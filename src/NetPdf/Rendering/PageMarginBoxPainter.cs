@@ -221,11 +221,16 @@ internal static class PageMarginBoxPainter
             // differ from the content's, so the paint-time line metrics follow `contentStyle` (post-PR-#151
             // review P1, BoxFragment.TextMetricsStyle). Mixed / non-element() content keeps the box's own style
             // for both. APPROXIMATION: the running element's box and the margin box COINCIDE (no separately-
-            // decorated nesting); the element's nested BLOCK children stay deferred (deferrals.md). Relative
+            // decorated nesting). Its nested BLOCK children DO render — stacked lines, 16-deep recursion,
+            // per-line leaf font/colour via the segment runs below (deep-recursion + segment-style cycles);
+            // real nested block LAYOUT (sub-boxes with own decoration/margins) stays deferred
+            // (deferrals.md). Relative
             // units / `inherit` resolve against the page context (exact for the common absolute values).
             ComputedStyle style, contentStyle;
             double? elementHAlign = null;   // the running element's own text-align factor (Task 23), if any.
-            if (CssContentList.TryGetStandaloneElement(mb.ContentRawValue, out var elName, out var elFirst)
+            var isStandaloneElement =
+                CssContentList.TryGetStandaloneElement(mb.ContentRawValue, out var elName, out var elFirst);
+            if (isStandaloneElement
                 && TryGetRunningElementOwnStyle(marginContext, elName, elFirst) is { } ownPairs)
             {
                 contentStyle = BuildFromOwnStyle(ownPairs, decorationOnly: false,
@@ -250,6 +255,49 @@ internal static class PageMarginBoxPainter
                 ResolveDeferredFontSizeInPlace(
                     contentStyle, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx,
                     $"page margin box @{mb.Name}", diagnostics);
+
+            // SEGMENT RUNS (Task 23, segment-style cycle): a standalone element()'s stacked lines
+            // each shape as their own TextRun in the LEAF block's own (ancestor-walked) font/colour
+            // — an h1 title line over a styled subtitle renders heterogeneously ("real nested block
+            // layout" first cut: per-line text style; per-line decoration/margins stay deferred).
+            // The '\n' terminators ride inside the run texts, so the pre-line/pre layout still sees
+            // the mandatory breaks. The line PITCH + TextMetricsStyle follow the LARGEST segment
+            // font (uniform-pitch approximation — no line can overlap a taller neighbour; true
+            // per-line pitch is the refinement). A SINGLE segment also takes this path (post-PR-#160
+            // review P2: `<div class=rh><h1>…</h1></div>` records ONE styled leaf segment whose
+            // font/colour must drive the shaping — the root's own-style capture sees only the
+            // ROOT's declarations, not the leaf's); an unstyled segment falls back to contentStyle,
+            // so flat unstyled content stays on an identical single-run layout. Non-element content
+            // keeps the single-run path untouched.
+            TextRun[]? contentRuns = null;
+            var contentMetricsStyle = contentStyle;
+            if (isStandaloneElement
+                && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
+            {
+                var runs = new TextRun[segs.Count];
+                var maxFontPx = 0.0;
+                for (var si = 0; si < segs.Count; si++)
+                {
+                    var seg = segs[si];
+                    var segStyle = seg.OwnStyle.Count > 0
+                        ? BuildFromOwnStyle(seg.OwnStyle, decorationOnly: false,
+                            ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics)
+                        : contentStyle;
+                    if (!ReferenceEquals(segStyle, contentStyle) && !ReferenceEquals(segStyle, style))
+                        ResolveDeferredFontSizeInPlace(
+                            segStyle, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx,
+                            $"page margin box @{mb.Name}", diagnostics);
+                    var segFontPx = segStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                    if (segFontPx > maxFontPx)
+                    {
+                        maxFontPx = segFontPx;
+                        contentMetricsStyle = segStyle;
+                    }
+                    runs[si] = new TextRun(
+                        si < segs.Count - 1 ? seg.Text + "\n" : seg.Text, segStyle);
+                }
+                contentRuns = runs;
+            }
 
             // currentcolor ORIGIN (CSS Color 4 §6.2 — currentcolor resolves to the `color` of the style that
             // OWNS the property). The box's declarations WIN the cascade (appended last), so a decoration
@@ -326,7 +374,7 @@ internal static class PageMarginBoxPainter
             // Lay out the content line FIRST — its size drives the §5.3 shrink-to-fit box below. An
             // empty `content: ""` box (CSS Page 3 §6.1: content not none/normal) or one whose font won't
             // resolve has no content size, so it keeps the FULL band.
-            var lineHeightPx = contentStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+            var lineHeightPx = contentMetricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
             // The box's computed white-space decides whether its content can WRAP: only Normal / PreWrap /
             // PreLine / BreakSpaces wrap, so only they can flex narrower than the single-line width and
             // re-wrap to fit. A `nowrap` / `pre` box is rigid (min-content == max-content) → the
@@ -364,12 +412,13 @@ internal static class PageMarginBoxPainter
             var horizontalAxis = region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal;
             InlineLayoutResult inline = default;
             var hasLine = false;
+            var layoutRuns = contentRuns ?? [new TextRun(text, contentStyle)];
             if (!string.IsNullOrEmpty(text))
             {
                 try
                 {
                     var laid = InlineLayouter.Layout(
-                        sourceTextRuns: new[] { new TextRun(text, contentStyle) },
+                        sourceTextRuns: layoutRuns,
                         availableInlineSize: horizontalAxis ? availableInlinePx : fixedAxisContentWidthPx,
                         resolver: shaper,
                         scriptIso15924: "Latn", language: "en",
@@ -445,7 +494,7 @@ internal static class PageMarginBoxPainter
                 ? boxWidthPx : boxHeightPx;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal && hasLine && canWrap
                 && explicitVarSizePx is null
-                && TryMeasureMinContentWidthPx(text, contentStyle, shaper, reflowWhiteSpace, out var minContentWidthPx))
+                && TryMeasureMinContentWidthPx(layoutRuns, shaper, reflowWhiteSpace, out var minContentWidthPx))
             {
                 minVarSizePx = Math.Min(region.Width, minContentWidthPx + insetLeftPx + insetRightPx);
             }
@@ -462,6 +511,7 @@ internal static class PageMarginBoxPainter
                 Region = region, Style = style, ContentStyle = contentStyle,
                 BgCurrentColorArgb = bgCurrentColor, BorderCurrentColors = borderCurrentColors,
                 Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
+                ContentRuns = layoutRuns, MetricsStyle = contentRuns is null ? null : contentMetricsStyle,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
                 OverflowVisible = MarginBoxStyle.OverflowVisible(mb.Declarations),
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
@@ -496,7 +546,7 @@ internal static class PageMarginBoxPainter
             // — a mandatory break can put a wider line later), wrapping with the reflow white-space (the
             // box's own, or pre-line/pre for forced-break content so the block breaks survive).
             if (contentWidthPx > 0 && contentWidthPx < WidestLineAdvancePx(item.Inline) - 0.5
-                && TryLayoutContent(item.Text, item.ContentStyle, shaper, contentWidthPx, item.ReflowWhiteSpace, out var wrapped))
+                && TryLayoutContent(item.ContentRuns, shaper, contentWidthPx, item.ReflowWhiteSpace, out var wrapped))
             {
                 item.Inline = wrapped;
             }
@@ -626,7 +676,7 @@ internal static class PageMarginBoxPainter
                 // element's font-size, so the pitch must match (else a 32px header overlaps at 16px pitch).
                 // For non-element content ContentStyle == Style, so this is byte-identical there. The box
                 // style still drives the border/padding origin + decoration in TextPainter/FragmentPainter.
-                TextMetricsStyle: item.ContentStyle,
+                TextMetricsStyle: item.MetricsStyle ?? item.ContentStyle,
                 // The padding-box clip for horizontally-overflowing content (clip-path cycle) — null for
                 // a fitting box, so its stream is byte-identical.
                 ClipRect: clipRect));
@@ -678,19 +728,21 @@ internal static class PageMarginBoxPainter
         style.IsSet(PropertyId.BorderTopStyle) || style.IsSet(PropertyId.BorderRightStyle)
         || style.IsSet(PropertyId.BorderBottomStyle) || style.IsSet(PropertyId.BorderLeftStyle);
 
-    /// <summary>Lay <paramref name="text"/> out in <paramref name="style"/> at <paramref name="widthPx"/>
-    /// with the given wrapping mode. Returns <see langword="false"/> on empty text, no line, or a
-    /// font-resolution failure. Used for the §5.3 min-content measurement + the overflow re-wrap.</summary>
+    /// <summary>Lay <paramref name="runs"/> out at <paramref name="widthPx"/> with the given wrapping
+    /// mode (segment-style cycle: the runs carry per-segment styles, so a re-wrap/measure shapes each
+    /// line exactly like the initial layout). Returns <see langword="false"/> on empty runs, no line,
+    /// or a font-resolution failure. Used for the §5.3 min-content measurement + the overflow
+    /// re-wrap.</summary>
     private static bool TryLayoutContent(
-        string text, ComputedStyle style, HarfBuzzShaperResolver shaper, double widthPx, WhiteSpace whiteSpace,
+        IReadOnlyList<TextRun> runs, HarfBuzzShaperResolver shaper, double widthPx, WhiteSpace whiteSpace,
         out InlineLayoutResult result)
     {
         result = default;
-        if (string.IsNullOrEmpty(text)) return false;
+        if (runs.Count == 0 || (runs.Count == 1 && string.IsNullOrEmpty(runs[0].Text))) return false;
         try
         {
             var laid = InlineLayouter.Layout(
-                sourceTextRuns: new[] { new TextRun(text, style) },
+                sourceTextRuns: runs,
                 availableInlineSize: Math.Max(widthPx, 1.0), resolver: shaper,
                 scriptIso15924: "Latn", language: "en",
                 paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: whiteSpace);
@@ -701,16 +753,16 @@ internal static class PageMarginBoxPainter
         catch (FontResolutionException) { return false; }
     }
 
-    /// <summary>The min-content WIDTH (px) of <paramref name="text"/> in <paramref name="whiteSpace"/> — the
+    /// <summary>The min-content WIDTH (px) of <paramref name="runs"/> in <paramref name="whiteSpace"/> — the
     /// longest unbreakable run, found by wrapping at a tiny width so each break opportunity splits a line;
     /// the widest resulting line is the min-content. The caller passes the box's COMPUTED white-space (and
     /// only calls this for a wrapping mode) so a <c>nowrap</c>/<c>pre</c> box isn't measured as if it could
     /// wrap (Copilot review). <see langword="false"/> on a font-resolution failure.</summary>
     private static bool TryMeasureMinContentWidthPx(
-        string text, ComputedStyle style, HarfBuzzShaperResolver shaper, WhiteSpace whiteSpace, out double minContentPx)
+        IReadOnlyList<TextRun> runs, HarfBuzzShaperResolver shaper, WhiteSpace whiteSpace, out double minContentPx)
     {
         minContentPx = 0;
-        if (!TryLayoutContent(text, style, shaper, 1.0, whiteSpace, out var laid)) return false;
+        if (!TryLayoutContent(runs, shaper, 1.0, whiteSpace, out var laid)) return false;
         minContentPx = WidestLineAdvancePx(laid);
         return true;
     }
@@ -926,6 +978,16 @@ internal static class PageMarginBoxPainter
         return dict is not null && dict.TryGetValue(name, out var pairs) && pairs.Count > 0 ? pairs : null;
     }
 
+    /// <summary>The selected occurrence's per-line SEGMENTS (segment-style cycle), or
+    /// <see langword="null"/> when none were collected — lockstep with the text/own-style
+    /// dictionaries, so the segments always describe the SAME occurrence as the text.</summary>
+    private static IReadOnlyList<CssContentList.RunningSegment>? TryGetRunningElementSegments(
+        CssContentList.MarginContentContext marginContext, string name, bool first)
+    {
+        var dict = first ? marginContext.RunningElementSegmentsFirst : marginContext.RunningElementSegments;
+        return dict is not null && dict.TryGetValue(name, out var segs) && segs.Count > 0 ? segs : null;
+    }
+
     /// <summary>Build a <see cref="ComputedStyle"/> from the running element's captured <paramref name="pairs"/>
     /// cascaded over <paramref name="pageContextStyle"/> via <see cref="MarginBoxStyle.Build"/>, split by
     /// <paramref name="decorationOnly"/>: <see langword="true"/> takes the element's NON-content pairs (the
@@ -1018,6 +1080,8 @@ internal static class PageMarginBoxPainter
         public bool OverflowVisible;            // explicit `overflow: visible` — opt OUT of clipping (clip-path cycle).
         public string Name = string.Empty;      // the margin-box name (e.g. "top-center") — for the overflow diagnostic.
         public string Text = string.Empty;     // raw content text — re-laid-out (wrapped) if the box shrinks.
+        public TextRun[] ContentRuns = [];      // the layout runs (per-SEGMENT styles when >1 — segment-style cycle).
+        public ComputedStyle? MetricsStyle;     // line-pitch style override (the LARGEST segment font) — null = ContentStyle.
         public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
                                                 // box's desired/max size for rigid/explicit/vertical boxes,
                                                 // so they take the clamp path — only horizontal auto boxes flex).

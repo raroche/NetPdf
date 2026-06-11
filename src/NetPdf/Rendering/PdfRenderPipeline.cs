@@ -105,6 +105,15 @@ internal static class PdfRenderPipeline
         var contentInlinePx = Math.Max(0, pageSize.WidthPx - margins.LeftPx - margins.RightPx);
         var contentBlockPx = Math.Max(0, pageSize.HeightPx - margins.TopPx - margins.BottomPx);
 
+        // Body context-dependent cycle — resolve the deferred font-/viewport-relative body lengths
+        // (`2em` / `5vw` / `calc(2em + 10px)`) IN PLACE now that the page box is final: the cascade
+        // deferred them (LengthResolver), BoxBuilder resolved each element's font-size, and the
+        // layouters read LengthPx slots. Percentage terms stay deferred (containing-block base —
+        // deferrals.md). The viewport bases are the PAGE box (incl. any `@page size` override),
+        // matching the margin-box painter's convention.
+        DeferredLengthResolver.ResolveTreeInPlace(
+            phase2.BoxRoot, pageSize.WidthPx, pageSize.HeightPx);
+
         var sink = new ListFragmentSink();
         var overflowReported = false;
         // Keep the shaper alive PAST paint (method-scoped using): the TextPainter subsets the

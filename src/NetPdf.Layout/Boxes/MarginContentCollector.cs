@@ -56,7 +56,8 @@ internal static class MarginContentCollector
         var c = new Collected();
         Walk(root, cascade, c);
         return new CssContentList.MarginContentContext(
-            c.Named, c.Running, c.NamedFirst, c.RunningFirst, c.RunningStyles, c.RunningStylesFirst);
+            c.Named, c.Running, c.NamedFirst, c.RunningFirst, c.RunningStyles, c.RunningStylesFirst,
+            c.RunningSegments, c.RunningSegmentsFirst);
     }
 
     /// <summary>Mutable accumulator threaded through the document <see cref="Walk"/> (a reference type, so
@@ -69,6 +70,8 @@ internal static class MarginContentCollector
         public Dictionary<string, string>? RunningFirst; // FIRST — element(name) default + first
         public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStyles;      // LAST own style
         public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStylesFirst; // FIRST own style
+        public Dictionary<string, IReadOnlyList<CssContentList.RunningSegment>>? RunningSegments;      // LAST per-line segments
+        public Dictionary<string, IReadOnlyList<CssContentList.RunningSegment>>? RunningSegmentsFirst; // FIRST per-line segments
     }
 
     private static void Walk(IElement element, ResolvedCascadeResult cascade, Collected c)
@@ -102,9 +105,17 @@ internal static class MarginContentCollector
             var position = rules.GetWinner("position")?.ResolvedValue;
             if (position is not null && TryParseRunningName(position, out var runName))
             {
-                var text = ReadRunningElementContent(element, cascade, MaxRunningTextChars);
+                // Per-line SEGMENTS (segment-style cycle) are recorded in the same walk, so the
+                // selected occurrence's text/style/segments can never mix occurrences (the PR #151
+                // lockstep rule). Stored as an array for the same no-downcast-mutation reason as
+                // the own-style capture below.
+                var segments = new List<CssContentList.RunningSegment>();
+                var text = ReadRunningElementContent(element, cascade, MaxRunningTextChars, depth: 0, segments);
                 (c.Running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
                 (c.RunningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
+                var segmentArray = segments.ToArray();
+                (c.RunningSegments ??= new(StringComparer.Ordinal))[runName] = segmentArray;
+                (c.RunningSegmentsFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, segmentArray);
 
                 // Capture this occurrence's OWN style IN LOCKSTEP with its text (post-PR-#151 review P1).
                 // CaptureOwnStyle returns an EMPTY list (not null) when the element has no own font/color, and
@@ -355,20 +366,29 @@ internal static class MarginContentCollector
     /// <c>U+000A</c> → the painter keeps its single-line <c>nowrap</c> path, byte-identical). The whole
     /// result is BOUNDED to <paramref name="maxChars"/> TOTAL — a SINGLE budget is shared across every block
     /// read + inline run + newline separator, and the walk STOPS once exhausted, so N huge block children
-    /// can't store N × the cap (post-PR-#154 review P1 / Copilot). APPROXIMATION: nested blocks are FLATTENED
-    /// (each direct block child is one line — its own further block structure / decoration / margins stay
-    /// deferred, deferrals.md); a <c>display: none</c> child renders nothing; a <c>display: contents</c>
-    /// child's block grandchildren aren't promoted (treated as an inline run). DEEP RECURSION
-    /// (deep-recursion cycle): a block child that itself has block-level children RECURSES (each
-    /// nested block its own stacked line) up to <see cref="MaxRunningBlockDepth"/> levels — a deeper
-    /// nest flattens to one line; the SAME total budget threads through every level.</summary>
+    /// can't store N × the cap (post-PR-#154 review P1 / Copilot). SHIPPED here (post-PR-#160 review P3
+    /// wording): nested-block TEXT SEGMENTATION — a block child that itself has block-level children
+    /// RECURSES (deep-recursion cycle; each nested block its own stacked line) up to
+    /// <see cref="MaxRunningBlockDepth"/> levels with the SAME total budget threading through every
+    /// level (a deeper nest flattens to one line), and each line is recorded as a
+    /// <c>CssContentList.RunningSegment</c> carrying its LEAF element's own font/colour (segment-style
+    /// cycle) so the painter shapes it per line. STILL DEFERRED (deferrals.md): real nested block
+    /// LAYOUT (separately laid-out sub-boxes), per-line decoration/margins, per-line
+    /// <c>text-align</c>. A <c>display: none</c> child renders nothing; a <c>display: contents</c>
+    /// child's block grandchildren aren't promoted (treated as an inline run).</summary>
     private static string ReadRunningElementContent(
-        IElement element, ResolvedCascadeResult cascade, int maxChars, int depth = 0)
+        IElement element, ResolvedCascadeResult cascade, int maxChars, int depth = 0,
+        List<CssContentList.RunningSegment>? segments = null)
     {
         // No block-level child → the flat normalized text (the common single-line header — no U+000A, so the
-        // painter's single-line path is byte-identical to before this first cut).
+        // painter's single-line path is byte-identical to before this first cut). One segment: the element's
+        // own (ancestor-walked) style.
         if (!HasBlockLevelChild(element, cascade))
-            return LineBuilder.PreprocessWhitespace(ReadBoundedDescendantText(element, maxChars), WhiteSpace.Normal);
+        {
+            var flat = LineBuilder.PreprocessWhitespace(ReadBoundedDescendantText(element, maxChars), WhiteSpace.Normal);
+            AddSegment(segments, flat, element, cascade);
+            return flat;
+        }
 
         // Block children → one U+000A-separated LINE per block child, bounded to maxChars TOTAL: `output`
         // never exceeds the cap (each block reads only the REMAINING budget, the inline buffer is capped to
@@ -385,7 +405,8 @@ internal static class MarginContentCollector
                 if (result == DisplayMapper.DisplayMappingResult.None) continue;   // display:none → no box, no content
                 if (result == DisplayMapper.DisplayMappingResult.Resolved && BoxKindFacts.IsBlockLevelOuter(kind))
                 {
-                    FlushInlineRun(inlineBuf, output, maxChars);   // flush the pending inline run as a line
+                    // flush the pending inline run as a line (its segment owner: THIS element)
+                    FlushInlineRun(inlineBuf, output, maxChars, segments, element, cascade);
                     if (output.Length >= maxChars) break;
                     // DEEP RECURSION (deep-recursion cycle): a block child that ITSELF has block-level
                     // children recurses, so each NESTED block contributes its own stacked line —
@@ -393,11 +414,27 @@ internal static class MarginContentCollector
                     // flattened "A B" + "C". Depth-capped (a deeper nest flattens — the pre-cycle
                     // behavior) and budget-bounded: the REMAINING budget threads down, so the 64 KiB
                     // total cap holds across every level.
-                    var block = depth < MaxRunningBlockDepth && HasBlockLevelChild(el, cascade)
-                        ? ReadRunningElementContent(el, cascade, maxChars - output.Length, depth + 1)
-                        : LineBuilder.PreprocessWhitespace(
+                    // SEGMENTS (segment-style cycle): the recursion records one segment per LEAF
+                    // line itself (the nested call appends to the same list); a flattened leaf —
+                    // no nested blocks, or past the depth cap — records one segment styled by the
+                    // block child element. The recursive budget RESERVES the parent's pending '\n'
+                    // separator (post-PR-#160 review P2): AppendLine consumes one char for it when
+                    // output is non-empty, so without the reservation a nested call at the budget
+                    // boundary could record segment text the joined string can't fit — the
+                    // segments now concatenate to EXACTLY the stored capped text.
+                    if (depth < MaxRunningBlockDepth && HasBlockLevelChild(el, cascade))
+                    {
+                        var nestedBudget = maxChars - output.Length - (output.Length > 0 ? 1 : 0);
+                        var block = ReadRunningElementContent(
+                            el, cascade, nestedBudget, depth + 1, segments);
+                        AppendLine(output, block, maxChars);
+                    }
+                    else
+                    {
+                        var block = LineBuilder.PreprocessWhitespace(
                             ReadBoundedDescendantText(el, maxChars - output.Length), WhiteSpace.Normal);
-                    AppendLine(output, block, maxChars);
+                        AddSegment(segments, AppendLine(output, block, maxChars), el, cascade);
+                    }
                 }
                 else if (inlineBuf.Length < remaining)             // inline / inline-block / contents / unsupported
                 {
@@ -409,7 +446,7 @@ internal static class MarginContentCollector
                 inlineBuf.Append(t.Data, 0, Math.Min(t.Data.Length, remaining - inlineBuf.Length));
             }
         }
-        FlushInlineRun(inlineBuf, output, maxChars);
+        FlushInlineRun(inlineBuf, output, maxChars, segments, element, cascade);
         return output.ToString();
     }
 
@@ -449,26 +486,65 @@ internal static class MarginContentCollector
     /// normalization) into <paramref name="output"/> and clear it — a run of text / inline children between
     /// two block children becomes a single line. Whitespace-only runs (the inter-block whitespace text nodes
     /// of indented HTML like <c>&lt;div&gt;\n  &lt;div&gt;A&lt;/div&gt;…</c>) are dropped.</summary>
-    private static void FlushInlineRun(StringBuilder inlineBuf, StringBuilder output, int maxChars)
+    private static void FlushInlineRun(
+        StringBuilder inlineBuf, StringBuilder output, int maxChars,
+        List<CssContentList.RunningSegment>? segments, IElement owner, ResolvedCascadeResult cascade)
     {
         if (inlineBuf.Length == 0) return;
         var line = LineBuilder.PreprocessWhitespace(inlineBuf.ToString(), WhiteSpace.Normal);
         inlineBuf.Clear();
-        if (!string.IsNullOrWhiteSpace(line)) AppendLine(output, line, maxChars);
+        if (!string.IsNullOrWhiteSpace(line))
+            AddSegment(segments, AppendLine(output, line, maxChars), owner, cascade);
     }
 
     /// <summary>Append <paramref name="line"/> to <paramref name="output"/> as a stacked line (a leading
     /// <c>U+000A</c> separator before all but the first), capping the TOTAL at <paramref name="maxChars"/>
-    /// (the single running-content budget) — both the separator and the line content count against it.</summary>
-    private static void AppendLine(StringBuilder output, string line, int maxChars)
+    /// (the single running-content budget) — both the separator and the line content count against it.
+    /// Returns the line portion actually APPENDED (post-cap; empty when nothing fit) so the segment
+    /// capture mirrors the budget-truncated text exactly (segment-style cycle).</summary>
+    private static string AppendLine(StringBuilder output, string line, int maxChars)
     {
-        if (line.Length == 0 || output.Length >= maxChars) return;
+        if (line.Length == 0 || output.Length >= maxChars) return string.Empty;
         if (output.Length > 0)
         {
             output.Append('\n');
-            if (output.Length >= maxChars) return;
+            if (output.Length >= maxChars) return string.Empty;
         }
-        output.Append(line, 0, Math.Min(line.Length, maxChars - output.Length));
+        var count = Math.Min(line.Length, maxChars - output.Length);
+        output.Append(line, 0, count);
+        return count == line.Length ? line : line[..count];
+    }
+
+    /// <summary>Record one per-line SEGMENT (segment-style cycle): <paramref name="text"/> (the
+    /// budget-capped appended line) styled by <paramref name="element"/>'s own inherited font/color
+    /// (ancestor-walked via <see cref="CaptureSegmentStyle"/>, so the record is self-contained — an
+    /// unstyled leaf inside a styled running root still carries the root's values). No-ops for a
+    /// null list (a non-segment caller) or an empty line.</summary>
+    private static void AddSegment(
+        List<CssContentList.RunningSegment>? segments, string text,
+        IElement element, ResolvedCascadeResult cascade)
+    {
+        if (segments is null || string.IsNullOrEmpty(text)) return;
+        segments.Add(new CssContentList.RunningSegment(text, CaptureSegmentStyle(element, cascade)));
+    }
+
+    /// <summary>The INHERITED own-style slice for one segment — the same nearest-self-or-ancestor
+    /// winner walk as <see cref="CaptureOwnStyle"/>'s inherited loop, WITHOUT the non-inherited
+    /// decoration props (per-segment decoration — a leaf block's own background/border band — stays
+    /// deferred; the box decoration comes from the running ROOT's capture). Per-segment
+    /// <c>text-align</c> is captured but not yet consumed (the box has ONE line-align factor) —
+    /// deferred alongside.</summary>
+    private static IReadOnlyList<KeyValuePair<string, string>> CaptureSegmentStyle(
+        IElement element, ResolvedCascadeResult cascade)
+    {
+        List<KeyValuePair<string, string>>? captured = null;
+        foreach (var prop in InheritedOwnProperties)
+        {
+            var value = NearestDeclaredWinner(element, cascade, prop);
+            if (!string.IsNullOrWhiteSpace(value))
+                (captured ??= new()).Add(new KeyValuePair<string, string>(prop, value));
+        }
+        return captured is null ? EmptyOwnStyle : captured.ToArray();
     }
 
     /// <summary>The element's descendant text (DOM <c>textContent</c>) read BOUNDED to

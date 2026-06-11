@@ -1136,6 +1136,9 @@ internal static class CssPreprocessor
     private static readonly FrozenSet<string> MathFunctionNames = new[]
     {
         "calc", "min", "max", "clamp", "round", "mod", "rem", "abs", "sign",
+        // §10.8 trig + §10.9 exponential (trig/exp cycle).
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "pow", "sqrt", "hypot", "log", "exp",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Per the body-calc cycle — <see langword="true"/> when <paramref name="value"/>

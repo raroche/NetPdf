@@ -108,6 +108,56 @@ public sealed class CalcLengthEvaluatorTests
         Assert.False(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out _), raw);
     }
 
+    [Theory]
+    // §10.8 trigonometric — a NUMBER argument is radians; an <angle> dimension canonicalizes to
+    // radians (360deg = 400grad = 1turn = 2π rad); the result is a NUMBER (composes in products).
+    [InlineData("calc(100px * cos(0))", 100.0)]
+    [InlineData("calc(10px * sin(pi / 2))", 10.0)]            // pi constant; number arg = radians
+    [InlineData("calc(10px * sin(30deg) + 5px)", 10.0)]       // sin 30° = 0.5
+    [InlineData("calc(10px * tan(45deg))", 10.0)]
+    [InlineData("calc(10px * cos(200grad) + 20px)", 10.0)]    // cos 180° = −1
+    [InlineData("calc(10px * sin(0.25turn))", 10.0)]
+    [InlineData("calc(10px * sin(45deg + 45deg))", 10.0)]     // angle + angle (same-type sum)
+    [InlineData("calc(10px * sin(asin(0.5)) * 2)", 10.0)]     // inverse trig yields an ANGLE arg
+    [InlineData("calc(10px * sin(atan2(1, 1)) * 2)", 14.142)] // atan2 → 45°; ×2·sin → √2 ×10
+    [InlineData("calc(10px * sign(45deg))", 10.0)]            // §10.7 sign accepts any type
+    // §10.9 exponential — number-typed except hypot, which keeps its arguments' type.
+    [InlineData("hypot(30px, 40px)", 50.0)]                   // length args → LENGTH (whole value!)
+    [InlineData("hypot(5px)", 5.0)]                           // single argument is valid
+    [InlineData("HYPOT(3px, 4px)", 5.0)]                      // names are case-insensitive
+    [InlineData("calc(1px * pow(2, 10))", 1024.0)]
+    [InlineData("calc(1px * sqrt(144))", 12.0)]
+    [InlineData("calc(1px * log(e))", 1.0)]                   // e constant; log defaults to base e
+    [InlineData("calc(1px * log(8, 2))", 3.0)]
+    [InlineData("calc(1px * exp(0))", 1.0)]
+    [InlineData("calc(1px * pi)", 3.1416)]
+    [InlineData("calc(2em * cos(0))", 40.0)]                  // relative term × trig (em base 20)
+    public void TryEvaluate_resolves_trig_and_exponential_functions(string raw, double expectedPx)
+    {
+        Assert.True(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out var px), raw);
+        Assert.Equal(expectedPx, px, 3);
+    }
+
+    [Theory]
+    [InlineData("sin(10px)")]                  // trig argument must be a number or angle
+    [InlineData("calc(10px * sin(5px))")]
+    [InlineData("atan(1)")]                    // an ANGLE result is invalid as a whole length
+    [InlineData("calc(45deg)")]                // …and as a calc() result
+    [InlineData("calc(10px + 45deg)")]         // §10.4: length + angle is a type mismatch
+    [InlineData("pow(2px, 2)")]                // pow/sqrt/log/exp take numbers only
+    [InlineData("pow(2)")]                     // pow takes exactly two arguments
+    [InlineData("sqrt(4px)")]
+    [InlineData("calc(1px * log(2px))")]
+    [InlineData("hypot(1px, 2)")]              // §10.4: same-type arguments only
+    [InlineData("hypot()")]                    // at least one argument
+    [InlineData("calc(1px * asin(1px))")]      // inverse trig takes a number
+    [InlineData("cosh(1)")]                    // §10.8 hyperbolic — not a CSS math function
+    [InlineData("calc(e)")]                    // a bare-number result is not a length
+    public void TryEvaluate_rejects_invalid_trig_and_exponential_functions(string raw)
+    {
+        Assert.False(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out _), raw);
+    }
+
     [Fact]
     public void Sign_of_a_NaN_context_term_fails_cleanly_instead_of_throwing()
     {

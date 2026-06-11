@@ -38,10 +38,13 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </para>
 /// <para>
 /// <b>Out of scope</b> (evaluate → <see langword="false"/>, the caller surfaces + falls back):
-/// container-relative units, the §10.8+ trigonometric/exponential functions
-/// (<c>sin()</c>/<c>pow()</c>/…), attr(), non-finite results. The §10.6 stepped-value
-/// (<c>round()</c>/<c>mod()</c>/<c>rem()</c>) and §10.7 sign-related (<c>abs()</c>/<c>sign()</c>)
-/// functions ARE evaluated (math-fns cycle).
+/// container-relative units, the <c>infinity</c>/<c>NaN</c> keywords, attr(), non-finite results.
+/// The §10.6 stepped-value (<c>round()</c>/<c>mod()</c>/<c>rem()</c>), §10.7 sign-related
+/// (<c>abs()</c>/<c>sign()</c>), §10.8 trigonometric (<c>sin()</c>/<c>cos()</c>/<c>tan()</c>/
+/// <c>asin()</c>/<c>acos()</c>/<c>atan()</c>/<c>atan2()</c>, with <c>deg</c>/<c>grad</c>/<c>rad</c>/
+/// <c>turn</c> angle dimensions + the <c>e</c>/<c>pi</c> constants), and §10.9 exponential
+/// (<c>pow()</c>/<c>sqrt()</c>/<c>hypot()</c>/<c>log()</c>/<c>exp()</c>) functions ARE evaluated
+/// (math-fns + trig/exp cycles).
 /// </para>
 /// </remarks>
 internal static class CalcLengthEvaluator
@@ -70,7 +73,14 @@ internal static class CalcLengthEvaluator
             // NUMBER, so as a WHOLE length value it admits here then fails evaluation (surfaced) —
             // correct: it IS invalid as a length, but it's still a math function.
             || StartsWithName(v, "round(") || StartsWithName(v, "mod(") || StartsWithName(v, "rem(")
-            || StartsWithName(v, "abs(") || StartsWithName(v, "sign(");
+            || StartsWithName(v, "abs(") || StartsWithName(v, "sign(")
+            // §10.8 trig + §10.9 exponential functions (trig/exp cycle). Like sign(), the number-
+            // valued ones (sin/cos/tan/pow/sqrt/log/exp) and the angle-valued inverses admit here
+            // then fail evaluation as a whole length (surfaced); hypot() over lengths IS a length.
+            || StartsWithName(v, "sin(") || StartsWithName(v, "cos(") || StartsWithName(v, "tan(")
+            || StartsWithName(v, "asin(") || StartsWithName(v, "acos(") || StartsWithName(v, "atan(")
+            || StartsWithName(v, "atan2(") || StartsWithName(v, "pow(") || StartsWithName(v, "sqrt(")
+            || StartsWithName(v, "hypot(") || StartsWithName(v, "log(") || StartsWithName(v, "exp(");
 
         static bool StartsWithName(ReadOnlySpan<char> v, string nameWithParen) =>
             v.Length > nameWithParen.Length + 1
@@ -111,15 +121,26 @@ internal static class CalcLengthEvaluator
         if (!TryParseValue(expr, ref pos, context, depth: 0, out var result)) return false;
         SkipWhitespace(expr, ref pos);
         if (pos != expr.Length) return false;            // trailing junk.
-        if (result.IsNumber) return false;               // a length property needs a length result.
+        if (result.Kind != TermKind.Length) return false; // a length property needs a LENGTH result
+                                                          // (a number- or ANGLE-typed whole value is invalid).
         if (!double.IsFinite(result.Value)) return false;
         px = clampNonNegative ? Math.Max(0, result.Value) : result.Value; // §10.5 used-value range clamp.
         return true;
     }
 
-    /// <summary>A partially-evaluated term: a px length or a unitless number (§10.4 type system —
-    /// only these two types occur in the length subset).</summary>
-    private readonly record struct Term(double Value, bool IsNumber);
+    /// <summary>The §10.4 type of a partially-evaluated term. The length subset of the calc grammar
+    /// produced only LENGTH and NUMBER until the trig/exp cycle added ANGLE — angle dimensions
+    /// (<c>deg</c>/<c>grad</c>/<c>rad</c>/<c>turn</c>, canonicalized to RADIANS) enter as trig
+    /// arguments and leave the inverse trig functions; an angle can never be the WHOLE expression
+    /// (the top-level gate requires a length).</summary>
+    private enum TermKind : byte { Length, Number, Angle }
+
+    /// <summary>A partially-evaluated term: a px length, a unitless number, or an angle in radians
+    /// (§10.4 type system).</summary>
+    private readonly record struct Term(double Value, TermKind Kind)
+    {
+        public bool IsNumber => Kind == TermKind.Number;
+    }
 
     private static bool TryParseSum(
         ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
@@ -137,7 +158,7 @@ internal static class CalcLengthEvaluator
             pos++;
             if (!hadLeadingWs || pos >= s.Length || !char.IsWhiteSpace(s[pos])) return false;
             if (!TryParseProduct(s, ref pos, ctx, depth, out var right)) return false;
-            if (result.IsNumber != right.IsNumber) return false; // §10.4: same-type operands only.
+            if (result.Kind != right.Kind) return false; // §10.4: same-type operands only.
             result = result with { Value = op == '+' ? result.Value + right.Value : result.Value - right.Value };
         }
     }
@@ -156,8 +177,11 @@ internal static class CalcLengthEvaluator
             if (!TryParseValue(s, ref pos, ctx, depth, out var right)) return false;
             if (op == '*')
             {
-                if (!result.IsNumber && !right.IsNumber) return false; // length × length has no CSS type.
-                result = new Term(result.Value * right.Value, result.IsNumber && right.IsNumber);
+                // §10.4: at least one factor must be a NUMBER (length × length / angle × angle /
+                // length × angle have no CSS type); the product takes the other factor's type.
+                if (result.Kind != TermKind.Number && right.Kind != TermKind.Number) return false;
+                result = new Term(result.Value * right.Value,
+                    result.Kind == TermKind.Number ? right.Kind : result.Kind);
             }
             else
             {
@@ -165,7 +189,7 @@ internal static class CalcLengthEvaluator
                 // is a valid expression per spec (post-PR-#157 Copilot review — a near-zero guard
                 // wrongly rejected e.g. `calc(10px / 1e-13)`); an overflowing quotient is caught by
                 // the final IsFinite gate instead.
-                if (!right.IsNumber || right.Value == 0.0) return false;
+                if (right.Kind != TermKind.Number || right.Value == 0.0) return false;
                 result = result with { Value = result.Value / right.Value };
             }
         }
@@ -216,6 +240,58 @@ internal static class CalcLengthEvaluator
             return TryParseAbsSign(s, ref pos, ctx, depth, isAbs: true, out result);
         if (TryMatchFunctionName(s, ref pos, "sign("))
             return TryParseAbsSign(s, ref pos, ctx, depth, isAbs: false, out result);
+        // §10.8 trigonometric + §10.9 exponential functions (trig/exp cycle). `atan2(` MUST match
+        // before `atan(` (a shared prefix); the inverse functions yield ANGLE terms (radians) that
+        // only the trig arguments can consume — the top-level length gate rejects a bare one. The
+        // Math.* delegates are cached fields (a method-group argument would allocate per call).
+        if (TryMatchFunctionName(s, ref pos, "sin("))
+            return TryParseTrig(s, ref pos, ctx, depth, SinFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "cos("))
+            return TryParseTrig(s, ref pos, ctx, depth, CosFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "tan("))
+            return TryParseTrig(s, ref pos, ctx, depth, TanFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "asin("))
+            return TryParseInverseTrig(s, ref pos, ctx, depth, AsinFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "acos("))
+            return TryParseInverseTrig(s, ref pos, ctx, depth, AcosFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "atan2("))
+            return TryParseAtan2(s, ref pos, ctx, depth, out result);
+        if (TryMatchFunctionName(s, ref pos, "atan("))
+            return TryParseInverseTrig(s, ref pos, ctx, depth, AtanFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "pow("))
+            return TryParsePow(s, ref pos, ctx, depth, out result);
+        if (TryMatchFunctionName(s, ref pos, "sqrt("))
+            return TryParseUnaryNumber(s, ref pos, ctx, depth, SqrtFn, out result);
+        if (TryMatchFunctionName(s, ref pos, "hypot("))
+            return TryParseHypot(s, ref pos, ctx, depth, out result);
+        if (TryMatchFunctionName(s, ref pos, "log("))
+            return TryParseLog(s, ref pos, ctx, depth, out result);
+        if (TryMatchFunctionName(s, ref pos, "exp("))
+            return TryParseUnaryNumber(s, ref pos, ctx, depth, ExpFn, out result);
+
+        // The §10.9-adjacent numeric constants — `e` / `pi` as NUMBER values (case-insensitive,
+        // token-boundary: `pixel` is not `pi`). `infinity` / `-infinity` / `nan` stay unsupported —
+        // the final finite gate would reject any expression needing them. An unknown identifier
+        // fails here (a known function name was consumed above).
+        if (char.IsAsciiLetter(s[pos]))
+        {
+            var idEnd = pos;
+            while (idEnd < s.Length && (char.IsAsciiLetterOrDigit(s[idEnd]) || s[idEnd] == '-')) idEnd++;
+            var id = s[pos..idEnd];
+            if (id.Equals("e", StringComparison.OrdinalIgnoreCase))
+            {
+                pos = idEnd;
+                result = new Term(Math.E, TermKind.Number);
+                return true;
+            }
+            if (id.Equals("pi", StringComparison.OrdinalIgnoreCase))
+            {
+                pos = idEnd;
+                result = new Term(Math.PI, TermKind.Number);
+                return true;
+            }
+            return false;
+        }
 
         // <number> with an optional unit / '%'. A sign is part of the value here (a value position),
         // unlike the whitespace-required binary +/- (an operator position).
@@ -243,12 +319,12 @@ internal static class CalcLengthEvaluator
         if (pos < s.Length && s[pos] == '%')
         {
             pos++;
-            result = new Term(number / 100.0 * ctx.PercentBasePx, IsNumber: false);
+            result = new Term(number / 100.0 * ctx.PercentBasePx, TermKind.Length);
             return true;
         }
         var unitStart = pos;
         while (pos < s.Length && char.IsAsciiLetter(s[pos])) pos++;
-        if (pos == unitStart) { result = new Term(number, IsNumber: true); return true; }
+        if (pos == unitStart) { result = new Term(number, TermKind.Number); return true; }
 
         // CSS units are ASCII case-insensitive (CSS Syntax §4) — normalize before the lookups:
         // TryAbsoluteUnitToPx matches lowercase only, so `calc(1IN - 24PT)` would otherwise be
@@ -256,13 +332,29 @@ internal static class CalcLengthEvaluator
         var unit = s[unitStart..pos].ToString().ToLowerInvariant();
         if (LengthResolver.TryAbsoluteUnitToPx(unit, number, out var absPx))
         {
-            result = new Term(absPx, IsNumber: false);
+            result = new Term(absPx, TermKind.Length);
             return true;
         }
         if (RelativeLengthResolver.TryResolveNumberUnit(
                 number, unit, ctx.EmPx, ctx.RootEmPx, ctx.ViewportWidthPx, ctx.ViewportHeightPx, out var relPx))
         {
-            result = new Term(relPx, IsNumber: false);
+            result = new Term(relPx, TermKind.Length);
+            return true;
+        }
+        // <angle> dimensions (trig/exp cycle) — canonicalized to RADIANS (CSS Values 4 §6.2:
+        // 360deg = 400grad = 1turn = 2π rad). An angle term is only CONSUMABLE by the trig
+        // arguments / same-type arithmetic; the §10.4 kind checks reject it everywhere else.
+        var radiansPerUnit = unit switch
+        {
+            "deg" => Math.PI / 180.0,
+            "grad" => Math.PI / 200.0,
+            "rad" => 1.0,
+            "turn" => Math.PI * 2.0,
+            _ => 0.0,
+        };
+        if (radiansPerUnit != 0.0)
+        {
+            result = new Term(number * radiansPerUnit, TermKind.Angle);
             return true;
         }
         return false; // container units / unknown units — unsupported.
@@ -295,7 +387,7 @@ internal static class CalcLengthEvaluator
             if (first) { result = arg; first = false; }
             else
             {
-                if (result.IsNumber != arg.IsNumber) return false; // §10.4: same-type arguments only.
+                if (result.Kind != arg.Kind) return false; // §10.4: same-type arguments only.
                 result = result with
                 {
                     Value = isMin ? Math.Min(result.Value, arg.Value) : Math.Max(result.Value, arg.Value),
@@ -334,8 +426,8 @@ internal static class CalcLengthEvaluator
             if (pos >= s.Length || s[pos] != (wantComma ? ',' : ')')) return false;
             pos++;
         }
-        if (!isNone[0] && args[0].IsNumber != args[1].IsNumber) return false; // §10.4: same-type
-        if (!isNone[2] && args[1].IsNumber != args[2].IsNumber) return false; //   arguments only.
+        if (!isNone[0] && args[0].Kind != args[1].Kind) return false; // §10.4: same-type
+        if (!isNone[2] && args[1].Kind != args[2].Kind) return false; //   arguments only.
         var value = args[1].Value;
         if (!isNone[2]) value = Math.Min(value, args[2].Value);
         if (!isNone[0]) value = Math.Max(args[0].Value, value); // MIN applied last → MIN wins over MAX.
@@ -379,7 +471,7 @@ internal static class CalcLengthEvaluator
         }
 
         if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
-        var b = new Term(1.0, IsNumber: true); // §10.6: B defaults to 1 (a NUMBER).
+        var b = new Term(1.0, TermKind.Number); // §10.6: B defaults to 1 (a NUMBER).
         SkipWhitespace(s, ref pos);
         if (pos < s.Length && s[pos] == ',')
         {
@@ -389,7 +481,7 @@ internal static class CalcLengthEvaluator
         }
         if (pos >= s.Length || s[pos] != ')') return false;
         pos++;
-        if (a.IsNumber != b.IsNumber) return false;      // §10.4: same-type arguments only.
+        if (a.Kind != b.Kind) return false;            // §10.4: same-type arguments only.
         if (b.Value == 0.0) return false;                // rounding to a zero step is invalid.
         // Post-PR-#159 Copilot review — normalize the step to |B|: the multiples of B and of
         // |B| are the same set, but a NEGATIVE B flips the ratio's sign, inverting the
@@ -433,7 +525,7 @@ internal static class CalcLengthEvaluator
         SkipWhitespace(s, ref pos);
         if (pos >= s.Length || s[pos] != ')') return false;
         pos++;
-        if (a.IsNumber != b.IsNumber) return false;      // §10.4: same-type arguments only.
+        if (a.Kind != b.Kind) return false;            // §10.4: same-type arguments only.
         if (b.Value == 0.0) return false;
         var value = isMod
             ? a.Value - (b.Value * Math.Floor(a.Value / b.Value))
@@ -462,7 +554,166 @@ internal static class CalcLengthEvaluator
         // path. Math.Sign handles ±∞ without throwing (±1, matching §10.7).
         result = isAbs
             ? a with { Value = Math.Abs(a.Value) }
-            : new Term(double.IsNaN(a.Value) ? double.NaN : Math.Sign(a.Value), IsNumber: true);
+            : new Term(double.IsNaN(a.Value) ? double.NaN : Math.Sign(a.Value), TermKind.Number);
+        return true;
+    }
+
+    // Cached Math.* delegates for the §10.8/§10.9 dispatch — a method-group argument at the call
+    // site would allocate a fresh delegate per invocation.
+    private static readonly Func<double, double> SinFn = Math.Sin;
+    private static readonly Func<double, double> CosFn = Math.Cos;
+    private static readonly Func<double, double> TanFn = Math.Tan;
+    private static readonly Func<double, double> AsinFn = Math.Asin;
+    private static readonly Func<double, double> AcosFn = Math.Acos;
+    private static readonly Func<double, double> AtanFn = Math.Atan;
+    private static readonly Func<double, double> SqrtFn = Math.Sqrt;
+    private static readonly Func<double, double> ExpFn = Math.Exp;
+
+    /// <summary><c>sin(A)</c> / <c>cos(A)</c> / <c>tan(A)</c> — §10.8: A is a NUMBER (interpreted
+    /// as radians) or an ANGLE; the result is a NUMBER. The asymptote special cases (an exact
+    /// <c>tan(90deg)</c> is +∞ per spec) are not modeled — double rounding lands near-asymptote
+    /// inputs on a finite value, and a non-finite END result is rejected by the final gate. The
+    /// caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseTrig(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth,
+        Func<double, double> fn, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.Kind == TermKind.Length) return false;     // §10.8: <number> (radians) or <angle> only.
+        result = new Term(fn(a.Value), TermKind.Number);
+        return true;
+    }
+
+    /// <summary><c>asin(A)</c> / <c>acos(A)</c> / <c>atan(A)</c> — §10.8: A is a NUMBER; the result
+    /// is an ANGLE (radians). An out-of-domain argument (e.g. <c>asin(2)</c>) yields NaN per IEEE,
+    /// which propagates to the surfaced-failure path. The caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseInverseTrig(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth,
+        Func<double, double> fn, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.Kind != TermKind.Number) return false;
+        result = new Term(fn(a.Value), TermKind.Angle);
+        return true;
+    }
+
+    /// <summary><c>atan2(A, B)</c> — §10.8: two SAME-type arguments (numbers, lengths, or angles —
+    /// the ratio is what matters); the result is the ANGLE of the point (B, A), in radians. The
+    /// caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseAtan2(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ',') return false;
+        pos++;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var b)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.Kind != b.Kind) return false;              // §10.4: same-type arguments only.
+        result = new Term(Math.Atan2(a.Value, b.Value), TermKind.Angle);
+        return true;
+    }
+
+    /// <summary><c>pow(B, E)</c> — §10.9: two NUMBER arguments; the result is a NUMBER. A negative
+    /// base with a non-integer exponent yields NaN per IEEE (surfaced path). The caller consumed
+    /// the name + <c>(</c>.</summary>
+    private static bool TryParsePow(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var b)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ',') return false;
+        pos++;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var e)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (b.Kind != TermKind.Number || e.Kind != TermKind.Number) return false;
+        result = new Term(Math.Pow(b.Value, e.Value), TermKind.Number);
+        return true;
+    }
+
+    /// <summary><c>sqrt(A)</c> / <c>exp(A)</c> — §10.9: one NUMBER argument → a NUMBER
+    /// (<c>sqrt(-1)</c> is NaN per IEEE → surfaced). The caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseUnaryNumber(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth,
+        Func<double, double> fn, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.Kind != TermKind.Number) return false;
+        result = new Term(fn(a.Value), TermKind.Number);
+        return true;
+    }
+
+    /// <summary><c>hypot(A#)</c> — §10.9: ONE-or-more comma-separated SAME-type arguments; the
+    /// result keeps their type (so <c>hypot(30px, 40px)</c> is a LENGTH — valid as a whole value).
+    /// Computed as √(Σ Aᵢ²); a squared intermediate can overflow to +∞ for extreme inputs, which
+    /// the final finite gate rejects (the spec's overflow-avoiding refinement is not modeled). The
+    /// caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseHypot(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var first)) return false;
+        var sumOfSquares = first.Value * first.Value;
+        while (true)
+        {
+            SkipWhitespace(s, ref pos);
+            if (pos < s.Length && s[pos] == ')') { pos++; break; }
+            if (pos >= s.Length || s[pos] != ',') return false;
+            pos++;
+            if (!TryParseSum(s, ref pos, ctx, depth + 1, out var next)) return false;
+            if (next.Kind != first.Kind) return false;   // §10.4: same-type arguments only.
+            sumOfSquares += next.Value * next.Value;
+        }
+        result = first with { Value = Math.Sqrt(sumOfSquares) };
+        return true;
+    }
+
+    /// <summary><c>log(A, B?)</c> — §10.9: NUMBER argument(s); B (the base) defaults to <i>e</i>
+    /// (the natural logarithm). The caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseLog(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        var hasBase = false;
+        var b = default(Term);
+        if (pos < s.Length && s[pos] == ',')
+        {
+            pos++;
+            if (!TryParseSum(s, ref pos, ctx, depth + 1, out b)) return false;
+            SkipWhitespace(s, ref pos);
+            hasBase = true;
+        }
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.Kind != TermKind.Number || (hasBase && b.Kind != TermKind.Number)) return false;
+        result = new Term(hasBase ? Math.Log(a.Value, b.Value) : Math.Log(a.Value), TermKind.Number);
         return true;
     }
 

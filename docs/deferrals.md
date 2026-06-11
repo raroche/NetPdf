@@ -3245,16 +3245,42 @@ flags the categories):
          (`MarginContentCollector.ReadRunningElementContent` — a block child with block children
          contributes one stacked line per NESTED block, `MaxRunningBlockDepth` = 16 deep, the single
          64 KiB budget threading through every level; deeper nests flatten — the pre-cycle behavior).
-         STILL DEFERRED: container-relative units (no container context — diagnosed + dropped), the
-         §10.8+ trig/exponential functions (`sin()`/`pow()`/…), CONTEXT-DEPENDENT body calc (%/em/
-         viewport terms need layout-time bases — margin boxes resolve them via the painter), and the
-         running element's REAL nested block LAYOUT (sub-boxes with own decoration/margins — lines
-         only). The post-PR-#159 review fixed `round()`'s negative-step inversion (the step
+         STILL DEFERRED: container-relative units (no container context — diagnosed + dropped). The post-PR-#159 review fixed `round()`'s negative-step inversion (the step
          normalizes to |B|), a `sign(NaN)` crash under the body NaN context (NaN now propagates to
          the surfaced path), the failure diagnostic mis-blaming context-dependent terms for
          malformed expressions (a finite-probe re-evaluation picks the right message), and
          `ContainsMathFunction` missing math functions nested inside unknown functions
          (`var(--x, calc(…))` now recovers).
+       - **§10.8 trig + §10.9 exponential functions + body CONTEXT-DEPENDENT lengths (no-% slice) +
+         element() per-line OWN STYLE — DONE (trig/exp / body-relative / element-segments cycles):**
+         **(trig/exp)** `sin()`/`cos()`/`tan()` (number = radians, or a `deg`/`grad`/`rad`/`turn`
+         angle), `asin()`/`acos()`/`atan()`/`atan2()` (→ ANGLE, consumable only by trig args — the
+         top-level length gate rejects a bare one), `pow()`/`sqrt()`/`hypot()`/`log()`/`exp()` and
+         the `e`/`pi` constants evaluate in `CalcLengthEvaluator` (the Term type system gained an
+         ANGLE kind; `hypot()` keeps its arguments' type, so `width: hypot(30px, 40px)` is a valid
+         whole value); `infinity`/`NaN` keywords + the spec's exact-asymptote values stay
+         unsupported (the finite gate rejects). **(body relative lengths)** the cascade DEFERS a
+         body math function whose only context dependence is font-/viewport-relative (a NaN-percent
+         probe classifies it), and the new post-build `DeferredLengthResolver` pass
+         (`PdfRenderPipeline`, after the `@page size` override fixes the page box) resolves ALL
+         deferred font-/viewport-relative body lengths IN PLACE — `2em` / `50vw` / `calc(2em +
+         10px)` on width/height/margins/paddings/offsets/line-height — em against the OWNING box's
+         font-size, rem against the root element's, viewport against the PAGE box; margins/offsets
+         admit negatives (`RelativeLengthResolver.TryResolve(allowNegative:)`), non-negative
+         properties reject a negative unit value and §10.5-clamp a negative calc. STILL DEFERRED
+         there: PERCENTAGE terms + plain percentage lengths (the containing-block base is
+         layout-time), border widths (`LineWidth` never defers), `lh`/`cap`/`ic`, and the
+         inherited-line-height nuance (an inherited `1.5em` line-height re-resolves against each
+         inheritor's font-size — computed-value-time inheritance is approximated). **(element()
+         segments)** a standalone `element()`'s stacked lines render in each LEAF block's OWN
+         (ancestor-walked) font + colour — `MarginContentCollector` records one `RunningSegment`
+         per line (lockstep with the text/own-style capture), and `PageMarginBoxPainter` shapes
+         each as its own `TextRun` (per-run shaping/painting already existed), the line pitch +
+         `TextMetricsStyle` following the LARGEST segment font (uniform-pitch approximation).
+         STILL DEFERRED there: per-line decoration/margins (a leaf block's own
+         background/border/margin band), per-line `text-align` (captured, not consumed — one
+         line-align factor per box), true per-line pitch, and the box/element separately-decorated
+         nesting.
        - **Body explicit `width` (post-PR-#159 handoff-spotted gap) — first cut DONE:** an in-flow
          `BlockContainer`/`ListItem` with an explicit `width` sizes its border box to
          width + inline borders + padding at BOTH `BlockLayouter` fill sites (outer dispatch +

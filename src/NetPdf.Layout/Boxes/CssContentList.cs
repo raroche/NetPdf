@@ -103,7 +103,23 @@ internal static class CssContentList
         // element()'s first-cut OWN-STYLE rendering (Task 23): the running element's winning font/color
         // (property, value) pairs, by name — first occurrence + last, mirroring the text dictionaries.
         IReadOnlyDictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningElementStyles = null,
-        IReadOnlyDictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningElementStylesFirst = null);
+        IReadOnlyDictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningElementStylesFirst = null,
+        // element()'s nested-block SEGMENTS (Task 23, segment-style cycle): one record per stacked
+        // line of the running element's content, each with the OWN style of the leaf block that
+        // produced it (ancestor-walked, so a record is self-contained) — first + last occurrence,
+        // lockstep with the text/style dictionaries above. A null/absent name means the joined-text
+        // single-style path (the pre-cycle behavior).
+        IReadOnlyDictionary<string, IReadOnlyList<RunningSegment>>? RunningElementSegments = null,
+        IReadOnlyDictionary<string, IReadOnlyList<RunningSegment>>? RunningElementSegmentsFirst = null);
+
+    /// <summary>One stacked LINE of a running element's content (Task 23, segment-style cycle):
+    /// the line's text plus the OWN font/color (property, value) pairs of the element that produced
+    /// it — a leaf block child, a flattened deep nest, or an inline run (its parent element's
+    /// style). The page-margin painter shapes each segment as its own <c>TextRun</c>, so a
+    /// heterogeneous running header (an <c>h1</c> title line over a styled subtitle line) renders
+    /// each line in its own font + colour.</summary>
+    public readonly record struct RunningSegment(
+        string Text, IReadOnlyList<KeyValuePair<string, string>> OwnStyle);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

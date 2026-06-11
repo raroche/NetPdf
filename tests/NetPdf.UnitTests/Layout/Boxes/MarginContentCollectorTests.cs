@@ -320,4 +320,97 @@ public sealed class MarginContentCollectorTests
 
         Assert.Equal("AA", ctx.RunningElementsFirst!["rh"]);
     }
+
+    // ---- per-line SEGMENTS (segment-style cycle) ----
+
+    [Fact]
+    public async Task Collect_records_one_segment_per_leaf_block_with_its_own_style()
+    {
+        // Each stacked line carries the style of the leaf element that produced it: the h1 line gets
+        // its own font-size PLUS the running root's inherited color (the ancestor walk makes each
+        // record self-contained); the plain div line gets the color only.
+        var ctx = await CollectAsync(
+            "<div class='rh'><h1>Title</h1><div>Sub</div></div>",
+            ".rh { position: running(rh); color: #112233 } .rh h1 { font-size: 32px }");
+
+        var segs = ctx.RunningElementSegmentsFirst!["rh"];
+        Assert.Equal(2, segs.Count);
+        Assert.Equal("Title", segs[0].Text);
+        Assert.Contains(segs[0].OwnStyle, kv => kv.Key == "font-size" && kv.Value == "32px");
+        Assert.Contains(segs[0].OwnStyle, kv => kv.Key == "color");
+        Assert.Equal("Sub", segs[1].Text);
+        Assert.DoesNotContain(segs[1].OwnStyle, kv => kv.Key == "font-size");
+        Assert.Contains(segs[1].OwnStyle, kv => kv.Key == "color");
+    }
+
+    [Fact]
+    public async Task Collect_records_a_single_segment_for_a_flat_header()
+    {
+        // The common flat header: ONE segment, its text equal to the joined running text — the
+        // painter's single-run path stays byte-identical.
+        var ctx = await CollectAsync(
+            "<div class='rh'>Chapter One</div>",
+            ".rh { position: running(rh); color: #112233 }");
+
+        var segs = ctx.RunningElementSegmentsFirst!["rh"];
+        var seg = Assert.Single(segs);
+        Assert.Equal(ctx.RunningElementsFirst!["rh"], seg.Text);
+        Assert.Contains(seg.OwnStyle, kv => kv.Key == "color");
+    }
+
+    [Fact]
+    public async Task Collect_records_segments_in_lockstep_with_the_occurrence()
+    {
+        // First/last segments mirror the first/last text (the PR #151 lockstep rule extended): the
+        // first occurrence's segments describe ITS lines, the last's describe the last's.
+        var ctx = await CollectAsync(
+            "<div class='rh'><div>A1</div><div>A2</div></div><div class='rh'><div>B1</div></div>",
+            ".rh { position: running(rh) }");
+
+        Assert.Equal(2, ctx.RunningElementSegmentsFirst!["rh"].Count);
+        Assert.Equal("A1", ctx.RunningElementSegmentsFirst!["rh"][0].Text);
+        Assert.Equal("B1", Assert.Single(ctx.RunningElementSegments!["rh"]).Text);
+    }
+
+    [Fact]
+    public async Task Collect_segments_concatenate_to_the_capped_text_at_the_budget_boundary()
+    {
+        // Post-PR-#160 review P2 — the recursive budget reserves the parent's pending '\n'
+        // separator. The first block consumes all but 2 chars of the 64 KiB budget; the nested
+        // second block then has 1 char of real room (separator + 1). Pre-fix the nested call
+        // recorded 2 chars of segment text while the joined string could only fit 1 — the
+        // segments must concatenate to EXACTLY the stored capped text.
+        var first = new string('A', (64 * 1024) - 2);
+        var ctx = await CollectAsync(
+            "<div class='rh'><div>" + first + "</div><div><div>XYZ</div></div></div>",
+            ".rh { position: running(rh) }");
+
+        var segs = ctx.RunningElementSegmentsFirst!["rh"];
+        var joined = new System.Text.StringBuilder();
+        for (var i = 0; i < segs.Count; i++)
+        {
+            if (i > 0) joined.Append('\n');
+            joined.Append(segs[i].Text);
+        }
+        Assert.Equal(ctx.RunningElementsFirst!["rh"], joined.ToString());
+        Assert.Equal(64 * 1024, joined.Length);   // budget exactly exhausted: 65534 + '\n' + "X"
+    }
+
+    [Fact]
+    public async Task Collect_records_nested_recursion_segments_per_nested_block()
+    {
+        // Deep recursion: each NESTED block is its own segment, styled by ITS element — the inner
+        // styled div's line carries the override, the outer sibling keeps the root's inheritance.
+        var ctx = await CollectAsync(
+            "<div class='rh'><div><div class='big'>A</div><div>B</div></div><div>C</div></div>",
+            ".rh { position: running(rh) } .big { font-size: 30px }");
+
+        var segs = ctx.RunningElementSegmentsFirst!["rh"];
+        Assert.Equal(3, segs.Count);
+        Assert.Equal("A", segs[0].Text);
+        Assert.Contains(segs[0].OwnStyle, kv => kv.Key == "font-size" && kv.Value == "30px");
+        Assert.Equal("B", segs[1].Text);
+        Assert.DoesNotContain(segs[1].OwnStyle, kv => kv.Key == "font-size");
+        Assert.Equal("C", segs[2].Text);
+    }
 }

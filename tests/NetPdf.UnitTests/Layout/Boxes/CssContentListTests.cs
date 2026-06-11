@@ -369,13 +369,37 @@ public sealed class CssContentListTests
     }
 
     [Theory]
-    [InlineData("content(before)")]      // typographic targets are deferred
-    [InlineData("content(after)")]
-    [InlineData("content(first-letter)")]
+    [InlineData("content(first-letter)")] // typographic targets stay deferred
+    [InlineData("content(marker)")]
     [InlineData("content(text, more)")]  // a second argument is malformed for the first cut
     public async Task StringSet_content_with_an_unsupported_target_is_rejected(string raw)
     {
         var host = await MakeHost("<h1 id='h'>One</h1>", "h");
         Assert.False(CssContentList.TryParseStringSet(raw, host, out _));
+    }
+
+    // ---- content(before|after) (content-pseudo cycle) ----
+
+    [Theory]
+    [InlineData("content(before)", "Ch. ")]                  // the pseudo's content alone
+    [InlineData("content(before) content()", "Ch. One")]     // composing with the element text
+    [InlineData("CONTENT(BEFORE)", "Ch. ")]                  // case-insensitive
+    [InlineData("content( before )", "Ch. ")]                // whitespace-tolerant
+    public async Task StringSet_content_before_resolves_via_the_pseudo_resolver(string raw, string expected)
+    {
+        var host = await MakeHost("<h1 id='h'>One</h1>", "h");
+        Assert.True(CssContentList.TryParseStringSet(
+            raw, host, pseudoName => pseudoName == "before" ? "\"Ch. \"" : null, out var result), raw);
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public async Task StringSet_content_before_without_a_resolver_resolves_empty()
+    {
+        // The legacy overload (null resolver) — content(before) contributes the empty string but
+        // the assignment SUCCEEDS (GCPM: an absent pseudo is empty), it is no longer a reject.
+        var host = await MakeHost("<h1 id='h'>One</h1>", "h");
+        Assert.True(CssContentList.TryParseStringSet("content(before) content()", host, out var result));
+        Assert.Equal("One", result);
     }
 }

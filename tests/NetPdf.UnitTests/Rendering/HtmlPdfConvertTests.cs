@@ -2250,6 +2250,83 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_and_element_decorations_nest_when_both_declare()
+    {
+        // Separately-decorated cycle (first cut): the BOX's band paints at the box rect AND the
+        // running element's own background paints as a NESTED band at its content block — the
+        // element's decoration no longer vanishes under the box's cascade win. #3366cc box,
+        // #cc3366 element → both fills present.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\">Head</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains("0.2 0.4 0.8 rg", pdf);   // the box band
+        Assert.Contains("0.8 0.2 0.4 rg", pdf);   // the element's nested band
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_rounds_the_background_band()
+    {
+        // Border-radius cycle (first cut): a uniform absolute radius fills the band as a rounded
+        // path (m/l/c Béziers + f) instead of a square `re f`; an undeclared radius keeps `re f`.
+        const string square =
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc } }</style></head><body></body></html>";
+        const string rounded =
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 8px } }</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var squarePdf = Latin1(HtmlPdf.Convert(square, opts));
+        var roundedPdf = Latin1(HtmlPdf.Convert(rounded, opts));
+
+        Assert.DoesNotContain(" c ", BlueFillRegion(squarePdf));
+        Assert.Contains(" c ", BlueFillRegion(roundedPdf));   // Bézier corners on the band fill
+
+        static string BlueFillRegion(string pdf)
+        {
+            var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+            Assert.True(i >= 0, "expected the blue band fill");
+            var end = pdf.IndexOf('Q', i);
+            return pdf[i..(end < 0 ? pdf.Length : end)];
+        }
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_unsupported_form_is_surfaced()
+    {
+        // %, per-corner, elliptical, relative forms are diagnosed + ignored (first cut).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 50% } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+    }
+
+    [Fact]
+    public void Page_margin_box_string_set_content_before_renders()
+    {
+        // content-pseudo cycle smoke — the string-set assignment composing content(before) +
+        // content() resolves and the margin box paints its line.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: title content(before) content() } " +
+            "h1::before { content: 'Ch. ' } " +
+            "@page { @top-center { content: string(title) } }</style></head>" +
+            "<body><h1>Intro</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        // The body renders the h1 + its ::before too, so the margin line ADDS one Td on top —
+        // the meaningful assertions are the absence of the unsupported-content diagnostic (the
+        // pre-cycle content(before) bail) and that text painted at all.
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.True(TdCount(Latin1(result.Pdf)) >= 2);
+    }
+
+    [Fact]
     public void Page_margin_box_element_single_styled_block_renders_in_its_own_font()
     {
         // Post-PR-#160 review P2 — a running element whose ONLY child is a styled block records
@@ -2998,15 +3075,16 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_box_background_overrides_the_running_elements_own()
     {
-        // The element's decoration cascades UNDER the box's own declarations — a box `background-color`
-        // overrides the element's. Box red wins; the element's blue band does NOT paint.
+        // Separately-decorated cycle — the box's band paints at the BOX rect AND the element's
+        // own background now paints as a NESTED band at its content block (pre-cycle the box's
+        // cascade win made the element's vanish entirely).
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #0000ff } " +
             "@page { @top-center { content: element(rh); background-color: #ff0000 } }</style>" +
             "</head><body><div class=\"rh\">AB</div></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Contains("1 0 0 rg", pdf);        // box's red band (it overrides the element's)
-        Assert.DoesNotContain("0 0 1 rg", pdf);  // the element's blue background did NOT win
+        Assert.Contains("1 0 0 rg", pdf);        // the box's red band (the box rect)
+        Assert.Contains("0 0 1 rg", pdf);        // the element's blue NESTED band (its content block)
     }
 
     [Theory]
@@ -3097,9 +3175,11 @@ public sealed class HtmlPdfConvertTests
             "</head><body><div class=\"rh\">AB</div></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         var rects = RectFillColors(pdf);
-        Assert.Contains("0 0 1", rects);        // the band is the BOX's blue (currentcolor → box color)
-        Assert.DoesNotContain("1 0 0", rects);  // NOT the element's red (the pre-fix bug)
-        Assert.DoesNotContain("0 1 0", rects);  // NOT the element's own green background (box overrides)
+        Assert.Contains("0 0 1", rects);        // the BOX band is blue (currentcolor → box color)
+        Assert.DoesNotContain("1 0 0", rects);  // NOT the element's red (the pre-fix currentcolor bug)
+        // Separately-decorated cycle — the element's own green now paints as the NESTED band
+        // (pre-cycle the box's cascade win suppressed it entirely).
+        Assert.Contains("0 1 0", rects);
     }
 
     [Fact]

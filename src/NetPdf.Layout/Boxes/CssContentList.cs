@@ -45,7 +45,7 @@ namespace NetPdf.Layout.Boxes;
 /// </para>
 /// <para>
 /// <b>Task 16 cycle 1 — diagnostic emission.</b> The
-/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?, MarginContentContext?, bool)"/>
+/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?, MarginContentContext?, bool, Func{string, string}?)"/>
 /// overload emits one of two diagnostic codes when the parse fails:
 /// <see cref="CssDiagnosticCodes.CssContentFunctionUnsupported001"/> for
 /// unsupported functions (<c>counter()</c> / <c>url()</c> / etc.) or unsupported
@@ -148,6 +148,18 @@ internal static class CssContentList
         => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result,
             pageCounters: null, marginContext: null, allowContentFunction: true);
 
+    /// <summary><c>string-set</c> overload with a PSEUDO-content resolver (content-pseudo cycle):
+    /// <paramref name="pseudoContentRaw"/> maps a pseudo name (<c>"before"</c> / <c>"after"</c>) to
+    /// that pseudo-element's raw <c>content</c> declaration on the host (or <see langword="null"/>
+    /// when the pseudo doesn't exist / declares no content — <c>content(before)</c> then resolves
+    /// to the empty string per GCPM). The raw is parsed as a plain content-list (literals +
+    /// <c>attr()</c>; a pseudo's content can't itself use <c>content()</c>).</summary>
+    public static bool TryParseStringSet(
+        string raw, IElement host, Func<string, string?>? pseudoContentRaw, out string result)
+        => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result,
+            pageCounters: null, marginContext: null, allowContentFunction: true,
+            pseudoContentRaw: pseudoContentRaw);
+
     // Per Phase A security hardening A-5 — cap on the concatenated output of
     // one ::before / ::after / ::marker content-list parse. A pseudo-element's
     // content is rendered into the output PDF; without a cap, an attacker can
@@ -171,7 +183,8 @@ internal static class CssContentList
         out string result,
         PageCounters? pageCounters = null,
         MarginContentContext? marginContext = null,
-        bool allowContentFunction = false)
+        bool allowContentFunction = false,
+        Func<string, string?>? pseudoContentRaw = null)
     {
         result = string.Empty;
         if (string.IsNullOrWhiteSpace(raw)) return false;
@@ -278,6 +291,27 @@ internal static class CssContentList
             {
                 var contentTokenStart = i;
                 i += "content(".Length;
+                // content(before|after) (content-pseudo cycle, GCPM §2.4): the host's ::before /
+                // ::after pseudo content — resolved through pseudoContentRaw to the pseudo's raw
+                // `content` declaration, parsed as a plain content-list (literals + attr(); a
+                // pseudo's content can't nest content()). A missing pseudo / no declaration /
+                // none/normal / a null resolver yields the EMPTY string (the assignment still
+                // succeeds — GCPM treats an absent pseudo as empty). An unparsable pseudo
+                // content-list also resolves empty (its own unsupported tokens are the PSEUDO's
+                // problem, surfaced when the pseudo renders). first-letter / marker stay
+                // unsupported (the existing bail path).
+                if (TryReadPseudoTarget(span, ref i, out var pseudoName))
+                {
+                    var pseudoRaw = pseudoContentRaw?.Invoke(pseudoName);
+                    if (!string.IsNullOrWhiteSpace(pseudoRaw)
+                        && !pseudoRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                        && !pseudoRaw.Trim().Equals("normal", StringComparison.OrdinalIgnoreCase)
+                        && TryParse(pseudoRaw, host, sink, location, out var pseudoText))
+                    {
+                        if (!TryAppendBounded(sb, pseudoText, sink, raw, location)) return false;
+                    }
+                    continue;
+                }
                 if (TryReadContentText(span, ref i, host, out var contentText))
                 {
                     if (!TryAppendBounded(sb, contentText, sink, raw, location)) return false;
@@ -634,6 +668,34 @@ internal static class CssContentList
             i++;
         }
         return true;
+    }
+
+    /// <summary>Match <c>before)</c> / <c>after)</c> (the content-pseudo cycle targets) at
+    /// <paramref name="i"/> inside a <c>content(</c> call — case-insensitive, whitespace-tolerant.
+    /// Advances past the closing paren on success; leaves <paramref name="i"/> untouched otherwise
+    /// (the bare/text forms parse next). <c>first-letter</c>/<c>marker</c> deliberately do NOT
+    /// match (they stay on the unsupported-bail path).</summary>
+    private static bool TryReadPseudoTarget(ReadOnlySpan<char> span, ref int i, out string pseudoName)
+    {
+        pseudoName = string.Empty;
+        var probe = i;
+        while (probe < span.Length && char.IsWhiteSpace(span[probe])) probe++;
+        foreach (var candidate in (ReadOnlySpan<string>)["before", "after"])
+        {
+            if (probe + candidate.Length <= span.Length
+                && span.Slice(probe, candidate.Length).Equals(candidate, StringComparison.OrdinalIgnoreCase))
+            {
+                var end = probe + candidate.Length;
+                while (end < span.Length && char.IsWhiteSpace(span[end])) end++;
+                if (end < span.Length && span[end] == ')')
+                {
+                    pseudoName = candidate;
+                    i = end + 1;
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>Parse a GCPM <c>content()</c> call in a <c>string-set</c> value (the <c>content(</c>

@@ -37,7 +37,11 @@ public sealed class MarginContentCollectorTests
         var ctx = BrowsingContext.New(Configuration.Default.WithCss());
         var doc = await ctx.OpenAsync(req => req.Content(html));
         var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
-        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css), href: null,
+        // Preprocess-aware adapt (content-pseudo cycle) — the production pipeline runs the
+        // CssPreprocessor recovery, so the harness must too (an AngleSharp-dropped
+        // `string-set: … content(before)` declaration only reaches the cascade via recovery).
+        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css),
+            NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(css), href: null,
             origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
             mediaQuery: null, isDisabled: false, order: 0);
         var cascade = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet), CssMediaContext.DefaultPrint);
@@ -319,6 +323,54 @@ public sealed class MarginContentCollectorTests
             ".rh { position: running(rh) } .hidden { display: none }");
 
         Assert.Equal("AA", ctx.RunningElementsFirst!["rh"]);
+    }
+
+    // ---- content(before|after) (content-pseudo cycle) ----
+
+    [Fact]
+    public async Task StringSet_content_before_resolves_the_pseudo_content()
+    {
+        // GCPM §2.4 — content(before) pulls the host's ::before pseudo content, composing with
+        // content() (the element's own text) in one content-list.
+        var ctx = await CollectAsync(
+            "<h1 id='h'>Intro</h1>",
+            "h1 { string-set: title content(before) content() } h1::before { content: 'Ch. ' }");
+
+        Assert.Equal("Ch. Intro", ctx.NamedStringsFirst!["title"]);
+    }
+
+    [Fact]
+    public async Task StringSet_content_after_resolves_attr_in_the_pseudo_content()
+    {
+        // The pseudo's own content-list resolves fully (literals + attr()).
+        var ctx = await CollectAsync(
+            "<h1 id='h' data-mark='*'>Intro</h1>",
+            "h1 { string-set: title content() content(after) } h1::after { content: attr(data-mark) }");
+
+        Assert.Equal("Intro*", ctx.NamedStringsFirst!["title"]);
+    }
+
+    [Fact]
+    public async Task StringSet_content_before_with_no_pseudo_resolves_empty()
+    {
+        // A missing ::before (or content: none/normal) contributes the EMPTY string — the
+        // assignment still succeeds (GCPM treats an absent pseudo as empty).
+        var ctx = await CollectAsync(
+            "<h1 id='h'>Intro</h1>",
+            "h1 { string-set: title content(before) content() }");
+
+        Assert.Equal("Intro", ctx.NamedStringsFirst!["title"]);
+    }
+
+    [Fact]
+    public async Task StringSet_content_first_letter_stays_unsupported()
+    {
+        // The typographic targets keep the unsupported-bail path — the assignment is dropped.
+        var ctx = await CollectAsync(
+            "<h1 id='h'>Intro</h1>",
+            "h1 { string-set: title content(first-letter) }");
+
+        Assert.True(ctx.NamedStringsFirst is null || !ctx.NamedStringsFirst.ContainsKey("title"));
     }
 
     // ---- per-line SEGMENTS (segment-style cycle) ----

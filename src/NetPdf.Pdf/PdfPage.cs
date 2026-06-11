@@ -229,6 +229,69 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Fill an axis-aligned ROUNDED rectangle (border-radius cycle) — the same contract
+    /// as <see cref="FillRectangle"/> (PDF points, bottom-left origin, clamped colour/alpha,
+    /// non-positive dimensions no-op, deterministic operator text) with the four corners rounded
+    /// at <paramref name="radius"/> via cubic Béziers (the k ≈ 0.5523 circle approximation,
+    /// ISO 32000-2 §8.5.2.2 <c>c</c> operator). The radius CLAMPS to half the smaller dimension
+    /// (a larger value degenerates to a capsule, per CSS B&amp;B §5.5's overlap rule for the
+    /// uniform case); a non-positive radius delegates to the plain rectangle.</summary>
+    public void FillRoundedRectangle(
+        double x, double y, double width, double height, double radius,
+        double r, double g, double b, double alpha = 1.0)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height)
+            || !double.IsFinite(radius))
+        {
+            throw new ArgumentException(
+                $"FillRoundedRectangle arguments must be finite; got x={x}, y={y}, width={width}, height={height}, radius={radius}.");
+        }
+        if (!double.IsFinite(alpha))
+        {
+            throw new ArgumentException(
+                $"FillRoundedRectangle alpha must be finite; got {alpha}.", nameof(alpha));
+        }
+        if (width <= 0 || height <= 0) return;
+        if (radius <= 0)
+        {
+            FillRectangle(x, y, width, height, r, g, b, alpha);
+            return;
+        }
+
+        r = Math.Clamp(r, 0.0, 1.0);
+        g = Math.Clamp(g, 0.0, 1.0);
+        b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var rad = Math.Min(radius, Math.Min(width, height) / 2.0);
+        const double kappa = 0.55228474983079; // 4/3 × (√2 − 1) — the cubic circle-quadrant constant.
+        var k = rad * (1.0 - kappa);
+
+        // q [/GSn gs] <r g b> rg <path: m, 4 × (l + c)> f Q — counter-clockwise from the
+        // bottom edge's left arc-end; each corner is one Bézier quadrant.
+        var sb = new StringBuilder(256);
+        sb.Append("q ");
+        if (alpha < 1.0)
+        {
+            sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        }
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" rg ");
+        void P(double vx, double vy) { AppendNumber(sb, vx); sb.Append(' '); AppendNumber(sb, vy); sb.Append(' '); }
+        P(x + rad, y); sb.Append("m ");
+        P(x + width - rad, y); sb.Append("l ");
+        P(x + width - k, y); P(x + width, y + k); P(x + width, y + rad); sb.Append("c ");
+        P(x + width, y + height - rad); sb.Append("l ");
+        P(x + width, y + height - k); P(x + width - k, y + height); P(x + width - rad, y + height); sb.Append("c ");
+        P(x + rad, y + height); sb.Append("l ");
+        P(x + k, y + height); P(x, y + height - k); P(x, y + height - rad); sb.Append("c ");
+        P(x, y + rad); sb.Append("l ");
+        P(x, y + k); P(x + k, y); P(x + rad, y); sb.Append("c ");
+        sb.Append("f Q\n");
+        AppendContent(sb.ToString());
+    }
+
     /// <summary>
     /// Push the graphics state and intersect the clip path with an axis-aligned rectangle —
     /// <c>q &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re W n</c> (ISO 32000-2 §8.5.4: <c>W</c> sets the

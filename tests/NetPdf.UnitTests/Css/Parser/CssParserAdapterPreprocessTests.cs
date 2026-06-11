@@ -616,4 +616,29 @@ public sealed class CssParserAdapterPreprocessTests
         CssImportRule i => i.Location,
         _ => CssSourceLocation.Unknown,
     };
+
+    [Fact]
+    public void Adapt_synthesizes_a_wholly_dropped_rule_from_its_recovery()
+    {
+        // Content-pseudo cycle hardening — when AngleSharp drops a RULE entirely (its only
+        // declaration carried a dropped function), the slot previously demoted to opaque,
+        // silently losing the recovery AND desyncing the style-rule ordinal counter (a later
+        // rule could steal this rule's recovery). Simulated directly: a preprocess result with
+        // two style slots adapted against an AngleSharp sheet that only kept the second rule.
+        var css = "h1 { string-set: title content(before) } p { color: red }";
+        var preprocess = CssPreprocessor.Process(css);
+        var parser = new AngleSharp.Css.Parser.CssParser();
+        var sheet = parser.ParseStyleSheet("p { color: red }"); // rule 0 dropped by "AngleSharp"
+
+        var adapted = CssParserAdapter.Adapt(sheet, preprocess, href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
+            mediaQuery: null, isDisabled: false, order: 0);
+
+        var first = Assert.IsType<CssStyleRule>(adapted.Rules[0]);
+        var decl = Assert.Single(first.Declarations);
+        Assert.Equal("string-set", decl.Property);
+        Assert.Contains("content(before)", decl.Value.RawText);
+        var second = Assert.IsType<CssStyleRule>(adapted.Rules[1]);
+        Assert.Single(second.Declarations);   // the p rule adapted normally after the synthesis
+    }
 }

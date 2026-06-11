@@ -375,18 +375,22 @@ BlockContainer/ListItem with `width > 0` to width + inline borders + padding):**
 properties evaluate ABSOLUTE-term math functions at cascade time (`LengthResolver` → the evaluator with a NaN
 context; range-aware §10.5 clamp; `CssPreprocessor` recovers the AngleSharp-dropped declarations via
 `ContainsMathFunction`). **(C)** the running element's nested blocks RECURSE (one stacked line per NESTED
-block, depth-capped 16, single 64 KiB budget). **Trig-exp / body-relative / element-segments cycles (in
-progress, branch `phase-3-task-21-23-trig-exp-body-relative-element-segments`) — the next three deferrals, one
-PR:** **(A)** the §10.8 trig (`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`, `deg`/`grad`/`rad`/`turn` angles,
+block, depth-capped 16, single 64 KiB budget). **Trig-exp / body-relative / element-segments cycles (merged as PR #160 incl. its review — single styled
+segment keeps its own style; the recursion budget reserves the pending separator; shipped-vs-deferred wording):** **(A)** the §10.8 trig (`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`, `deg`/`grad`/`rad`/`turn` angles,
 `e`/`pi`) + §10.9 exponential (`pow`/`sqrt`/`hypot`/`log`/`exp`) functions evaluate (the Term type system gained
 an ANGLE kind; `hypot()` over lengths is a valid whole value). **(B)** BODY font-/viewport-relative lengths —
 units AND math functions (no %) — resolve via the new post-build `DeferredLengthResolver` in-place pass
 (`PdfRenderPipeline`, page box final; em per owning box, rem per root, viewport per page box; negatives for
 margins/offsets); % terms stay diagnosed. **(C)** a standalone `element()`'s stacked lines render in each LEAF
 block's OWN font + colour (`RunningSegment` capture lockstep with the text; one `TextRun` per segment; pitch
-follows the largest segment font). Next (in order): cross-page running +
-`@page :left`/`:right`/`:blank` + named pages (all multi-page-gated — the multi-page driver is the next big
-move). Blocked (see `deferrals.md`):
+follows the largest segment font). **Nested-decor / border-radius / content-pseudo cycles (in progress, branch
+`phase-3-task-21-23-nested-decor-border-radius-content-pseudo`) — the next three deferrals, one PR:** **(A)** a
+co-declared element()'s decoration paints as a NESTED band at its content block. **(B)** a uniform absolute
+margin-box `border-radius` rounds the background band (`PdfPage.FillRoundedRectangle`; strokes/body deferred).
+**(C)** `content(before|after)` resolves the host's pseudo content in `string-set` — plus a REAL adapter fix
+(a wholly-dropped rule now synthesizes from its recovery instead of losing it). Next (in order): per-line
+decoration/pitch, body % lengths, then the multi-page driver (cross-page running + `@page :left`/`:right`/
+`:blank` + named pages). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

@@ -3295,9 +3295,9 @@ flags the categories):
          background/border paints a per-LINE band behind its line; a segment's own `text-align`
          aligns its line (the box's declared text-align wins); each line advances by ITS segment's
          pitch (font × 1.2 — replaces the max-font uniform approximation; cumulative tops,
-         per-line half-leading, per-line truncation). STILL DEFERRED: per-line margins/padding
-         (vertical gaps between segment lines), per-segment line-height (the pitch uses font ×
-         the normal factor), real nested block LAYOUT (separately laid-out sub-boxes).
+         per-line half-leading, per-line truncation). STILL DEFERRED: per-line padding,
+         real nested block LAYOUT (separately laid-out sub-boxes). (Per-line vertical MARGINS +
+         per-segment LINE-HEIGHT shipped in the NEXT cycle — see the entry above.)
        - **Box/element separately-decorated + margin-box border-radius + content(before|after) — DONE
          (nested-decor / border-radius / content-pseudo cycles):** a co-declared standalone element()'s
          decoration paints as a NESTED band at its content block (box band at the box rect; element-only

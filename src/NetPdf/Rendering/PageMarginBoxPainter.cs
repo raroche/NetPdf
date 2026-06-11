@@ -675,10 +675,22 @@ internal static class PageMarginBoxPainter
             // width / flexed / wrapped box has room, so the alignment is observable.
             // Per-line PITCH (segment-pitch cycle): each line advances by ITS segment's height
             // (line→segment via the first glyph slice's source-run index); uniform for non-segment
-            // content (heights == null → lineHeightPx × count, byte-identical).
+            // content (heights == null → lineHeightPx × count, byte-identical). The geometry is
+            // computed ONCE here (post-PR-#163 review P3) — the truncation decision, the kept-sum,
+            // the per-line bands, and the fragment arrays all consume the same pair (a truncation
+            // slices the prefix: line→segment mapping is positional, so the prefix is identical).
             var lineSegments = LineSegmentIndices(inline);
-            var blockHeightPx = SumLineHeightsPx(inline, item.SegmentLineHeightsPx,
-                item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx, lineHeightPx, inline.Lines.Length);
+            double[]? perLineHeights = null;
+            double[]? perLineGaps = null;
+            if (item.SegmentLineHeightsPx is { } segHeightsForGeometry)
+            {
+                (perLineHeights, perLineGaps) = PerLineGeometry(
+                    inline, segHeightsForGeometry, item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx,
+                    lineHeightPx);
+            }
+            var blockHeightPx = perLineHeights is null
+                ? lineHeightPx * inline.Lines.Length
+                : PrefixSum(perLineHeights, perLineGaps!, perLineHeights.Length);
             var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
             var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
             // Vertical-edge (height) OVERFLOW (Task 23 + the overflow-clipping cycle): when the content
@@ -696,16 +708,23 @@ internal static class PageMarginBoxPainter
             // pre-clipping builds — authored overflow, so no truncation, no clip, and no diagnostic.
             if (!item.OverflowVisible && blockHeightPx > contentBoxHeightPx + OverflowEpsilonPx)
             {
-                var keptLines = item.SegmentLineHeightsPx is null
+                var keptLines = perLineHeights is null
                     ? MaxLinesThatFit(contentBoxHeightPx, lineHeightPx, inline.Lines.Length)
-                    : MaxLinesThatFitPerLine(contentBoxHeightPx, inline, item.SegmentLineHeightsPx,
-                        item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx, lineHeightPx);
+                    : MaxLinesThatFitCumulative(contentBoxHeightPx, perLineHeights, perLineGaps!);
                 EmitContentOverflow(
                     diagnostics, item.Name, blockHeightPx, contentBoxHeightPx, keptLines, inline.Lines.Length);
                 if (keptLines <= 0) continue; // nothing fits — decoration only, no text fragment.
                 inline = inline with { Lines = inline.Lines[..keptLines] };
-                blockHeightPx = SumLineHeightsPx(inline, item.SegmentLineHeightsPx,
-                    item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx, lineHeightPx, keptLines);
+                if (perLineHeights is not null)
+                {
+                    blockHeightPx = PrefixSum(perLineHeights, perLineGaps!, keptLines);
+                    perLineHeights = perLineHeights[..keptLines];
+                    perLineGaps = perLineGaps![..keptLines];
+                }
+                else
+                {
+                    blockHeightPx = lineHeightPx * keptLines;
+                }
             }
             // HORIZONTAL overflow of the surviving lines (clip-path cycle): a line that protrudes past
             // the box's CLIP EDGE — an unbreakable run wider than the box (a long word in a narrow
@@ -780,23 +799,20 @@ internal static class PageMarginBoxPainter
             // block-fills-its-containing-block rule); a segment's own text-align aligns ITS line
             // (the box's declared text-align still WINS — uniform hAlign); each line advances by
             // its segment's pitch. Non-segment content: all three stay null → byte-identical.
-            double[]? perLineHeights = null;
             double[]? perLineAligns = null;
-            double[]? perLineGaps = null;
-            if (item.SegmentLineHeightsPx is { } segHeights)
+            if (perLineHeights is not null)
             {
-                // Per-line gaps (segment-margins cycle) ride the same geometry the sizing +
-                // truncation used — a leaf block's collapsed vertical margin pushes its line
-                // down; the band starts AFTER the gap (margins stay transparent).
-                (perLineHeights, perLineGaps) = PerLineGeometry(
-                    inline, segHeights, item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx, lineHeightPx);
+                // Per-line gaps (segment-margins cycle) ride the SAME precomputed geometry the
+                // sizing + truncation used (review P3 — no recompute) — a leaf block's collapsed
+                // vertical margin pushes its line down; the band starts AFTER the gap (margins
+                // stay transparent).
                 // Content-box top (review P1) — the same + insetTop the glyph pass applies.
                 var lineTopCursorPx = absTopPx + insetTopPx;
-                for (var li = 0; li < inline.Lines.Length; li++)
+                for (var li = 0; li < inline.Lines.Length && li < perLineHeights.Length; li++)
                 {
                     var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
                     var h = perLineHeights[li];
-                    lineTopCursorPx += perLineGaps[li];
+                    lineTopCursorPx += perLineGaps![li];
                     if (segIdx >= 0 && item.SegmentDecorStyles?[segIdx] is { } segDecorStyle)
                     {
                         var segColor = item.SegmentColorArgbs is { } sc && segIdx < sc.Length
@@ -986,24 +1002,34 @@ internal static class PageMarginBoxPainter
         double[]? segmentMarginBottomsPx, double uniformLineHeightPx, int lineCount)
     {
         if (segmentLineHeightsPx is null) return uniformLineHeightPx * lineCount;
-        var (heights, gaps) = PerLineGeometry(
-            inline, segmentLineHeightsPx, segmentMarginTopsPx, segmentMarginBottomsPx,
-            uniformLineHeightPx);
+        // Single pass, no array allocations (PR #163 Copilot — this runs in the pass-1 sizing
+        // path; the same gap/collapse rules as PerLineGeometry, summed inline).
+        var lineSegments = LineSegmentIndices(inline);
         var sum = 0.0;
-        for (var li = 0; li < lineCount && li < heights.Length; li++) sum += gaps[li] + heights[li];
+        var prevSeg = -1;
+        for (var li = 0; li < lineCount && li < inline.Lines.Length; li++)
+        {
+            var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
+            sum += segIdx >= 0 && segIdx < segmentLineHeightsPx.Length
+                ? segmentLineHeightsPx[segIdx] : uniformLineHeightPx;
+            if (segIdx >= 0 && segIdx != prevSeg && segmentMarginTopsPx is not null)
+            {
+                var topMargin = segIdx < segmentMarginTopsPx.Length ? segmentMarginTopsPx[segIdx] : 0;
+                var prevBottom = prevSeg >= 0 && segmentMarginBottomsPx is not null
+                    && prevSeg < segmentMarginBottomsPx.Length ? segmentMarginBottomsPx[prevSeg] : 0;
+                sum += Math.Max(0, li == 0 ? topMargin : Math.Max(prevBottom, topMargin));
+            }
+            prevSeg = segIdx;
+        }
         return sum;
     }
 
     /// <summary>The per-line-pitch counterpart of <see cref="MaxLinesThatFit"/>: keeps whole lines
     /// while their CUMULATIVE (gap + height) fits the content-box height (+ the shared epsilon),
-    /// in reading order.</summary>
-    private static int MaxLinesThatFitPerLine(
-        double contentBoxHeightPx, InlineLayoutResult inline, double[] segmentLineHeightsPx,
-        double[]? segmentMarginTopsPx, double[]? segmentMarginBottomsPx, double uniformLineHeightPx)
+    /// in reading order — over the PRECOMPUTED geometry (post-PR-#163 review P3).</summary>
+    private static int MaxLinesThatFitCumulative(
+        double contentBoxHeightPx, double[] heights, double[] gaps)
     {
-        var (heights, gaps) = PerLineGeometry(
-            inline, segmentLineHeightsPx, segmentMarginTopsPx, segmentMarginBottomsPx,
-            uniformLineHeightPx);
         var budget = Math.Max(0, contentBoxHeightPx) + OverflowEpsilonPx;
         var kept = 0;
         var sum = 0.0;
@@ -1014,6 +1040,15 @@ internal static class PageMarginBoxPainter
             kept++;
         }
         return kept;
+    }
+
+    /// <summary>Σ (gap + height) of the first <paramref name="lineCount"/> lines of the
+    /// precomputed per-line geometry.</summary>
+    private static double PrefixSum(double[] heights, double[] gaps, int lineCount)
+    {
+        var sum = 0.0;
+        for (var li = 0; li < lineCount && li < heights.Length; li++) sum += gaps[li] + heights[li];
+        return sum;
     }
 
     /// <summary>Each line's SEGMENT index — the source-run index of the line's first GLYPH slice
@@ -1296,15 +1331,25 @@ internal static class PageMarginBoxPainter
     {
         string? raw = null;
         foreach (var kv in pairs)
-            if (kv.Key.Equals("line-height", StringComparison.OrdinalIgnoreCase)) raw = kv.Value;
+        {
+            // The capture list holds ONE winner per property (NearestDeclaredWinner) — break on
+            // the first match (PR #163 Copilot: the precedence is explicit, no wasted scan).
+            if (kv.Key.Equals("line-height", StringComparison.OrdinalIgnoreCase))
+            {
+                raw = kv.Value;
+                break;
+            }
+        }
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var v = raw.Trim();
         if (v.Equals("normal", StringComparison.OrdinalIgnoreCase)) return null;
         if (!LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit) || n < 0) return null;
         if (unit.Length == 0) return n * segFontPx;                       // unitless multiplier
         if (unit.Equals("em", StringComparison.OrdinalIgnoreCase)) return n * segFontPx;
+        // px >= 0 (post-PR-#163 review P2): CSS line-height admits any NON-NEGATIVE value —
+        // `line-height: 0px`/`0pt` collapses the pitch like the unitless 0, not the font default.
         return LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out var px)
-            && double.IsFinite(px) && px > 0 ? px : null;
+            && double.IsFinite(px) && px >= 0 ? px : null;
     }
 
     private static double? ElementHorizontalAlignFactor(IReadOnlyList<KeyValuePair<string, string>> pairs)

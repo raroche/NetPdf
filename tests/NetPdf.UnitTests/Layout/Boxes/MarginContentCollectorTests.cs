@@ -373,6 +373,24 @@ public sealed class MarginContentCollectorTests
         Assert.True(ctx.NamedStringsFirst is null || !ctx.NamedStringsFirst.ContainsKey("title"));
     }
 
+    [Fact]
+    public async Task Collect_segment_margins_capture_absolute_px()
+    {
+        // Segment-margins cycle — the leaf's own vertical margins capture in used px. (The
+        // post-PR-#163 review P3 unit normalization in CaptureSegmentMargins matches
+        // SegmentLineHeightPx, but an UPPERCASE-unit declaration can't be exercised through this
+        // harness: AngleSharp.Css 1.0.0-beta.144 DROPS `margin-top: 16PX` entirely before the
+        // cascade — see the facade canary pin in HtmlPdfConvertTests.)
+        var ctx = await CollectAsync(
+            "<div class='rh'><div>One</div><div class='gap'>Two</div></div>",
+            ".rh { position: running(rh) } .gap { margin-top: 16px; margin-bottom: 8px }");
+
+        var segs = ctx.RunningElementSegmentsFirst!["rh"];
+        Assert.Equal(2, segs.Count);
+        Assert.Equal(16.0, segs[1].MarginTopPx, 3);
+        Assert.Equal(8.0, segs[1].MarginBottomPx, 3);
+    }
+
     // ---- per-line SEGMENTS (segment-style cycle) ----
 
     [Fact]

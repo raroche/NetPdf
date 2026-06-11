@@ -11,6 +11,9 @@ using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Paginate;
 using NetPdf.Paginate.Diagnostics;
+using NetPdf.Layout.Inline;
+using NetPdf.Text.Shaping;
+using NetPdf.UnitTests.Text.Fonts.OpenType;
 using Xunit;
 
 namespace NetPdf.UnitTests.Phase3;
@@ -247,6 +250,43 @@ public sealed class BlockLayouterTests
         Assert.Equal(2, sink.Fragments.Count);
         Assert.Equal(400, sink.Fragments[0].InlineSize);
         Assert.Equal(200, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void Percentage_margin_top_positions_a_nested_inline_only_child()
+    {
+        // Post-PR-#163 review P1 — the nested inline-only path read margin-top with the
+        // percent-blind helper for the fragment POSITION while the cursor advance was
+        // percent-aware: `margin-top: 10%` of the 400px parent must push the child 40px DOWN
+        // (not reserve 40px after it).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Width, 400);
+        var childStyle = MakeStyle();
+        childStyle.Set(PropertyId.MarginTop, ComputedSlot.FromPercentage(10));
+        SetLengthPx(childStyle, PropertyId.FontSize, 16);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        var blockChild = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetLengthPx(blockChild.Style, PropertyId.Height, 10);
+        var inlineOnly = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        inlineOnly.AppendChild(Box.TextRun("AB", childStyle));
+        parent.AppendChild(blockChild);    // forces the RECURSIVE (mixed-children) path
+        parent.AppendChild(inlineOnly);
+        root.AppendChild(parent);
+
+        using var layouter = new BlockLayouter(root, sink, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Fragments: parent, blockChild (10 tall at parent top), the inline-only line.
+        // The inline-only border box must start at blockChild bottom + 40 (10% of 400).
+        var inlineFrag = sink.Fragments[^1];
+        Assert.Equal(10 + 40, inlineFrag.BlockOffset, 3);
     }
 
     // --- Multi-block stacking ----------------------------------------
@@ -6623,6 +6663,13 @@ public sealed class BlockLayouterTests
             Assert.Equal(40.0, f.InlineSize, precision: 3);
             Assert.Equal(40.0, f.BlockSize, precision: 3);
         });
+    }
+
+    private sealed class SyntheticShaperResolver : IShaperResolver
+    {
+        private readonly HbShaper _shaper = new(SyntheticFont.Build(), fontSizePx: 12);
+        public HbShaper Resolve(ComputedStyle style) => _shaper;
+        public void Dispose() => _shaper.Dispose();
     }
 
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();

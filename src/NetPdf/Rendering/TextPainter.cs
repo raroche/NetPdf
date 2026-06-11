@@ -238,8 +238,12 @@ internal static class TextPainter
             // starts after it). Null = no gaps, byte-identical.
             if (fragment.PerLineTopOffsetsPx is { } gaps && li < gaps.Count)
                 cumulativeTopPx += gaps[li];
-            var lineTopPx = contentTopPx + (fragment.PerLineHeightsPx is null
-                ? li * lineHeightPx : cumulativeTopPx);
+            // The cumulative path keys on EITHER per-line array (post-PR-#163 review P3): the
+            // margin-box producer sends both together, but the fragment contract exposes them
+            // independently — an offsets-only fragment must not silently drop its gaps.
+            var lineTopPx = contentTopPx
+                + (fragment.PerLineHeightsPx is null && fragment.PerLineTopOffsetsPx is null
+                    ? li * lineHeightPx : cumulativeTopPx);
             cumulativeTopPx += thisLineHeightPx;
             // Per-line inline alignment (wrapped-line content-alignment, Task 21; per-line factors —
             // segment-align cycle): shift each line by its own leftover × the line's align factor

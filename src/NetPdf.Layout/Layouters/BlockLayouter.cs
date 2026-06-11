@@ -4441,7 +4441,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // box breaks adjacency, so the chain is reset (same
                 // rule as the main loop's reset). topShift is the
                 // block's own marginTop.
-                var inlineOnlyMarginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
+                // Percent-aware (post-PR-#163 review P1): EmitInlineOnlyBlockInRecursion
+                // advances the cursor by the PERCENT-RESOLVED MarginBlockStart (its metrics read
+                // against the parent content box), so the POSITION must use the same base — a
+                // ReadLengthPxOrZero here read `margin-top: 10%` as 0 and the margin got reserved
+                // AFTER the child instead of pushing it down.
+                var inlineOnlyMarginStart =
+                    child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
 
                 var emittedExtent = EmitInlineOnlyBlockInRecursion(
                     child,
@@ -6431,8 +6437,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // via border + padding. Sub-cycle 1 handles the simple case:
         //   * `width` set explicitly → border-box = width + borders
         //     + padding (clamped non-negative).
-        //   * `width: auto` (DeclaredWidthPx == 0 here because
-        //     ReadLengthPxOrZero returns 0 for auto in cycle 1) →
+        //   * `width: auto` (DeclaredWidthPx == 0 — auto reads 0;
+        //     a PERCENTAGE width resolves against the containing
+        //     block's inline size, body-percent cycle) →
         //     border-box = full available content area minus
         //     inline margins (the in-flow-fill behavior).
         // True `auto` resolution per §10.3.3 (with the margin

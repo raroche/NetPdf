@@ -2485,6 +2485,44 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 62.4) < 0.1);
     }
 
+    [Theory]
+    [InlineData("0px")]
+    [InlineData("0pt")]
+    public void Page_margin_box_segment_zero_absolute_line_height_collapses_the_pitch(string zero)
+    {
+        // Post-PR-#163 review P2 — CSS line-height admits any NON-NEGATIVE value: an absolute
+        // ZERO collapses the h1 line's pitch like the unitless 0 (band = 0 + 19.2px = 14.4pt),
+        // instead of falling back to the 32px font default (would be 38.4 + 19.2 = 43.2pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh h1 { font-size: 32px; line-height: " + zero + " } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Big</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 14.4) < 0.1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_uppercase_margin_unit_is_eaten_by_anglesharp()
+    {
+        // CANARY (post-PR-#163 review P3): CSS units are ASCII case-insensitive and the collector
+        // normalizes them (CaptureSegmentMargins, matching SegmentLineHeightPx) — but
+        // AngleSharp.Css 1.0.0-beta.144 DROPS `margin-top: 16PX` (uppercase unit on a known
+        // property) before the cascade, so no gap can appear end-to-end: the band stays 38.4px
+        // = 28.8pt. When an AngleSharp upgrade fixes the drop, THIS pin fails — flip it to the
+        // 40.8pt gap expectation (the collector side is already correct).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh .gap { margin-top: 16PX } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><div>One</div><div class=\"gap\">Two</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 28.8) < 0.1);
+        Assert.DoesNotContain(AllRects(pdf), r => Math.Abs(r.H - 40.8) < 0.1);
+    }
+
     [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {

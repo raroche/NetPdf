@@ -560,9 +560,10 @@ internal static class MarginContentCollector
     /// <summary>The leaf block's OWN vertical margins in used px (segment-margins cycle) — the
     /// self-only winners (margins aren't inherited), ABSOLUTE lengths only (a %/relative/`auto`
     /// margin reads 0 — the per-line gap model has no containing-block/font context here;
-    /// deferrals.md). Negative margins are kept (legal per CSS 2.2 §8.3 — a negative gap pulls
-    /// lines together; the painter floors the COLLAPSED gap at 0 to keep bands non-overlapping,
-    /// a documented approximation).</summary>
+    /// deferrals.md). Negative values are CAPTURED as-is (legal per CSS 2.2 §8.3) but the painter
+    /// clamps the COLLAPSED gap at 0 (PR #163 Copilot ×2 — a net-negative collapsed margin is
+    /// treated as TOUCHING, not overlapping: pulling a line up into its neighbour would overlap
+    /// the per-line bands; a documented approximation).</summary>
     private static (double TopPx, double BottomPx) CaptureSegmentMargins(
         IElement element, ResolvedCascadeResult cascade)
     {
@@ -576,9 +577,12 @@ internal static class MarginContentCollector
             if (string.IsNullOrWhiteSpace(raw)) return 0;
             var v = raw.Trim();
             if (v == "0") return 0;
+            // Units are ASCII case-insensitive (CSS Syntax §4) — TryAbsoluteUnitToPx matches
+            // lowercase only, so `16PX` silently read 0 (post-PR-#163 review P3; matches
+            // SegmentLineHeightPx's normalization).
             return LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit)
                 && unit.Length > 0
-                && LengthResolver.TryAbsoluteUnitToPx(unit, n, out var px)
+                && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out var px)
                 && double.IsFinite(px)
                 ? px : 0;
         }

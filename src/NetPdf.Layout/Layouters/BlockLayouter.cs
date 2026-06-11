@@ -1272,7 +1272,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctBase);
             var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctBase);
-            var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // % height resolves against the fragmentainer's DEFINITE content height (the page
+            // content area — percent-height cycle, CSS 2.2 §10.5).
+            var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, fragmentainer.BlockSize);
             var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, pctBase);
             var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
             var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, pctBase);
@@ -1381,6 +1383,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // `width` on a plain block container overrides the fill.
             var borderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
                 child, availInlineSize, fragmentainer.ContentInlineSize, marginInlineStart, marginInlineEnd);
+            // §10.3.3 auto margins (auto-margins cycle): `margin: 0 auto` centres an explicit-width
+            // block — must run before any inline-offset consumption below.
+            ResolveAutoInlineMargins(
+                child, borderBoxInlineSize, fragmentainer.ContentInlineSize,
+                ref marginInlineStart, ref marginInlineEnd);
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
             // for Table / InlineTable wrappers, pre-measure the
@@ -2579,7 +2586,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         depth: 1,
                         propagatingResolver: resolver,
                         propagatingFragmentainer: fragmentainer,
-                        incomingContinuation: forcedRecIncoming);
+                        incomingContinuation: forcedRecIncoming,
+                        parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
                     if (forcedNestedRet is BlockContinuation forcedDeep)
                     {
                         return LayoutAttemptResult.PageComplete(
@@ -3483,7 +3491,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: 1,
                 propagatingResolver: resolver,
                 propagatingFragmentainer: fragmentainer,
-                incomingContinuation: recIncoming);
+                incomingContinuation: recIncoming,
+                parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
 
             // Stitching (up): on non-null return propagate as a
             // `PageComplete(BlockContinuation(rc=childIdx, ls=<chain>))`
@@ -4270,7 +4279,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         int depth,
         IBreakResolver? propagatingResolver = null,
         FragmentainerContext? propagatingFragmentainer = null,
-        LayoutContinuation? incomingContinuation = null)
+        LayoutContinuation? incomingContinuation = null,
+        // Body % height (percent-height cycle): the parent's DEFINITE content height in px —
+        // a child `height: N%` resolves against it (CSS 2.2 §10.5); 0 = indefinite (the parent's
+        // height is auto), the percentage then computes to auto (reads 0).
+        double parentContentBlockSize = 0)
     {
         // Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
         // protection. Untrusted HTML can construct pathologically
@@ -4513,7 +4526,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
             var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, contentInlineSize);
             var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, contentInlineSize);
-            var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // % height resolves against the parent's DEFINITE content height (0 = indefinite →
+            // auto, CSS 2.2 §10.5 — percent-height cycle).
+            var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
 
             var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
                 + paddingEnd + borderEnd;
@@ -4523,6 +4538,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // sizes identically to a top-level one.
             var childBorderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
                 child, contentInlineSize, contentInlineSize, marginInlineStart, marginInlineEnd);
+            ResolveAutoInlineMargins(
+                child, childBorderBoxInlineSize, contentInlineSize,
+                ref marginInlineStart, ref marginInlineEnd);   // §10.3.3 — auto-margins cycle.
 
             // Per cycle 2c post-PR-29 review #2 — measure/emit cursor
             // mismatch fix. Pre-fix the recursion advanced by
@@ -5603,7 +5621,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: depth + 1,
                 propagatingResolver: propagatingResolver,
                 propagatingFragmentainer: propagatingFragmentainer,
-                incomingContinuation: incomingForChild);
+                incomingContinuation: incomingForChild,
+                parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
             if (nestedRet is not null)
             {
                 return new BlockContinuation(
@@ -6335,11 +6354,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Rewrite % padding to used px FIRST (body-percent cycle) — TextPainter's content-origin
         // inset reads the same slots at paint time.
         block.Style.ResolveUsedPercentPaddingInPlace(containingInlinePx);
+        // §10.3.3 auto margins (auto-margins cycle) — the same distribution as the block paths,
+        // so a text-bearing `width: …; margin: 0 auto` block centres like an empty one. The
+        // declared width must be explicit (the fill path's auto margins stay 0).
+        var marginInlineStart = block.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, containingInlinePx);
+        var marginInlineEnd = block.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, containingInlinePx);
+        var declaredWidth = block.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
+        if (declaredWidth > 0)
+        {
+            var borderBox = declaredWidth
+                + block.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                + block.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+                + block.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+                + block.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+            ResolveAutoInlineMargins(
+                block, borderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
+        }
         return new(
             // Body % lengths (body-percent cycle): margins/paddings/width take percentages against
             // the containing block's INLINE size (CSS 2.2 §8.3/§8.4/§10.2), like the block paths.
-            MarginInlineStart: block.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, containingInlinePx),
-            MarginInlineEnd: block.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, containingInlinePx),
+            MarginInlineStart: marginInlineStart,
+            MarginInlineEnd: marginInlineEnd,
             MarginBlockStart: block.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, containingInlinePx),
             MarginBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, containingInlinePx),
             BorderInlineStart: block.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth),
@@ -6381,6 +6416,46 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// </list>
     /// §10.3.3 margin DISTRIBUTION (<c>margin: auto</c> centering, the over-constrained
     /// rule) stays deferred — the box keeps its inline-start edge.</summary>
+    /// <summary>§10.3.3 auto-margin DISTRIBUTION (auto-margins cycle) — for a plain in-flow block
+    /// with an EXPLICIT width (length or percentage; the border box is narrower than the
+    /// containing block), <c>margin-left/right: auto</c> (a Keyword slot — the initial unset
+    /// margin is 0, so Keyword = the authored <c>auto</c>) absorb the leftover: both auto →
+    /// CENTRED (equal split); one auto → that side takes the rest. A non-positive leftover
+    /// clamps the auto side(s) at 0 (§10.3.3's over-constrained rule). A box with AUTO width
+    /// keeps the fill behavior (auto margins read 0 — the cycle-1 contract), and non-plain
+    /// kinds (tables/flex/grid/anonymous) are untouched like the width override.</summary>
+    private static void ResolveAutoInlineMargins(
+        Box child, double borderBoxInlineSize, double containingInlinePx,
+        ref double marginInlineStart, ref double marginInlineEnd)
+    {
+        if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem)) return;
+        if (child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx) <= 0) return;
+        var leftAuto = child.Style.Get(PropertyId.MarginLeft).Tag == ComputedSlotTag.Keyword;
+        var rightAuto = child.Style.Get(PropertyId.MarginRight).Tag == ComputedSlotTag.Keyword;
+        if (!leftAuto && !rightAuto) return;
+        var leftover = containingInlinePx - borderBoxInlineSize
+            - (leftAuto ? 0 : marginInlineStart) - (rightAuto ? 0 : marginInlineEnd);
+        if (leftover <= 0)
+        {
+            if (leftAuto) marginInlineStart = 0;
+            if (rightAuto) marginInlineEnd = 0;
+            return;
+        }
+        if (leftAuto && rightAuto)
+        {
+            marginInlineStart = leftover / 2;
+            marginInlineEnd = leftover / 2;
+        }
+        else if (leftAuto)
+        {
+            marginInlineStart = leftover;
+        }
+        else
+        {
+            marginInlineEnd = leftover;
+        }
+    }
+
     private static double ResolveInFlowBorderBoxInlineSize(
         Box child, double availableInlineSize, double containingInlinePx,
         double marginInlineStart, double marginInlineEnd)

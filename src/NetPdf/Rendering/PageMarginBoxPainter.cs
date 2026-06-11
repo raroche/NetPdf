@@ -316,9 +316,14 @@ internal static class PageMarginBoxPainter
                     // (the band's currentcolor owner).
                     // Per-segment pitch: the leaf's own line-height (segment-line-height cycle —
                     // read straight from the captured pairs, like text-align: an absolute length,
-                    // a unitless multiplier, or an em factor; `normal`/%/other → the font default).
+                    // a unitless multiplier, or an em factor; `normal`/%/other → the font default)
+                    // PLUS its own vertical padding (segment-padding cycle): the band/pitch grows
+                    // so the background covers the padding box (CSS B&B §4.2); the glyphs centre
+                    // within the padded pitch via the half-leading (exact for symmetric padding,
+                    // a documented approximation for asymmetric).
                     segmentLineHeightsPx[si] =
-                        SegmentLineHeightPx(seg.OwnStyle, segFontPx) ?? segFontPx * NormalLineHeightFactor;
+                        (SegmentLineHeightPx(seg.OwnStyle, segFontPx) ?? segFontPx * NormalLineHeightFactor)
+                        + seg.PaddingTopPx + seg.PaddingBottomPx;
                     segmentAlignFactors[si] = ElementHorizontalAlignFactor(seg.OwnStyle);
                     segmentMarginTopsPx[si] = seg.MarginTopPx;       // segment-margins cycle —
                     segmentMarginBottomsPx[si] = seg.MarginBottomPx; //   inter-line gaps below.

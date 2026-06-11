@@ -289,6 +289,129 @@ public sealed class BlockLayouterTests
         Assert.Equal(10 + 40, inlineFrag.BlockOffset, 3);
     }
 
+    [Fact]
+    public void Auto_inline_margins_center_an_explicit_width_block()
+    {
+        // §10.3.3 (auto-margins cycle) — `width: 200px; margin: 0 auto` in a 600px containing
+        // block centres the border box: offset (600 − 200) / 2 = 200.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 200);
+        SetKeyword(style, PropertyId.MarginLeft, 0);    // the authored `auto` keyword
+        SetKeyword(style, PropertyId.MarginRight, 0);
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(200, sink.Fragments[0].InlineOffset);
+        Assert.Equal(200, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void Single_auto_margin_absorbs_the_leftover()
+    {
+        // One auto side takes the whole remainder: width 200, margin-right 50 → left auto
+        // absorbs 600 − 200 − 50 = 350.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 200);
+        SetKeyword(style, PropertyId.MarginLeft, 0);
+        SetLengthPx(style, PropertyId.MarginRight, 50);
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(350, sink.Fragments[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Auto_margins_without_an_explicit_width_keep_the_fill()
+    {
+        // Auto width + auto margins = the pre-cycle fill (auto margins read 0).
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetKeyword(style, PropertyId.MarginLeft, 0);
+        SetKeyword(style, PropertyId.MarginRight, 0);
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(0, sink.Fragments[0].InlineOffset);
+        Assert.Equal(600, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void Overconstrained_auto_margins_clamp_at_zero()
+    {
+        // Width 700 exceeds the 600px containing block — the auto margins clamp at 0 (§10.3.3).
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 700);
+        SetKeyword(style, PropertyId.MarginLeft, 0);
+        SetKeyword(style, PropertyId.MarginRight, 0);
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(0, sink.Fragments[0].InlineOffset);
+        Assert.Equal(700, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void Percentage_height_resolves_against_the_fragmentainer_and_a_definite_parent()
+    {
+        // Percent-height cycle — outer: 50% of the 800px content height = 400. Nested: 25% of
+        // the parent's DEFINITE 400px content height = 100; with an AUTO parent it computes to
+        // auto (0-height border box).
+        var sink = new RecordingFragmentSink();
+        var parentStyle = MakeStyle();
+        parentStyle.Set(PropertyId.Height, ComputedSlot.FromPercentage(50));
+        var childStyle = MakeStyle();
+        childStyle.Set(PropertyId.Height, ComputedSlot.FromPercentage(25));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        parent.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        root.AppendChild(parent);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(400, sink.Fragments[0].BlockSize);   // 50% × 800
+        Assert.Equal(100, sink.Fragments[1].BlockSize);   // 25% × the parent's definite 400
+    }
+
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]

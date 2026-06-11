@@ -127,7 +127,12 @@ internal static class CssContentList
         // The leaf block's OWN vertical margins in used px (segment-margins cycle) — inter-line
         // GAPS between segment lines (adjacent gaps collapse via max, CSS 2.2 §8.3.1's simple
         // case). Absolute lengths only; %/relative/auto read 0.
-        double MarginTopPx = 0, double MarginBottomPx = 0);
+        double MarginTopPx = 0, double MarginBottomPx = 0,
+        // The leaf block's OWN vertical padding in used px (segment-padding cycle) — grows the
+        // line's band/pitch (the background covers the padding box per CSS B&B §4.2); the glyphs
+        // centre within the padded pitch (exact for symmetric padding — a documented
+        // approximation for asymmetric). Horizontal per-line padding stays deferred.
+        double PaddingTopPx = 0, double PaddingBottomPx = 0);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

@@ -2524,6 +2524,63 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_auto_margins_center_an_explicit_width_band()
+    {
+        // Auto-margins cycle — `width: 100px; margin: 0 auto` centres in the 602px content area:
+        // x = 72 + (451.5 − 75) / 2 = 260.25pt; the band stays 75pt wide.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;margin:0 auto;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(75.0, r.W, 1);
+        Assert.Equal(260.25, r.X, 1);
+    }
+
+    [Fact]
+    public void Body_percentage_height_resolves_through_a_definite_chain()
+    {
+        // Percent-height cycle — a % height needs a DEFINITE ancestor chain (CSS 2.2 §10.5: a %
+        // against an auto-height parent computes to auto, like browsers): with
+        // `html, body { height: 100% }` the div's 25% resolves against the 931px page content
+        // height = 232.75px → 174.56pt.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html, body { height: 100% }</style></head><body>" +
+            "<div style=\"width:64px;height:25%;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(174.56, r.H, 1);
+    }
+
+    [Fact]
+    public void Body_percentage_height_against_an_auto_parent_computes_to_auto()
+    {
+        // The counterpart pin: WITHOUT the definite chain the 25% computes to auto — the empty
+        // div has no height, so no band paints (browser-equivalent).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:64px;height:25%;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.DoesNotContain(" re f", pdf);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_vertical_padding_grows_its_line_band()
+    {
+        // Segment-padding cycle — the h1's own vertical padding grows ITS band/pitch:
+        // the h1's one-line band is 38.4 + 8 + 8 = 54.4px → 40.8pt (background covers the
+        // padding box), and the NESTED element band (the box co-declares a background, forcing
+        // the nesting) totals (54.4 + 19.2)px = 73.6px → 55.2pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh h1 { font-size: 32px; padding-top: 8px; padding-bottom: 8px; background-color: #3366cc } " +
+            "@page { @top-center { content: element(rh); background-color: #00ff00 } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Big</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 55.2) < 0.1);   // the nested element band
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 40.8) < 0.1);   // the h1's padded line band
+    }
+
+    [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {
         // Post-PR-#162 review P1 — a FLAT running element's own background/border already rides

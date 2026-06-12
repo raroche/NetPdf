@@ -1668,11 +1668,6 @@ internal static class PageMarginBoxPainter
         return false;
     }
 
-    /// <summary>The box's declared uniform <c>border-radius</c> in used px (border-radius cycle,
-    /// first cut) — a single non-negative absolute <c>&lt;length&gt;</c> (or the 0 literal); the
-    /// LAST declaration wins (cascade order). Percentages, multi-value/per-corner forms, elliptical
-    /// <c>/</c> radii, and relative/calc() values are SURFACED + ignored (deferrals.md). 0 = square
-    /// (no radius declared, or an unsupported form).</summary>
     /// <summary>The margin box's declared <c>background-image</c> as a single parsed url
     /// (margin-box-bg-image cycle), or <see langword="null"/> for unset / <c>none</c> / an
     /// unsupported form (gradient / multi-layer / unrecognized — surfaced once per Layout via
@@ -1716,6 +1711,11 @@ internal static class PageMarginBoxPainter
         return string.IsNullOrWhiteSpace(raw) ? null : raw;
     }
 
+    /// <summary>The box's declared uniform <c>border-radius</c> in used px (border-radius cycle,
+    /// first cut) — a single non-negative absolute <c>&lt;length&gt;</c> (or the 0 literal); the
+    /// LAST declaration wins (cascade order). Percentages, multi-value/per-corner forms, elliptical
+    /// <c>/</c> radii, and relative/calc() values are SURFACED + ignored (deferrals.md). 0 = square
+    /// (no radius declared, or an unsupported form).</summary>
     private static double ReadBorderRadiusPx(
         ImmutableArray<CssDeclaration> declarations, string boxName, IDiagnosticsSink diagnostics)
     {

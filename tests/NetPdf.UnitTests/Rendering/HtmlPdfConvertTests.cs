@@ -2774,6 +2774,77 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_segment_horizontal_margin_insets_its_own_line()
+    {
+        // segment-hmargins cycle — the leaf's own margin-left shifts ITS line 20px = 15pt right
+        // of its sibling (both left-aligned in the 300px box); the unmargined line is unaffected.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .m { margin-left: 20px } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"m\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] + 15.0, tds[1], 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_margin_right_shrinks_the_aligned_extent()
+    {
+        // A right-aligned margined line ends margin-right SHORT of its unmargined sibling
+        // (margins shrink the alignment extent like padding): the second Td sits 15pt left.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .m { margin-right: 20px } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: right } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"m\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] - 15.0, tds[1], 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_horizontal_margin_insets_its_decoration_band()
+    {
+        // Margins sit OUTSIDE the leaf's border box — its per-line band starts after
+        // margin-left and ends before margin-right: band X = box band X + 15pt, band width
+        // (300 − 20 − 20)px = 195pt (padding, by contrast, stays INSIDE the band).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .m { margin-left: 20px; margin-right: 20px; background-color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left; " +
+            "background-color: #eeeeee } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"m\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var rects = AllRects(pdf);
+        Assert.True(rects.Count >= 2, "expected the box band + the segment band");
+        Assert.Equal(rects[0].X + 15.0, rects[1].X, 1);   // after margin-left
+        Assert.Equal(195.0, rects[1].W, 1);               // (300 − 40)px = 195pt
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_negative_horizontal_margin_clamps_to_zero()
+    {
+        // A negative horizontal margin would pull the line outside its box — clamped at 0
+        // (capture-side, like the vertical gaps' overlap clamp): the line stays put.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .m { margin-left: -10px } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"m\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0], tds[1], 1);
+    }
+
+    [Fact]
     public void Body_float_percentage_width_sizes_the_band()
     {
         // Float-percent cycle — float: left; width: 25% of the 602px content area = 150.5px
@@ -2849,6 +2920,211 @@ public sealed class HtmlPdfConvertTests
             "</body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Empty(AllTdXs(pdf));
+    }
+
+    // ---- the body image pipeline (img-pipeline cycle) ----
+
+    /// <summary>A synthetic opaque-RGB PNG as a self-contained <c>data:</c> URI — the
+    /// no-loader-needed default path the img pipeline ships with.</summary>
+    private static string PngDataUri(int w, int h) =>
+        "data:image/png;base64," + Convert.ToBase64String(
+            NetPdf.UnitTests.Pdf.Images.SyntheticPng.BuildOpaqueRgb8(w, h));
+
+    /// <summary>The (w, h, x, y) operands of every <c>q w 0 0 h x y cm /ImN Do Q</c> image
+    /// placement, in content-stream order.</summary>
+    private static List<(double W, double H, double X, double Y)> AllImagePlacements(string pdf)
+    {
+        var result = new List<(double, double, double, double)>();
+        var idx = 0;
+        while ((idx = pdf.IndexOf(" cm /Im", idx, StringComparison.Ordinal)) >= 0)
+        {
+            var opStart = pdf.LastIndexOf('q', idx);
+            var nums = pdf[(opStart + 1)..idx].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            result.Add((
+                double.Parse(nums[0], CultureInfo.InvariantCulture),
+                double.Parse(nums[3], CultureInfo.InvariantCulture),
+                double.Parse(nums[4], CultureInfo.InvariantCulture),
+                double.Parse(nums[5], CultureInfo.InvariantCulture)));
+            idx += 1;
+        }
+        return result;
+    }
+
+    [Fact]
+    public void Img_data_uri_renders_at_its_intrinsic_size()
+    {
+        // img-pipeline cycle — a block-level <img> with a data: PNG renders with NO loader
+        // configured: one XObject placement at the intrinsic 16×16 px = 12×12 pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block\">" +
+            "</body></html>"));
+        var placements = AllImagePlacements(pdf);
+        var p = Assert.Single(placements);
+        Assert.Equal(12.0, p.W, 1);
+        Assert.Equal(12.0, p.H, 1);
+        Assert.Contains("/Subtype /Image", pdf);
+    }
+
+    [Fact]
+    public void Img_css_width_completes_height_from_the_intrinsic_ratio()
+    {
+        // §10.3.2 — width: 32px declared, height auto, intrinsic 16×16 → height completes via
+        // the 1:1 ratio → a 24×24 pt placement.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block;width:32px\">" +
+            "</body></html>"));
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(24.0, p.W, 1);
+        Assert.Equal(24.0, p.H, 1);
+    }
+
+    [Fact]
+    public void Img_dimension_attributes_size_the_image()
+    {
+        // The HTML width/height attributes (CSS px integers) win over the intrinsic size when
+        // no CSS width/height is declared: 48×24 px = 36×18 pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"24\" style=\"display:block\">" +
+            "</body></html>"));
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(36.0, p.W, 1);
+        Assert.Equal(18.0, p.H, 1);
+    }
+
+    [Fact]
+    public void Img_block_margin_auto_centres_the_image()
+    {
+        // The canonical centering idiom — display: block; margin: 0 auto. The centred image's
+        // X sits (602 − 16) / 2 = 293 px = 219.75 pt right of the plain one's.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block\">" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block;margin:0 auto\">" +
+            "</body></html>"));
+        var placements = AllImagePlacements(pdf);
+        Assert.Equal(2, placements.Count);
+        Assert.Equal(placements[0].X + 219.75, placements[1].X, 1);
+    }
+
+    [Fact]
+    public void Img_fetch_failure_surfaces_res_load_failed()
+    {
+        // An http src under the SafeDefault policy (no http, no loader) fails the fetch — the
+        // RES-LOAD-FAILED-001 diagnostic surfaces it and nothing paints (CLAUDE.md #7).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<img src=\"http://example.com/x.png\" style=\"display:block\">" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.ResLoadFailed001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    [Fact]
+    public void Img_undecodable_payload_surfaces_img_decode_failed()
+    {
+        // A data: payload that is no recognizable raster format → IMG-DECODE-FAILED-001 and no
+        // placement (the element lays out at its declared size; nothing paints).
+        var garbage = Convert.ToBase64String(Encoding.ASCII.GetBytes("not an image at all"));
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"data:image/png;base64,{garbage}\" style=\"display:block;width:20px;height:20px\">" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.ImgDecodeFailed001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    // ---- background-image: url(...) (bg-image cycle) ----
+
+    [Fact]
+    public void Background_image_tiles_over_the_border_box()
+    {
+        // bg-image cycle — a 16×16 px tile repeats over the 64×32 px box (the initial
+        // background-repeat) → 4 × 2 = 8 placements of one shared XObject, clipped to the
+        // border box; the tiles sit over the background-color, under the text.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        var placements = AllImagePlacements(pdf);
+        Assert.Equal(8, placements.Count);
+        Assert.Equal(12.0, placements[0].W, 1);
+        Assert.Contains(" re W n", pdf);   // partial-tile clip at the border box
+        Assert.Contains(" re f", pdf);     // the color band still paints under the tiles
+    }
+
+    [Fact]
+    public void Background_image_respects_print_backgrounds_off()
+    {
+        // Gated by PrintBackgrounds exactly like the color band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)})\"></div>" +
+            "</body></html>", new HtmlPdfOptions { PrintBackgrounds = false }));
+        Assert.Empty(AllImagePlacements(pdf));
+    }
+
+    [Fact]
+    public void Background_image_gradient_is_surfaced_and_skipped()
+    {
+        // A gradient (the Phase 4 shading-pattern work) surfaces CSS-BACKGROUND-IMAGE-
+        // UNSUPPORTED-001 once; the background-color still paints.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:64px;height:32px;background-image:linear-gradient(red, blue);" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        var pdf = Latin1(result.Pdf);
+        Assert.Empty(AllImagePlacements(pdf));
+        Assert.Contains(" re f", pdf);
+    }
+
+    [Fact]
+    public void Background_image_tile_cap_skips_and_diagnoses()
+    {
+        // A 1×1 px tile over a 100×100 px box would need 10,000 tiles — over the 4096-tile
+        // content-stream cap → PAINT-BG-IMAGE-TILE-CAP-001 + no placements (the color band
+        // still paints).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:100px;height:100px;background-image:url({PngDataUri(1, 1)});" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBgImageTileCap001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    [Fact]
+    public void Background_image_tile_cap_is_overflow_safe_for_huge_boxes()
+    {
+        // PR #166 review P1 — a 4e9 × 4e9 px box with a 1×1 tile needs ~1.6e19 tiles: the long
+        // product wraps NEGATIVE and the pre-fix `nx * ny > cap` compare bypassed the cap into
+        // a ~1.6e19-iteration placement loop. The division-based bound skips + diagnoses.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:4000000000px;height:4000000000px;background-image:url({PngDataUri(1, 1)})\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBgImageTileCap001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    [Fact]
+    public void Background_image_multi_layer_list_is_surfaced_not_misfetched()
+    {
+        // PR #166 review P2 — url(a),url(b) must take the unsupported-multi-layer path, not
+        // parse as the single bogus URL "a),url(b" (which produced misleading fetch failures).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:32px;height:32px;background-image:url(a.png),url(b.png);" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.ResLoadFailed001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
     }
 
     [Fact]

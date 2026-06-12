@@ -232,8 +232,16 @@ internal sealed class HtmlParsingHost
                 // Surviving javascript: / vbscript: / data: URL on a known
                 // url-bearing attribute name. The strip walk covers many
                 // attributes by selector; this check is a safety net.
-                if (IsKnownUrlAttribute(name) && IsDangerousUrl(attr.Value))
+                // An <img src> data: URI with an allowlisted IMAGE mediatype is
+                // EXEMPT (img-pipeline cycle) — mirroring the strip walk's
+                // exemption; the image pipeline validates it downstream
+                // (SafeResourceLoader MIME allowlist + magic-byte decode).
+                if (IsKnownUrlAttribute(name) && IsDangerousUrl(attr.Value)
+                    && !(string.Equals(el.LocalName, "img", System.StringComparison.OrdinalIgnoreCase)
+                        && name is "src" && IsAllowedImageDataUri(attr.Value)))
+                {
                     hasDangerousUrl = true;
+                }
             }
             // Short-circuit when all three are flipped — nothing more to learn.
             if (hasScript && hasOnHandler && hasDangerousUrl) break;
@@ -304,7 +312,14 @@ internal sealed class HtmlParsingHost
         StripDangerousUrlOnAttribute(document, "object[data]", "data", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "embed[src]", "src", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "base[href]", "href", sink, sourceFile);
-        StripDangerousUrlOnAttribute(document, "img[src]", "src", sink, sourceFile);
+        // img[src] EXEMPTS an allowlisted-image-mediatype data: URI (img-pipeline cycle —
+        // the self-contained embedded-image path). The Phase A strip predated the image
+        // pipeline ("inert today — when Phase 5 wires IResourceLoader…"); now that the wireup
+        // exists, the data: payload is validated DOWNSTREAM: SafeResourceLoader's MIME
+        // allowlist (text/html + image/svg+xml polyglots rejected) + the decoder's magic-byte
+        // check (a payload claiming image/png but carrying HTML fails to decode). javascript:
+        // / vbscript: / non-image data: still strip.
+        StripDangerousUrlOnAttribute(document, "img[src]", "src", sink, sourceFile, allowImageDataUri: true);
         StripDangerousUrlOnAttribute(document, "link[href]", "href", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "source[src]", "src", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "source[srcset]", "srcset", sink, sourceFile);
@@ -529,12 +544,16 @@ internal sealed class HtmlParsingHost
 
     private static void StripDangerousUrlOnAttribute(
         IDocument document, string querySelector, string attributeName,
-        IDiagnosticsSink? sink, string? sourceFile)
+        IDiagnosticsSink? sink, string? sourceFile, bool allowImageDataUri = false)
     {
         foreach (var element in document.QuerySelectorAll(querySelector).ToArray())
         {
             var value = element.GetAttribute(attributeName);
             if (!IsDangerousUrl(value)) continue;
+            // img-pipeline cycle — the img[src] call site opts in: a data: URI with an
+            // allowlisted IMAGE mediatype survives for the image pipeline (validated
+            // downstream by SafeResourceLoader's MIME allowlist + magic-byte decode).
+            if (allowImageDataUri && IsAllowedImageDataUri(value)) continue;
             sink?.Emit(new Diagnostic(
                 DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
                 $"A <{element.LocalName}> element's {attributeName} attribute carried a {DescribeUrlScheme(value)} URL. The attribute was removed; element text retained.",
@@ -542,6 +561,26 @@ internal sealed class HtmlParsingHost
                 ToSourceLocation(element, sourceFile)));
             element.RemoveAttribute(attributeName);
         }
+    }
+
+    /// <summary>Whether <paramref name="value"/> is a <c>data:</c> URI whose EXPLICIT mediatype
+    /// is on the image decoder's MIME allowlist (img-pipeline cycle —
+    /// <see cref="SafeResourceLoader.IsMimeAllowedForKind"/>, the single source of truth:
+    /// png / jpeg / gif / webp / bmp; <c>text/html</c> and <c>image/svg+xml</c> polyglots are
+    /// NOT). A data: URI with no mediatype (<c>data:,…</c> / <c>data:;base64,…</c>) stays
+    /// dangerous — the embedded-image path requires the author to declare what it is.</summary>
+    private static bool IsAllowedImageDataUri(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var v = value.AsSpan().TrimStart();
+        if (v.Length < 5 || !v[..5].Equals("data:", System.StringComparison.OrdinalIgnoreCase))
+            return false;
+        v = v[5..];
+        var end = v.IndexOfAny(';', ',');
+        if (end <= 0) return false;   // no mediatype declared → keep stripping.
+        var mediatype = v[..end].Trim().ToString();
+        return mediatype.Length > 0
+            && SafeResourceLoader.IsMimeAllowedForKind(mediatype, ResourceKind.Image);
     }
 
     /// <summary>Parses the value of <c>&lt;meta http-equiv="refresh" content="..."&gt;</c>

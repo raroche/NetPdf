@@ -3281,6 +3281,35 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Body image pipeline + background images + per-line horizontal margins — DONE
+         (img-pipeline / bg-image / segment-hmargins cycles):** the BODY IMAGE PIPELINE is
+         live — a BLOCK-level `<img>` renders end-to-end: every image reference is prefetched
+         BEFORE layout through `SafeResourceLoader` (`data:` URIs decode INLINE with no user
+         loader — the self-contained default; the parser's Phase-A `img[src]` data:-strip now
+         EXEMPTS allowlisted IMAGE mediatypes, validated downstream by the MIME allowlist +
+         magic-byte decode; `file:`/`http(s):` via `HtmlPdfOptions.ResourceLoader` under
+         `SecurityPolicy`), decoded once per URI (PNG/JPEG passthrough; GIF/WebP/BMP via the
+         SkiaSharp raster fallback) into a registered XObject (per-URI memo + content-hash
+         dedup); `ReplacedSizeResolver` writes the §10.3.2 used size into the slots (CSS
+         declared > HTML dimension attrs > intrinsic 1:1 px; aspect-ratio completion from an
+         ABSOLUTE other side) so layout sizes it like an explicit block (`margin: auto`
+         centres); `ImagePainter` places the content-box rect after bands/borders, before
+         text. `background-image: url(...)` on body blocks TILES the decoded image over the
+         border box (initial `repeat`; clipped partial edge tiles; over the color, under
+         borders; `PrintBackgrounds`-gated; 4096-tile cap → `PAINT-BG-IMAGE-TILE-CAP-001`).
+         A leaf block's own horizontal MARGINS inset its line's per-line BAND + glyphs/extent
+         (margins sit OUTSIDE the border box — padding stays inside the band; absolute only,
+         clamped ≥ 0). Failures surface `RES-LOAD-FAILED-001` / `IMG-DECODE-FAILED-001` /
+         `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` — nothing drops silently. STILL DEFERRED:
+         INLINE `<img>` (the atomic-inline deferral — no line-box atomics yet), `object-fit`,
+         `%` dimension attributes, `srcset`, ICC profiles, SVG sources (needs the sanitize/
+         rasterize pipeline — the MIME allowlist rejects `image/svg+xml`), gradients +
+         multi-layer backgrounds (Phase 4 shading patterns), `background-position`/`-size`/
+         `-repeat` variants (the tile phase starts at the BORDER box — spec phases at the
+         padding box), PDF tiling-pattern objects (the O(1) replacement for the tile cap),
+         MARGIN-BOX background images, % `height` relative-resolution for replaced boxes,
+         negative / `auto` per-line horizontal margins (no per-line centering distribution),
+         real nested block LAYOUT.
        - **Horizontal per-line padding + float % lengths + body box-sizing — DONE
          (hpadding / float-percent / box-sizing cycles):** a leaf block's own absolute
          `padding-left/right` insets its line's glyphs + alignment extent (the band keeps the
@@ -3288,8 +3317,10 @@ flags the categories):
          the clip-path safety net). Float `width`/`margin-*`/`padding-*` percentages resolve
          against the BFC content box (float `% height` deferred; abspos % was already live).
          An explicit body width under `box-sizing: border-box` IS the border box (floored at
-         the insets), at both the block and inline-only paths. STILL DEFERRED: per-line
-         horizontal margins, background images (body image pipeline), real nested block LAYOUT.
+         the insets), at both the block and inline-only paths. STILL DEFERRED THEN: per-line
+         horizontal margins + background images (body image pipeline) — BOTH shipped in the
+         NEXT entry (img-pipeline / bg-image / segment-hmargins cycles, see above) — and real
+         nested block LAYOUT.
        - **Per-line segment padding + body % height + margin:auto centering — DONE
          (segment-padding / percent-height / auto-margins cycles):** a leaf block's own absolute
          VERTICAL padding grows its line's band/pitch (background covers the padding box;

@@ -71,6 +71,11 @@ internal static class FragmentPainter
     /// <see langword="false"/>, no background is painted (borders, being foreground, still are).</param>
     /// <param name="diagnostics">Sink for paint diagnostics (alpha / border-style
     /// approximation); <see langword="null"/> drops them.</param>
+    /// <param name="imageCache">The per-render image store (bg-image cycle) — fragments whose
+    /// box has a decoded <c>background-image</c> tile it over their border box. Null (every
+    /// pre-cycle caller) paints color-only, byte-identical.</param>
+    /// <param name="document">The owning document for XObject registration; required (non-null)
+    /// only when <paramref name="imageCache"/> is supplied.</param>
     public static void PaintFragments(
         IReadOnlyList<BoxFragment> fragments,
         PdfPage page,
@@ -78,9 +83,14 @@ internal static class FragmentPainter
         double contentOriginLeftPx,
         double contentOriginTopPx,
         bool paintBackgrounds,
-        IDiagnosticsSink? diagnostics)
+        IDiagnosticsSink? diagnostics,
+        // bg-image cycle: the per-render image store + owning document. Null (the default and
+        // every pre-cycle caller) paints color-only — byte-identical output.
+        ImageResourceCache? imageCache = null,
+        PdfDocument? document = null)
     {
         var borderStyleApproximationReported = false;
+        var tileCapReported = false;
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -99,12 +109,90 @@ internal static class FragmentPainter
 
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)
+            {
                 PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                // background-image tiles paint OVER this fragment's color and UNDER its borders
+                // (CSS B&B §14.2 layer order), gated by PrintBackgrounds like the color.
+                if (imageCache is not null && document is not null
+                    && imageCache.BackgroundImageBoxes.TryGetValue(fragment.Box, out var bgUri)
+                    && imageCache.TryGet(bgUri, out var bgEntry))
+                {
+                    PaintBackgroundImageTiles(
+                        page, document, bgEntry, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                        diagnostics, ref tileCapReported);
+                }
+            }
 
             // Borders (foreground — always painted regardless of PrintBackgrounds).
             PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                 currentColorArgb, diagnostics, ref borderStyleApproximationReported);
         }
+    }
+
+    /// <summary>Per-fragment <c>background-image</c> tile cap — bounds the content-stream size
+    /// against a tiny tile over a large box (a 1×1 px image across an A4 page would otherwise
+    /// emit ~500k placements). PDF tiling-pattern objects (O(1) regardless of count) are the
+    /// tracked follow-up.</summary>
+    private const int MaxBackgroundTilesPerFragment = 4096;
+
+    /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box at its intrinsic
+    /// pixel size (bg-image cycle first cut: <c>background-repeat: repeat</c> — the initial —
+    /// from the border-box top-left, partial edge tiles clipped to the border box via the
+    /// existing rectangle-clip helper). Approximations, documented in <c>deferrals.md</c>: the
+    /// tile phase starts at the BORDER box (the spec's initial <c>background-origin:
+    /// padding-box</c> would phase tiles at the padding box while still painting the border
+    /// strip per <c>background-clip: border-box</c>); <c>background-position</c> / <c>-size</c>
+    /// / <c>-repeat</c> variants and gradients stay deferred.</summary>
+    private static void PaintBackgroundImageTiles(
+        PdfPage page, PdfDocument document, ImageResourceCache.Entry entry, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx,
+        IDiagnosticsSink? diagnostics, ref bool tileCapReported)
+    {
+        var tileW = entry.WidthPx;
+        var tileH = entry.HeightPx;
+        if (tileW <= 0 || tileH <= 0) return;
+
+        var nx = (long)Math.Ceiling(widthPx / tileW);
+        var ny = (long)Math.Ceiling(heightPx / tileH);
+        if (nx <= 0 || ny <= 0) return;
+        // OVERFLOW-SAFE cap compare (PR #166 review P1): `nx * ny` can wrap for a huge box /
+        // tiny tile (a 4e9 × 4e9 count wraps long negative and would bypass the cap into a
+        // ~1.6e19-iteration loop). Per-axis bound first, then a division-based product bound;
+        // the diagnostic reports the count as a double product (never wraps).
+        if (nx > MaxBackgroundTilesPerFragment
+            || ny > MaxBackgroundTilesPerFragment
+            || nx > MaxBackgroundTilesPerFragment / ny)
+        {
+            if (!tileCapReported && diagnostics is not null)
+            {
+                diagnostics.Emit(new Diagnostic(
+                    DiagnosticCodes.PaintBgImageTileCap001,
+                    $"A background-image tiling needs {(double)nx * ny:0} tiles for one box (tile "
+                    + $"{tileW:0.##}×{tileH:0.##}px over {widthPx:0.##}×{heightPx:0.##}px) — over the "
+                    + $"{MaxBackgroundTilesPerFragment}-tile cap; the image is skipped for this box "
+                    + "(its background-color still paints). PDF tiling patterns are the tracked "
+                    + "follow-up (deferrals.md#layout-to-pdf-pipeline).",
+                    DiagnosticSeverity.Warning));
+                tileCapReported = true;
+            }
+            return;
+        }
+
+        var imageRef = ImageResourceCache.GetOrRegister(document, entry);
+        // Clip partial edge tiles to the border box (background-clip: border-box, the initial).
+        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+        page.BeginRectangleClip(cx, cy, cw, ch);
+        for (long row = 0; row < ny; row++)
+        {
+            for (long col = 0; col < nx; col++)
+            {
+                ToPdfRect(
+                    leftPx + col * tileW, topPx + row * tileH, tileW, tileH, pageHeightPt,
+                    out var x, out var y, out var w, out var h);
+                page.PlaceImage(imageRef, x, y, w, h);
+            }
+        }
+        page.RestoreGraphicsState();
     }
 
     /// <summary>The <c>currentcolor</c> fallback for each border edge — the colour of the style that

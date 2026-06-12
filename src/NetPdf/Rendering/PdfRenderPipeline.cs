@@ -114,6 +114,19 @@ internal static class PdfRenderPipeline
         DeferredLengthResolver.ResolveTreeInPlace(
             phase2.BoxRoot, pageSize.WidthPx, pageSize.HeightPx);
 
+        // Body image pipeline (img-pipeline + bg-image cycles): prefetch + decode every image
+        // reference (an <img src>, a background-image url) BEFORE layout — `data:` URIs decode
+        // inline with no loader (the self-contained default; other schemes go through
+        // HtmlPdfOptions.ResourceLoader under SecurityPolicy). The sizing pre-pass then writes
+        // each replaced box's §10.3.2 used width/height into its slots (CSS declared > HTML
+        // width/height attribute > intrinsic, aspect-ratio completed) so layout sizes it like
+        // any explicit-size block. Failures surface RES-LOAD-FAILED-001 / IMG-DECODE-FAILED-001
+        // and the element lays out unpainted.
+        var imageCache = await ImageResourceCache.PrefetchAsync(
+            phase2.BoxRoot, phase2.Cascade, options, diagnostics, cancellationToken)
+            .ConfigureAwait(false);
+        ReplacedSizeResolver.ResolveTreeInPlace(phase2.BoxRoot, imageCache);
+
         var sink = new ListFragmentSink();
         var overflowReported = false;
         // Keep the shaper alive PAST paint (method-scoped using): the TextPainter subsets the
@@ -180,7 +193,15 @@ internal static class PdfRenderPipeline
 
         FragmentPainter.PaintFragments(
             sink.Fragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
-            paintBackgrounds: options.PrintBackgrounds, diagnostics);
+            paintBackgrounds: options.PrintBackgrounds, diagnostics,
+            imageCache, document);
+
+        // Replaced-element content (img-pipeline cycle): each <img> fragment places its decoded
+        // XObject at its content box — over every band/border, under the glyphs (the documented
+        // text-last paint-order approximation).
+        ImagePainter.PaintImages(
+            sink.Fragments, page, document, imageCache, mediaBox.HeightPts,
+            margins.LeftPx, margins.TopPx);
 
         // Page margin boxes (running headers/footers, Task 21 cycle 3): resolved from the same
         // bare @page rules, laid out into fragments in the page margins. They paint through the

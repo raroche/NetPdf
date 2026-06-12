@@ -98,6 +98,16 @@ internal static class DiagnosticCodes
     public const string CssHasRenderingNotImplemented001 = "CSS-HAS-RENDERING-NOT-IMPLEMENTED-001";
 
     /// <summary>
+    /// Per the bg-image cycle — a <c>background-image</c> value other than a single
+    /// <c>url(...)</c> / <c>none</c> was declared: a gradient function
+    /// (<c>linear-gradient()</c> etc. — the Phase 4 shading-pattern work), a multi-layer list,
+    /// or an unrecognized form. The declaration is ignored (any <c>background-color</c> still
+    /// paints) — surfaced once per render rather than dropped silently.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssBackgroundImageUnsupported001 = "CSS-BACKGROUND-IMAGE-UNSUPPORTED-001";
+
+    /// <summary>
     /// An unrecognized at-rule was preserved in the AST but had no rendering effect — the
     /// cascade resolver couldn't decompose its body or its conditions weren't evaluable.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.
@@ -657,6 +667,34 @@ internal static class DiagnosticCodes
 
     // endregion PDF-*
 
+    // region RES-*
+
+    /// <summary>
+    /// Per the img-pipeline cycle — a <c>url(...)</c> resource (an <c>&lt;img src&gt;</c> or a
+    /// <c>background-image</c>) failed to load: the URI failed the <see cref="SecurityPolicy"/>
+    /// safety checks, no <c>IResourceLoader</c> was configured for a non-<c>data:</c> scheme,
+    /// the loader returned an error / not-found, or a budget cap rejected it. The element still
+    /// lays out (an unsized image keeps its declared/attribute dimensions; nothing paints) —
+    /// surfaced rather than dropped silently. The message carries the sanitized failure reason.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string ResLoadFailed001 = "RES-LOAD-FAILED-001";
+
+    // endregion RES-*
+
+    // region IMG-*
+
+    /// <summary>
+    /// Per the img-pipeline cycle — fetched image bytes could not be DECODED: not a recognizable
+    /// raster format (PNG / JPEG natively; GIF / WebP / BMP via the SkiaSharp raster fallback),
+    /// a corrupt stream, or a decoded size beyond the pixel cap. The element still lays out at
+    /// its declared/attribute size (no intrinsic dimensions are available); nothing paints.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string ImgDecodeFailed001 = "IMG-DECODE-FAILED-001";
+
+    // endregion IMG-*
+
     // region PAINT-*
 
     /// <summary>
@@ -720,6 +758,15 @@ internal static class DiagnosticCodes
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string PaintMarginBoxContentOverflow001 = "PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001";
+
+    /// <summary>
+    /// Per the bg-image cycle — a <c>background-image</c> tiling would exceed the per-fragment
+    /// tile cap (a tiny image repeated over a large box, e.g. a 1×1 px tile across a full page —
+    /// a content-stream DoS guard). The background image is skipped for that box (its
+    /// <c>background-color</c> still paints); PDF tiling-pattern objects (which make this O(1))
+    /// are the tracked follow-up. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PaintBgImageTileCap001 = "PAINT-BG-IMAGE-TILE-CAP-001";
 
     // endregion PAINT-*
 }

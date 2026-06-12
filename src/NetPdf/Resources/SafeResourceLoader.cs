@@ -174,9 +174,45 @@ public sealed class SafeResourceLoader
             return SafeResourceResult.Failed(uri, kind, $"per-render budget: {slotReason}");
         }
 
-        // 4. No user loader = nothing to fetch. Phase 5 will wire actual
-        // fetching; until then every fetch resolves to "not found" so the
-        // pipeline degrades gracefully rather than throwing.
+        // 3b. data: URIs carry their bytes INLINE (img-pipeline cycle) — decode them here, no
+        // user loader needed (the canonical self-contained-document path). The decoded bytes
+        // flow through the SAME post-fetch defenses as loader bytes: per-resource size cap,
+        // MIME allowlist (from the URI's own mediatype) and the per-render byte budget — an
+        // inline payload is attacker-reachable exactly like a fetched one. The scheme already
+        // passed UriSafetyValidator (AllowDataUri) and reserved a budget slot above.
+        if (uri.Scheme.Equals("data", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!DataUriParser.TryDecode(uri, _context.Policy.MaxResourceBytes,
+                    out var dataBytes, out var dataMime, out var dataReason))
+            {
+                return SafeResourceResult.Failed(uri, kind, dataReason);
+            }
+            if (dataBytes.Length > _context.Policy.MaxResourceBytes)
+            {
+                return SafeResourceResult.Failed(uri, kind,
+                    $"resource size {dataBytes.Length} exceeds per-resource cap {_context.Policy.MaxResourceBytes}");
+            }
+            if (!string.IsNullOrEmpty(dataMime) && !IsMimeAllowedForKind(dataMime, kind))
+            {
+                return SafeResourceResult.Failed(uri, kind,
+                    $"MIME type '{dataMime}' not in allowlist for {kind} resource");
+            }
+            var dataBytesReason = _context.TryAddBytes(dataBytes.Length);
+            if (dataBytesReason is not null)
+            {
+                return SafeResourceResult.Failed(uri, kind, $"per-render budget: {dataBytesReason}");
+            }
+            return SafeResourceResult.Loaded(new ResourceResponse
+            {
+                Content = dataBytes,
+                MimeType = dataMime,
+            });
+        }
+
+        // 4. No user loader = nothing to fetch. Phase 5 wired data: URIs
+        // above (img-pipeline cycle); every OTHER scheme still resolves to
+        // "not found" without a loader so the pipeline degrades gracefully
+        // rather than throwing.
         if (_inner is null)
         {
             return SafeResourceResult.Failed(uri, kind,

@@ -315,6 +315,55 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Block_replaced_element_with_explicit_width_does_not_fill()
+    {
+        // img-pipeline cycle — a BlockReplacedElement with an explicit width (the sizing
+        // pre-pass writes the §10.3.2 used size into the slots) takes the explicit-width
+        // mapping, not the fill: a 100×50 image emits a 100-wide fragment in the 600 page.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 100);
+        SetLengthPx(style, PropertyId.Height, 50);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockReplacedElement, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(100, sink.Fragments[0].InlineSize);
+        Assert.Equal(50, sink.Fragments[0].BlockSize);
+    }
+
+    [Fact]
+    public void Block_replaced_element_auto_margins_centre_it()
+    {
+        // img-pipeline cycle — `display: block; margin: 0 auto` is the canonical image
+        // centering: width 100 in the 600 page → offset (600 − 100) / 2 = 250.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 100);
+        SetLengthPx(style, PropertyId.Height, 50);
+        SetKeyword(style, PropertyId.MarginLeft, 0);    // the authored `auto` keyword
+        SetKeyword(style, PropertyId.MarginRight, 0);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockReplacedElement, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(250, sink.Fragments[0].InlineOffset);
+        Assert.Equal(100, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
     public void Single_auto_margin_absorbs_the_leftover()
     {
         // One auto side takes the whole remainder: width 200, margin-right 50 → left auto

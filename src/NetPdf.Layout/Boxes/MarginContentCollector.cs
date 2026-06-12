@@ -548,9 +548,9 @@ internal static class MarginContentCollector
         IElement element, ResolvedCascadeResult cascade, bool captureDecoration)
     {
         if (segments is null || string.IsNullOrEmpty(text)) return;
-        var (marginTopPx, marginBottomPx) = captureDecoration
+        var (marginTopPx, marginBottomPx, marginLeftPx, marginRightPx) = captureDecoration
             ? CaptureSegmentMargins(element, cascade)
-            : (0.0, 0.0);   // the running ROOT's margins are the box's business, like its decoration.
+            : (0.0, 0.0, 0.0, 0.0);   // the running ROOT's margins are the box's business, like its decoration.
         var (paddingTopPx, paddingBottomPx, paddingLeftPx, paddingRightPx) = captureDecoration
             ? CaptureSegmentPadding(element, cascade)
             : (0.0, 0.0, 0.0, 0.0);   // the root's padding already insets via the element() box-model path.
@@ -558,7 +558,7 @@ internal static class MarginContentCollector
             text, CaptureSegmentStyle(element, cascade),
             captureDecoration ? CaptureSegmentDecoration(element, cascade) : EmptyOwnStyle,
             marginTopPx, marginBottomPx, paddingTopPx, paddingBottomPx,
-            paddingLeftPx, paddingRightPx));
+            paddingLeftPx, paddingRightPx, marginLeftPx, marginRightPx));
     }
 
     /// <summary>The leaf block's OWN padding in used px (segment-padding + hpadding cycles) —
@@ -595,19 +595,24 @@ internal static class MarginContentCollector
             ? px : 0;
     }
 
-    /// <summary>The leaf block's OWN vertical margins in used px (segment-margins cycle) — the
-    /// self-only winners (margins aren't inherited), ABSOLUTE lengths only (a %/relative/`auto`
-    /// margin reads 0 — the per-line gap model has no containing-block/font context here;
-    /// deferrals.md). Negative values are CAPTURED as-is (legal per CSS 2.2 §8.3) but the painter
-    /// clamps the COLLAPSED gap at 0 (PR #163 Copilot ×2 — a net-negative collapsed margin is
-    /// treated as TOUCHING, not overlapping: pulling a line up into its neighbour would overlap
-    /// the per-line bands; a documented approximation).</summary>
-    private static (double TopPx, double BottomPx) CaptureSegmentMargins(
+    /// <summary>The leaf block's OWN margins in used px (segment-margins + segment-hmargins
+    /// cycles) — the self-only winners (margins aren't inherited), ABSOLUTE lengths only (a
+    /// %/relative/`auto` margin reads 0 — the per-line model has no containing-block/font
+    /// context here; deferrals.md). VERTICAL values are CAPTURED sign-preserving (legal per CSS
+    /// 2.2 §8.3) but the painter clamps the COLLAPSED gap at 0 (PR #163 Copilot ×2 — a
+    /// net-negative collapsed margin is treated as TOUCHING, not overlapping: pulling a line up
+    /// into its neighbour would overlap the per-line bands; a documented approximation).
+    /// HORIZONTAL values clamp ≥ 0 at capture — a negative left/right margin would pull the
+    /// line's band/glyphs OUTSIDE its box (the same out-of-box class the vertical clamp
+    /// avoids).</summary>
+    private static (double TopPx, double BottomPx, double LeftPx, double RightPx) CaptureSegmentMargins(
         IElement element, ResolvedCascadeResult cascade)
     {
         var rules = cascade.TryGetStylesFor(element);
-        if (rules is null) return (0, 0);
-        return (AbsoluteSidePx(rules, "margin-top"), AbsoluteSidePx(rules, "margin-bottom"));
+        if (rules is null) return (0, 0, 0, 0);
+        return (AbsoluteSidePx(rules, "margin-top"), AbsoluteSidePx(rules, "margin-bottom"),
+                Math.Max(0, AbsoluteSidePx(rules, "margin-left")),
+                Math.Max(0, AbsoluteSidePx(rules, "margin-right")));
     }
 
     /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)

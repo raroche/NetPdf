@@ -285,6 +285,8 @@ internal static class PageMarginBoxPainter
             double[]? segmentPaddingBottomsPx = null;
             double[]? segmentPaddingLeftsPx = null;  // per-SEGMENT horizontal padding (hpadding cycle).
             double[]? segmentPaddingRightsPx = null;
+            double[]? segmentMarginLeftsPx = null;   // per-SEGMENT horizontal margins (segment-hmargins cycle).
+            double[]? segmentMarginRightsPx = null;
             if (isStandaloneElement
                 && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
             {
@@ -299,6 +301,8 @@ internal static class PageMarginBoxPainter
                 segmentPaddingBottomsPx = new double[segs.Count];
                 segmentPaddingLeftsPx = new double[segs.Count];
                 segmentPaddingRightsPx = new double[segs.Count];
+                segmentMarginLeftsPx = new double[segs.Count];
+                segmentMarginRightsPx = new double[segs.Count];
                 var maxFontPx = 0.0;
                 for (var si = 0; si < segs.Count; si++)
                 {
@@ -337,6 +341,8 @@ internal static class PageMarginBoxPainter
                     segmentPaddingBottomsPx[si] = seg.PaddingBottomPx;
                     segmentPaddingLeftsPx[si] = seg.PaddingLeftPx;   // hpadding cycle — per-line X insets.
                     segmentPaddingRightsPx[si] = seg.PaddingRightPx;
+                    segmentMarginLeftsPx[si] = seg.MarginLeftPx;     // segment-hmargins cycle — band +
+                    segmentMarginRightsPx[si] = seg.MarginRightPx;   //   glyph insets (margins sit outside the border box).
                     segmentAlignFactors[si] = ElementHorizontalAlignFactor(seg.OwnStyle);
                     segmentMarginTopsPx[si] = seg.MarginTopPx;       // segment-margins cycle —
                     segmentMarginBottomsPx[si] = seg.MarginBottomPx; //   inter-line gaps below.
@@ -601,6 +607,8 @@ internal static class PageMarginBoxPainter
                 SegmentPaddingBottomsPx = contentRuns is null ? null : segmentPaddingBottomsPx,
                 SegmentPaddingLeftsPx = contentRuns is null ? null : segmentPaddingLeftsPx,
                 SegmentPaddingRightsPx = contentRuns is null ? null : segmentPaddingRightsPx,
+                SegmentMarginLeftsPx = contentRuns is null ? null : segmentMarginLeftsPx,
+                SegmentMarginRightsPx = contentRuns is null ? null : segmentMarginRightsPx,
                 SegmentAlignFactors = contentRuns is null ? null : segmentAlignFactors,
                 SegmentDecorStyles = contentRuns is null ? null : segmentDecorStyles,
                 SegmentColorArgbs = contentRuns is null ? null : segmentColorArgbs,
@@ -712,10 +720,16 @@ internal static class PageMarginBoxPainter
                 (perLineHeights, perLineGaps) = PerLineGeometry(
                     inline, segHeightsForGeometry, item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx,
                     item.SegmentPaddingTopsPx, item.SegmentPaddingBottomsPx, lineHeightPx);
-                // Per-line HORIZONTAL insets (hpadding cycle): a leaf's own padding-left/right
-                // shift ITS lines' glyphs + shrink their alignment extent (the band keeps the full
-                // content-box width — a block's background spans its border box).
-                if (item.SegmentPaddingLeftsPx is { } segPadL && item.SegmentPaddingRightsPx is { } segPadR)
+                // Per-line HORIZONTAL insets (hpadding + segment-hmargins cycles): a leaf's own
+                // padding-left/right shifts ITS lines' glyphs + shrinks their alignment extent
+                // (the band keeps the full content-box width — a block's background spans its
+                // border box); its own margin-left/right insets the glyphs AND the band (margins
+                // sit OUTSIDE the border box — the per-line band loop below subtracts them).
+                var segPadL = item.SegmentPaddingLeftsPx;
+                var segPadR = item.SegmentPaddingRightsPx;
+                var segMargL = item.SegmentMarginLeftsPx;
+                var segMargR = item.SegmentMarginRightsPx;
+                if (segPadL is not null || segMargL is not null)
                 {
                     perLineInsetL = new double[lineSegments.Length];
                     perLineInsetR = new double[lineSegments.Length];
@@ -723,12 +737,14 @@ internal static class PageMarginBoxPainter
                     for (var li = 0; li < lineSegments.Length; li++)
                     {
                         var segIdx = lineSegments[li];
-                        if (segIdx >= 0 && segIdx < segPadL.Length)
-                        {
-                            perLineInsetL[li] = segPadL[segIdx];
-                            perLineInsetR[li] = segPadR[segIdx];
-                            anyInset |= segPadL[segIdx] > 0 || segPadR[segIdx] > 0;
-                        }
+                        if (segIdx < 0) continue;
+                        var l = (segPadL is not null && segIdx < segPadL.Length ? segPadL[segIdx] : 0)
+                            + (segMargL is not null && segIdx < segMargL.Length ? segMargL[segIdx] : 0);
+                        var r = (segPadR is not null && segIdx < segPadR.Length ? segPadR[segIdx] : 0)
+                            + (segMargR is not null && segIdx < segMargR.Length ? segMargR[segIdx] : 0);
+                        perLineInsetL[li] = l;
+                        perLineInsetR[li] = r;
+                        anyInset |= l > 0 || r > 0;
                     }
                     if (!anyInset) { perLineInsetL = null; perLineInsetR = null; }
                 }
@@ -864,18 +880,27 @@ internal static class PageMarginBoxPainter
                     {
                         var segColor = item.SegmentColorArgbs is { } sc && segIdx < sc.Length
                             ? sc[segIdx] : item.ElementColorArgb;
-                        var bandXPx = boxXPx + insetLeftPx;
+                        // Horizontal MARGINS inset the band too (segment-hmargins cycle) —
+                        // margins sit OUTSIDE the leaf's border box, so its band starts after
+                        // margin-left and ends before margin-right (padding stays INSIDE the
+                        // band — the background covers the padding box per CSS B&B §4.2).
+                        var bandMargL = item.SegmentMarginLeftsPx is { } bml && segIdx < bml.Length
+                            ? bml[segIdx] : 0;
+                        var bandMargR = item.SegmentMarginRightsPx is { } bmr && segIdx < bmr.Length
+                            ? bmr[segIdx] : 0;
+                        var bandXPx = boxXPx + insetLeftPx + bandMargL;
+                        var bandWidthPx = Math.Max(0, contentBoxWidthPx - bandMargL - bandMargR);
                         if (FragmentPainter.TryResolveColor(
                                 segDecorStyle.Get(PropertyId.BackgroundColor), segColor, out var segBgArgb)
                             && FragmentPainter.Alpha(segBgArgb) != 0)
                         {
                             backgrounds.Add(new MarginBoxBackgroundFill(
-                                bandXPx, lineTopCursorPx, contentBoxWidthPx, h, segBgArgb));
+                                bandXPx, lineTopCursorPx, bandWidthPx, h, segBgArgb));
                         }
                         if (HasBorder(segDecorStyle))
                         {
                             borders.Add(new MarginBoxBorder(
-                                bandXPx, lineTopCursorPx, contentBoxWidthPx, h, segDecorStyle,
+                                bandXPx, lineTopCursorPx, bandWidthPx, h, segDecorStyle,
                                 FragmentPainter.BorderEdgeCurrentColors.Uniform(segColor)));
                         }
                     }
@@ -1611,6 +1636,8 @@ internal static class PageMarginBoxPainter
         public double[]? SegmentPaddingBottomsPx;
         public double[]? SegmentPaddingLeftsPx;  // per-SEGMENT horizontal padding (hpadding cycle).
         public double[]? SegmentPaddingRightsPx;
+        public double[]? SegmentMarginLeftsPx;   // per-SEGMENT horizontal margins (segment-hmargins cycle).
+        public double[]? SegmentMarginRightsPx;
         public double?[]? SegmentAlignFactors;   // per-SEGMENT own text-align (segment-align cycle).
         public ComputedStyle?[]? SegmentDecorStyles; // per-SEGMENT own decoration band (segment-decor cycle).
         public uint[]? SegmentColorArgbs;        // per-SEGMENT colour — the band's currentcolor owner.

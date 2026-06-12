@@ -138,7 +138,14 @@ internal static class CssContentList
         // block's background spans its border box). The wrap width is NOT narrowed per segment
         // (one shared inline pass — a padded long line clips via the existing clip-path safety
         // net; documented approximation).
-        double PaddingLeftPx = 0, double PaddingRightPx = 0);
+        double PaddingLeftPx = 0, double PaddingRightPx = 0,
+        // The leaf block's OWN horizontal margins in used px (segment-hmargins cycle) — margins
+        // sit OUTSIDE the border box, so they inset the line's per-line DECORATION band AND the
+        // glyphs/alignment extent (padding insets only the glyphs — the band covers the padding
+        // box). Absolute lengths only, clamped ≥ 0 at capture (a negative horizontal margin
+        // would pull the line outside its box — deferred, like the vertical gaps' overlap
+        // clamp); `auto` reads 0 (no per-line centering distribution — deferrals.md).
+        double MarginLeftPx = 0, double MarginRightPx = 0);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

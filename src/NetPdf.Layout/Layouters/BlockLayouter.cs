@@ -6455,9 +6455,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   <item><see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/> wrappers track
     ///   the MEASURED grid via the table-driven growth logic (Task 12 Finding 6) — the grid
     ///   already consumes the css width itself.</item>
-    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> /
-    ///   replaced boxes keep the documented cycle-1 fill behavior (their explicit-width
-    ///   honoring is its own cycle — see <c>docs/deferrals.md</c>).</item>
+    ///   <item><see cref="BoxKind.BlockReplacedElement"/> sizes like a plain block
+    ///   (img-pipeline cycle): the sizing pre-pass writes the §10.3.2 used width/height into
+    ///   the slots, so an explicit width here is the image's used size — filling would
+    ///   stretch it.</item>
+    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> keep
+    ///   the documented cycle-1 fill behavior (their explicit-width honoring is its own cycle
+    ///   — see <c>docs/deferrals.md</c>).</item>
     /// </list>
     /// §10.3.3 margin DISTRIBUTION ships in the auto-margins cycle — see
     /// <see cref="ResolveAutoInlineMargins"/> (the caller applies it right after this).</summary>
@@ -6465,7 +6469,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         Box child, double availableInlineSize, double containingInlinePx,
         double marginInlineStart, double marginInlineEnd)
     {
-        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem)
+        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement)
         {
             // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
             // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available
@@ -6502,7 +6506,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         Box child, double borderBoxInlineSize, double distributionRangePx,
         ref double marginInlineStart, ref double marginInlineEnd)
     {
-        if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem)) return;
+        // BlockReplacedElement included (img-pipeline cycle) — `display: block; margin: 0 auto`
+        // is the canonical image-centering idiom; the pre-pass gave it an explicit used width.
+        if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement)) return;
         // EXPLICIT width only (a tag test, so the legal `width: 0` / `0%` distributes too —
         // post-PR-#164 review P3); auto-width boxes keep the fill (auto margins read 0).
         if (!HasExplicitWidth(child)) return;

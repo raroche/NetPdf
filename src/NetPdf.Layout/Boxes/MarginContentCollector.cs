@@ -59,7 +59,8 @@ internal static class MarginContentCollector
         Walk(root, cascade, c);
         return new CssContentList.MarginContentContext(
             c.Named, c.Running, c.NamedFirst, c.RunningFirst, c.RunningStyles, c.RunningStylesFirst,
-            c.RunningSegments, c.RunningSegmentsFirst);
+            c.RunningSegments, c.RunningSegmentsFirst,
+            c.RunningContainers, c.RunningContainersFirst);
     }
 
     /// <summary>Mutable accumulator threaded through the document <see cref="Walk"/> (a reference type, so
@@ -74,6 +75,8 @@ internal static class MarginContentCollector
         public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStylesFirst; // FIRST own style
         public Dictionary<string, IReadOnlyList<CssContentList.RunningSegment>>? RunningSegments;      // LAST per-line segments
         public Dictionary<string, IReadOnlyList<CssContentList.RunningSegment>>? RunningSegmentsFirst; // FIRST per-line segments
+        public Dictionary<string, IReadOnlyList<CssContentList.RunningContainer>>? RunningContainers;      // LAST container bands
+        public Dictionary<string, IReadOnlyList<CssContentList.RunningContainer>>? RunningContainersFirst; // FIRST container bands
     }
 
     private static void Walk(IElement element, ResolvedCascadeResult cascade, Collected c)
@@ -112,12 +115,18 @@ internal static class MarginContentCollector
                 // lockstep rule). Stored as an array for the same no-downcast-mutation reason as
                 // the own-style capture below.
                 var segments = new List<CssContentList.RunningSegment>();
-                var text = ReadRunningElementContent(element, cascade, MaxRunningTextChars, depth: 0, segments);
+                var containers = new List<CssContentList.RunningContainer>();
+                var text = ReadRunningElementContent(
+                    element, cascade, MaxRunningTextChars, depth: 0, segments, containers);
                 (c.Running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
                 (c.RunningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
                 var segmentArray = segments.ToArray();
                 (c.RunningSegments ??= new(StringComparer.Ordinal))[runName] = segmentArray;
                 (c.RunningSegmentsFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, segmentArray);
+                // Container bands (container-bands cycle) — lockstep with the segments above.
+                var containerArray = containers.ToArray();
+                (c.RunningContainers ??= new(StringComparer.Ordinal))[runName] = containerArray;
+                (c.RunningContainersFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, containerArray);
 
                 // Capture this occurrence's OWN style IN LOCKSTEP with its text (post-PR-#151 review P1).
                 // CaptureOwnStyle returns an EMPTY list (not null) when the element has no own font/color, and
@@ -389,7 +398,8 @@ internal static class MarginContentCollector
     /// child's block grandchildren aren't promoted (treated as an inline run).</summary>
     private static string ReadRunningElementContent(
         IElement element, ResolvedCascadeResult cascade, int maxChars, int depth = 0,
-        List<CssContentList.RunningSegment>? segments = null)
+        List<CssContentList.RunningSegment>? segments = null,
+        List<CssContentList.RunningContainer>? containers = null)
     {
         // No block-level child → the flat normalized text (the common single-line header — no U+000A, so the
         // painter's single-line path is byte-identical to before this first cut). One segment: the element's
@@ -440,9 +450,29 @@ internal static class MarginContentCollector
                     if (depth < MaxRunningBlockDepth && HasBlockLevelChild(el, cascade))
                     {
                         var nestedBudget = maxChars - output.Length - (output.Length > 0 ? 1 : 0);
+                        // CONTAINER capture (container-bands cycle) — a DECORATED intermediate
+                        // block's own band spans its descendants' segment range. The slot is
+                        // RESERVED pre-recursion so the list stays PRE-order (outer before
+                        // inner → paint order nests), then filled with the recursion's actual
+                        // range; an undecorated container reserves nothing. Its VERTICAL
+                        // margins fold into the boundary segments regardless of decoration.
+                        var containerSlot = -1;
+                        var firstSegment = segments?.Count ?? 0;
+                        if (containers is not null && segments is not null
+                            && CaptureSegmentDecoration(el, cascade) is { Count: > 0 })
+                        {
+                            containerSlot = containers.Count;
+                            containers.Add(default);
+                        }
                         var block = ReadRunningElementContent(
-                            el, cascade, nestedBudget, depth + 1, segments);
+                            el, cascade, nestedBudget, depth + 1, segments, containers);
                         AppendLine(output, block, maxChars);
+                        if (segments is not null)
+                        {
+                            FoldContainerVerticalMargins(el, cascade, segments, firstSegment);
+                            if (containerSlot >= 0)
+                                FillContainerBand(containers!, containerSlot, el, cascade, segments, firstSegment);
+                        }
                     }
                     else
                     {
@@ -613,6 +643,53 @@ internal static class MarginContentCollector
         return (AbsoluteSidePx(rules, "margin-top"), AbsoluteSidePx(rules, "margin-bottom"),
                 Math.Max(0, AbsoluteSidePx(rules, "margin-left")),
                 Math.Max(0, AbsoluteSidePx(rules, "margin-right")));
+    }
+
+    /// <summary>Fold a recursed CONTAINER's vertical margins into its BOUNDARY segments
+    /// (container-bands cycle): its margin-top max-collapses into its FIRST descendant line's
+    /// gap margin, its margin-bottom into the LAST's (CSS 2.2 §8.3.1's parent/first-child +
+    /// parent/last-child adjoining collapse, the simple max case — the existing per-line gap
+    /// machinery then renders them). Runs for EVERY recursed container, decorated or not.</summary>
+    private static void FoldContainerVerticalMargins(
+        IElement el, ResolvedCascadeResult cascade,
+        List<CssContentList.RunningSegment> segments, int firstSegment)
+    {
+        var lastSegment = segments.Count - 1;
+        if (lastSegment < firstSegment) return;
+        var (top, bottom, _, _) = CaptureSegmentMargins(el, cascade);
+        if (top != 0)
+        {
+            segments[firstSegment] = segments[firstSegment] with
+            { MarginTopPx = Math.Max(segments[firstSegment].MarginTopPx, top) };
+        }
+        if (bottom != 0)
+        {
+            segments[lastSegment] = segments[lastSegment] with
+            { MarginBottomPx = Math.Max(segments[lastSegment].MarginBottomPx, bottom) };
+        }
+    }
+
+    /// <summary>Fill the PRE-reserved container slot (container-bands cycle) with the
+    /// decorated container's band record — its self-only decoration + inherited colour
+    /// (<see cref="CaptureSegmentStyle"/>, the band's currentcolor owner) + the segment range
+    /// its recursion produced + its own horizontal margins (insetting ITS band only — the
+    /// children's line geometry is untouched, the documented first cut). A recursion that
+    /// produced NO lines leaves an inert record (Last &lt; First) the painter skips.</summary>
+    private static void FillContainerBand(
+        List<CssContentList.RunningContainer> containers, int slot, IElement el,
+        ResolvedCascadeResult cascade, List<CssContentList.RunningSegment> segments, int firstSegment)
+    {
+        var lastSegment = segments.Count - 1;
+        if (lastSegment < firstSegment)
+        {
+            containers[slot] = new CssContentList.RunningContainer(
+                EmptyOwnStyle, EmptyOwnStyle, FirstSegment: 1, LastSegment: 0);
+            return;
+        }
+        var (_, _, marginLeftPx, marginRightPx) = CaptureSegmentMargins(el, cascade);
+        containers[slot] = new CssContentList.RunningContainer(
+            CaptureSegmentDecoration(el, cascade), CaptureSegmentStyle(el, cascade),
+            firstSegment, lastSegment, marginLeftPx, marginRightPx);
     }
 
     /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)

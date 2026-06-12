@@ -113,15 +113,27 @@ internal static class PageMarginBoxPainter
         double LeftPx, double TopPx, double WidthPx, double HeightPx, ComputedStyle Style,
         FragmentPainter.BorderEdgeCurrentColors CurrentColors);
 
+    /// <summary>A margin box's declared <c>background-image: url(...)</c> (margin-box-bg-image
+    /// cycle): the band rect (the SAME border-box rect its color fill uses) + the RAW url — the
+    /// pipeline resolves it against the per-render image cache and tiles it over the rect
+    /// (initial <c>repeat</c>, the body tiler; <c>PrintBackgrounds</c>-gated like the fill).
+    /// A declared border-radius keeps the tiles RECTANGULAR (the rounded-band corners may show
+    /// square tiles — a documented approximation, like the square border strokes).</summary>
+    internal readonly record struct MarginBoxBackgroundImage(
+        double LeftPx, double TopPx, double WidthPx, double HeightPx, string RawUrl);
+
     /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
-    /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle).</summary>
+    /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle)
+    /// + the background images (margin-box-bg-image cycle).</summary>
     internal sealed record MarginBoxLayoutResult(
         IReadOnlyList<BoxFragment> Fragments,
         IReadOnlyList<MarginBoxBackgroundFill> Backgrounds,
-        IReadOnlyList<MarginBoxBorder> Borders)
+        IReadOnlyList<MarginBoxBorder> Borders,
+        IReadOnlyList<MarginBoxBackgroundImage> BackgroundImages)
     {
         public static readonly MarginBoxLayoutResult Empty = new(
-            Array.Empty<BoxFragment>(), Array.Empty<MarginBoxBackgroundFill>(), Array.Empty<MarginBoxBorder>());
+            Array.Empty<BoxFragment>(), Array.Empty<MarginBoxBackgroundFill>(), Array.Empty<MarginBoxBorder>(),
+            Array.Empty<MarginBoxBackgroundImage>());
     }
 
     /// <summary>Lay out every resolved margin box's content into a fragment positioned for the
@@ -170,6 +182,7 @@ internal static class PageMarginBoxPainter
         // Surface invalid margin-box style values (e.g. `color: bogus`) via the CSS diagnostic path
         // (post-PR-#133 review P3) instead of silently defaulting.
         var styleDiagnostics = new PublicDiagnosticsSinkAdapter(diagnostics);
+        var bgImageUnsupportedReported = false;   // margin-box-bg-image cycle — once per Layout.
         // CSS Page 3 inheritance chain (cycle 5): root element → page context (@page declarations) →
         // each margin box. Build the page-context style once; every box inherits from it.
         var pageContextStyle = MarginBoxStyle.Build(pageDeclarations, rootElementStyle, styleDiagnostics);
@@ -287,6 +300,7 @@ internal static class PageMarginBoxPainter
             double[]? segmentPaddingRightsPx = null;
             double[]? segmentMarginLeftsPx = null;   // per-SEGMENT horizontal margins (segment-hmargins cycle).
             double[]? segmentMarginRightsPx = null;
+            List<ContainerBand>? containerBands = null;  // nested CONTAINER bands (container-bands cycle).
             if (isStandaloneElement
                 && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
             {
@@ -356,6 +370,33 @@ internal static class PageMarginBoxPainter
                         si < segs.Count - 1 ? seg.Text + "\n" : seg.Text, segStyle);
                 }
                 contentRuns = runs;
+
+                // Nested CONTAINER bands (container-bands cycle): a decorated intermediate
+                // block's band spans its descendants' segment range — built like the per-segment
+                // decoration (its own colour as the band's currentcolor owner), painted between
+                // the element band and the per-line leaf bands (PRE-order = outer under inner).
+                if (TryGetRunningElementContainers(marginContext, elName, elFirst) is { } rawContainers)
+                {
+                    var built = new List<ContainerBand>(rawContainers.Count);
+                    foreach (var rc in rawContainers)
+                    {
+                        if (rc.Decoration is not { Count: > 0 } || rc.LastSegment < rc.FirstSegment)
+                            continue;   // inert record (empty recursion) or undecorated.
+                        var bandStyle = BuildFromOwnStyle(rc.Decoration, decorationOnly: true,
+                            ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics);
+                        var bandColorStyle = rc.OwnStyle.Count > 0
+                            ? BuildFromOwnStyle(rc.OwnStyle, decorationOnly: false,
+                                ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics)
+                            : contentStyle;
+                        var bandColor = FragmentPainter.TryResolveColor(
+                            bandColorStyle.Get(PropertyId.Color), DefaultColorArgb, out var cc)
+                            ? cc : DefaultColorArgb;
+                        built.Add(new ContainerBand(
+                            bandStyle, bandColor, rc.FirstSegment, rc.LastSegment,
+                            rc.MarginLeftPx, rc.MarginRightPx));
+                    }
+                    if (built.Count > 0) containerBands = built;
+                }
             }
 
             // currentcolor ORIGIN (CSS Color 4 §6.2 — currentcolor resolves to the `color` of the style that
@@ -430,6 +471,11 @@ internal static class PageMarginBoxPainter
             // values, and the BODY path are deferred (border-radius isn't a cascaded PropertyId
             // yet — read from the box's RAW declaration; unsupported forms are surfaced + ignored).
             var borderRadiusPx = ReadBorderRadiusPx(mb.Declarations, mb.Name, diagnostics);
+            // Margin-box background-image (margin-box-bg-image cycle) — the raw declared winner
+            // (the established non-slot read); a single url(...) is carried to PASS 2 (the band
+            // rect is final there); any other non-none form surfaces once per Layout.
+            var backgroundImageUrl = TryReadBackgroundImageUrl(
+                mb.Declarations, diagnostics, ref bgImageUnsupportedReported);
 
             // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
             // (width/height/padding are box properties — CSS Values 4 §6.1.1), `rem` against the
@@ -609,12 +655,14 @@ internal static class PageMarginBoxPainter
                 SegmentPaddingRightsPx = contentRuns is null ? null : segmentPaddingRightsPx,
                 SegmentMarginLeftsPx = contentRuns is null ? null : segmentMarginLeftsPx,
                 SegmentMarginRightsPx = contentRuns is null ? null : segmentMarginRightsPx,
+                ContainerBands = contentRuns is null ? null : containerBands,
                 SegmentAlignFactors = contentRuns is null ? null : segmentAlignFactors,
                 SegmentDecorStyles = contentRuns is null ? null : segmentDecorStyles,
                 SegmentColorArgbs = contentRuns is null ? null : segmentColorArgbs,
                 BoxAlignDeclared = MarginBoxDeclares(mb.Declarations, "text-align"),
                 ElementDecorStyle = elementDecorStyle, ElementColorArgb = elementColor,
                 RadiusPx = borderRadiusPx,
+                BackgroundImageUrl = backgroundImageUrl,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
                 OverflowVisible = MarginBoxStyle.OverflowVisible(mb.Declarations),
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
@@ -660,6 +708,7 @@ internal static class PageMarginBoxPainter
         var fragments = new List<BoxFragment>(items.Count);
         var backgrounds = new List<MarginBoxBackgroundFill>();
         var borders = new List<MarginBoxBorder>();
+        var backgroundImages = new List<MarginBoxBackgroundImage>();
         foreach (var item in items)
         {
             var style = item.Style;
@@ -687,6 +736,15 @@ internal static class PageMarginBoxPainter
             {
                 backgrounds.Add(new MarginBoxBackgroundFill(
                     boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb, item.RadiusPx));
+            }
+
+            // background-image (margin-box-bg-image cycle): the SAME band rect as the fill —
+            // the pipeline resolves the url against the per-render cache + tiles it over the
+            // rect (over the fill, under borders/text; PrintBackgrounds-gated there).
+            if (item.BackgroundImageUrl is { } bgImageUrl)
+            {
+                backgroundImages.Add(new MarginBoxBackgroundImage(
+                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgImageUrl));
             }
 
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
@@ -865,6 +923,51 @@ internal static class PageMarginBoxPainter
             double[]? perLineAligns = null;
             if (perLineHeights is not null)
             {
+                // Nested CONTAINER bands (container-bands cycle): each decorated intermediate
+                // block paints ONE band spanning its descendant lines — added AFTER the element
+                // band, BEFORE the per-line leaf bands below (list order = paint order; the
+                // capture is PRE-order, so an outer container paints under an inner one). The
+                // Y range derives from the SAME per-line geometry the leaf loop uses: the first
+                // spanned surviving line's band top (after ITS gap) to the last's bottom — a
+                // vertical truncation clamps the range (a fully-truncated container paints
+                // nothing). The container's own horizontal margins inset ITS band (its
+                // children's line geometry is untouched — the documented first cut).
+                if (item.ContainerBands is { } cBands)
+                {
+                    foreach (var cb in cBands)
+                    {
+                        var firstLi = -1;
+                        var lastLi = -1;
+                        for (var li = 0; li < inline.Lines.Length && li < lineSegments.Length; li++)
+                        {
+                            var s = lineSegments[li];
+                            if (s < cb.FirstSegment || s > cb.LastSegment) continue;
+                            if (firstLi < 0) firstLi = li;
+                            lastLi = li;
+                        }
+                        if (firstLi < 0) continue;   // fully truncated.
+                        var topPx = absTopPx + insetTopPx
+                            + PrefixSum(perLineHeights, perLineGaps!, firstLi) + perLineGaps![firstLi];
+                        var bottomPx = absTopPx + insetTopPx
+                            + PrefixSum(perLineHeights, perLineGaps!, lastLi + 1);
+                        var cbX = boxXPx + insetLeftPx + cb.MarginLeftPx;
+                        var cbW = Math.Max(0, contentBoxWidthPx - cb.MarginLeftPx - cb.MarginRightPx);
+                        var cbH = Math.Max(0, bottomPx - topPx);
+                        if (cbW <= 0 || cbH <= 0) continue;
+                        if (FragmentPainter.TryResolveColor(
+                                cb.Style.Get(PropertyId.BackgroundColor), cb.ColorArgb, out var cbBg)
+                            && FragmentPainter.Alpha(cbBg) != 0)
+                        {
+                            backgrounds.Add(new MarginBoxBackgroundFill(cbX, topPx, cbW, cbH, cbBg));
+                        }
+                        if (HasBorder(cb.Style))
+                        {
+                            borders.Add(new MarginBoxBorder(cbX, topPx, cbW, cbH, cb.Style,
+                                FragmentPainter.BorderEdgeCurrentColors.Uniform(cb.ColorArgb)));
+                        }
+                    }
+                }
+
                 // Per-line gaps (segment-margins cycle) ride the SAME precomputed geometry the
                 // sizing + truncation used (review P3 — no recompute) — a leaf block's collapsed
                 // vertical margin pushes its line down; the band starts AFTER the gap (margins
@@ -946,7 +1049,7 @@ internal static class PageMarginBoxPainter
         // it to the pool now instead of leaking it (post-PR-#134 review; the per-box styles stay
         // box-owned with their synthetic Box).
         pageContextStyle.ReleaseFromBox();
-        return new MarginBoxLayoutResult(fragments, backgrounds, borders);
+        return new MarginBoxLayoutResult(fragments, backgrounds, borders, backgroundImages);
     }
 
     /// <summary>Paint the resolved margin-box background bands (cycle 8) onto <paramref name="page"/>,
@@ -1417,6 +1520,15 @@ internal static class PageMarginBoxPainter
         return dict is not null && dict.TryGetValue(name, out var segs) && segs.Count > 0 ? segs : null;
     }
 
+    /// <summary>The selected occurrence's nested CONTAINER bands (container-bands cycle) —
+    /// lockstep with <see cref="TryGetRunningElementSegments"/>'s occurrence selection.</summary>
+    private static IReadOnlyList<CssContentList.RunningContainer>? TryGetRunningElementContainers(
+        CssContentList.MarginContentContext marginContext, string name, bool first)
+    {
+        var dict = first ? marginContext.RunningElementContainersFirst : marginContext.RunningElementContainers;
+        return dict is not null && dict.TryGetValue(name, out var c) && c.Count > 0 ? c : null;
+    }
+
     /// <summary>Build a <see cref="ComputedStyle"/> from the running element's captured <paramref name="pairs"/>
     /// cascaded over <paramref name="pageContextStyle"/> via <see cref="MarginBoxStyle.Build"/>, split by
     /// <paramref name="decorationOnly"/>: <see langword="true"/> takes the element's NON-content pairs (the
@@ -1547,6 +1659,38 @@ internal static class PageMarginBoxPainter
     /// LAST declaration wins (cascade order). Percentages, multi-value/per-corner forms, elliptical
     /// <c>/</c> radii, and relative/calc() values are SURFACED + ignored (deferrals.md). 0 = square
     /// (no radius declared, or an unsupported form).</summary>
+    /// <summary>The margin box's declared <c>background-image</c> as a single parsed url
+    /// (margin-box-bg-image cycle), or <see langword="null"/> for unset / <c>none</c> / an
+    /// unsupported form (gradient / multi-layer / unrecognized — surfaced once per Layout via
+    /// the shared body code; callers that only PROBE pass a pre-set flag to suppress it). The
+    /// RAW declaration winner is read like <see cref="ReadBorderRadiusPx"/> (last declaration
+    /// wins — cascade order). INTERNAL so the pipeline's prefetch can collect the urls.</summary>
+    internal static string? TryReadBackgroundImageUrl(
+        ImmutableArray<CssDeclaration> declarations, IDiagnosticsSink diagnostics,
+        ref bool unsupportedReported)
+    {
+        if (declarations.IsDefaultOrEmpty) return null;
+        string? raw = null;
+        foreach (var d in declarations)
+            if (d.Property.Equals("background-image", StringComparison.OrdinalIgnoreCase))
+                raw = d.Value.RawText;
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var v = raw.Trim();
+        if (v.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (ImageResourceCache.TryParseCssUrl(v, out var url)) return url;
+        if (!unsupportedReported)
+        {
+            diagnostics.Emit(new Diagnostic(
+                DiagnosticCodes.CssBackgroundImageUnsupported001,
+                "A page margin box's background-image supports a single url(...) this cycle; a "
+                + "gradient function, multi-layer list, or unrecognized form was ignored "
+                + "(background-color still paints). Gradients are the Phase 4 shading-pattern work.",
+                DiagnosticSeverity.Warning));
+            unsupportedReported = true;
+        }
+        return null;
+    }
+
     private static double ReadBorderRadiusPx(
         ImmutableArray<CssDeclaration> declarations, string boxName, IDiagnosticsSink diagnostics)
     {
@@ -1610,6 +1754,13 @@ internal static class PageMarginBoxPainter
         MarginBoxDeclares(declarations, colorProperty) || MarginBoxDeclares(declarations, styleProperty)
             ? boxColor : elementColor;
 
+    /// <summary>A BUILT nested-container band (container-bands cycle): the container's own
+    /// decoration style + its colour (the band's currentcolor owner) + the segment range it
+    /// spans + its own horizontal margins (insetting its band only).</summary>
+    private readonly record struct ContainerBand(
+        ComputedStyle Style, uint ColorArgb, int FirstSegment, int LastSegment,
+        double MarginLeftPx, double MarginRightPx);
+
     /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
     /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The
     /// box rect (<see cref="BoxXPx"/> … <see cref="BoxHeightPx"/>) is mutable for that adjustment.</summary>
@@ -1638,6 +1789,7 @@ internal static class PageMarginBoxPainter
         public double[]? SegmentPaddingRightsPx;
         public double[]? SegmentMarginLeftsPx;   // per-SEGMENT horizontal margins (segment-hmargins cycle).
         public double[]? SegmentMarginRightsPx;
+        public List<ContainerBand>? ContainerBands; // nested CONTAINER bands (container-bands cycle), pre-order.
         public double?[]? SegmentAlignFactors;   // per-SEGMENT own text-align (segment-align cycle).
         public ComputedStyle?[]? SegmentDecorStyles; // per-SEGMENT own decoration band (segment-decor cycle).
         public uint[]? SegmentColorArgbs;        // per-SEGMENT colour — the band's currentcolor owner.
@@ -1646,6 +1798,7 @@ internal static class PageMarginBoxPainter
                                                  // (separately-decorated cycle) — null = coinciding single band.
         public uint ElementColorArgb;            // the element's own colour — the nested band's currentcolor.
         public double RadiusPx;                  // uniform border-radius for the box's background band (0 = square).
+        public string? BackgroundImageUrl;       // raw url from background-image (margin-box-bg-image cycle).
         public ComputedStyle? MetricsStyle;     // line-pitch style override (the LARGEST segment font) — null = ContentStyle.
         public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
                                                 // box's desired/max size for rigid/explicit/vertical boxes,

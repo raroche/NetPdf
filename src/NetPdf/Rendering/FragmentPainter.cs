@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using NetPdf.Css.ComputedValues;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
@@ -91,6 +92,7 @@ internal static class FragmentPainter
     {
         var borderStyleApproximationReported = false;
         var tileCapReported = false;
+        var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -114,12 +116,13 @@ internal static class FragmentPainter
                 // background-image tiles paint OVER this fragment's color and UNDER its borders
                 // (CSS B&B §14.2 layer order), gated by PrintBackgrounds like the color.
                 if (imageCache is not null && document is not null
-                    && imageCache.BackgroundImageBoxes.TryGetValue(fragment.Box, out var bgUri)
-                    && imageCache.TryGet(bgUri, out var bgEntry))
+                    && imageCache.BackgroundImageBoxes.TryGetValue(fragment.Box, out var bgSpec)
+                    && imageCache.TryGet(bgSpec.UriKey, out var bgEntry))
                 {
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                        diagnostics, ref tileCapReported);
+                        diagnostics, ref tileCapReported, ref variantUnsupportedReported,
+                        bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw);
                 }
             }
 
@@ -135,25 +138,92 @@ internal static class FragmentPainter
     /// tracked follow-up.</summary>
     private const int MaxBackgroundTilesPerFragment = 4096;
 
-    /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box at its intrinsic
-    /// pixel size (bg-image cycle first cut: <c>background-repeat: repeat</c> — the initial —
-    /// from the border-box top-left, partial edge tiles clipped to the border box via the
-    /// existing rectangle-clip helper). Approximations, documented in <c>deferrals.md</c>: the
-    /// tile phase starts at the BORDER box (the spec's initial <c>background-origin:
-    /// padding-box</c> would phase tiles at the padding box while still painting the border
-    /// strip per <c>background-clip: border-box</c>); <c>background-position</c> / <c>-size</c>
-    /// / <c>-repeat</c> variants and gradients stay deferred.</summary>
-    private static void PaintBackgroundImageTiles(
+    /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box (bg-image +
+    /// bg-variants cycles): the tile size comes from <paramref name="sizeRaw"/>
+    /// (<c>auto</c> = intrinsic px — the initial; <c>contain</c> / <c>cover</c>;
+    /// <c>&lt;length|%&gt;{1,2}</c>, % against the area, a missing/auto side aspect-completed),
+    /// the grid's phase from <paramref name="positionRaw"/> (keywords / <c>&lt;length|%&gt;</c>
+    /// per the CSS B&amp;B §3.6 percentage rule — <c>x%</c> aligns the image's x% point with the
+    /// area's; one value → the other axis centers), and each axis repeats per
+    /// <paramref name="repeatRaw"/> (<c>repeat</c> — the initial — / <c>no-repeat</c> /
+    /// <c>repeat-x</c> / <c>repeat-y</c> / the two-value axis form). An unsupported form
+    /// (<c>space</c> / <c>round</c> / 3-4-value positions / non-absolute units) surfaces once
+    /// per render and that longhand falls back to its initial. Partial tiles clip at the border
+    /// box. Approximation (documented): the positioning area is the BORDER box (the spec's
+    /// initial <c>background-origin: padding-box</c> would use the padding box). Null raws =
+    /// the initial everywhere (the margin-box caller). INTERNAL so the pipeline reuses the
+    /// tiler for page-margin-box background images (margin-box-bg-image cycle).</summary>
+    internal static void PaintBackgroundImageTiles(
         PdfPage page, PdfDocument document, ImageResourceCache.Entry entry, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        IDiagnosticsSink? diagnostics, ref bool tileCapReported)
+        IDiagnosticsSink? diagnostics, ref bool tileCapReported, ref bool variantUnsupportedReported,
+        string? repeatRaw = null, string? sizeRaw = null, string? positionRaw = null)
     {
-        var tileW = entry.WidthPx;
-        var tileH = entry.HeightPx;
+        // Each unsupported longhand falls back to ITS initial WHOLE (a failed parse may have
+        // half-assigned its outs — e.g. a valid first axis before an invalid second).
+        var anyVariantUnsupported = false;
+        if (!TryParseBackgroundRepeat(repeatRaw, out var repeatX, out var repeatY))
+        {
+            anyVariantUnsupported = true;
+            repeatX = repeatY = true;                           // the initial: repeat.
+        }
+        if (!TryParseBackgroundSize(
+                sizeRaw, widthPx, heightPx, entry.WidthPx, entry.HeightPx, out var tileW, out var tileH))
+        {
+            anyVariantUnsupported = true;
+            tileW = entry.WidthPx;                              // the initial: auto (intrinsic).
+            tileH = entry.HeightPx;
+        }
+        if (!TryParseBackgroundPosition(
+                positionRaw, widthPx, heightPx, tileW, tileH, out var posX, out var posY))
+        {
+            anyVariantUnsupported = true;
+            posX = posY = 0;                                    // the initial: 0% 0%.
+        }
+        if (anyVariantUnsupported && !variantUnsupportedReported && diagnostics is not null)
+        {
+            diagnostics.Emit(new Diagnostic(
+                DiagnosticCodes.CssBackgroundImageUnsupported001,
+                "A background-repeat/-size/-position value outside the supported set "
+                + "(repeat/no-repeat/repeat-x/repeat-y incl. the two-value axis form; "
+                + "auto/contain/cover/<length|percentage>{1,2}; keyword/<length|percentage>{1,2}) "
+                + "was ignored — that longhand fell back to its initial value.",
+                DiagnosticSeverity.Warning));
+            variantUnsupportedReported = true;
+        }
         if (tileW <= 0 || tileH <= 0) return;
 
-        var nx = (long)Math.Ceiling(widthPx / tileW);
-        var ny = (long)Math.Ceiling(heightPx / tileH);
+        // The grid: a repeating axis covers the whole area at the position's PHASE (the first
+        // tile starts ≤ the area edge); a non-repeating axis paints exactly ONE tile at the
+        // position (it may protrude — the clip below bounds it).
+        double firstX;
+        long nx;
+        if (repeatX)
+        {
+            var phase = posX % tileW;
+            if (phase > 0) phase -= tileW;
+            firstX = phase;
+            nx = (long)Math.Ceiling((widthPx - firstX) / tileW);
+        }
+        else
+        {
+            firstX = posX;
+            nx = 1;
+        }
+        double firstY;
+        long ny;
+        if (repeatY)
+        {
+            var phase = posY % tileH;
+            if (phase > 0) phase -= tileH;
+            firstY = phase;
+            ny = (long)Math.Ceiling((heightPx - firstY) / tileH);
+        }
+        else
+        {
+            firstY = posY;
+            ny = 1;
+        }
         if (nx <= 0 || ny <= 0) return;
         // OVERFLOW-SAFE cap compare (PR #166 review P1): `nx * ny` can wrap for a huge box /
         // tiny tile (a 4e9 × 4e9 count wraps long negative and would bypass the cap into a
@@ -179,7 +249,8 @@ internal static class FragmentPainter
         }
 
         var imageRef = ImageResourceCache.GetOrRegister(document, entry);
-        // Clip partial edge tiles to the border box (background-clip: border-box, the initial).
+        // Clip partial / protruding tiles to the border box (background-clip: border-box, the
+        // initial).
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
         page.BeginRectangleClip(cx, cy, cw, ch);
         for (long row = 0; row < ny; row++)
@@ -187,12 +258,176 @@ internal static class FragmentPainter
             for (long col = 0; col < nx; col++)
             {
                 ToPdfRect(
-                    leftPx + col * tileW, topPx + row * tileH, tileW, tileH, pageHeightPt,
-                    out var x, out var y, out var w, out var h);
+                    leftPx + firstX + col * tileW, topPx + firstY + row * tileH, tileW, tileH,
+                    pageHeightPt, out var x, out var y, out var w, out var h);
                 page.PlaceImage(imageRef, x, y, w, h);
             }
         }
         page.RestoreGraphicsState();
+    }
+
+    /// <summary>Parse <c>background-repeat</c> (bg-variants cycle): the four single keywords +
+    /// the two-value per-axis form. <c>space</c> / <c>round</c> / unknown → <see langword="false"/>
+    /// (the caller falls back to <c>repeat</c> + surfaces once). Null/empty = the initial.</summary>
+    internal static bool TryParseBackgroundRepeat(string? raw, out bool repeatX, out bool repeatY)
+    {
+        repeatX = true;
+        repeatY = true;
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var parts = raw.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1)
+        {
+            switch (parts[0])
+            {
+                case "repeat": return true;
+                case "no-repeat": repeatX = repeatY = false; return true;
+                case "repeat-x": repeatY = false; return true;
+                case "repeat-y": repeatX = false; return true;
+                default: return false;
+            }
+        }
+        return parts.Length == 2
+            && TryAxisRepeat(parts[0], out repeatX)
+            && TryAxisRepeat(parts[1], out repeatY);
+    }
+
+    private static bool TryAxisRepeat(string token, out bool repeat)
+    {
+        repeat = token == "repeat";
+        return token is "repeat" or "no-repeat";
+    }
+
+    /// <summary>Parse <c>background-size</c> (bg-variants cycle): <c>auto</c> (intrinsic — the
+    /// initial), <c>contain</c> / <c>cover</c> (aspect-preserving fit/fill of the area), or
+    /// <c>&lt;length|%&gt;{1,2}</c> (% against the area axis; a missing or <c>auto</c> side
+    /// completes from the intrinsic ratio). Non-absolute units / junk →
+    /// <see langword="false"/> (fall back to auto + surface once).</summary>
+    internal static bool TryParseBackgroundSize(
+        string? raw, double areaW, double areaH, double intrinsicW, double intrinsicH,
+        out double tileW, out double tileH)
+    {
+        tileW = intrinsicW;
+        tileH = intrinsicH;
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var v = raw.Trim().ToLowerInvariant();
+        if (v is "auto" or "auto auto") return true;
+        if (v is "contain" or "cover")
+        {
+            if (intrinsicW <= 0 || intrinsicH <= 0) return true;
+            var sx = areaW / intrinsicW;
+            var sy = areaH / intrinsicH;
+            var s = v == "contain" ? Math.Min(sx, sy) : Math.Max(sx, sy);
+            tileW = intrinsicW * s;
+            tileH = intrinsicH * s;
+            return true;
+        }
+        var parts = v.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 2) return false;
+        if (!TryParseSizeComponent(parts[0], areaW, out var wAuto, out var w)) return false;
+        var hAuto = true;
+        var h = 0.0;
+        if (parts.Length == 2 && !TryParseSizeComponent(parts[1], areaH, out hAuto, out h)) return false;
+        var ratio = intrinsicW > 0 && intrinsicH > 0 ? intrinsicH / intrinsicW : 1.0;
+        tileW = wAuto ? (hAuto ? intrinsicW : (ratio > 0 ? h / ratio : intrinsicW)) : w;
+        tileH = hAuto ? (wAuto ? intrinsicH : tileW * ratio) : h;
+        return true;
+    }
+
+    private static bool TryParseSizeComponent(string token, double areaPx, out bool auto, out double px)
+    {
+        auto = false;
+        px = 0;
+        if (token == "auto")
+        {
+            auto = true;
+            return true;
+        }
+        if (token.EndsWith('%')
+            && double.TryParse(token[..^1], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var pct)
+            && double.IsFinite(pct))
+        {
+            px = areaPx * pct / 100.0;
+            return true;
+        }
+        return LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit)
+            && unit.Length > 0
+            && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out px)
+            && double.IsFinite(px);
+    }
+
+    /// <summary>Parse <c>background-position</c> (bg-variants cycle): per-axis keywords
+    /// (<c>left</c>/<c>center</c>/<c>right</c>, <c>top</c>/<c>center</c>/<c>bottom</c> — a
+    /// swapped keyword pair like <c>top left</c> is accepted), <c>&lt;length&gt;</c> (absolute),
+    /// or <c>&lt;percentage&gt;</c> per the CSS B&amp;B §3.6 rule (<c>x%</c> aligns the image's
+    /// x% point with the area's: offset = (area − tile) × x%). ONE value → the other axis
+    /// centers. 3-/4-value edge-offset forms / non-absolute units → <see langword="false"/>
+    /// (fall back to 0% 0% + surface once).</summary>
+    internal static bool TryParseBackgroundPosition(
+        string? raw, double areaW, double areaH, double tileW, double tileH,
+        out double posX, out double posY)
+    {
+        posX = 0;
+        posY = 0;
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var parts = raw.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 2) return false;
+        string xTok, yTok;
+        if (parts.Length == 1)
+        {
+            xTok = parts[0];
+            yTok = "center";
+        }
+        else
+        {
+            xTok = parts[0];
+            yTok = parts[1];
+            // Keyword order leniency: "top left" → axes resolved by keyword, not position.
+            if (yTok is "left" or "right" && xTok is "top" or "bottom")
+                (xTok, yTok) = (yTok, xTok);
+        }
+        return TryParsePositionComponent(xTok, areaW, tileW, isX: true, out posX)
+            && TryParsePositionComponent(yTok, areaH, tileH, isX: false, out posY);
+    }
+
+    private static bool TryParsePositionComponent(
+        string token, double areaPx, double tilePx, bool isX, out double pos)
+    {
+        pos = 0;
+        var keywordPct = token switch
+        {
+            "left" when isX => 0.0,
+            "right" when isX => 100.0,
+            "top" when !isX => 0.0,
+            "bottom" when !isX => 100.0,
+            "center" => 50.0,
+            _ => double.NaN,
+        };
+        if (!double.IsNaN(keywordPct))
+        {
+            pos = (areaPx - tilePx) * keywordPct / 100.0;
+            return true;
+        }
+        if (token.EndsWith('%')
+            && double.TryParse(token[..^1], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var pct)
+            && double.IsFinite(pct))
+        {
+            pos = (areaPx - tilePx) * pct / 100.0;   // the §3.6 percentage rule.
+            return true;
+        }
+        if (LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit))
+        {
+            if (unit.Length == 0 && n == 0.0) return true;   // the unitless zero.
+            if (unit.Length > 0
+                && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out pos)
+                && double.IsFinite(pos))
+            {
+                return true;
+            }
+        }
+        pos = 0;
+        return false;
     }
 
     /// <summary>The <c>currentcolor</c> fallback for each border edge — the colour of the style that

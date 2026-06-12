@@ -50,12 +50,30 @@ internal sealed class ImageResourceCache
     /// fetch + decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
     public Dictionary<Box, string> ImageBoxes { get; } = new();
 
-    /// <summary>Element-backed box → its <c>background-image</c> URI (bg-image cycle). Only
+    /// <summary>A box's background-image reference (bg-image + bg-variants cycles): the resolved
+    /// URI key + the RAW declared <c>background-repeat</c> / <c>-size</c> / <c>-position</c>
+    /// winners (null = unset → the initial), parsed by the tiler at paint.</summary>
+    internal readonly record struct BackgroundSpec(
+        string UriKey, string? RepeatRaw, string? SizeRaw, string? PositionRaw);
+
+    /// <summary>Element-backed box → its <c>background-image</c> spec (bg-image cycle). Only
     /// successfully decoded references appear.</summary>
-    public Dictionary<Box, string> BackgroundImageBoxes { get; } = new();
+    public Dictionary<Box, BackgroundSpec> BackgroundImageBoxes { get; } = new();
+
+    /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
+    /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
+    /// decoded references appear.</summary>
+    public Dictionary<string, string> ExtraImagesByRawUrl { get; } = new(StringComparer.Ordinal);
 
     public bool TryGet(string absoluteUri, out Entry entry) =>
         _byUri.TryGetValue(absoluteUri, out entry!);
+
+    /// <summary>Look an EXTRA reference's entry up by its RAW url (margin-box-bg-image cycle).</summary>
+    public bool TryGetByRawUrl(string rawUrl, out Entry entry)
+    {
+        entry = null!;
+        return ExtraImagesByRawUrl.TryGetValue(rawUrl, out var key) && _byUri.TryGetValue(key, out entry!);
+    }
 
     /// <summary>Register <paramref name="entry"/>'s XObject with <paramref name="document"/>,
     /// memoized — N placements of one image share one XObject (and the document dedups
@@ -64,13 +82,18 @@ internal sealed class ImageResourceCache
         entry.RegisteredRef ??= document.RegisterImage(entry.XObject);
 
     /// <summary>Walk <paramref name="boxRoot"/> + fetch/decode every image reference. Never
-    /// throws for a bad reference — each failure is a diagnostic + the reference is skipped.</summary>
+    /// throws for a bad reference — each failure is a diagnostic + the reference is skipped.
+    /// <paramref name="extraImageUrls"/> (margin-box-bg-image cycle) carries non-box references
+    /// — the page margin boxes' <c>background-image</c> urls, already
+    /// <c>PrintBackgrounds</c>-gated by the caller — resolved into
+    /// <see cref="ExtraImagesByRawUrl"/>.</summary>
     public static async Task<ImageResourceCache> PrefetchAsync(
         Box boxRoot,
         ResolvedCascadeResult cascade,
         HtmlPdfOptions options,
         IDiagnosticsSink diagnostics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? extraImageUrls = null)
     {
         var cache = new ImageResourceCache();
         var context = new ResourceFetchContext(
@@ -90,29 +113,68 @@ internal sealed class ImageResourceCache
 
         foreach (var (box, rawUrl, isBackground) in references)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!TryResolveUri(rawUrl, options.BaseUri, out var uri, out var resolveFailure))
+            var key = await ResolveAndFetchAsync(
+                cache, loader, rawUrl, options.BaseUri, diagnostics, cancellationToken)
+                .ConfigureAwait(false);
+            if (key is null) continue;
+            if (isBackground)
             {
-                EmitLoadFailed(diagnostics, rawUrl, resolveFailure);
-                continue;
+                // The bg-variants cycle reads the three layout longhands' RAW winners alongside
+                // the image (null = unset → the initial); the tiler parses them at paint.
+                // AngleSharp.Css (beta) EXPANDS background-repeat/-position into their per-axis
+                // longhands (-x/-y), so those two recompose from the axis pair.
+                var rules = box.SourceElement is { } el ? cascade.TryGetStylesFor(el) : null;
+                cache.BackgroundImageBoxes[box] = new BackgroundSpec(
+                    key,
+                    ComposeAxisLonghands(rules, "background-repeat", axisInitial: "repeat"),
+                    rules?.GetWinner("background-size")?.ResolvedValue,
+                    ComposeAxisLonghands(rules, "background-position", axisInitial: "0%"));
             }
-            var key = uri.OriginalString;
-            if (!cache._byUri.TryGetValue(key, out var entry))
+            else
             {
-                // Not fetched yet (a failed URI is recorded as null via the sentinel below).
-                if (cache._failedUris.Contains(key)) continue;
-                entry = await FetchAndDecodeAsync(loader, uri, diagnostics).ConfigureAwait(false);
-                if (entry is null)
-                {
-                    cache._failedUris.Add(key);
-                    continue;
-                }
-                cache._byUri[key] = entry;
+                cache.ImageBoxes[box] = key;
             }
-            if (isBackground) cache.BackgroundImageBoxes[box] = key;
-            else cache.ImageBoxes[box] = key;
+        }
+
+        if (extraImageUrls is not null)
+        {
+            foreach (var rawUrl in extraImageUrls)
+            {
+                var key = await ResolveAndFetchAsync(
+                    cache, loader, rawUrl, options.BaseUri, diagnostics, cancellationToken)
+                    .ConfigureAwait(false);
+                if (key is not null) cache.ExtraImagesByRawUrl[rawUrl] = key;
+            }
         }
         return cache;
+    }
+
+    /// <summary>Resolve <paramref name="rawUrl"/> + fetch/decode it once (per-URI memo incl. a
+    /// failed-URI sentinel so a repeated bad reference diagnoses once). Returns the cache key,
+    /// or <see langword="null"/> on failure (already diagnosed).</summary>
+    private static async Task<string?> ResolveAndFetchAsync(
+        ImageResourceCache cache, SafeResourceLoader loader, string rawUrl, Uri? baseUri,
+        IDiagnosticsSink diagnostics, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!TryResolveUri(rawUrl, baseUri, out var uri, out var resolveFailure))
+        {
+            EmitLoadFailed(diagnostics, rawUrl, resolveFailure);
+            return null;
+        }
+        var key = uri.OriginalString;
+        if (!cache._byUri.ContainsKey(key))
+        {
+            if (cache._failedUris.Contains(key)) return null;
+            var entry = await FetchAndDecodeAsync(loader, uri, diagnostics).ConfigureAwait(false);
+            if (entry is null)
+            {
+                cache._failedUris.Add(key);
+                return null;
+            }
+            cache._byUri[key] = entry;
+        }
+        return key;
     }
 
     private readonly HashSet<string> _failedUris = new(StringComparer.Ordinal);
@@ -207,6 +269,23 @@ internal sealed class ImageResourceCache
         if (inner.IsEmpty) return false;
         url = inner.ToString();
         return true;
+    }
+
+    /// <summary>The raw winner of <paramref name="property"/>, or — when AngleSharp.Css (beta)
+    /// expanded the authored shorthand into its per-axis longhands
+    /// (<c>background-repeat-x</c>/<c>-y</c>, <c>background-position-x</c>/<c>-y</c> — it splits
+    /// both) — the recomposed two-value form <c>"&lt;x&gt; &lt;y&gt;"</c>; a missing axis takes
+    /// <paramref name="axisInitial"/>. Null when neither form is declared.</summary>
+    private static string? ComposeAxisLonghands(
+        ResolvedRuleSet? rules, string property, string axisInitial)
+    {
+        if (rules is null) return null;
+        var whole = rules.GetWinner(property)?.ResolvedValue;
+        if (!string.IsNullOrWhiteSpace(whole)) return whole;
+        var x = rules.GetWinner(property + "-x")?.ResolvedValue;
+        var y = rules.GetWinner(property + "-y")?.ResolvedValue;
+        if (string.IsNullOrWhiteSpace(x) && string.IsNullOrWhiteSpace(y)) return null;
+        return $"{(string.IsNullOrWhiteSpace(x) ? axisInitial : x)} {(string.IsNullOrWhiteSpace(y) ? axisInitial : y)}";
     }
 
     private static bool TryResolveUri(string rawUrl, Uri? baseUri, out Uri uri, out string failure)

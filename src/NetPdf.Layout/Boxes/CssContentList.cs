@@ -110,7 +110,27 @@ internal static class CssContentList
         // lockstep with the text/style dictionaries above. A null/absent name means the joined-text
         // single-style path (the pre-cycle behavior).
         IReadOnlyDictionary<string, IReadOnlyList<RunningSegment>>? RunningElementSegments = null,
-        IReadOnlyDictionary<string, IReadOnlyList<RunningSegment>>? RunningElementSegmentsFirst = null);
+        IReadOnlyDictionary<string, IReadOnlyList<RunningSegment>>? RunningElementSegmentsFirst = null,
+        // element()'s nested CONTAINER bands (container-bands cycle): one record per DECORATED
+        // intermediate block (a div whose children are the leaf lines) spanning its descendants'
+        // segment range — PRE-order (outer before inner), so paint order nests correctly. First +
+        // last occurrence, lockstep like the segments.
+        IReadOnlyDictionary<string, IReadOnlyList<RunningContainer>>? RunningElementContainers = null,
+        IReadOnlyDictionary<string, IReadOnlyList<RunningContainer>>? RunningElementContainersFirst = null);
+
+    /// <summary>One nested CONTAINER of a running element's content (container-bands cycle): an
+    /// intermediate block-level element (between the running root and the leaf lines) carrying its
+    /// OWN self-only decoration — its band spans its descendant leaf lines
+    /// [<paramref name="FirstSegment"/>..<paramref name="LastSegment"/>]. Its own horizontal
+    /// margins inset ITS band (children's line geometry is untouched — the documented first cut);
+    /// its VERTICAL margins were folded into the boundary segments' gap margins at capture
+    /// (max-collapse, CSS 2.2 §8.3.1's simple case). <paramref name="OwnStyle"/> carries the
+    /// container's inherited <c>color</c> (its band's currentcolor owner).</summary>
+    public readonly record struct RunningContainer(
+        IReadOnlyList<KeyValuePair<string, string>> Decoration,
+        IReadOnlyList<KeyValuePair<string, string>> OwnStyle,
+        int FirstSegment, int LastSegment,
+        double MarginLeftPx = 0, double MarginRightPx = 0);
 
     /// <summary>One stacked LINE of a running element's content (Task 23, segment-style cycle):
     /// the line's text plus the OWN font/color (property, value) pairs of the element that produced

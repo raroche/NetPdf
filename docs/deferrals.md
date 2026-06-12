@@ -3281,6 +3281,30 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **element() nested CONTAINER bands + margin-box background-image + background
+         position/size/repeat — DONE (container-bands / margin-box-bg-image / bg-variants
+         cycles):** a DECORATED intermediate block between the running root and the leaf lines
+         paints ONE band spanning its descendants' lines (PRE-order capture — an outer
+         container paints under an inner one; the Y range rides the per-line geometry, a
+         vertical truncation clamps it); its VERTICAL margins fold into the boundary segments'
+         gap margins at capture (max-collapse, §8.3.1's parent/first-last-child case —
+         decorated or not), and its own horizontal margins inset ITS band only. A page margin
+         box's `background-image: url(...)` tiles over its band (the raw-read pattern; margin
+         boxes resolve EARLY so the prefetch sees their urls — the PrintBackgrounds prefetch
+         gate applies; initial repeat/auto/0%0% only; rectangular tiles over a rounded band —
+         documented). Body `background-repeat` (4 keywords + the two-value axis form; a
+         repeating axis covers the area at the position's PHASE, a non-repeating axis paints
+         ONE clipped tile), `background-size` (auto / contain / cover / `<length|%>{1,2}` with
+         aspect completion) and `background-position` (keywords incl. the swapped pair,
+         absolute lengths, the §3.6 percentage rule; one value → other axis centers) drive the
+         shared tiler — AngleSharp-beta EXPANDS repeat/position into `-x`/`-y` longhands, so
+         the capture recomposes the two-value form. An unsupported form (`space`/`round`,
+         3-/4-value positions, non-absolute units) surfaces once + that longhand falls back to
+         its initial WHOLE (no half-applied axes). STILL DEFERRED: container width/padding
+         affecting CHILD line geometry (sub-box wrap) + inline-level spans; margin-box
+         background VARIANTS (initial only); `background-origin`/`-clip`/`-attachment` (the
+         positioning area stays the BORDER box — documented); `space`/`round`; edge-offset
+         positions; PDF tiling patterns (the O(1) tile-cap replacement); gradients (Phase 4).
        - **Body image pipeline + background images + per-line horizontal margins — DONE
          (img-pipeline / bg-image / segment-hmargins cycles):** the BODY IMAGE PIPELINE is
          live — a BLOCK-level `<img>` renders end-to-end: every image reference is prefetched

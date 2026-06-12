@@ -3127,6 +3127,241 @@ public sealed class HtmlPdfConvertTests
         Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
     }
 
+    // ---- background-position / -size / -repeat (bg-variants cycle) ----
+
+    [Fact]
+    public void Background_no_repeat_places_one_tile()
+    {
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:no-repeat\"></div>" +
+            "</body></html>"));
+        Assert.Single(AllImagePlacements(pdf));
+    }
+
+    [Fact]
+    public void Background_repeat_x_tiles_one_row()
+    {
+        // 64px / 16px = 4 columns, one row.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:repeat-x\"></div>" +
+            "</body></html>"));
+        Assert.Equal(4, AllImagePlacements(pdf).Count);
+    }
+
+    [Fact]
+    public void Background_size_explicit_scales_the_tile()
+    {
+        // background-size: 32px 32px over 64×32 → 2 × 1 tiles, each 24pt wide.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-size:32px 32px\"></div>" +
+            "</body></html>"));
+        var placements = AllImagePlacements(pdf);
+        Assert.Equal(2, placements.Count);
+        Assert.Equal(24.0, placements[0].W, 1);
+        Assert.Equal(24.0, placements[0].H, 1);
+    }
+
+    [Fact]
+    public void Background_size_contain_and_cover_scale_aspect_preserving()
+    {
+        // contain in 64×32 with a 1:1 16×16 image → ×2 → 32×32 tile → 2 placements (it still
+        // repeats); cover → ×4 → 64×64 tile → 1 placement.
+        var contain = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-size:contain\"></div>" +
+            "</body></html>"));
+        var containPlacements = AllImagePlacements(contain);
+        Assert.Equal(2, containPlacements.Count);
+        Assert.Equal(24.0, containPlacements[0].W, 1);
+
+        var cover = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-size:cover\"></div>" +
+            "</body></html>"));
+        var coverPlacements = AllImagePlacements(cover);
+        Assert.Single(coverPlacements);
+        Assert.Equal(48.0, coverPlacements[0].W, 1);
+    }
+
+    [Fact]
+    public void Background_position_center_offsets_a_no_repeat_tile()
+    {
+        // §3.6: center → (64 − 16) / 2 = 24px = 18pt right of the band's left edge.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:no-repeat;background-position:center;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        var band = FirstRect(pdf);
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(band.X + 18.0, p.X, 1);
+    }
+
+    [Fact]
+    public void Background_position_lengths_offset_the_tile()
+    {
+        // 8px 4px → +6pt X; the tile drops 4px = 3pt, so its PDF (bottom-left) y is 3pt lower.
+        var zero = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:no-repeat\"></div>" +
+            "</body></html>")))[0];
+        var offset = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:no-repeat;background-position:8px 4px\"></div>" +
+            "</body></html>")))[0];
+        Assert.Equal(zero.X + 6.0, offset.X, 1);
+        Assert.Equal(zero.Y - 3.0, offset.Y, 1);
+    }
+
+    [Fact]
+    public void Background_position_phases_a_repeating_grid()
+    {
+        // position 8px with repeat: the first column starts at 8 − 16 = −8px, so
+        // ceil((64 + 8) / 16) = 5 columns × 2 rows = 10 placements (edge tiles clipped).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-position:8px 0\"></div>" +
+            "</body></html>"));
+        Assert.Equal(10, AllImagePlacements(pdf).Count);
+    }
+
+    [Fact]
+    public void Background_repeat_space_is_surfaced_and_falls_back_to_repeat()
+    {
+        // space/round are unsupported — surfaced once, the longhand falls back to repeat
+        // (4 × 2 = 8 tiles still paint).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:space\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001
+            && d.Message.Contains("background-repeat"));
+        Assert.Equal(8, AllImagePlacements(Latin1(result.Pdf)).Count);
+    }
+
+    // ---- margin-box background images (margin-box-bg-image cycle) ----
+
+    [Fact]
+    public void Page_margin_box_background_image_tiles_over_the_band()
+    {
+        // A 64×32 @top-center band (margin: 32px → band height 32) with a 16×16 tile →
+        // 4 × 2 = 8 placements, clipped at the band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 32px; " +
+            $"@top-center {{ content: \"AB\"; width: 64px; background-image: url({PngDataUri(16, 16)}) }} }}" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(8, AllImagePlacements(pdf).Count);
+        Assert.Contains(" re W n", pdf);
+    }
+
+    [Fact]
+    public void Page_margin_box_background_image_respects_print_backgrounds_off()
+    {
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 32px; " +
+            $"@top-center {{ content: \"AB\"; width: 64px; background-image: url({PngDataUri(16, 16)}) }} }}" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver(), PrintBackgrounds = false }));
+        Assert.Empty(AllImagePlacements(pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_background_image_gradient_is_surfaced()
+    {
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { margin: 32px; " +
+            "@top-center { content: \"AB\"; width: 64px; background-image: linear-gradient(red, blue) } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    // ---- element() nested CONTAINER bands (container-bands cycle) ----
+
+    [Fact]
+    public void Page_margin_box_container_band_spans_its_descendant_lines()
+    {
+        // A decorated intermediate div's band covers BOTH its leaf lines: H = 2 × 19.2px
+        // (16px font × 1.2 pitch) = 38.4px = 28.8pt, the full 300px = 225pt content width.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { background-color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); width: 300px } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"c\"><div>AB</div><div>AB</div></div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.True(rects.Count >= 1, "expected the container band");
+        Assert.Equal(28.8, rects[0].H, 1);
+        Assert.Equal(225.0, rects[0].W, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_container_vertical_margin_gaps_its_first_line()
+    {
+        // An UNDECORATED container's margin-top folds into its first leaf line's gap
+        // (max-collapse): the second line drops line-height + 20px = 19.2 + 20 = 39.2px =
+        // 29.4pt below the first (vs 14.4pt with no margin).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { margin-top: 20px } " +
+            "@page { @top-center { content: element(rh); width: 300px } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"c\"><div>AB</div></div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var ys = AllTdY(pdf);
+        Assert.True(ys.Length >= 2, "expected two margin lines");
+        Assert.Equal(29.4, ys[0] - ys[1], 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_container_horizontal_margins_inset_its_band()
+    {
+        // The container's own margin-left/right inset ITS band: X = box band X + 15pt,
+        // width (300 − 40)px = 195pt — the leaf line geometry is untouched (first cut).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { margin-left: 20px; margin-right: 20px; background-color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); width: 300px; " +
+            "background-color: #eeeeee } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"c\"><div>AB</div></div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.True(rects.Count >= 2, "expected the box band + the container band");
+        Assert.Equal(rects[0].X + 15.0, rects[1].X, 1);
+        Assert.Equal(195.0, rects[1].W, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_container_band_paints_under_its_leaf_bands()
+    {
+        // Pre-order: the container's band is added BEFORE its leaf's per-line band, so the
+        // leaf paints over it. rects[0] = the 2-line container, rects[1] = the 1-line leaf.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { background-color: #eeeeee } .rh .leaf { background-color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); width: 300px } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"c\"><div class=\"leaf\">AB</div><div>AB</div></div></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.True(rects.Count >= 2, "expected the container + leaf bands");
+        Assert.Equal(28.8, rects[0].H, 1);   // the container spans both lines
+        Assert.Equal(14.4, rects[1].H, 1);   // the leaf's own line band paints over it
+    }
+
     [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {

@@ -404,9 +404,11 @@ inline-only auto-margin distribution sizes through the shared `DeclaredWidthToBo
 explicit `width: 0` no longer fills [kind-gated tag test]):** a leaf's horizontal padding insets its line's
 glyphs + alignment extent (band keeps full width); float `width`/`margin-*`/`padding-*` % resolve against
 the BFC content box (abspos % was already live); an explicit body width under `box-sizing: border-box` IS
-the border box (floored at the insets). **Img-pipeline / bg-image / segment-hmargins cycles (in progress,
-branch `phase-3-task-21-23-img-bg-images-segment-hmargins`, PR open):** the BODY IMAGE PIPELINE — a
-BLOCK-level `<img>` renders end-to-end (prefetch-before-layout via `ImageResourceCache` →
+the border box (floored at the insets). **Img-pipeline / bg-image / segment-hmargins cycles (merged as
+PR #166 incl. its review — P1 bg prefetch `PrintBackgrounds`-gated [counting-loader pinned]; P1+P3 raw
+percent-byte `data:` decode [no-throw by construction + RFC 2397 binary round-trip]; P1 overflow-safe
+tile cap [division bound]; P2 whole-token `url()` parse [multi-layer lists reject]):** the BODY IMAGE
+PIPELINE — a BLOCK-level `<img>` renders end-to-end (prefetch-before-layout via `ImageResourceCache` →
 `SafeResourceLoader`, NEW inline `data:` decode [`DataUriParser`, budget/MIME-gated; the Phase-A
 `img[src]` data:-strip gained a narrow allowlisted-image-mediatype exemption]; PNG/JPEG passthrough +
 Skia raster fallback; `ReplacedSizeResolver` writes §10.3.2 used sizes into the slots — CSS > attrs >
@@ -415,10 +417,19 @@ RES-LOAD-FAILED-001 / IMG-DECODE-FAILED-001 on failure); `background-image: url(
 border box (initial repeat, clipped, `PrintBackgrounds`-gated, over the color band; 4096-tile cap
 PAINT-BG-IMAGE-TILE-CAP-001; gradients surface CSS-BACKGROUND-IMAGE-UNSUPPORTED-001; border-box tile
 phase — documented approximation); a leaf segment's own horizontal MARGINS inset its per-line band +
-glyphs/extent (outside the border box, unlike padding; clamped ≥ 0). Next (in order): the multi-page
-driver (cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope
-confirmation first), optional riders: real nested block LAYOUT, margin-box background images,
-`background-position`/`-size`/`-repeat`. Blocked (see `deferrals.md`):
+glyphs/extent (outside the border box, unlike padding; clamped ≥ 0). **Container-bands /
+margin-box-bg-image / bg-variants cycles (in progress, branch
+`phase-3-task-21-23-container-bands-marginbox-bg-bg-variants`, PR open):** a DECORATED intermediate
+block of a running element paints ONE band spanning its descendants' lines (PRE-order capture — outer
+under inner; vertical margins fold into boundary segment gaps, max-collapse; its h-margins inset ITS
+band); a margin box's `background-image: url()` tiles over its band (raw-read → `MarginBoxLayoutResult.
+BackgroundImages`; margin boxes resolve EARLY so the prefetch sees their urls, PrintBackgrounds-gated;
+initial repeat only); body `background-repeat`/`-size`/`-position` drive the shared tiler (per-axis
+repeat with position PHASE; auto/contain/cover/lengths/%; keywords + §3.6 percentages; AngleSharp splits
+repeat/position into `-x`/`-y` longhands → recomposed; unsupported forms fall back WHOLE to the initial +
+surface once). Next (in order): the multi-page driver (cross-page running + `@page :left`/`:right`/
+`:blank` + named pages — design/plan + scope confirmation first), optional riders: container width/
+padding sub-box wrap, PDF tiling patterns, `object-fit`. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

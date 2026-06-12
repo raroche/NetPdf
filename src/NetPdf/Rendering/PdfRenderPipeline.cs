@@ -114,16 +114,39 @@ internal static class PdfRenderPipeline
         DeferredLengthResolver.ResolveTreeInPlace(
             phase2.BoxRoot, pageSize.WidthPx, pageSize.HeightPx);
 
+        // Page margin boxes resolve EARLY (margin-box-bg-image cycle) — they're sheet-based
+        // (no layout dependency), and the image prefetch below needs their background-image
+        // urls. Layout/paint still happen at assembly time below.
+        var marginBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media);
+        // Margin-box background-image urls (PrintBackgrounds-gated like the body's — PR #166
+        // review P1: no fetch for backgrounds that will not paint). The unsupported-form
+        // diagnostic stays with the painter's Layout (the rect pass); silent null here.
+        List<string>? marginBoxImageUrls = null;
+        if (options.PrintBackgrounds && !marginBoxes.IsDefaultOrEmpty)
+        {
+            var noopReported = true;   // suppress the duplicate here — Layout surfaces it.
+            foreach (var mb in marginBoxes)
+            {
+                if (PageMarginBoxPainter.TryReadBackgroundImageUrl(mb.Declarations, diagnostics, ref noopReported)
+                    is { } mbUrl)
+                {
+                    (marginBoxImageUrls ??= new()).Add(mbUrl);
+                }
+            }
+        }
+
         // Body image pipeline (img-pipeline + bg-image cycles): prefetch + decode every image
-        // reference (an <img src>, a background-image url) BEFORE layout — `data:` URIs decode
-        // inline with no loader (the self-contained default; other schemes go through
-        // HtmlPdfOptions.ResourceLoader under SecurityPolicy). The sizing pre-pass then writes
-        // each replaced box's §10.3.2 used width/height into its slots (CSS declared > HTML
-        // width/height attribute > intrinsic, aspect-ratio completed) so layout sizes it like
-        // any explicit-size block. Failures surface RES-LOAD-FAILED-001 / IMG-DECODE-FAILED-001
-        // and the element lays out unpainted.
+        // reference (an <img src>, a background-image url, a margin box's background-image)
+        // BEFORE layout — `data:` URIs decode inline with no loader (the self-contained
+        // default; other schemes go through HtmlPdfOptions.ResourceLoader under
+        // SecurityPolicy). The sizing pre-pass then writes each replaced box's §10.3.2 used
+        // width/height into its slots (CSS declared > HTML width/height attribute > intrinsic,
+        // aspect-ratio completed) so layout sizes it like any explicit-size block. Failures
+        // surface RES-LOAD-FAILED-001 / IMG-DECODE-FAILED-001 and the element lays out
+        // unpainted.
         var imageCache = await ImageResourceCache.PrefetchAsync(
-            phase2.BoxRoot, phase2.Cascade, options, diagnostics, cancellationToken)
+            phase2.BoxRoot, phase2.Cascade, options, diagnostics, cancellationToken,
+            marginBoxImageUrls)
             .ConfigureAwait(false);
         ReplacedSizeResolver.ResolveTreeInPlace(phase2.BoxRoot, imageCache);
 
@@ -211,7 +234,6 @@ internal static class PdfRenderPipeline
         // Literal + attr() content only this cycle; needs a host element (for attr()) —
         // element-free documents skip them.
         var textFragments = sink.Fragments;
-        var marginBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media);
         if (!marginBoxes.IsDefaultOrEmpty
             && FindRootElementBox(phase2.BoxRoot) is { SourceElement: { } host } rootEl)
         {
@@ -233,6 +255,25 @@ internal static class PdfRenderPipeline
             // Gated by PrintBackgrounds, exactly like body backgrounds (post-PR-#137 review P1).
             if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
                 PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
+            // Margin-box background IMAGES (margin-box-bg-image cycle) tile over the color bands,
+            // under borders/text — the SAME body tiler (initial repeat, border-box clip, the tile
+            // cap), the same PrintBackgrounds gate. A url that failed to fetch/decode was already
+            // diagnosed at prefetch; its box paints color-only.
+            if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
+            {
+                var marginTileCapReported = false;
+                var marginVariantReported = false;
+                foreach (var bi in marginResult.BackgroundImages)
+                {
+                    if (!imageCache.TryGetByRawUrl(bi.RawUrl, out var biEntry)) continue;
+                    // Null variant raws = the initials (repeat / auto / 0% 0%) — margin-box
+                    // background-position/-size/-repeat stay deferred (deferrals.md).
+                    FragmentPainter.PaintBackgroundImageTiles(
+                        page, document, biEntry, mediaBox.HeightPts,
+                        bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
+                        diagnostics, ref marginTileCapReported, ref marginVariantReported);
+                }
+            }
             // Margin-box borders (border cycle) paint over the bands, before the text — NOT gated by
             // PrintBackgrounds (borders aren't background graphics; body borders always paint too).
             if (marginResult.Borders.Count > 0)

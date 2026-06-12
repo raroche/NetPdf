@@ -455,7 +455,9 @@ internal static class MarginContentCollector
                         // RESERVED pre-recursion so the list stays PRE-order (outer before
                         // inner → paint order nests), then filled with the recursion's actual
                         // range; an undecorated container reserves nothing. Its VERTICAL
-                        // margins fold into the boundary segments regardless of decoration.
+                        // margins fold into the boundary segments and its HORIZONTAL
+                        // margin+padding propagate into its descendants (container-insets
+                        // cycle) regardless of decoration.
                         var containerSlot = -1;
                         var firstSegment = segments?.Count ?? 0;
                         if (containers is not null && segments is not null
@@ -464,12 +466,16 @@ internal static class MarginContentCollector
                             containerSlot = containers.Count;
                             containers.Add(default);
                         }
+                        // Descendant-container range start — captured AFTER the slot reserve so
+                        // the container's OWN slot is never bumped by its own inset fold.
+                        var firstDescendantContainer = containers?.Count ?? 0;
                         var block = ReadRunningElementContent(
                             el, cascade, nestedBudget, depth + 1, segments, containers);
                         AppendLine(output, block, maxChars);
                         if (segments is not null)
                         {
-                            FoldContainerVerticalMargins(el, cascade, segments, firstSegment);
+                            FoldContainerBoxModel(
+                                el, cascade, segments, firstSegment, containers, firstDescendantContainer);
                             if (containerSlot >= 0)
                                 FillContainerBand(containers!, containerSlot, el, cascade, segments, firstSegment);
                         }
@@ -645,18 +651,28 @@ internal static class MarginContentCollector
                 Math.Max(0, AbsoluteSidePx(rules, "margin-right")));
     }
 
-    /// <summary>Fold a recursed CONTAINER's vertical margins into its BOUNDARY segments
+    /// <summary>Fold a recursed CONTAINER's box model into its descendants. VERTICAL
     /// (container-bands cycle): its margin-top max-collapses into its FIRST descendant line's
     /// gap margin, its margin-bottom into the LAST's (CSS 2.2 §8.3.1's parent/first-child +
     /// parent/last-child adjoining collapse, the simple max case — the existing per-line gap
-    /// machinery then renders them). Runs for EVERY recursed container, decorated or not.</summary>
-    private static void FoldContainerVerticalMargins(
+    /// machinery then renders them). HORIZONTAL (container-insets cycle): its margin+padding
+    /// (left/right, absolute, ≥ 0 — the container's CONTENT box) propagate into every
+    /// descendant SEGMENT's margin slots (the leaf's line band + glyphs/extent inset — the
+    /// margin slot, so the leaf's own band moves too) AND every descendant CONTAINER band's
+    /// margin slots (nested bands inset under the outer's content box; the container's OWN
+    /// reserved slot starts before <paramref name="firstDescendantContainer"/>, so it is never
+    /// bumped by its own fold — its own padding stays INSIDE its band). Border widths stay
+    /// deferred (they need the §4.3 style gate); container VERTICAL padding (band extension)
+    /// stays deferred — deferrals.md. Runs for EVERY recursed container, decorated or
+    /// not.</summary>
+    private static void FoldContainerBoxModel(
         IElement el, ResolvedCascadeResult cascade,
-        List<CssContentList.RunningSegment> segments, int firstSegment)
+        List<CssContentList.RunningSegment> segments, int firstSegment,
+        List<CssContentList.RunningContainer>? containers, int firstDescendantContainer)
     {
         var lastSegment = segments.Count - 1;
         if (lastSegment < firstSegment) return;
-        var (top, bottom, _, _) = CaptureSegmentMargins(el, cascade);
+        var (top, bottom, left, right) = CaptureSegmentMargins(el, cascade);
         if (top != 0)
         {
             segments[firstSegment] = segments[firstSegment] with
@@ -666,6 +682,32 @@ internal static class MarginContentCollector
         {
             segments[lastSegment] = segments[lastSegment] with
             { MarginBottomPx = Math.Max(segments[lastSegment].MarginBottomPx, bottom) };
+        }
+
+        var (_, _, padLeft, padRight) = CaptureSegmentPadding(el, cascade);
+        var insetL = left + padLeft;
+        var insetR = right + padRight;
+        if (insetL <= 0 && insetR <= 0) return;
+        for (var i = firstSegment; i <= lastSegment; i++)
+        {
+            segments[i] = segments[i] with
+            {
+                MarginLeftPx = segments[i].MarginLeftPx + insetL,
+                MarginRightPx = segments[i].MarginRightPx + insetR,
+            };
+        }
+        if (containers is null) return;
+        for (var c = firstDescendantContainer; c < containers.Count; c++)
+        {
+            var rc = containers[c];
+            // Descendants only (prior siblings'/uncles' ranges end before firstSegment);
+            // inert empty-recursion records are skipped.
+            if (rc.LastSegment < rc.FirstSegment || rc.FirstSegment < firstSegment) continue;
+            containers[c] = rc with
+            {
+                MarginLeftPx = rc.MarginLeftPx + insetL,
+                MarginRightPx = rc.MarginRightPx + insetR,
+            };
         }
     }
 

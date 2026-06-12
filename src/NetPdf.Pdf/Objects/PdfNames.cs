@@ -30,6 +30,16 @@ internal static class PdfNames
     public static readonly PdfName Resources = new("Resources");
     public static readonly PdfName Contents = new("Contents");
 
+    // Tiling patterns (tiling-patterns cycle, ISO 32000-2 §8.7.3)
+    public static readonly PdfName Pattern = new("Pattern");
+    public static readonly PdfName PatternType = new("PatternType");
+    public static readonly PdfName PaintType = new("PaintType");
+    public static readonly PdfName TilingType = new("TilingType");
+    public static readonly PdfName BBox = new("BBox");
+    public static readonly PdfName XStep = new("XStep");
+    public static readonly PdfName YStep = new("YStep");
+    public static readonly PdfName Matrix = new("Matrix");
+
     // Streams
     public static readonly PdfName Length = new("Length");
     public static readonly PdfName Filter = new("Filter");

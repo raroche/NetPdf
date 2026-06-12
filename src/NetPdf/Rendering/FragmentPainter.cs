@@ -91,7 +91,6 @@ internal static class FragmentPainter
         PdfDocument? document = null)
     {
         var borderStyleApproximationReported = false;
-        var tileCapReported = false;
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
 
         for (var i = 0; i < fragments.Count; i++)
@@ -121,7 +120,7 @@ internal static class FragmentPainter
                 {
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                        diagnostics, ref tileCapReported, ref variantUnsupportedReported,
+                        diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw);
                 }
             }
@@ -132,11 +131,13 @@ internal static class FragmentPainter
         }
     }
 
-    /// <summary>Per-fragment <c>background-image</c> tile cap — bounds the content-stream size
-    /// against a tiny tile over a large box (a 1×1 px image across an A4 page would otherwise
-    /// emit ~500k placements). PDF tiling-pattern objects (O(1) regardless of count) are the
-    /// tracked follow-up.</summary>
-    private const int MaxBackgroundTilesPerFragment = 4096;
+    /// <summary>Per-fragment tile-count threshold ABOVE which the tiling emits ONE PDF
+    /// tiling-pattern fill instead of per-tile placements (tiling-patterns cycle, ISO 32000-2
+    /// §8.7.3 — O(1) content-stream size regardless of count, so the old 4096-tile cap +
+    /// <c>PAINT-BG-IMAGE-TILE-CAP-001</c> are RETIRED; a 1×1 px tile over a full page is now
+    /// one pattern object). At or below the threshold the per-tile loop stays — fewer bytes
+    /// than a pattern object for small grids, and every pre-cycle stream is byte-identical.</summary>
+    private const int MaxLoopTilesPerFragment = 16;
 
     /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box (bg-image +
     /// bg-variants cycles): the tile size comes from <paramref name="sizeRaw"/>
@@ -156,7 +157,7 @@ internal static class FragmentPainter
     internal static void PaintBackgroundImageTiles(
         PdfPage page, PdfDocument document, ImageResourceCache.Entry entry, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        IDiagnosticsSink? diagnostics, ref bool tileCapReported, ref bool variantUnsupportedReported,
+        IDiagnosticsSink? diagnostics, ref bool variantUnsupportedReported,
         string? repeatRaw = null, string? sizeRaw = null, string? positionRaw = null)
     {
         // Each unsupported longhand falls back to ITS initial WHOLE (a failed parse may have
@@ -225,30 +226,39 @@ internal static class FragmentPainter
             ny = 1;
         }
         if (nx <= 0 || ny <= 0) return;
-        // OVERFLOW-SAFE cap compare (PR #166 review P1): `nx * ny` can wrap for a huge box /
-        // tiny tile (a 4e9 × 4e9 count wraps long negative and would bypass the cap into a
-        // ~1.6e19-iteration loop). Per-axis bound first, then a division-based product bound;
-        // the diagnostic reports the count as a double product (never wraps).
-        if (nx > MaxBackgroundTilesPerFragment
-            || ny > MaxBackgroundTilesPerFragment
-            || nx > MaxBackgroundTilesPerFragment / ny)
-        {
-            if (!tileCapReported && diagnostics is not null)
-            {
-                diagnostics.Emit(new Diagnostic(
-                    DiagnosticCodes.PaintBgImageTileCap001,
-                    $"A background-image tiling needs {(double)nx * ny:0} tiles for one box (tile "
-                    + $"{tileW:0.##}×{tileH:0.##}px over {widthPx:0.##}×{heightPx:0.##}px) — over the "
-                    + $"{MaxBackgroundTilesPerFragment}-tile cap; the image is skipped for this box "
-                    + "(its background-color still paints). PDF tiling patterns are the tracked "
-                    + "follow-up (deferrals.md#layout-to-pdf-pipeline).",
-                    DiagnosticSeverity.Warning));
-                tileCapReported = true;
-            }
-            return;
-        }
 
         var imageRef = ImageResourceCache.GetOrRegister(document, entry);
+
+        // ABOVE the loop threshold → ONE tiling-pattern fill (tiling-patterns cycle): the
+        // pattern object carries the cell (the image stretched to the tile) + the grid phase
+        // in its /Matrix (anchored at the (firstX, firstY) tile — pattern space is DEFAULT
+        // user space, §8.7.3.1), and the fill RECT bounds the painted area, clamped per
+        // NON-repeating axis to its single tile (a repeating axis spans the box). O(1)
+        // content-stream size for any count — the old 4096-tile cap and its diagnostic are
+        // retired. The compare stays overflow-safe (PR #166 review P1 — `nx * ny` wraps for
+        // a 4e9 × 4e9 grid; per-axis bound first, then the division-based product bound).
+        if (nx > MaxLoopTilesPerFragment
+            || ny > MaxLoopTilesPerFragment
+            || nx > MaxLoopTilesPerFragment / ny)
+        {
+            var fillLeftPx = repeatX ? leftPx : Math.Max(leftPx, leftPx + firstX);
+            var fillRightPx = repeatX ? leftPx + widthPx : Math.Min(leftPx + widthPx, leftPx + firstX + tileW);
+            var fillTopPx = repeatY ? topPx : Math.Max(topPx, topPx + firstY);
+            var fillBottomPx = repeatY ? topPx + heightPx : Math.Min(topPx + heightPx, topPx + firstY + tileH);
+            if (fillRightPx - fillLeftPx <= 0 || fillBottomPx - fillTopPx <= 0) return;
+            // The anchor tile's PDF rect gives the pattern Matrix origin (its bottom-left)
+            // + the tile size in pt; any anchor congruent modulo the tile reproduces the
+            // same grid, so the phase is exact.
+            ToPdfRect(
+                leftPx + firstX, topPx + firstY, tileW, tileH, pageHeightPt,
+                out var ax, out var ay, out var aw, out var ah);
+            var patternRef = document.RegisterTilingPattern(imageRef, aw, ah, ax, ay);
+            ToPdfRect(
+                fillLeftPx, fillTopPx, fillRightPx - fillLeftPx, fillBottomPx - fillTopPx,
+                pageHeightPt, out var fx, out var fy, out var fw, out var fh);
+            page.FillRectangleWithPattern(patternRef, fx, fy, fw, fh);
+            return;
+        }
         // Clip partial / protruding tiles to the border box (background-clip: border-box, the
         // initial).
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);

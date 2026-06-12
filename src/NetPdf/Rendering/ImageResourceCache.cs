@@ -46,9 +46,14 @@ internal sealed class ImageResourceCache
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
 
-    /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its resolved absolute URI. Only boxes whose
-    /// fetch + decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
-    public Dictionary<Box, string> ImageBoxes { get; } = new();
+    /// <summary>An <c>&lt;img&gt;</c> box's image reference (img-pipeline + object-fit cycles):
+    /// the resolved URI key + the RAW declared <c>object-fit</c> winner (null = unset → the
+    /// initial <c>fill</c>), parsed by <see cref="ImagePainter"/> at paint.</summary>
+    internal readonly record struct ImgSpec(string UriKey, string? ObjectFitRaw);
+
+    /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its image spec. Only boxes whose fetch +
+    /// decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
+    public Dictionary<Box, ImgSpec> ImageBoxes { get; } = new();
 
     /// <summary>A box's background-image reference (bg-image + bg-variants cycles): the resolved
     /// URI key + the RAW declared <c>background-repeat</c> / <c>-size</c> / <c>-position</c>
@@ -132,7 +137,12 @@ internal sealed class ImageResourceCache
             }
             else
             {
-                cache.ImageBoxes[box] = key;
+                // object-fit rides along RAW (object-fit cycle; null = unset → fill).
+                cache.ImageBoxes[box] = new ImgSpec(
+                    key,
+                    box.SourceElement is { } imgEl
+                        ? cascade.TryGetStylesFor(imgEl)?.GetWinner("object-fit")?.ResolvedValue
+                        : null);
             }
         }
 

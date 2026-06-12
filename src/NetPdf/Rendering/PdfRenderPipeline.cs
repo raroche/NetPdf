@@ -224,7 +224,7 @@ internal static class PdfRenderPipeline
         // text-last paint-order approximation).
         ImagePainter.PaintImages(
             sink.Fragments, page, document, imageCache, mediaBox.HeightPts,
-            margins.LeftPx, margins.TopPx);
+            margins.LeftPx, margins.TopPx, diagnostics);
 
         // Page margin boxes (running headers/footers, Task 21 cycle 3): resolved from the same
         // bare @page rules, laid out into fragments in the page margins. They paint through the
@@ -261,7 +261,6 @@ internal static class PdfRenderPipeline
             // diagnosed at prefetch; its box paints color-only.
             if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
             {
-                var marginTileCapReported = false;
                 var marginVariantReported = false;
                 foreach (var bi in marginResult.BackgroundImages)
                 {
@@ -271,7 +270,7 @@ internal static class PdfRenderPipeline
                     FragmentPainter.PaintBackgroundImageTiles(
                         page, document, biEntry, mediaBox.HeightPts,
                         bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
-                        diagnostics, ref marginTileCapReported, ref marginVariantReported,
+                        diagnostics, ref marginVariantReported,
                         bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw);
                 }
             }

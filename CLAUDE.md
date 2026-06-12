@@ -418,20 +418,27 @@ border box (initial repeat, clipped, `PrintBackgrounds`-gated, over the color ba
 PAINT-BG-IMAGE-TILE-CAP-001; gradients surface CSS-BACKGROUND-IMAGE-UNSUPPORTED-001; border-box tile
 phase — documented approximation); a leaf segment's own horizontal MARGINS inset its per-line band +
 glyphs/extent (outside the border box, unlike padding; clamped ≥ 0). **Container-bands /
-margin-box-bg-image / bg-variants cycles (in progress, branch
-`phase-3-task-21-23-container-bands-marginbox-bg-bg-variants`, PR open):** a DECORATED intermediate
-block of a running element paints ONE band spanning its descendants' lines (PRE-order capture — outer
-under inner; vertical margins fold into boundary segment gaps, max-collapse; its h-margins inset ITS
-band); a margin box's `background-image: url()` tiles over its band (raw-read → `MarginBoxLayoutResult.
-BackgroundImages`; margin boxes resolve EARLY so the prefetch sees their urls, PrintBackgrounds-gated;
-its repeat/size/position raws wired through — post-PR-#167 review P1, with the §3.9 negative-size
-reject + unitless-zero accept + single-vertical-keyword fix); body `background-repeat`/`-size`/
-`-position` drive the shared tiler (per-axis
-repeat with position PHASE; auto/contain/cover/lengths/%; keywords + §3.6 percentages; AngleSharp splits
-repeat/position into `-x`/`-y` longhands → recomposed; unsupported forms fall back WHOLE to the initial +
-surface once). Next (in order): the multi-page driver (cross-page running + `@page :left`/`:right`/
-`:blank` + named pages — design/plan + scope confirmation first), optional riders: container width/
-padding sub-box wrap, PDF tiling patterns, `object-fit`. Blocked (see `deferrals.md`):
+margin-box-bg-image / bg-variants cycles (merged as PR #167 incl. its review — P1 margin-box variant
+raws wired to the shared tiler; P2 §3.9 negative-size reject + unitless-zero accept; P2 single vertical
+position keyword on the Y axis; Copilot: the orphaned border-radius doc restored):** a DECORATED
+intermediate block of a running element paints ONE band spanning its descendants' lines (PRE-order
+capture — outer under inner; vertical margins fold into boundary segment gaps, max-collapse; its
+h-margins inset ITS band); a margin box's `background-image: url()` tiles over its band (raw-read →
+`MarginBoxLayoutResult.BackgroundImages`; margin boxes resolve EARLY so the prefetch sees their urls,
+PrintBackgrounds-gated; its repeat/size/position raws wired through); body `background-repeat`/`-size`/
+`-position` drive the shared tiler (per-axis repeat with position PHASE; auto/contain/cover/lengths/%;
+keywords + §3.6 percentages; AngleSharp splits repeat/position into `-x`/`-y` longhands → recomposed;
+unsupported forms fall back WHOLE to the initial + surface once). **Container-insets / tiling-patterns /
+object-fit cycles (in progress, branch `phase-3-task-21-23-container-insets-tiling-patterns-object-fit`,
+PR open):** a container's horizontal margin+padding propagate into its descendants' lines + nested bands
+(`FoldContainerBoxModel` — the outer's own band keeps its margin-only inset); tilings above a 16-tile
+threshold emit ONE PDF tiling-pattern fill (`RegisterTilingPattern` §8.7.3 + `FillRectangleWithPattern`;
+the 4096-tile cap + PAINT-BG-IMAGE-TILE-CAP-001 REMOVED — O(1) for any count, phase exact via /Matrix);
+`object-fit` fits `<img>` content (fill/contain/cover/none/scale-down, centred per the object-position
+50%50% initial, cover/none clipped at the content box). Next (in order): the multi-page driver
+(cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation
+first), optional riders: container width sub-box wrap / vertical-padding band extension,
+`object-position`, inline `<img>` atomics. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

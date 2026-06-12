@@ -92,4 +92,112 @@ public sealed class DataUriImagePipelineTests
         Assert.False(result.Success);
         Assert.Contains("not in allowlist", result.Failure!.Reason, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Malformed_percent_escapes_fail_without_throwing()
+    {
+        // PR #166 review P1 — the no-throw resource contract: a malformed percent escape in an
+        // attacker-controlled payload returns false with a reason (the pre-fix
+        // Uri.UnescapeDataString path could let a BCL exception escape FetchAsync). Both the
+        // base64 and non-base64 branches percent-decode through the same raw decoder.
+        Assert.False(DataUriParser.TryDecode(
+            new Uri("data:image/png;base64,AA%G1AA"), 1 << 20, out _, out _, out var r1));
+        Assert.Contains("percent escape", r1, StringComparison.Ordinal);
+
+        Assert.False(DataUriParser.TryDecode(
+            new Uri("data:text/plain,abc%4"), 1 << 20, out _, out _, out var r2));
+        Assert.Contains("percent escape", r2, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Percent_encoded_binary_non_base64_payload_round_trips()
+    {
+        // PR #166 review P3 — RFC 2397 octet semantics: %XX decodes to the raw byte, so a
+        // percent-encoded BINARY payload (bytes ≥ 0x80) survives exactly (the pre-fix
+        // unescape-to-string + UTF-8 re-encode corrupted it).
+        var png = SyntheticPng.BuildOpaqueRgb8(4, 4);   // starts 0x89 'P' 'N' 'G' — binary
+        var sb = new System.Text.StringBuilder("data:image/png,");
+        foreach (var b in png) sb.Append('%').Append(b.ToString("X2"));
+        Assert.True(DataUriParser.TryDecode(
+            new Uri(sb.ToString()), 1 << 20, out var bytes, out var mime, out _));
+        Assert.Equal(png, bytes);
+        Assert.Equal("image/png", mime);
+    }
+
+    [Fact]
+    public void Css_url_token_parses_whole_token_only()
+    {
+        // PR #166 review P2 — url(...) parses as ONE complete token: multi-layer lists and
+        // trailing tokens reject (→ the unsupported-form diagnostic path); quoted/unquoted
+        // single tokens parse whole, commas INSIDE the URL included (data: URIs).
+        Assert.True(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl(
+            "url(data:image/png;base64,AAA)", out var u1));
+        Assert.Equal("data:image/png;base64,AAA", u1);
+        Assert.True(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl(
+            "url(\"data:image/png;base64,AAA\")", out var u2));
+        Assert.Equal("data:image/png;base64,AAA", u2);
+        Assert.True(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl(
+            "  url( 'x.png' )  ", out var u3));
+        Assert.Equal("x.png", u3);
+
+        Assert.False(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl("url(a),url(b)", out _));
+        Assert.False(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl("url(a), url(b)", out _));
+        Assert.False(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl("url(a) extra", out _));
+        Assert.False(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl("url(\"a\" junk)", out _));
+        Assert.False(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl("url(a", out _));
+        Assert.False(NetPdf.Rendering.ImageResourceCache.TryParseCssUrl("url()", out _));
+    }
+
+    /// <summary>Records every URI the pipeline asks for and serves a tiny PNG.</summary>
+    private sealed class RecordingLoader : IResourceLoader
+    {
+        public System.Collections.Generic.List<string> Requested { get; } = new();
+
+        public ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct)
+        {
+            Requested.Add(uri.AbsoluteUri);
+            return ValueTask.FromResult(new ResourceResponse
+            {
+                Content = SyntheticPng.BuildOpaqueRgb8(4, 4),
+                MimeType = "image/png",
+            });
+        }
+    }
+
+    [Fact]
+    public void Print_backgrounds_off_skips_background_image_fetch_but_not_img()
+    {
+        // PR #166 review P1 — PrintBackgrounds=false must not trigger loads / decode / budget
+        // consumption for backgrounds the caller explicitly disabled; <img> is CONTENT and
+        // still fetches.
+        var loader = new RecordingLoader();
+        var options = new HtmlPdfOptions
+        {
+            PrintBackgrounds = false,
+            ResourceLoader = loader,
+            SecurityPolicy = new SecurityPolicy { AllowHttpsScheme = true },
+        };
+        HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<img src=\"https://example.com/i.png\" style=\"display:block\">" +
+            "<div style=\"width:32px;height:32px;background-image:url(https://example.com/b.png)\"></div>" +
+            "</body></html>", options);
+        Assert.Contains("https://example.com/i.png", loader.Requested);
+        Assert.DoesNotContain("https://example.com/b.png", loader.Requested);
+
+        // The control: backgrounds ON fetches both.
+        var loaderOn = new RecordingLoader();
+        HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<img src=\"https://example.com/i.png\" style=\"display:block\">" +
+            "<div style=\"width:32px;height:32px;background-image:url(https://example.com/b.png)\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions
+            {
+                PrintBackgrounds = true,
+                ResourceLoader = loaderOn,
+                SecurityPolicy = new SecurityPolicy { AllowHttpsScheme = true },
+            });
+        Assert.Contains("https://example.com/b.png", loaderOn.Requested);
+    }
 }

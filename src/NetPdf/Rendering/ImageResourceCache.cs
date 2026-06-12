@@ -79,8 +79,14 @@ internal sealed class ImageResourceCache
         var unsupportedBackgroundReported = false;
 
         // Collect references first (sync tree walk), then fetch each unique URI once.
+        // background-image references are collected ONLY when backgrounds will paint
+        // (PR #166 review P1 — PrintBackgrounds=false must not trigger network loads,
+        // data-URI decode cost, diagnostics, or budget consumption for backgrounds the
+        // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
-        CollectReferences(boxRoot, cascade, references, diagnostics, ref unsupportedBackgroundReported);
+        CollectReferences(
+            boxRoot, cascade, references, collectBackgrounds: options.PrintBackgrounds,
+            diagnostics, ref unsupportedBackgroundReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
         {
@@ -115,6 +121,7 @@ internal sealed class ImageResourceCache
         Box box,
         ResolvedCascadeResult cascade,
         List<(Box, string, bool)> references,
+        bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported)
     {
@@ -131,8 +138,12 @@ internal sealed class ImageResourceCache
 
             // background-image winner from the cascade (raw declared value — the established
             // non-slot read, like border-radius / string-set). `none` is the initial; a single
-            // url(...) is the supported form; anything else surfaces once per render.
-            var bgRaw = cascade.TryGetStylesFor(element)?.GetWinner("background-image")?.ResolvedValue;
+            // url(...) is the supported form; anything else surfaces once per render. Skipped
+            // wholesale under PrintBackgrounds=false (PR #166 review P1) — no fetch, no decode,
+            // no diagnostics for backgrounds that will not paint.
+            var bgRaw = collectBackgrounds
+                ? cascade.TryGetStylesFor(element)?.GetWinner("background-image")?.ResolvedValue
+                : null;
             if (!string.IsNullOrWhiteSpace(bgRaw)
                 && !bgRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
@@ -154,27 +165,47 @@ internal sealed class ImageResourceCache
             }
         }
         foreach (var child in box.Children)
-            CollectReferences(child, cascade, references, diagnostics, ref unsupportedBackgroundReported);
+            CollectReferences(
+                child, cascade, references, collectBackgrounds, diagnostics,
+                ref unsupportedBackgroundReported);
     }
 
-    /// <summary>Parse a CSS <c>url(...)</c> token — optionally quoted, the WHOLE value (a
-    /// trailing layer / second token makes it a multi-layer form → unsupported).</summary>
+    /// <summary>Parse a CSS <c>url(...)</c> token as ONE COMPLETE token (PR #166 review P2 —
+    /// a StartsWith/EndsWith scan let <c>url(a),url(b)</c> through as the single bogus URL
+    /// <c>a),url(b</c>): the content is either a QUOTED string (scan to the closing quote — a
+    /// quoted URL may contain parens) or an UNQUOTED url-token (scan to the first <c>)</c> —
+    /// CSS Syntax §4.3.6 forbids unescaped parens inside an unquoted url-token; commas are
+    /// legal, so an unquoted data: URI parses whole). Anything but whitespace AFTER the closing
+    /// paren (a second layer, extra tokens) rejects → the caller's unsupported-form path.</summary>
     internal static bool TryParseCssUrl(string raw, out string url)
     {
         url = string.Empty;
-        var v = raw.Trim();
-        if (!v.StartsWith("url(", StringComparison.OrdinalIgnoreCase) || !v.EndsWith(")", StringComparison.Ordinal))
+        var v = raw.AsSpan().Trim();
+        if (v.Length < 5 || !v[..4].Equals("url(", StringComparison.OrdinalIgnoreCase))
             return false;
-        var inner = v[4..^1].Trim();
-        // A comma at the top level of the VALUE (outside the url token) would be a multi-layer
-        // list; inside the parens any comma belongs to the URL (data: URIs contain one!).
-        if (inner.Length >= 2
-            && ((inner[0] == '"' && inner[^1] == '"') || (inner[0] == '\'' && inner[^1] == '\'')))
+        var rest = v[4..].TrimStart();
+        ReadOnlySpan<char> inner;
+        ReadOnlySpan<char> after;
+        if (rest.Length > 0 && (rest[0] == '"' || rest[0] == '\''))
         {
-            inner = inner[1..^1];
+            var quote = rest[0];
+            var close = rest[1..].IndexOf(quote);
+            if (close < 0) return false;                      // unterminated string
+            inner = rest[1..(1 + close)];
+            var tail = rest[(close + 2)..].TrimStart();
+            if (tail.Length == 0 || tail[0] != ')') return false;  // junk between quote and ')'
+            after = tail[1..];
         }
-        if (inner.Length == 0) return false;
-        url = inner;
+        else
+        {
+            var close = rest.IndexOf(')');
+            if (close < 0) return false;                      // unterminated url(
+            inner = rest[..close].Trim();
+            after = rest[(close + 1)..];
+        }
+        if (!after.IsWhiteSpace()) return false;              // multi-layer list / extra tokens
+        if (inner.IsEmpty) return false;
+        url = inner.ToString();
         return true;
     }
 

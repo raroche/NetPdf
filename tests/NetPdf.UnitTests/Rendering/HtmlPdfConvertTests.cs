@@ -3099,6 +3099,35 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Background_image_tile_cap_is_overflow_safe_for_huge_boxes()
+    {
+        // PR #166 review P1 — a 4e9 × 4e9 px box with a 1×1 tile needs ~1.6e19 tiles: the long
+        // product wraps NEGATIVE and the pre-fix `nx * ny > cap` compare bypassed the cap into
+        // a ~1.6e19-iteration placement loop. The division-based bound skips + diagnoses.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:4000000000px;height:4000000000px;background-image:url({PngDataUri(1, 1)})\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBgImageTileCap001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    [Fact]
+    public void Background_image_multi_layer_list_is_surfaced_not_misfetched()
+    {
+        // PR #166 review P2 — url(a),url(b) must take the unsupported-multi-layer path, not
+        // parse as the single bogus URL "a),url(b" (which produced misleading fetch failures).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:32px;height:32px;background-image:url(a.png),url(b.png);" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.ResLoadFailed001);
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+    }
+
+    [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {
         // Post-PR-#162 review P1 — a FLAT running element's own background/border already rides

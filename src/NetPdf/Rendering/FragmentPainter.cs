@@ -155,13 +155,19 @@ internal static class FragmentPainter
         var nx = (long)Math.Ceiling(widthPx / tileW);
         var ny = (long)Math.Ceiling(heightPx / tileH);
         if (nx <= 0 || ny <= 0) return;
-        if (nx * ny > MaxBackgroundTilesPerFragment)
+        // OVERFLOW-SAFE cap compare (PR #166 review P1): `nx * ny` can wrap for a huge box /
+        // tiny tile (a 4e9 × 4e9 count wraps long negative and would bypass the cap into a
+        // ~1.6e19-iteration loop). Per-axis bound first, then a division-based product bound;
+        // the diagnostic reports the count as a double product (never wraps).
+        if (nx > MaxBackgroundTilesPerFragment
+            || ny > MaxBackgroundTilesPerFragment
+            || nx > MaxBackgroundTilesPerFragment / ny)
         {
             if (!tileCapReported && diagnostics is not null)
             {
                 diagnostics.Emit(new Diagnostic(
                     DiagnosticCodes.PaintBgImageTileCap001,
-                    $"A background-image tiling needs {nx * ny} tiles for one box (tile "
+                    $"A background-image tiling needs {(double)nx * ny:0} tiles for one box (tile "
                     + $"{tileW:0.##}×{tileH:0.##}px over {widthPx:0.##}×{heightPx:0.##}px) — over the "
                     + $"{MaxBackgroundTilesPerFragment}-tile cap; the image is skipped for this box "
                     + "(its background-color still paints). PDF tiling patterns are the tracked "

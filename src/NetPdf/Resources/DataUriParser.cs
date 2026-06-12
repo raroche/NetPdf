@@ -76,14 +76,32 @@ internal static class DataUriParser
             return false;
         }
 
+        // RAW percent-byte decode (PR #166 review P1 + P3) — `%XX` → the byte, everything else
+        // its own byte(s). This is the RFC 2397/3986 octet semantics, so a percent-encoded
+        // BINARY non-base64 payload round-trips exactly (the pre-fix UnescapeDataString +
+        // UTF-8 re-encode corrupted bytes ≥ 0x80), and the no-throw contract holds by
+        // construction: a malformed escape returns false with a reason instead of letting a
+        // BCL exception escape SafeResourceLoader.FetchAsync.
+        if (!TryPercentDecodeToBytes(payload, out var decoded, out reason))
+        {
+            return false;
+        }
+
         if (isBase64)
         {
-            // Base64 may arrive percent-encoded ('+' as %2B etc.) and with literal whitespace —
-            // unescape, then strip whitespace per RFC 2397 §3's forgiving readers.
-            var unescaped = Uri.UnescapeDataString(payload.ToString());
-            var compact = unescaped.Replace(" ", "").Replace("\t", "").Replace("\n", "").Replace("\r", "");
-            var buffer = new byte[Base64.GetMaxDecodedFromUtf8Length(compact.Length)];
-            if (!Convert.TryFromBase64String(compact, buffer, out var written))
+            // Strip whitespace per RFC 2397 §3's forgiving readers, then decode the (ASCII)
+            // base64 alphabet from the percent-decoded octets.
+            var compact = new byte[decoded.Length];
+            var n = 0;
+            foreach (var b in decoded)
+            {
+                if (b is (byte)' ' or (byte)'\t' or (byte)'\n' or (byte)'\r') continue;
+                compact[n++] = b;
+            }
+            var buffer = new byte[Base64.GetMaxDecodedFromUtf8Length(n)];
+            var status = Base64.DecodeFromUtf8(
+                compact.AsSpan(0, n), buffer, out _, out var written);
+            if (status != System.Buffers.OperationStatus.Done)
             {
                 reason = "data: URI base64 payload failed to decode";
                 return false;
@@ -92,10 +110,7 @@ internal static class DataUriParser
         }
         else
         {
-            // Percent-encoded textual payload → raw bytes (Latin-1 round-trip of the unescaped
-            // string; binary data is conventionally base64, this branch serves textual payloads).
-            var unescaped = Uri.UnescapeDataString(payload.ToString());
-            bytes = System.Text.Encoding.UTF8.GetBytes(unescaped);
+            bytes = decoded;
         }
 
         if (bytes.Length == 0)
@@ -104,5 +119,60 @@ internal static class DataUriParser
             return false;
         }
         return true;
+    }
+
+    /// <summary>Percent-decode <paramref name="payload"/> to raw octets: <c>%XX</c> → the byte;
+    /// an ASCII char → its byte; a non-ASCII char (lenient — a data: URI authored directly in
+    /// HTML can carry one) → its UTF-8 bytes. A malformed escape (<c>%</c> without two hex
+    /// digits) FAILS with a reason — never throws (PR #166 review P1).</summary>
+    private static bool TryPercentDecodeToBytes(
+        ReadOnlySpan<char> payload, out byte[] bytes, out string reason)
+    {
+        bytes = Array.Empty<byte>();
+        reason = string.Empty;
+        var buffer = new byte[System.Text.Encoding.UTF8.GetMaxByteCount(payload.Length)];
+        var n = 0;
+        for (var i = 0; i < payload.Length; i++)
+        {
+            var c = payload[i];
+            if (c == '%')
+            {
+                if (i + 2 >= payload.Length
+                    || !TryHexNibble(payload[i + 1], out var hi)
+                    || !TryHexNibble(payload[i + 2], out var lo))
+                {
+                    reason = $"data: URI payload has a malformed percent escape at offset {i}";
+                    return false;
+                }
+                buffer[n++] = (byte)((hi << 4) | lo);
+                i += 2;
+            }
+            else if (c <= 0x7F)
+            {
+                buffer[n++] = (byte)c;
+            }
+            else
+            {
+                // Lenient non-ASCII: encode the (possibly surrogate-paired) char as UTF-8.
+                var charSpan = i + 1 < payload.Length && char.IsHighSurrogate(c)
+                    ? payload.Slice(i, 2)
+                    : payload.Slice(i, 1);
+                n += System.Text.Encoding.UTF8.GetBytes(charSpan, buffer.AsSpan(n));
+                if (charSpan.Length == 2) i++;
+            }
+        }
+        bytes = buffer.AsSpan(0, n).ToArray();
+        return true;
+    }
+
+    private static bool TryHexNibble(char c, out int value)
+    {
+        switch (c)
+        {
+            case >= '0' and <= '9': value = c - '0'; return true;
+            case >= 'a' and <= 'f': value = c - 'a' + 10; return true;
+            case >= 'A' and <= 'F': value = c - 'A' + 10; return true;
+            default: value = 0; return false;
+        }
     }
 }

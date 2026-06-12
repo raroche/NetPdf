@@ -57,9 +57,24 @@ public sealed class BackgroundVariantParserTests
     [InlineData("calc(10px + 2px)")]
     [InlineData("32px 32px 32px")]             // too many values
     [InlineData("bogus")]
+    [InlineData("-10%")]                       // negative sizes are invalid (PR #167 review P2)
+    [InlineData("-10px")]
+    [InlineData("32px -10px")]
     public void Size_unsupported_forms_reject(string raw) =>
         Assert.False(FragmentPainter.TryParseBackgroundSize(
             raw, 64, 32, 16, 16, out _, out _));
+
+    [Theory]
+    [InlineData("0", 0, 0)]                    // the unitless zero is VALID (PR #167 review P2)
+    [InlineData("0 0", 0, 0)]
+    [InlineData("0 32px", 0, 32)]
+    public void Size_zero_is_valid(string raw, double expectW, double expectH)
+    {
+        Assert.True(FragmentPainter.TryParseBackgroundSize(
+            raw, 64, 32, 16, 16, out var w, out var h));
+        Assert.Equal(expectW, w, 3);
+        Assert.Equal(expectH, h, 3);
+    }
 
     [Theory]
     [InlineData(null, 0, 0)]                   // unset → 0% 0%
@@ -71,6 +86,9 @@ public sealed class BackgroundVariantParserTests
     [InlineData("100% 0%", 48, 0)]
     [InlineData("8px 4px", 8, 4)]              // absolute lengths are plain offsets
     [InlineData("0 0", 0, 0)]                  // the unitless zero
+    [InlineData("top", 24, 0)]                 // a single VERTICAL keyword = center top
+    [InlineData("bottom", 24, 16)]             //   (PR #167 review P2 — the Y axis, X centers)
+    [InlineData("left", 0, 8)]                 // a single horizontal keyword: Y centers
     public void Position_supported_forms_parse(string? raw, double expectX, double expectY)
     {
         Assert.True(FragmentPainter.TryParseBackgroundPosition(

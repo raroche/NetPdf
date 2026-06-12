@@ -3300,9 +3300,11 @@ flags the categories):
          shared tiler — AngleSharp-beta EXPANDS repeat/position into `-x`/`-y` longhands, so
          the capture recomposes the two-value form. An unsupported form (`space`/`round`,
          3-/4-value positions, non-absolute units) surfaces once + that longhand falls back to
-         its initial WHOLE (no half-applied axes). STILL DEFERRED: container width/padding
-         affecting CHILD line geometry (sub-box wrap) + inline-level spans; margin-box
-         background VARIANTS (initial only); `background-origin`/`-clip`/`-attachment` (the
+         its initial WHOLE (no half-applied axes). Margin-box VARIANTS are wired too
+         (post-PR-#167 review P1 — the raw winners ride `MarginBoxBackgroundImage` into the
+         shared tiler; margin-box bodies never pass through AngleSharp, so no `-x`/`-y`
+         recompose). STILL DEFERRED: container width/padding affecting CHILD line geometry
+         (sub-box wrap) + inline-level spans; `background-origin`/`-clip`/`-attachment` (the
          positioning area stays the BORDER box — documented); `space`/`round`; edge-offset
          positions; PDF tiling patterns (the O(1) tile-cap replacement); gradients (Phase 4).
        - **Body image pipeline + background images + per-line horizontal margins — DONE

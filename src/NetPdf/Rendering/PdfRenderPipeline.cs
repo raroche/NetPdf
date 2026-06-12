@@ -266,12 +266,13 @@ internal static class PdfRenderPipeline
                 foreach (var bi in marginResult.BackgroundImages)
                 {
                     if (!imageCache.TryGetByRawUrl(bi.RawUrl, out var biEntry)) continue;
-                    // Null variant raws = the initials (repeat / auto / 0% 0%) — margin-box
-                    // background-position/-size/-repeat stay deferred (deferrals.md).
+                    // The box's declared repeat/size/position raws drive the shared tiler
+                    // (PR #167 review P1 — margin-box variants wired; null = the initial).
                     FragmentPainter.PaintBackgroundImageTiles(
                         page, document, biEntry, mediaBox.HeightPts,
                         bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
-                        diagnostics, ref marginTileCapReported, ref marginVariantReported);
+                        diagnostics, ref marginTileCapReported, ref marginVariantReported,
+                        bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw);
                 }
             }
             // Margin-box borders (border cycle) paint over the bands, before the text — NOT gated by

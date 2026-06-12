@@ -114,13 +114,17 @@ internal static class PageMarginBoxPainter
         FragmentPainter.BorderEdgeCurrentColors CurrentColors);
 
     /// <summary>A margin box's declared <c>background-image: url(...)</c> (margin-box-bg-image
-    /// cycle): the band rect (the SAME border-box rect its color fill uses) + the RAW url — the
-    /// pipeline resolves it against the per-render image cache and tiles it over the rect
-    /// (initial <c>repeat</c>, the body tiler; <c>PrintBackgrounds</c>-gated like the fill).
-    /// A declared border-radius keeps the tiles RECTANGULAR (the rounded-band corners may show
-    /// square tiles — a documented approximation, like the square border strokes).</summary>
+    /// cycle): the band rect (the SAME border-box rect its color fill uses) + the RAW url +
+    /// the RAW <c>background-repeat</c>/<c>-size</c>/<c>-position</c> winners (PR #167 review
+    /// P1 — margin-box declarations are raw CSS, so the authored values arrive intact; null =
+    /// unset → the initial). The pipeline resolves the url against the per-render image cache
+    /// and tiles it over the rect via the SHARED body tiler
+    /// (<c>PrintBackgrounds</c>-gated like the fill). A declared border-radius keeps the tiles
+    /// RECTANGULAR (the rounded-band corners may show square tiles — a documented
+    /// approximation, like the square border strokes).</summary>
     internal readonly record struct MarginBoxBackgroundImage(
-        double LeftPx, double TopPx, double WidthPx, double HeightPx, string RawUrl);
+        double LeftPx, double TopPx, double WidthPx, double HeightPx, string RawUrl,
+        string? RepeatRaw, string? SizeRaw, string? PositionRaw);
 
     /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
     /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle)
@@ -473,9 +477,14 @@ internal static class PageMarginBoxPainter
             var borderRadiusPx = ReadBorderRadiusPx(mb.Declarations, mb.Name, diagnostics);
             // Margin-box background-image (margin-box-bg-image cycle) — the raw declared winner
             // (the established non-slot read); a single url(...) is carried to PASS 2 (the band
-            // rect is final there); any other non-none form surfaces once per Layout.
+            // rect is final there); any other non-none form surfaces once per Layout. The three
+            // tiling variants ride along RAW (PR #167 review P1 — margin-box bodies never pass
+            // through AngleSharp, so the authored values arrive intact, no -x/-y recompose).
             var backgroundImageUrl = TryReadBackgroundImageUrl(
                 mb.Declarations, diagnostics, ref bgImageUnsupportedReported);
+            var backgroundRepeatRaw = RawDeclarationWinner(mb.Declarations, "background-repeat");
+            var backgroundSizeRaw = RawDeclarationWinner(mb.Declarations, "background-size");
+            var backgroundPositionRaw = RawDeclarationWinner(mb.Declarations, "background-position");
 
             // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
             // (width/height/padding are box properties — CSS Values 4 §6.1.1), `rem` against the
@@ -663,6 +672,9 @@ internal static class PageMarginBoxPainter
                 ElementDecorStyle = elementDecorStyle, ElementColorArgb = elementColor,
                 RadiusPx = borderRadiusPx,
                 BackgroundImageUrl = backgroundImageUrl,
+                BackgroundRepeatRaw = backgroundRepeatRaw,
+                BackgroundSizeRaw = backgroundSizeRaw,
+                BackgroundPositionRaw = backgroundPositionRaw,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
                 OverflowVisible = MarginBoxStyle.OverflowVisible(mb.Declarations),
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
@@ -740,11 +752,13 @@ internal static class PageMarginBoxPainter
 
             // background-image (margin-box-bg-image cycle): the SAME band rect as the fill —
             // the pipeline resolves the url against the per-render cache + tiles it over the
-            // rect (over the fill, under borders/text; PrintBackgrounds-gated there).
+            // rect (over the fill, under borders/text; PrintBackgrounds-gated there), the
+            // declared repeat/size/position raws riding along (PR #167 review P1).
             if (item.BackgroundImageUrl is { } bgImageUrl)
             {
                 backgroundImages.Add(new MarginBoxBackgroundImage(
-                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgImageUrl));
+                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgImageUrl,
+                    item.BackgroundRepeatRaw, item.BackgroundSizeRaw, item.BackgroundPositionRaw));
             }
 
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
@@ -1669,12 +1683,8 @@ internal static class PageMarginBoxPainter
         ImmutableArray<CssDeclaration> declarations, IDiagnosticsSink diagnostics,
         ref bool unsupportedReported)
     {
-        if (declarations.IsDefaultOrEmpty) return null;
-        string? raw = null;
-        foreach (var d in declarations)
-            if (d.Property.Equals("background-image", StringComparison.OrdinalIgnoreCase))
-                raw = d.Value.RawText;
-        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var raw = RawDeclarationWinner(declarations, "background-image");
+        if (raw is null) return null;
         var v = raw.Trim();
         if (v.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
         if (ImageResourceCache.TryParseCssUrl(v, out var url)) return url;
@@ -1689,6 +1699,21 @@ internal static class PageMarginBoxPainter
             unsupportedReported = true;
         }
         return null;
+    }
+
+    /// <summary>The LAST declaration of <paramref name="property"/> in the margin box's body
+    /// (cascade order — last wins), or <see langword="null"/> when unset/blank. The raw-read
+    /// fold shared by the background-image url + variant reads (the same loop shape as
+    /// <see cref="ReadBorderRadiusPx"/>).</summary>
+    private static string? RawDeclarationWinner(
+        ImmutableArray<CssDeclaration> declarations, string property)
+    {
+        if (declarations.IsDefaultOrEmpty) return null;
+        string? raw = null;
+        foreach (var d in declarations)
+            if (d.Property.Equals(property, StringComparison.OrdinalIgnoreCase))
+                raw = d.Value.RawText;
+        return string.IsNullOrWhiteSpace(raw) ? null : raw;
     }
 
     private static double ReadBorderRadiusPx(
@@ -1799,6 +1824,9 @@ internal static class PageMarginBoxPainter
         public uint ElementColorArgb;            // the element's own colour — the nested band's currentcolor.
         public double RadiusPx;                  // uniform border-radius for the box's background band (0 = square).
         public string? BackgroundImageUrl;       // raw url from background-image (margin-box-bg-image cycle).
+        public string? BackgroundRepeatRaw;      // raw background-repeat/-size/-position winners
+        public string? BackgroundSizeRaw;        //   (PR #167 review P1 — margin-box variants
+        public string? BackgroundPositionRaw;    //   wired through to the shared tiler).
         public ComputedStyle? MetricsStyle;     // line-pitch style override (the LARGEST segment font) — null = ContentStyle.
         public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
                                                 // box's desired/max size for rigid/explicit/vertical boxes,

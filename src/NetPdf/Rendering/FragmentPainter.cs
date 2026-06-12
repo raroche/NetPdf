@@ -342,18 +342,34 @@ internal static class FragmentPainter
             auto = true;
             return true;
         }
+        // Sizes are NON-NEGATIVE (CSS B&B §3.9 — a negative background-size is invalid; the
+        // pre-fix accepted -10% / -10px, whose ≤ 0 tile silently skipped painting instead of
+        // falling back with the diagnostic — PR #167 review P2).
         if (token.EndsWith('%')
             && double.TryParse(token[..^1], System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var pct)
             && double.IsFinite(pct))
         {
+            if (pct < 0) return false;
             px = areaPx * pct / 100.0;
             return true;
         }
-        return LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit)
-            && unit.Length > 0
-            && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out px)
-            && double.IsFinite(px);
+        if (LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit))
+        {
+            // The unitless ZERO is a valid length (CSS Values §6.2) — `background-size: 0`
+            // parses to a zero tile (which paints nothing), it is NOT an unsupported form
+            // (PR #167 review P2).
+            if (unit.Length == 0 && n == 0.0) return true;
+            if (unit.Length > 0
+                && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out px)
+                && double.IsFinite(px)
+                && px >= 0)
+            {
+                return true;
+            }
+        }
+        px = 0;
+        return false;
     }
 
     /// <summary>Parse <c>background-position</c> (bg-variants cycle): per-axis keywords
@@ -375,8 +391,19 @@ internal static class FragmentPainter
         string xTok, yTok;
         if (parts.Length == 1)
         {
-            xTok = parts[0];
-            yTok = "center";
+            // ONE value: the other axis centers (§3.6). A single VERTICAL keyword belongs to
+            // the Y axis — `background-position: top` means `center top` (PR #167 review P2;
+            // the pre-fix assigned it to X and rejected, falling back to 0% 0%).
+            if (parts[0] is "top" or "bottom")
+            {
+                xTok = "center";
+                yTok = parts[0];
+            }
+            else
+            {
+                xTok = parts[0];
+                yTok = "center";
+            }
         }
         else
         {

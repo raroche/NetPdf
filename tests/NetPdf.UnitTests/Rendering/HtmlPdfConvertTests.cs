@@ -3290,6 +3290,76 @@ public sealed class HtmlPdfConvertTests
         Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
     }
 
+    [Fact]
+    public void Page_margin_box_background_variants_drive_the_tiler()
+    {
+        // PR #167 review P1 — a margin box's declared repeat/size/position raws reach the
+        // shared tiler (margin-box bodies never pass through AngleSharp, so the authored
+        // values arrive intact): no-repeat → ONE tile (was 8); size 32px 32px → 2 × 1 tiles
+        // at 24pt.
+        var noRepeat = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 32px; " +
+            $"@top-center {{ content: \"AB\"; width: 64px; background-image: url({PngDataUri(16, 16)}); " +
+            "background-repeat: no-repeat } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Single(AllImagePlacements(noRepeat));
+
+        var sized = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 32px; " +
+            $"@top-center {{ content: \"AB\"; width: 64px; background-image: url({PngDataUri(16, 16)}); " +
+            "background-size: 32px 32px } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var placements = AllImagePlacements(sized);
+        Assert.Equal(2, placements.Count);
+        Assert.Equal(24.0, placements[0].W, 1);
+    }
+
+    [Fact]
+    public void Background_position_single_vertical_keyword_centers_x()
+    {
+        // PR #167 review P2 — `background-position: top` = `center top`: the tile sits
+        // (64 − 16) / 2 = 24px = 18pt right of the band edge (pre-fix the keyword was
+        // rejected on the X axis and fell back to 0% 0%).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:no-repeat;background-position:top;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        var band = FirstRect(pdf);
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(band.X + 18.0, p.X, 1);
+    }
+
+    [Fact]
+    public void Background_size_negative_falls_back_with_diagnostic()
+    {
+        // PR #167 review P2 — a negative size is INVALID (not a zero tile): the longhand
+        // falls back to auto (8 intrinsic tiles on the 64×32 box) and surfaces once.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-size:-10px\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.Equal(8, AllImagePlacements(Latin1(result.Pdf)).Count);
+    }
+
+    [Fact]
+    public void Background_size_zero_paints_nothing_without_diagnostic()
+    {
+        // `background-size: 0` is VALID CSS — a zero tile paints nothing, with no
+        // unsupported-form warning (PR #167 review P2).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-size:0\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
     // ---- element() nested CONTAINER bands (container-bands cycle) ----
 
     [Fact]

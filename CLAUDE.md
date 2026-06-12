@@ -424,7 +424,9 @@ block of a running element paints ONE band spanning its descendants' lines (PRE-
 under inner; vertical margins fold into boundary segment gaps, max-collapse; its h-margins inset ITS
 band); a margin box's `background-image: url()` tiles over its band (raw-read → `MarginBoxLayoutResult.
 BackgroundImages`; margin boxes resolve EARLY so the prefetch sees their urls, PrintBackgrounds-gated;
-initial repeat only); body `background-repeat`/`-size`/`-position` drive the shared tiler (per-axis
+its repeat/size/position raws wired through — post-PR-#167 review P1, with the §3.9 negative-size
+reject + unitless-zero accept + single-vertical-keyword fix); body `background-repeat`/`-size`/
+`-position` drive the shared tiler (per-axis
 repeat with position PHASE; auto/contain/cover/lengths/%; keywords + §3.6 percentages; AngleSharp splits
 repeat/position into `-x`/`-y` longhands → recomposed; unsupported forms fall back WHOLE to the initial +
 surface once). Next (in order): the multi-page driver (cross-page running + `@page :left`/`:right`/

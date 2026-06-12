@@ -200,4 +200,36 @@ public sealed class DataUriImagePipelineTests
             });
         Assert.Contains("https://example.com/b.png", loaderOn.Requested);
     }
+
+    [Fact]
+    public void Print_backgrounds_off_skips_margin_box_background_fetch()
+    {
+        // margin-box-bg-image cycle — the PrintBackgrounds prefetch gate (PR #166 review P1)
+        // applies to page margin boxes' background-image urls too.
+        var loader = new RecordingLoader();
+        HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; " +
+            "background-image: url(https://example.com/m.png) } }</style></head>" +
+            "<body>x</body></html>",
+            new HtmlPdfOptions
+            {
+                PrintBackgrounds = false,
+                ResourceLoader = loader,
+                SecurityPolicy = new SecurityPolicy { AllowHttpsScheme = true },
+            });
+        Assert.DoesNotContain("https://example.com/m.png", loader.Requested);
+
+        var loaderOn = new RecordingLoader();
+        HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; " +
+            "background-image: url(https://example.com/m.png) } }</style></head>" +
+            "<body>x</body></html>",
+            new HtmlPdfOptions
+            {
+                PrintBackgrounds = true,
+                ResourceLoader = loaderOn,
+                SecurityPolicy = new SecurityPolicy { AllowHttpsScheme = true },
+            });
+        Assert.Contains("https://example.com/m.png", loaderOn.Requested);
+    }
 }

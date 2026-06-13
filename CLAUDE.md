@@ -447,7 +447,7 @@ stays UNREGISTERED, so `@supports` doesn't report it — PR #169 P2). `backgroun
 last two modes (new `BackgroundRepeatMode` + `AxisTilingPlan`; `space` distributes equal gaps via the origin
 step, `round` rescales the tile; `RegisterTilingPattern` gained `/XStep`//`/YStep`). **4-value `<position>`
 edge-offsets / `background-origin` / `background-clip` cycles (in progress, branch
-`phase-3-task-21-23-pos-edge-offset-bg-origin-clip`, PR open):** the shared `TryParseBackgroundPosition` parses
+`phase-3-task-21-23-pos-edge-offset-bg-origin-clip`, PR #170 OPEN):** the shared `TryParseBackgroundPosition` parses
 the 3-/4-value edge-offset form (`left 10px top 5px` — an offset FROM a named edge; benefits `object-position`
 + `background-position`; facade-reachable via MARGIN-BOX raws, the BODY + `object-position` 4-value forms
 AngleSharp-dropped); a body block's `background-image` honors `background-origin` (the positioning area —

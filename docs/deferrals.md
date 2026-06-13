@@ -3281,6 +3281,25 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
+         (edge-offset / bg-origin / bg-clip cycles):** the shared
+         `FragmentPainter.TryParseBackgroundPosition` (used by `object-position` +
+         `background-position`) parses the §3.6 THREE-/FOUR-value edge-offset form — an edge
+         keyword each optionally followed by a `<length-percentage>` offset FROM that edge
+         (`left 10px top 5px`, `right 25% bottom 50%`); components assigned to axes by keyword
+         (left/right → X, top/bottom → Y, center → the free axis), either order; two same-axis
+         edges / leftover tokens reject. FACADE-reachable only via MARGIN-BOX backgrounds (raw
+         values) — a BODY `background-position` or `object-position` 4-value form is
+         AngleSharp-dropped at parse (a documented beta gremlin; only the parser + the margin-box
+         raw path see it). A body block's `background-image` honors `background-origin` (the
+         POSITIONING area — `border-box` / `padding-box` [initial] / `content-box`, the border box
+         inset by the USED border / border+padding via new `BackgroundAreaInset` +
+         `UsedBorderEdgeWidthPx`, matching the border painter — replaces the border-box
+         approximation; borderless boxes byte-identical) and `background-clip` (the PAINT/clip rect
+         — `border-box` [initial] / `padding-box` / `content-box`, the tiler's new optional
+         clip-rect params bounding the loop clip + the pattern fill). STILL DEFERRED: MARGIN-BOX
+         `background-origin`/`-clip` (the band stays the area); the BODY + `object-position`
+         4-value position forms (AngleSharp drop); `background-attachment`; gradients (Phase 4).
        - **Container vertical padding + §4.3-gated borders + `object-position` +
          `background-repeat: space`/`round` — DONE (container-vpad / object-position /
          space-round cycles):** a running-element CONTAINER's VERTICAL border+padding now

@@ -63,6 +63,15 @@ public sealed class KeywordResolverTests
     [Fact] public void ObjectFit_scale_down_resolves()    => AssertResolves("scale-down", PropertyId.ObjectFit);
     [Fact] public void ObjectFit_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.ObjectFit);
 
+    // background-origin / background-clip (bg-origin / bg-clip cycles + PR #170 review P2 — the
+    // registered keyword properties: border-box / padding-box / content-box).
+    [Fact] public void BackgroundOrigin_padding_box_resolves() => AssertResolves("padding-box", PropertyId.BackgroundOrigin);
+    [Fact] public void BackgroundOrigin_content_box_resolves() => AssertResolves("content-box", PropertyId.BackgroundOrigin);
+    [Fact] public void BackgroundOrigin_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.BackgroundOrigin);
+    [Fact] public void BackgroundClip_border_box_resolves()    => AssertResolves("border-box", PropertyId.BackgroundClip);
+    [Fact] public void BackgroundClip_content_box_resolves()   => AssertResolves("content-box", PropertyId.BackgroundClip);
+    [Fact] public void BackgroundClip_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.BackgroundClip);
+
     [Fact] public void Display_foo_emits_diagnostic()         => AssertInvalid("foo", PropertyId.Display);
     [Fact] public void Display_block_flex_emits_diagnostic()  => AssertInvalid("block-flex", PropertyId.Display);
     [Fact] public void Position_stickys_emits_diagnostic()    => AssertInvalid("stickys", PropertyId.Position);

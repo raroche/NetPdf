@@ -56,7 +56,8 @@ public sealed class BackgroundVariantParserTests
         // §3.2 — 88px area / 16px tile → floor(88/16) = 5 whole tiles; the 8px leftover spreads
         // as 4 equal 2px gaps → the origin step is 16 + 2 = 18px, the first tile flush at 0.
         var (first, count, step) = FragmentPainter.AxisTilingPlan(
-            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 88, tilePx: 16, posPx: 0);
+            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 88, tilePx: 16, posPx: 0,
+            coverStartPx: 0, coverEndPx: 88);   // space fills the AREA, ignoring the cover window
         Assert.Equal(0.0, first, 6);
         Assert.Equal(5L, count);
         Assert.Equal(18.0, step, 6);
@@ -67,7 +68,8 @@ public sealed class BackgroundVariantParserTests
     {
         // 0–1 whole tiles fit → no gaps to distribute; a single tile at the resolved position.
         var (first, count, step) = FragmentPainter.AxisTilingPlan(
-            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 20, tilePx: 16, posPx: 5);
+            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 20, tilePx: 16, posPx: 5,
+            coverStartPx: 0, coverEndPx: 20);
         Assert.Equal(5.0, first, 6);
         Assert.Equal(1L, count);
         Assert.Equal(16.0, step, 6);
@@ -79,10 +81,26 @@ public sealed class BackgroundVariantParserTests
         // round pre-rescales the tile (in the caller) so a whole number fits; the plan then
         // counts round(area/tile) tiles flush from the area start, step = the rescaled tile.
         var (first, count, step) = FragmentPainter.AxisTilingPlan(
-            FragmentPainter.BackgroundRepeatMode.Round, areaPx: 60, tilePx: 15, posPx: 7);
+            FragmentPainter.BackgroundRepeatMode.Round, areaPx: 60, tilePx: 15, posPx: 7,
+            coverStartPx: 0, coverEndPx: 60);
         Assert.Equal(0.0, first, 6);
         Assert.Equal(4L, count);
         Assert.Equal(15.0, step, 6);
+    }
+
+    [Fact]
+    public void Axis_tiling_plan_repeat_covers_the_clip_window_phased_at_the_origin()
+    {
+        // PR #170 review P1 — `repeat` tiles the PAINTING (clip) window, not just the positioning
+        // area: an 80px area / 16px tile with the clip extending [−4, 84] (a 4px border strip each
+        // side under a padding-box origin) → the grid (phase 0) starts at the first tile ≤ −4 (−16)
+        // and runs to ≥ 84 → 7 tiles (−16,0,16,32,48,64,80) spanning [−16, 96] ⊇ [−4, 84].
+        var (first, count, step) = FragmentPainter.AxisTilingPlan(
+            FragmentPainter.BackgroundRepeatMode.Repeat, areaPx: 80, tilePx: 16, posPx: 0,
+            coverStartPx: -4, coverEndPx: 84);
+        Assert.Equal(-16.0, first, 6);
+        Assert.Equal(7L, count);
+        Assert.Equal(16.0, step, 6);
     }
 
     [Theory]
@@ -139,6 +157,13 @@ public sealed class BackgroundVariantParserTests
     [InlineData("top", 24, 0)]                 // a single VERTICAL keyword = center top
     [InlineData("bottom", 24, 16)]             //   (PR #167 review P2 — the Y axis, X centers)
     [InlineData("left", 0, 8)]                 // a single horizontal keyword: Y centers
+    [InlineData("left 10px top 5px", 10, 5)]   // edge-offset cycle — 4-value offsets FROM the edges
+    [InlineData("top 5px left 10px", 10, 5)]   // axes resolved by keyword, order-independent
+    [InlineData("right 10px bottom 5px", 38, 11)] // from the FAR edges: (48−10, 16−5)
+    [InlineData("left 25% top 50%", 12, 8)]    // a % offset is of the range: (48×.25, 16×.5)
+    [InlineData("right 25% bottom 50%", 36, 8)] // (48−48×.25, 16−16×.5)
+    [InlineData("left top 5px", 0, 5)]         // 3-value: left edge (0) + 5px from top
+    [InlineData("center top 5px", 24, 5)]      // center X (48×.5) + 5px from top
     public void Position_supported_forms_parse(string? raw, double expectX, double expectY)
     {
         Assert.True(FragmentPainter.TryParseBackgroundPosition(
@@ -148,8 +173,10 @@ public sealed class BackgroundVariantParserTests
     }
 
     [Theory]
-    [InlineData("left 10px top 5px")]          // 4-value edge-offset form unsupported
-    [InlineData("center center center")]
+    [InlineData("center center center")]       // a leftover token (3 edges, no offset to consume)
+    [InlineData("left 10px right 5px")]        // two X-axis edges
+    [InlineData("top 10px bottom 5px")]        // two Y-axis edges
+    [InlineData("left 10px top 5px right 0")]  // 5 tokens
     [InlineData("5em 0")]                      // relative units unsupported
     [InlineData("bogus")]
     public void Position_unsupported_forms_reject(string raw) =>

@@ -59,16 +59,17 @@ public sealed class PropertyCoverageCorpusTests
         // CSS sub-features that the renderer emits diagnostics for in Phase 4 (post-v1).
         "background-image", "background-position", "background-position-x", "background-position-y",
         "background-repeat", "background-repeat-x", "background-repeat-y",
-        "background-size", "background-attachment", "background-origin", "background-clip",
+        "background-size", "background-attachment",
         "border-bottom-left-radius", "border-bottom-right-radius",
         "border-top-left-radius", "border-top-right-radius",
         "outline-color", "outline-style", "outline-width", "outline-offset",
         "box-shadow", "text-shadow", "filter", "mix-blend-mode", "isolation",
         "transform", "transform-origin", "transform-style", "perspective", "perspective-origin",
         "will-change", "backface-visibility",
-        // object-fit was REGISTERED in properties.json (object-fit cycle + PR #168 review P2 —
-        // it computes via the keyword resolver and @supports sees it); object-position stays
-        // deferred (the painter centres per its 50% 50% initial).
+        // object-fit + background-origin/-clip are REGISTERED in properties.json (object-fit cycle
+        // / PR #168 review P2 / PR #170 review P2 — they compute via the keyword resolver and
+        // @supports sees them); object-position stays deferred (a 2-component <position> needs a
+        // new metadata type — the painter centres per its 50% 50% initial).
         "object-position",
         // Per Phase 3 Task 10 cycle 2 review (User #4) — list-style-type
         // + list-style-position were ALREADY registered in

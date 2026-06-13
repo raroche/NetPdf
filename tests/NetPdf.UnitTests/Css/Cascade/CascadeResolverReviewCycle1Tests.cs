@@ -248,6 +248,24 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_background_origin_and_clip_evaluate_true()
+    {
+        // PR #170 review P2 — background-origin/-clip are REGISTERED keyword properties (properties.json
+        // + the keyword resolver), so `@supports (background-origin: content-box)` /
+        // `(background-clip: padding-box)` gate their blocks IN (the metadata-based @supports evaluator
+        // sees them); an invalid value is diagnosed (KeywordResolverTests).
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (background-origin: content-box) { p { color: red } } " +
+            "@supports (background-clip: padding-box) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));
+        Assert.NotNull(rules?.GetWinner("font-size"));
+    }
+
+    [Fact]
     public async Task Rec4_AtSupports_and_combines()
     {
         // Synthetic AST so the @supports prelude survives unambiguously through to the

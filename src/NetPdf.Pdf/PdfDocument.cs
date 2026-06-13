@@ -253,7 +253,11 @@ internal sealed class PdfDocument
         anchorXPt = double.Parse(axText, CultureInfo.InvariantCulture);
         anchorYPt = double.Parse(ayText, CultureInfo.InvariantCulture);
 
-        var key = $"{imageRef.ObjectNumber}|{wText}|{hText}|{axText}|{ayText}";
+        // FULL indirect-ref identity in the key (PR #168 Copilot) — object numbers repeat
+        // across stores (a foreign or synthetic StoreId-0 ref can share a number with a local
+        // one), and HasSameTarget's contract is number + generation + store; a number-only key
+        // could hand back a pattern for the WRONG image.
+        var key = $"{imageRef.ObjectNumber}:{imageRef.Generation}:{imageRef.StoreId}|{wText}|{hText}|{axText}|{ayText}";
         if (_patternCache.TryGetValue(key, out var existing)) return existing;
 
         // The cell paints the image stretched to the tile rect: q w 0 0 h 0 0 cm /ImP Do Q —
@@ -268,6 +272,7 @@ internal sealed class PdfDocument
             .Add(new PdfReal(1)).Add(new PdfReal(0)).Add(new PdfReal(0))
             .Add(new PdfReal(1)).Add(new PdfReal(anchorXPt)).Add(new PdfReal(anchorYPt));
         var dict = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Pattern)           // ISO 32000-2 Table 74 (PR #168 Copilot)
             .Set(PdfNames.PatternType, new PdfInteger(1))   // tiling
             .Set(PdfNames.PaintType, new PdfInteger(1))     // colored (the image carries color)
             .Set(PdfNames.TilingType, new PdfInteger(1))    // constant spacing

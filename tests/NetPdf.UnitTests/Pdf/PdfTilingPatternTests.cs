@@ -36,6 +36,7 @@ public sealed class PdfTilingPatternTests
         page.FillRectangleWithPattern(patternRef, 30, 600, 200, 112);
         var pdf = Latin1(doc.Save());
 
+        Assert.Contains("/Type /Pattern", pdf);   // ISO 32000-2 Table 74 (PR #168 Copilot)
         Assert.Contains("/PatternType 1", pdf);
         Assert.Contains("/PaintType 1", pdf);
         Assert.Contains("/TilingType 1", pdf);

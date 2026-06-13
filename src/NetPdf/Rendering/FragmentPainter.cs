@@ -118,10 +118,19 @@ internal static class FragmentPainter
                     && imageCache.BackgroundImageBoxes.TryGetValue(fragment.Box, out var bgSpec)
                     && imageCache.TryGet(bgSpec.UriKey, out var bgEntry))
                 {
+                    // background-origin (initial padding-box) sets the positioning area;
+                    // background-clip (initial border-box) the paint rect — each insets the border
+                    // box by the used border (padding-box) or border+padding (content-box) (bg-origin
+                    // / bg-clip cycles).
+                    var (oT, oR, oB, oL) = BackgroundAreaInset(style, bgSpec.OriginRaw, defaultArea: 'p');
+                    var (cT, cR, cB, cL) = BackgroundAreaInset(style, bgSpec.ClipRaw, defaultArea: 'b');
                     PaintBackgroundImageTiles(
-                        page, document, bgEntry, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                        page, document, bgEntry, pageHeightPt,
+                        leftPx + oL, topPx + oT, widthPx - oL - oR, heightPx - oT - oB,
                         diagnostics, ref variantUnsupportedReported,
-                        bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw);
+                        bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
+                        clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,
+                        clipWidthPx: widthPx - cL - cR, clipHeightPx: heightPx - cT - cB);
                 }
             }
 
@@ -147,19 +156,31 @@ internal static class FragmentPainter
     /// per the CSS B&amp;B §3.6 percentage rule — <c>x%</c> aligns the image's x% point with the
     /// area's; one value → the other axis centers), and each axis repeats per
     /// <paramref name="repeatRaw"/> (<c>repeat</c> — the initial — / <c>no-repeat</c> /
-    /// <c>repeat-x</c> / <c>repeat-y</c> / the two-value axis form). An unsupported form
-    /// (<c>space</c> / <c>round</c> / 3-4-value positions / non-absolute units) surfaces once
-    /// per render and that longhand falls back to its initial. Partial tiles clip at the border
-    /// box. Approximation (documented): the positioning area is the BORDER box (the spec's
-    /// initial <c>background-origin: padding-box</c> would use the padding box). Null raws =
-    /// the initial everywhere (the margin-box caller). INTERNAL so the pipeline reuses the
-    /// tiler for page-margin-box background images (margin-box-bg-image cycle).</summary>
+    /// <c>repeat-x</c> / <c>repeat-y</c> / <c>space</c> / <c>round</c> / the two-value axis form).
+    /// An unsupported form (non-absolute units / a malformed position) surfaces once per render and
+    /// that longhand falls back to its initial. The positioning area is the caller-passed box — the
+    /// body caller passes the <c>background-origin</c> box (initial padding-box; bg-origin cycle),
+    /// the margin-box caller its band (origin/clip = the band, a documented approximation). The
+    /// clip rect (<c>background-clip</c>, initial border-box; bg-clip cycle) is the optional clip
+    /// params, defaulting to the positioning area. Null raws = the initial everywhere. INTERNAL so
+    /// the pipeline reuses the tiler for page-margin-box background images (margin-box-bg-image
+    /// cycle).</summary>
     internal static void PaintBackgroundImageTiles(
         PdfPage page, PdfDocument document, ImageResourceCache.Entry entry, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
         IDiagnosticsSink? diagnostics, ref bool variantUnsupportedReported,
-        string? repeatRaw = null, string? sizeRaw = null, string? positionRaw = null)
+        string? repeatRaw = null, string? sizeRaw = null, string? positionRaw = null,
+        double? clipLeftPx = null, double? clipTopPx = null,
+        double? clipWidthPx = null, double? clipHeightPx = null)
     {
+        // background-clip (bg-clip cycle): the PAINT area, defaulting to the POSITIONING area —
+        // the body caller passes the border box here while the area (leftPx..heightPx) is the
+        // background-origin box; the margin-box caller leaves it = the band. Tiles are POSITIONED
+        // in the area (background-origin) but PAINTED only within the clip rect.
+        var clipL = clipLeftPx ?? leftPx;
+        var clipT = clipTopPx ?? topPx;
+        var clipW = clipWidthPx ?? widthPx;
+        var clipH = clipHeightPx ?? heightPx;
         // Each unsupported longhand falls back to ITS initial WHOLE (a failed parse may have
         // half-assigned its outs — e.g. a valid first axis before an invalid second).
         var anyVariantUnsupported = false;
@@ -221,6 +242,11 @@ internal static class FragmentPainter
             var fillRightPx = singleX ? Math.Min(leftPx + widthPx, leftPx + firstX + tileW) : leftPx + widthPx;
             var fillTopPx = singleY ? Math.Max(topPx, topPx + firstY) : topPx;
             var fillBottomPx = singleY ? Math.Min(topPx + heightPx, topPx + firstY + tileH) : topPx + heightPx;
+            // Bound the pattern fill by the background-clip rect (bg-clip cycle).
+            fillLeftPx = Math.Max(fillLeftPx, clipL);
+            fillRightPx = Math.Min(fillRightPx, clipL + clipW);
+            fillTopPx = Math.Max(fillTopPx, clipT);
+            fillBottomPx = Math.Min(fillBottomPx, clipT + clipH);
             if (fillRightPx - fillLeftPx <= 0 || fillBottomPx - fillTopPx <= 0) return;
             // The anchor tile's PDF rect gives the pattern Matrix origin (its bottom-left)
             // + the tile size in pt; the ORIGIN STEPS convert with the same px→pt scale
@@ -238,9 +264,10 @@ internal static class FragmentPainter
             page.FillRectangleWithPattern(patternRef, fx, fy, fw, fh);
             return;
         }
-        // Clip partial / protruding tiles to the border box (background-clip: border-box, the
-        // initial).
-        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+        // Clip partial / protruding tiles to the background-clip rect (bg-clip cycle; the initial
+        // background-clip: border-box, which the body caller passes explicitly while the tiled
+        // area is the background-origin box).
+        ToPdfRect(clipL, clipT, clipW, clipH, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
         page.BeginRectangleClip(cx, cy, cw, ch);
         for (long row = 0; row < ny; row++)
         {
@@ -267,6 +294,46 @@ internal static class FragmentPainter
             + "was ignored — that longhand fell back to its initial value.",
             DiagnosticSeverity.Warning));
         variantUnsupportedReported = true;
+    }
+
+    /// <summary>The per-side inset from the BORDER box for a background box-area keyword (bg-origin
+    /// / bg-clip cycles): <c>border-box</c> → 0, <c>padding-box</c> → the used border widths,
+    /// <c>content-box</c> → border + padding. An unset / unrecognized value uses
+    /// <paramref name="defaultArea"/> — the property's initial (<c>'p'</c> padding-box for
+    /// background-origin, <c>'b'</c> border-box for background-clip).</summary>
+    private static (double Top, double Right, double Bottom, double Left) BackgroundAreaInset(
+        ComputedStyle style, string? raw, char defaultArea)
+    {
+        var area = raw?.Trim().ToLowerInvariant() switch
+        {
+            "border-box" => 'b',
+            "padding-box" => 'p',
+            "content-box" => 'c',
+            _ => defaultArea,
+        };
+        if (area == 'b') return (0, 0, 0, 0);
+        var bt = UsedBorderEdgeWidthPx(style, PropertyId.BorderTopStyle, PropertyId.BorderTopWidth);
+        var br = UsedBorderEdgeWidthPx(style, PropertyId.BorderRightStyle, PropertyId.BorderRightWidth);
+        var bb = UsedBorderEdgeWidthPx(style, PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth);
+        var bl = UsedBorderEdgeWidthPx(style, PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth);
+        if (area == 'p') return (bt, br, bb, bl);
+        return (bt + style.ReadLengthPxOrZero(PropertyId.PaddingTop),
+                br + style.ReadLengthPxOrZero(PropertyId.PaddingRight),
+                bb + style.ReadLengthPxOrZero(PropertyId.PaddingBottom),
+                bl + style.ReadLengthPxOrZero(PropertyId.PaddingLeft));
+    }
+
+    /// <summary>The USED width of a border edge — the gated value the border painter uses: 0 when
+    /// the edge's style is unset / <c>none</c> / <c>hidden</c>, else its <c>border-*-width</c> px.
+    /// The background origin/clip inset must match what actually paints (bg-origin / bg-clip).</summary>
+    private static double UsedBorderEdgeWidthPx(ComputedStyle style, PropertyId styleId, PropertyId widthId)
+    {
+        var styleSlot = style.Get(styleId);
+        if (styleSlot.Tag != ComputedSlotTag.Keyword) return 0;     // unset → initial `none`
+        var kw = styleSlot.AsKeyword();
+        if (kw is BorderStyleNone or BorderStyleHidden) return 0;
+        var widthSlot = style.Get(widthId);
+        return widthSlot.Tag == ComputedSlotTag.LengthPx ? Math.Max(0, widthSlot.AsLengthPx()) : 0;
     }
 
     /// <summary>A per-axis <c>background-repeat</c> mode (bg-variants + space-round cycles,
@@ -435,8 +502,9 @@ internal static class FragmentPainter
     /// swapped keyword pair like <c>top left</c> is accepted), <c>&lt;length&gt;</c> (absolute),
     /// or <c>&lt;percentage&gt;</c> per the CSS B&amp;B §3.6 rule (<c>x%</c> aligns the image's
     /// x% point with the area's: offset = (area − tile) × x%). ONE value → the other axis
-    /// centers. 3-/4-value edge-offset forms / non-absolute units → <see langword="false"/>
-    /// (fall back to 0% 0% + surface once).</summary>
+    /// centers. The THREE-/FOUR-value edge-offset form (<c>left 10px top 5px</c> — an offset FROM
+    /// a named edge; edge-offset cycle) is supported; non-absolute units → <see langword="false"/>
+    /// (fall back to 0% 0% + surface once). Reused for <c>object-position</c> too.</summary>
     internal static bool TryParseBackgroundPosition(
         string? raw, double areaW, double areaH, double tileW, double tileH,
         out double posX, out double posY)
@@ -445,7 +513,11 @@ internal static class FragmentPainter
         posY = 0;
         if (string.IsNullOrWhiteSpace(raw)) return true;
         var parts = raw.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length is < 1 or > 2) return false;
+        if (parts.Length is < 1 or > 4) return false;
+        // The 3-/4-value edge-offset form (edge-offset cycle, CSS B&B §3.6): an edge keyword each
+        // optionally followed by a <length-percentage> offset FROM that edge.
+        if (parts.Length >= 3)
+            return TryParseEdgeOffsetPosition(parts, areaW, areaH, tileW, tileH, out posX, out posY);
         string xTok, yTok;
         if (parts.Length == 1)
         {
@@ -512,6 +584,108 @@ internal static class FragmentPainter
             }
         }
         pos = 0;
+        return false;
+    }
+
+    /// <summary>The §3.6 THREE-/FOUR-value edge-offset position form (edge-offset cycle): two
+    /// components, each an edge keyword (<c>left</c>/<c>right</c>/<c>top</c>/<c>bottom</c>/
+    /// <c>center</c>) optionally followed by a <c>&lt;length-percentage&gt;</c> offset FROM that
+    /// edge. Components are assigned to axes by keyword (left/right → X, top/bottom → Y, center →
+    /// the free axis), in either order; two same-axis edges or a leftover token reject.</summary>
+    private static bool TryParseEdgeOffsetPosition(
+        string[] parts, double areaW, double areaH, double tileW, double tileH,
+        out double posX, out double posY)
+    {
+        posX = 0;
+        posY = 0;
+        // Parse exactly two (edge, offset?) components, consuming EVERY token.
+        var i = 0;
+        var e0 = parts[i++];
+        var o0 = i < parts.Length && IsOffsetToken(parts[i]) ? parts[i++] : null;
+        if (i >= parts.Length) return false;
+        var e1 = parts[i++];
+        var o1 = i < parts.Length && IsOffsetToken(parts[i]) ? parts[i++] : null;
+        if (i != parts.Length) return false;   // a leftover token → invalid
+
+        var a0 = EdgeAxis(e0);
+        var a1 = EdgeAxis(e1);
+        if (a0 == '\0' || a1 == '\0') return false;       // a non-edge keyword / bad token
+        // Resolve which component is X vs Y (a `center` floats to whichever axis the other isn't).
+        int xc;
+        if (a0 == 'x' && a1 != 'x') xc = 0;
+        else if (a1 == 'x' && a0 != 'x') xc = 1;
+        else if (a0 == 'y' && a1 != 'y') xc = 1;          // comp0 is Y → comp1 is X
+        else if (a1 == 'y' && a0 != 'y') xc = 0;
+        else if (a0 == 'c' && a1 == 'c') xc = 0;          // both center → arbitrary
+        else return false;                                // two same-axis edges
+        var (xEdge, xOff) = xc == 0 ? (e0, o0) : (e1, o1);
+        var (yEdge, yOff) = xc == 0 ? (e1, o1) : (e0, o0);
+        return TryEdgeOffsetComponent(xEdge, xOff, areaW, tileW, out posX)
+            && TryEdgeOffsetComponent(yEdge, yOff, areaH, tileH, out posY);
+    }
+
+    /// <summary>The axis an edge keyword belongs to: <c>x</c> (left/right), <c>y</c> (top/bottom),
+    /// <c>c</c> (center — the free axis), or <c>\0</c> (not an edge keyword).</summary>
+    private static char EdgeAxis(string token) => token switch
+    {
+        "left" or "right" => 'x',
+        "top" or "bottom" => 'y',
+        "center" => 'c',
+        _ => '\0',
+    };
+
+    /// <summary>True for a token that is an OFFSET (a <c>&lt;length-percentage&gt;</c>) rather than
+    /// an edge keyword — so the parser knows whether the token after an edge belongs to it.</summary>
+    private static bool IsOffsetToken(string token) =>
+        EdgeAxis(token) == '\0'
+        && (token.EndsWith('%') || LengthResolver.TrySplitNumberAndUnit(token, out _, out _));
+
+    /// <summary>One edge-offset component's tile-origin offset: <c>left</c>/<c>top</c> measure FROM
+    /// the start edge (0 + offset), <c>right</c>/<c>bottom</c> from the END edge (range − offset),
+    /// <c>center</c> is the midpoint and takes no offset; a percentage offset is of the §3.6 range
+    /// (area − tile).</summary>
+    private static bool TryEdgeOffsetComponent(
+        string edge, string? offset, double areaPx, double tilePx, out double pos)
+    {
+        pos = 0;
+        var range = areaPx - tilePx;
+        if (edge == "center")
+        {
+            if (offset is not null) return false;   // `center` takes no offset
+            pos = range * 0.5;
+            return true;
+        }
+        var off = 0.0;
+        if (offset is not null && !TryOffsetValuePx(offset, range, out off)) return false;
+        pos = edge is "left" or "top" ? off : range - off;   // start edge vs end edge
+        return true;
+    }
+
+    /// <summary>An edge offset's px value: a percentage is of the §3.6 <paramref name="rangePx"/>
+    /// (area − tile), an absolute length is its px, the unitless zero is 0; a non-absolute unit →
+    /// <see langword="false"/>.</summary>
+    private static bool TryOffsetValuePx(string token, double rangePx, out double px)
+    {
+        px = 0;
+        if (token.EndsWith('%')
+            && double.TryParse(token[..^1], System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var pct)
+            && double.IsFinite(pct))
+        {
+            px = rangePx * pct / 100.0;
+            return true;
+        }
+        if (LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit))
+        {
+            if (unit.Length == 0 && n == 0.0) return true;   // the unitless zero
+            if (unit.Length > 0
+                && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out px)
+                && double.IsFinite(px))
+            {
+                return true;
+            }
+        }
+        px = 0;
         return false;
     }
 

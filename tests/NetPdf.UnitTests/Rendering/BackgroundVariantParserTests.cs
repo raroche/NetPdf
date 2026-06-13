@@ -139,6 +139,13 @@ public sealed class BackgroundVariantParserTests
     [InlineData("top", 24, 0)]                 // a single VERTICAL keyword = center top
     [InlineData("bottom", 24, 16)]             //   (PR #167 review P2 — the Y axis, X centers)
     [InlineData("left", 0, 8)]                 // a single horizontal keyword: Y centers
+    [InlineData("left 10px top 5px", 10, 5)]   // edge-offset cycle — 4-value offsets FROM the edges
+    [InlineData("top 5px left 10px", 10, 5)]   // axes resolved by keyword, order-independent
+    [InlineData("right 10px bottom 5px", 38, 11)] // from the FAR edges: (48−10, 16−5)
+    [InlineData("left 25% top 50%", 12, 8)]    // a % offset is of the range: (48×.25, 16×.5)
+    [InlineData("right 25% bottom 50%", 36, 8)] // (48−48×.25, 16−16×.5)
+    [InlineData("left top 5px", 0, 5)]         // 3-value: left edge (0) + 5px from top
+    [InlineData("center top 5px", 24, 5)]      // center X (48×.5) + 5px from top
     public void Position_supported_forms_parse(string? raw, double expectX, double expectY)
     {
         Assert.True(FragmentPainter.TryParseBackgroundPosition(
@@ -148,8 +155,10 @@ public sealed class BackgroundVariantParserTests
     }
 
     [Theory]
-    [InlineData("left 10px top 5px")]          // 4-value edge-offset form unsupported
-    [InlineData("center center center")]
+    [InlineData("center center center")]       // a leftover token (3 edges, no offset to consume)
+    [InlineData("left 10px right 5px")]        // two X-axis edges
+    [InlineData("top 10px bottom 5px")]        // two Y-axis edges
+    [InlineData("left 10px top 5px right 0")]  // 5 tokens
     [InlineData("5em 0")]                      // relative units unsupported
     [InlineData("bogus")]
     public void Position_unsupported_forms_reject(string raw) =>

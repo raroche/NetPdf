@@ -3190,11 +3190,12 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Img_object_position_unsupported_form_falls_back_to_centre()
     {
-        // AngleSharp validates object-position's <position> grammar and DROPS the 4-value edge-
-        // offset form `left 10px top 5px` at parse (the known beta drop boundary), so the cascade
-        // winner is null → the object centres (the initial 50% 50%), matching the unset placement.
-        // The painter's own unsupported-form fallback (+ CSS-PROPERTY-VALUE-INVALID-001) stays as
-        // defense-in-depth for raw values arriving via recovery paths (like object-fit's bogus).
+        // `left 10px right 5px` is an INVALID <position> (two X-axis edges). AngleSharp drops it at
+        // parse (so the cascade winner is null) and the painter's §3.6 parser would reject it too →
+        // the object centres (the initial 50% 50%), matching the unset placement. (The 4-value
+        // edge-offset form `left 10px top 5px` is now SUPPORTED — see the parser tests — but stays
+        // unreachable via the facade, since AngleSharp drops it; the painter's fallback +
+        // CSS-PROPERTY-VALUE-INVALID-001 stay defense-in-depth for raw-recovery paths.)
         var centre = AllImagePlacements(Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><body>" +
             $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
@@ -3203,7 +3204,7 @@ public sealed class HtmlPdfConvertTests
         var p = Assert.Single(AllImagePlacements(Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><body>" +
             $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
-            "style=\"display:block;object-fit:none;object-position:left 10px top 5px\">" +
+            "style=\"display:block;object-fit:none;object-position:left 10px right 5px\">" +
             "</body></html>"))));
         Assert.Equal(centre.X, p.X, 1);
         Assert.Equal(centre.Y, p.Y, 1);
@@ -3445,6 +3446,26 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_background_position_edge_offsets_place_the_tile()
+    {
+        // edge-offset cycle — a margin box's raw `background-position: left 10px top 5px` reaches
+        // the §3.6 parser INTACT (margin-box bodies bypass AngleSharp, unlike a body block whose
+        // 4-value position the beta splits/drops), placing the no-repeat tile 10px from the band's
+        // left + 5px from its top: +7.5pt X, 3.75pt lower (smaller PDF y) than the top-left default.
+        string Build(string posDecl) =>
+            "<!DOCTYPE html><html><head><style>@page { margin: 32px; " +
+            $"@top-center {{ content: \"AB\"; width: 64px; background-image: url({PngDataUri(16, 16)}); " +
+            "background-repeat: no-repeat" + posDecl + " } }" +
+            "</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var zero = AllImagePlacements(Latin1(HtmlPdf.Convert(Build(""), opts)))[0];
+        var offset = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            Build("; background-position: left 10px top 5px"), opts)))[0];
+        Assert.Equal(zero.X + 7.5, offset.X, 1);
+        Assert.Equal(zero.Y - 3.75, offset.Y, 1);
+    }
+
+    [Fact]
     public void Background_position_phases_a_repeating_grid()
     {
         // position 8px with repeat: the first column starts at 8 − 16 = −8px, so
@@ -3455,6 +3476,42 @@ public sealed class HtmlPdfConvertTests
             "background-position:8px 0\"></div>" +
             "</body></html>"));
         Assert.Equal(10, AllImagePlacements(pdf).Count);
+    }
+
+    [Fact]
+    public void Background_origin_shifts_the_positioning_area()
+    {
+        // bg-origin cycle — a 4px-border + 8px-padding box: the no-repeat tile anchors at the
+        // background-origin box. border-box → the box edge; padding-box (the initial) → +4px (the
+        // border) = +3pt; content-box → +12px (border+padding) = +9pt.
+        string Build(string origin) =>
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:80px;border:4px solid #000;padding:8px;" +
+            $"background-image:url({PngDataUri(16, 16)});background-repeat:no-repeat;" +
+            $"background-origin:{origin}\"></div>" +
+            "</body></html>";
+        var border = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("border-box"))))[0];
+        var padding = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("padding-box"))))[0];
+        var content = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("content-box"))))[0];
+        Assert.Equal(border.X + 3.0, padding.X, 1);    // +4px border
+        Assert.Equal(border.X + 9.0, content.X, 1);    // +12px border + padding
+    }
+
+    [Fact]
+    public void Background_clip_bounds_the_paint_area()
+    {
+        // bg-clip cycle — the SAME box (border box 80 + 16 padding + 8 border = 104px = 78pt). The
+        // tile clip rect shrinks to the background-clip box: border-box (the initial) → 78pt;
+        // padding-box → 72pt (−4px/side, the border); content-box → 60pt (−12px/side).
+        string Build(string clip) =>
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:80px;border:4px solid #000;padding:8px;" +
+            $"background-image:url({PngDataUri(16, 16)});background-repeat:no-repeat;" +
+            $"background-clip:{clip}\"></div>" +
+            "</body></html>";
+        Assert.Equal(78.0, FirstClipRect(Latin1(HtmlPdf.Convert(Build("border-box")))).W, 1);
+        Assert.Equal(72.0, FirstClipRect(Latin1(HtmlPdf.Convert(Build("padding-box")))).W, 1);
+        Assert.Equal(60.0, FirstClipRect(Latin1(HtmlPdf.Convert(Build("content-box")))).W, 1);
     }
 
     [Fact]

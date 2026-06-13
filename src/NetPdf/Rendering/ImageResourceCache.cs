@@ -61,10 +61,13 @@ internal sealed class ImageResourceCache
     public Dictionary<Box, ImgSpec> ImageBoxes { get; } = new();
 
     /// <summary>A box's background-image reference (bg-image + bg-variants cycles): the resolved
-    /// URI key + the RAW declared <c>background-repeat</c> / <c>-size</c> / <c>-position</c>
-    /// winners (null = unset → the initial), parsed by the tiler at paint.</summary>
+    /// URI key + the RAW declared <c>background-repeat</c> / <c>-size</c> / <c>-position</c> /
+    /// <c>-origin</c> / <c>-clip</c> winners (null = unset → the initial), parsed by the tiler at
+    /// paint. <c>-origin</c> sets the positioning area (initial padding-box), <c>-clip</c> the
+    /// paint area (initial border-box) — bg-origin / bg-clip cycles.</summary>
     internal readonly record struct BackgroundSpec(
-        string UriKey, string? RepeatRaw, string? SizeRaw, string? PositionRaw);
+        string UriKey, string? RepeatRaw, string? SizeRaw, string? PositionRaw,
+        string? OriginRaw = null, string? ClipRaw = null);
 
     /// <summary>Element-backed box → its <c>background-image</c> spec (bg-image cycle). Only
     /// successfully decoded references appear.</summary>
@@ -138,7 +141,9 @@ internal sealed class ImageResourceCache
                     key,
                     ComposeAxisLonghands(rules, "background-repeat", axisInitial: "repeat"),
                     rules?.GetWinner("background-size")?.ResolvedValue,
-                    ComposeAxisLonghands(rules, "background-position", axisInitial: "0%"));
+                    ComposeAxisLonghands(rules, "background-position", axisInitial: "0%"),
+                    rules?.GetWinner("background-origin")?.ResolvedValue,
+                    rules?.GetWinner("background-clip")?.ResolvedValue);
             }
             else
             {

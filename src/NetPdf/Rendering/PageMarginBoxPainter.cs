@@ -489,8 +489,13 @@ internal static class PageMarginBoxPainter
             var backgroundRepeatRaw = RawDeclarationWinner(mb.Declarations, "background-repeat");
             var backgroundSizeRaw = RawDeclarationWinner(mb.Declarations, "background-size");
             var backgroundPositionRaw = RawDeclarationWinner(mb.Declarations, "background-position");
-            var backgroundOriginRaw = RawDeclarationWinner(mb.Declarations, "background-origin");
-            var backgroundClipRaw = RawDeclarationWinner(mb.Declarations, "background-clip");
+            // background-origin / background-clip flow through MarginBoxStyle's cascade now (they joined
+            // CascadedStyleIds), so the box's ComputedStyle carries the validated keyword — respecting
+            // !important, CSS-wide keywords, and invalid-value diagnostics — instead of the
+            // last-declaration-only RawDeclarationWinner (post-PR-#171 review P2). Read it back as the
+            // area string the shared tiler expects (unset → null → the property's initial below).
+            var backgroundOriginRaw = ReadBackgroundAreaKeyword(style, PropertyId.BackgroundOrigin);
+            var backgroundClipRaw = ReadBackgroundAreaKeyword(style, PropertyId.BackgroundClip);
 
             // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
             // (width/height/padding are box properties — CSS Values 4 §6.1.1), `rem` against the
@@ -769,10 +774,14 @@ internal static class PageMarginBoxPainter
                 // border+padding (bg-origin / bg-clip cycles; the body helper reused).
                 var (oT, oR, oB, oL) = FragmentPainter.BackgroundAreaInset(style, item.BackgroundOriginRaw, 'p');
                 var (cT, cR, cB, cL) = FragmentPainter.BackgroundAreaInset(style, item.BackgroundClipRaw, 'b');
+                // A narrow box with large border/padding + a content-box origin/clip can drive the inset
+                // sum past the box dimension, so clamp the positioning-area + clip width/height to ≥ 0 —
+                // a negative dimension must never reach the tiler (post-PR-#171 review P1; the body call
+                // site + PaintBackgroundImageTiles' empty-clip skip mirror this).
                 backgroundImages.Add(new MarginBoxBackgroundImage(
-                    boxXPx + oL, boxYPx + oT, boxWidthPx - oL - oR, boxHeightPx - oT - oB, bgImageUrl,
+                    boxXPx + oL, boxYPx + oT, Math.Max(0, boxWidthPx - oL - oR), Math.Max(0, boxHeightPx - oT - oB), bgImageUrl,
                     item.BackgroundRepeatRaw, item.BackgroundSizeRaw, item.BackgroundPositionRaw,
-                    boxXPx + cL, boxYPx + cT, boxWidthPx - cL - cR, boxHeightPx - cT - cB));
+                    boxXPx + cL, boxYPx + cT, Math.Max(0, boxWidthPx - cL - cR), Math.Max(0, boxHeightPx - cT - cB)));
             }
 
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
@@ -1729,6 +1738,26 @@ internal static class PageMarginBoxPainter
             if (d.Property.Equals(property, StringComparison.OrdinalIgnoreCase))
                 raw = d.Value.RawText;
         return string.IsNullOrWhiteSpace(raw) ? null : raw;
+    }
+
+    /// <summary>Read a margin box's cascaded <c>background-origin</c>/<c>-clip</c> keyword (now in
+    /// <c>MarginBoxStyle.CascadedStyleIds</c>, so it carries the production cascade's importance +
+    /// CSS-wide + invalid-value handling — post-PR-#171 review P2) back as the area string
+    /// <see cref="FragmentPainter.BackgroundAreaInset"/> expects. Indices match the keyword resolver's
+    /// <c>T("border-box","padding-box","content-box")</c> table; an unset (or invalid → cleared) slot
+    /// returns <see langword="null"/> so the inset helper applies the property's own initial
+    /// (padding-box for origin, border-box for clip).</summary>
+    private static string? ReadBackgroundAreaKeyword(ComputedStyle style, PropertyId id)
+    {
+        var slot = style.Get(id);
+        if (slot.Tag != ComputedSlotTag.Keyword) return null;
+        return slot.AsKeyword() switch
+        {
+            0 => "border-box",
+            1 => "padding-box",
+            2 => "content-box",
+            _ => null,
+        };
     }
 
     /// <summary>The box's declared uniform <c>border-radius</c> in used px (border-radius cycle,

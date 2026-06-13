@@ -453,13 +453,20 @@ review):** the shared `TryParseBackgroundPosition` parses the 3-/4-value edge-of
 MARGIN-BOX raws, the BODY + `object-position` 4-value forms AngleSharp-dropped); a body block's
 `background-image` honors `background-origin` (positioning area) + `background-clip` (paint/clip rect), `repeat`
 now tiling the clip window (review P1; `BackgroundAreaInset`/`UsedBorderEdgeWidthPx`). **body `border-radius` /
-`background-attachment` / margin-box `background-origin`/`-clip` cycles (in progress, branch
-`phase-3-task-21-23-bg-attachment-mbox-origin-clip-body-radius`, PR #171 OPEN):** a UNIFORM absolute `border-radius`
+`background-attachment` / margin-box `background-origin`/`-clip` cycles (merged in PR #171 incl. its review):** a UNIFORM absolute `border-radius`
 rounds a BODY block's background COLOR band (`PaintBackground` → `PdfPage.FillRoundedRectangle`; the 4 corner
 longhands REGISTERED so `@supports` sees them; strokes/image-clip/elliptical/per-corner deferred);
-`background-attachment` is REGISTERED (scroll[initial]/fixed/local — scroll/local element-relative correct for
-paged, `fixed` approximated, page-relative deferred); a MARGIN box's `background-image` honors origin/clip too
-(reusing the body `BackgroundAreaInset` on the box's `ComputedStyle`). Next (in order): the MULTI-PAGE DRIVER
+`background-attachment` is REGISTERED for VALIDATION only (parse-only metadata — `@supports` + invalid-value
+diagnostics, but rendering doesn't consume the value: scroll[initial]/local element-relative correct for paged,
+`fixed` SILENTLY approximated element-relative, page-relative deferred + NOT diagnosed); a MARGIN box's
+`background-image` honors origin/clip too (reusing the body `BackgroundAreaInset` on the box's `ComputedStyle`).
+Post-PR-#171 review: **(P1)** the margin-box + body origin/clip inset math is clamped to ≥ 0 with an empty-clip
+skip in `PaintBackgroundImageTiles` (a thin box's border+padding can't drive a negative paint/clip rect into the
+tiler); **(P2)** margin-box origin/clip flow through `MarginBoxStyle`'s cascade now (joined `CascadedStyleIds`,
+read via `ReadBackgroundAreaKeyword`) — `!important` + CSS-wide + invalid-value diagnostics, not
+`RawDeclarationWinner`; **(P2)** the misleading `KeywordResolver` `background-attachment` comment + matrix +
+`deferrals.md` were corrected to "parse-only"; **(P3)** the rounded-band test targets the exact 75×45pt band.
+Next (in order): the MULTI-PAGE DRIVER
 (cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation first);
 the remaining riders are mostly LARGER features now (container width sub-box wrap, inline `<img>` atomics,
 `outline`, `object-position` registration). Blocked (see

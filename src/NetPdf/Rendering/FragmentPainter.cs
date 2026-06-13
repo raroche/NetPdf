@@ -124,13 +124,17 @@ internal static class FragmentPainter
                     // / bg-clip cycles).
                     var (oT, oR, oB, oL) = BackgroundAreaInset(style, bgSpec.OriginRaw, defaultArea: 'p');
                     var (cT, cR, cB, cL) = BackgroundAreaInset(style, bgSpec.ClipRaw, defaultArea: 'b');
+                    // Clamp the positioning-area + clip width/height to ≥ 0 — a thin box with large
+                    // border/padding + a content-box origin/clip can drive the inset sum past the box
+                    // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1,
+                    // the same guard as the margin-box site; the empty-clip skip below backstops it).
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt,
-                        leftPx + oL, topPx + oT, widthPx - oL - oR, heightPx - oT - oB,
+                        leftPx + oL, topPx + oT, Math.Max(0, widthPx - oL - oR), Math.Max(0, heightPx - oT - oB),
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
                         clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,
-                        clipWidthPx: widthPx - cL - cR, clipHeightPx: heightPx - cT - cB);
+                        clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB));
                 }
             }
 
@@ -181,6 +185,11 @@ internal static class FragmentPainter
         var clipT = clipTopPx ?? topPx;
         var clipW = clipWidthPx ?? widthPx;
         var clipH = clipHeightPx ?? heightPx;
+        // An empty (or negative) clip rect paints nothing — a content-box clip on a box whose
+        // border+padding meet/exceed its size collapses the paint window (post-PR-#171 review P1).
+        // Bail before the pattern/loop paths so neither a zero-area pattern fill nor a degenerate
+        // clip rectangle is emitted.
+        if (clipW <= 0 || clipH <= 0) return;
         // Each unsupported longhand falls back to ITS initial WHOLE (a failed parse may have
         // half-assigned its outs — e.g. a valid first axis before an invalid second).
         var anyVariantUnsupported = false;

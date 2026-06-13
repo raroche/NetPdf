@@ -3287,16 +3287,21 @@ flags the categories):
          (`FragmentPainter.PaintBackground` → `PdfPage.FillRoundedRectangle`, clamped to half the
          shorter side; the four corner-radius longhands now REGISTERED — `properties.json`
          LengthPercentage, expanded from the `border-radius` shorthand, so `@supports` reports
-         them). `background-attachment` is REGISTERED (keyword `scroll`[initial]/`fixed`/`local`)
-         so `@supports` reports it + an invalid value is diagnosed; for PAGED media there is no
-         scroll, so `scroll`/`local` paint element-relative (correct) and `fixed` is approximated
-         as element-relative. A page-MARGIN box's `background-image` now honors `background-origin`
-         (positioning area) + `background-clip` (paint rect) like a body block — the body
-         `FragmentPainter.BackgroundAreaInset` (made internal) is reused on the margin box's
-         `ComputedStyle`, the origin area + clip rect riding `MarginBoxBackgroundImage` into the
-         shared tiler. STILL DEFERRED: body `border-radius` for the BORDER strokes + the
-         background-image clip (rounded clip path) + elliptical / per-corner / `%` radii;
-         `background-attachment: fixed` PAGE-relative positioning; `outline`; gradients (Phase 4).
+         them). `background-attachment` is REGISTERED for VALIDATION only (keyword
+         `scroll`[initial]/`fixed`/`local`) so `@supports` reports it + an invalid value is
+         diagnosed — but rendering does NOT consume the value yet (PARSE-ONLY metadata): for PAGED
+         media there is no scroll, so every value paints element-relative, `fixed` page-relative
+         positioning being silently approximated (NOT diagnosed — the value is valid; post-PR-#171
+         review P2 made the code comment + docs honest). A page-MARGIN box's `background-image` now
+         honors `background-origin` (positioning area) + `background-clip` (paint rect) like a body
+         block — the body `FragmentPainter.BackgroundAreaInset` (made internal) is reused on the
+         margin box's `ComputedStyle`, the origin area + clip rect riding `MarginBoxBackgroundImage`
+         into the shared tiler (the origin/clip keywords flow through the box's cascade — importance
+         + CSS-wide + invalid-value diagnostics — post-PR-#171 review P2, not RawDeclarationWinner;
+         the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
+         negative paint rect — review P1). STILL DEFERRED: body `border-radius` for the BORDER
+         strokes + the background-image clip (rounded clip path) + elliptical / per-corner / `%`
+         radii; `background-attachment: fixed` PAGE-relative positioning; `outline`; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared
          `FragmentPainter.TryParseBackgroundPosition` (used by `object-position` +

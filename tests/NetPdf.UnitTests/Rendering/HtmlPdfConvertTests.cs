@@ -3547,6 +3547,25 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Background_color_with_border_radius_rounds_the_band()
+    {
+        // body-radius cycle — a uniform border-radius rounds the background band: the fill becomes a
+        // rounded-rect PATH (Bézier-curve corners), NOT a plain `re f` rectangle. (Confirms the
+        // newly-registered border-*-radius longhands compute from the `border-radius` shorthand.)
+        var square = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        var rounded = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" re f", square);            // a square band is a plain rectangle fill
+        Assert.DoesNotContain(" re f", rounded);     // the rounded band is a curve path
+        Assert.Contains(" c ", rounded);             // ... with Bézier-curve corners
+    }
+
+    [Fact]
     public void Background_repeat_space_distributes_equal_gaps()
     {
         // space-round cycle — `space` packs floor(area/tile) whole tiles flush to the edges with
@@ -3662,6 +3681,27 @@ public sealed class HtmlPdfConvertTests
         var placements = AllImagePlacements(sized);
         Assert.Equal(2, placements.Count);
         Assert.Equal(24.0, placements[0].W, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_background_origin_and_clip_apply()
+    {
+        // bg-origin / bg-clip cycles (margin boxes) — a bordered/padded @top-center box honors
+        // background-origin (content-box anchors the no-repeat tile +12px = +9pt right of
+        // border-box) and background-clip (content-box shrinks the clip rect by 12px/side = 18pt
+        // vs border-box). The body BackgroundAreaInset helper is reused on the margin box's style.
+        string Build(string decls) =>
+            "<!DOCTYPE html><html><head><style>@page { margin: 40px; " +
+            "@top-center { content: \"AB\"; width: 80px; border: 4px solid #000; padding: 8px; " +
+            $"background-image: url({PngDataUri(16, 16)}); background-repeat: no-repeat; {decls} }} }}" +
+            "</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var oBorder = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-origin: border-box"), opts)))[0];
+        var oContent = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-origin: content-box"), opts)))[0];
+        Assert.Equal(oBorder.X + 9.0, oContent.X, 1);
+        var cBorder = FirstClipRect(Latin1(HtmlPdf.Convert(Build("background-clip: border-box"), opts))).W;
+        var cContent = FirstClipRect(Latin1(HtmlPdf.Convert(Build("background-clip: content-box"), opts))).W;
+        Assert.Equal(cBorder - 18.0, cContent, 1);   // content-box clip is 12px/side narrower
     }
 
     [Fact]

@@ -298,7 +298,7 @@ internal static class FragmentPainter
     /// <c>content-box</c> → border + padding. An unset / unrecognized value uses
     /// <paramref name="defaultArea"/> — the property's initial (<c>'p'</c> padding-box for
     /// background-origin, <c>'b'</c> border-box for background-clip).</summary>
-    private static (double Top, double Right, double Bottom, double Left) BackgroundAreaInset(
+    internal static (double Top, double Right, double Bottom, double Left) BackgroundAreaInset(
         ComputedStyle style, string? raw, char defaultArea)
     {
         var area = raw?.Trim().ToLowerInvariant() switch
@@ -760,9 +760,30 @@ internal static class FragmentPainter
 
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        // A partial alpha (0 < alpha < 255) is composited faithfully via the page's ExtGState
-        // constant-alpha (/ca) — no longer painted fully opaque.
+        // border-radius (body-radius cycle, first cut): a UNIFORM absolute radius rounds the band
+        // (PdfPage.FillRoundedRectangle, clamped to half the shorter side); border strokes + the
+        // background-image clip stay rectangular (deferred, like the margin-box first cut). A
+        // partial alpha is composited faithfully via the page's ExtGState constant-alpha (/ca).
+        var radiusPx = UniformBorderRadiusPx(style);
+        if (radiusPx > 0)
+        {
+            var radiusPt = Math.Min(PdfUnits.PxToPt(radiusPx), Math.Min(w, h) / 2.0);
+            page.FillRoundedRectangle(x, y, w, h, radiusPt, r, g, b, alpha / 255.0);
+            return;
+        }
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+    }
+
+    /// <summary>The UNIFORM circular border-radius in px (body-radius cycle, first cut): the four
+    /// registered corner-radius longhands must all be the SAME absolute length — else 0 (per-corner
+    /// / elliptical / percentage rounding is deferred).</summary>
+    private static double UniformBorderRadiusPx(ComputedStyle style)
+    {
+        var tl = style.ReadLengthPxOrZero(PropertyId.BorderTopLeftRadius);
+        var tr = style.ReadLengthPxOrZero(PropertyId.BorderTopRightRadius);
+        var br = style.ReadLengthPxOrZero(PropertyId.BorderBottomRightRadius);
+        var bl = style.ReadLengthPxOrZero(PropertyId.BorderBottomLeftRadius);
+        return tl > 0 && tl == tr && tr == br && br == bl ? tl : 0;
     }
 
     private static void PaintBorderEdge(

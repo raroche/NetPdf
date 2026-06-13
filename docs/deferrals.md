@@ -3281,6 +3281,22 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **body `border-radius` (background band) + `background-attachment` + margin-box
+         `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
+         cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
+         (`FragmentPainter.PaintBackground` → `PdfPage.FillRoundedRectangle`, clamped to half the
+         shorter side; the four corner-radius longhands now REGISTERED — `properties.json`
+         LengthPercentage, expanded from the `border-radius` shorthand, so `@supports` reports
+         them). `background-attachment` is REGISTERED (keyword `scroll`[initial]/`fixed`/`local`)
+         so `@supports` reports it + an invalid value is diagnosed; for PAGED media there is no
+         scroll, so `scroll`/`local` paint element-relative (correct) and `fixed` is approximated
+         as element-relative. A page-MARGIN box's `background-image` now honors `background-origin`
+         (positioning area) + `background-clip` (paint rect) like a body block — the body
+         `FragmentPainter.BackgroundAreaInset` (made internal) is reused on the margin box's
+         `ComputedStyle`, the origin area + clip rect riding `MarginBoxBackgroundImage` into the
+         shared tiler. STILL DEFERRED: body `border-radius` for the BORDER strokes + the
+         background-image clip (rounded clip path) + elliptical / per-corner / `%` radii;
+         `background-attachment: fixed` PAGE-relative positioning; `outline`; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared
          `FragmentPainter.TryParseBackgroundPosition` (used by `object-position` +

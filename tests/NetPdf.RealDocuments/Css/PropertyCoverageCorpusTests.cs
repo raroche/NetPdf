@@ -59,9 +59,7 @@ public sealed class PropertyCoverageCorpusTests
         // CSS sub-features that the renderer emits diagnostics for in Phase 4 (post-v1).
         "background-image", "background-position", "background-position-x", "background-position-y",
         "background-repeat", "background-repeat-x", "background-repeat-y",
-        "background-size", "background-attachment",
-        "border-bottom-left-radius", "border-bottom-right-radius",
-        "border-top-left-radius", "border-top-right-radius",
+        "background-size",
         "outline-color", "outline-style", "outline-width", "outline-offset",
         "box-shadow", "text-shadow", "filter", "mix-blend-mode", "isolation",
         "transform", "transform-origin", "transform-style", "perspective", "perspective-origin",

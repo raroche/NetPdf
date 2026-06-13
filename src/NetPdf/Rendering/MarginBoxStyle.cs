@@ -114,6 +114,7 @@ internal static class MarginBoxStyle
     private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
         SupportedStyleIds.AddRange(
             PropertyId.BackgroundColor,
+            PropertyId.BackgroundOrigin, PropertyId.BackgroundClip,
             PropertyId.BorderTopWidth, PropertyId.BorderTopStyle, PropertyId.BorderTopColor,
             PropertyId.BorderRightWidth, PropertyId.BorderRightStyle, PropertyId.BorderRightColor,
             PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,

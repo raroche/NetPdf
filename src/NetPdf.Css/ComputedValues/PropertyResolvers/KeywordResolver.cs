@@ -162,6 +162,13 @@ internal static class KeywordResolver
         b[PropertyId.BackgroundOrigin] = T("border-box", "padding-box", "content-box");
         b[PropertyId.BackgroundClip] = T("border-box", "padding-box", "content-box");
 
+        // background-attachment — CSS B&B §3.10 (bg-attachment cycle): scroll[initial]/fixed/local.
+        // Registered for validation only: @supports reports it and an INVALID value is diagnosed, but
+        // rendering does not yet consume the value — PARSE-ONLY metadata for now. For PAGED media there
+        // is no scroll, so every value paints element-relative; `fixed` page-relative positioning is a
+        // documented deferral (deferrals.md), silently approximated (NOT diagnosed — the value is valid).
+        b[PropertyId.BackgroundAttachment] = T("scroll", "fixed", "local");
+
         // border-collapse — CSS Tables 3 §6.
         b[PropertyId.BorderCollapse] = T("separate", "collapse");
 

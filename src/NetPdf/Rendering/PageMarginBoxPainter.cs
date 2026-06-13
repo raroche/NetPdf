@@ -121,10 +121,13 @@ internal static class PageMarginBoxPainter
     /// and tiles it over the rect via the SHARED body tiler
     /// (<c>PrintBackgrounds</c>-gated like the fill). A declared border-radius keeps the tiles
     /// RECTANGULAR (the rounded-band corners may show square tiles — a documented
-    /// approximation, like the square border strokes).</summary>
+    /// approximation, like the square border strokes). <c>LeftPx..HeightPx</c> is the
+    /// background-origin (positioning) area; <c>ClipLeftPx..ClipHeightPx</c> the background-clip
+    /// (paint) rect (bg-origin / bg-clip cycles).</summary>
     internal readonly record struct MarginBoxBackgroundImage(
         double LeftPx, double TopPx, double WidthPx, double HeightPx, string RawUrl,
-        string? RepeatRaw, string? SizeRaw, string? PositionRaw);
+        string? RepeatRaw, string? SizeRaw, string? PositionRaw,
+        double ClipLeftPx, double ClipTopPx, double ClipWidthPx, double ClipHeightPx);
 
     /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
     /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle)
@@ -486,6 +489,13 @@ internal static class PageMarginBoxPainter
             var backgroundRepeatRaw = RawDeclarationWinner(mb.Declarations, "background-repeat");
             var backgroundSizeRaw = RawDeclarationWinner(mb.Declarations, "background-size");
             var backgroundPositionRaw = RawDeclarationWinner(mb.Declarations, "background-position");
+            // background-origin / background-clip flow through MarginBoxStyle's cascade now (they joined
+            // CascadedStyleIds), so the box's ComputedStyle carries the validated keyword — respecting
+            // !important, CSS-wide keywords, and invalid-value diagnostics — instead of the
+            // last-declaration-only RawDeclarationWinner (post-PR-#171 review P2). Read it back as the
+            // area string the shared tiler expects (unset → null → the property's initial below).
+            var backgroundOriginRaw = ReadBackgroundAreaKeyword(style, PropertyId.BackgroundOrigin);
+            var backgroundClipRaw = ReadBackgroundAreaKeyword(style, PropertyId.BackgroundClip);
 
             // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
             // (width/height/padding are box properties — CSS Values 4 §6.1.1), `rem` against the
@@ -676,6 +686,8 @@ internal static class PageMarginBoxPainter
                 BackgroundRepeatRaw = backgroundRepeatRaw,
                 BackgroundSizeRaw = backgroundSizeRaw,
                 BackgroundPositionRaw = backgroundPositionRaw,
+                BackgroundOriginRaw = backgroundOriginRaw,
+                BackgroundClipRaw = backgroundClipRaw,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
                 OverflowVisible = MarginBoxStyle.OverflowVisible(mb.Declarations),
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
@@ -757,9 +769,19 @@ internal static class PageMarginBoxPainter
             // declared repeat/size/position raws riding along (PR #167 review P1).
             if (item.BackgroundImageUrl is { } bgImageUrl)
             {
+                // background-origin (initial padding-box) sets the positioning area, background-clip
+                // (initial border-box) the paint rect — the box rect inset by the used border /
+                // border+padding (bg-origin / bg-clip cycles; the body helper reused).
+                var (oT, oR, oB, oL) = FragmentPainter.BackgroundAreaInset(style, item.BackgroundOriginRaw, 'p');
+                var (cT, cR, cB, cL) = FragmentPainter.BackgroundAreaInset(style, item.BackgroundClipRaw, 'b');
+                // A narrow box with large border/padding + a content-box origin/clip can drive the inset
+                // sum past the box dimension, so clamp the positioning-area + clip width/height to ≥ 0 —
+                // a negative dimension must never reach the tiler (post-PR-#171 review P1; the body call
+                // site + PaintBackgroundImageTiles' empty-clip skip mirror this).
                 backgroundImages.Add(new MarginBoxBackgroundImage(
-                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgImageUrl,
-                    item.BackgroundRepeatRaw, item.BackgroundSizeRaw, item.BackgroundPositionRaw));
+                    boxXPx + oL, boxYPx + oT, Math.Max(0, boxWidthPx - oL - oR), Math.Max(0, boxHeightPx - oT - oB), bgImageUrl,
+                    item.BackgroundRepeatRaw, item.BackgroundSizeRaw, item.BackgroundPositionRaw,
+                    boxXPx + cL, boxYPx + cT, Math.Max(0, boxWidthPx - cL - cR), Math.Max(0, boxHeightPx - cT - cB)));
             }
 
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
@@ -1718,6 +1740,26 @@ internal static class PageMarginBoxPainter
         return string.IsNullOrWhiteSpace(raw) ? null : raw;
     }
 
+    /// <summary>Read a margin box's cascaded <c>background-origin</c>/<c>-clip</c> keyword (now in
+    /// <c>MarginBoxStyle.CascadedStyleIds</c>, so it carries the production cascade's importance +
+    /// CSS-wide + invalid-value handling — post-PR-#171 review P2) back as the area string
+    /// <see cref="FragmentPainter.BackgroundAreaInset"/> expects. Indices match the keyword resolver's
+    /// <c>T("border-box","padding-box","content-box")</c> table; an unset (or invalid → cleared) slot
+    /// returns <see langword="null"/> so the inset helper applies the property's own initial
+    /// (padding-box for origin, border-box for clip).</summary>
+    private static string? ReadBackgroundAreaKeyword(ComputedStyle style, PropertyId id)
+    {
+        var slot = style.Get(id);
+        if (slot.Tag != ComputedSlotTag.Keyword) return null;
+        return slot.AsKeyword() switch
+        {
+            0 => "border-box",
+            1 => "padding-box",
+            2 => "content-box",
+            _ => null,
+        };
+    }
+
     /// <summary>The box's declared uniform <c>border-radius</c> in used px (border-radius cycle,
     /// first cut) — a single non-negative absolute <c>&lt;length&gt;</c> (or the 0 literal); the
     /// LAST declaration wins (cascade order). Percentages, multi-value/per-corner forms, elliptical
@@ -1837,6 +1879,8 @@ internal static class PageMarginBoxPainter
         public string? BackgroundRepeatRaw;      // raw background-repeat/-size/-position winners
         public string? BackgroundSizeRaw;        //   (PR #167 review P1 — margin-box variants
         public string? BackgroundPositionRaw;    //   wired through to the shared tiler).
+        public string? BackgroundOriginRaw;      // raw background-origin/-clip winners (bg-origin /
+        public string? BackgroundClipRaw;        //   bg-clip cycles — the box's positioning/paint area).
         public ComputedStyle? MetricsStyle;     // line-pitch style override (the LARGEST segment font) — null = ContentStyle.
         public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
                                                 // box's desired/max size for rigid/explicit/vertical boxes,

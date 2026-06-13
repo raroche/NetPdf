@@ -72,6 +72,12 @@ public sealed class KeywordResolverTests
     [Fact] public void BackgroundClip_content_box_resolves()   => AssertResolves("content-box", PropertyId.BackgroundClip);
     [Fact] public void BackgroundClip_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.BackgroundClip);
 
+    // background-attachment (bg-attachment cycle — registered keyword: scroll / fixed / local).
+    [Fact] public void BackgroundAttachment_scroll_resolves() => AssertResolves("scroll", PropertyId.BackgroundAttachment);
+    [Fact] public void BackgroundAttachment_fixed_resolves()  => AssertResolves("fixed", PropertyId.BackgroundAttachment);
+    [Fact] public void BackgroundAttachment_local_resolves()  => AssertResolves("local", PropertyId.BackgroundAttachment);
+    [Fact] public void BackgroundAttachment_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.BackgroundAttachment);
+
     [Fact] public void Display_foo_emits_diagnostic()         => AssertInvalid("foo", PropertyId.Display);
     [Fact] public void Display_block_flex_emits_diagnostic()  => AssertInvalid("block-flex", PropertyId.Display);
     [Fact] public void Position_stickys_emits_diagnostic()    => AssertInvalid("stickys", PropertyId.Position);

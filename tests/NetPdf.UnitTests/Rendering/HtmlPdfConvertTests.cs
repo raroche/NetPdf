@@ -3547,6 +3547,37 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Background_color_with_border_radius_rounds_the_band()
+    {
+        // body-radius cycle — a uniform border-radius rounds the background band: the fill becomes a
+        // rounded-rect PATH (Bézier-curve corners), NOT a plain `re f` rectangle. (Confirms the
+        // newly-registered border-*-radius longhands compute from the `border-radius` shorthand.)
+        var square = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        var rounded = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+
+        // Target the EXACT 100×60px → 75×45pt #3366cc (0.2 0.4 0.8) band rather than asserting
+        // DoesNotContain(" re f") across the whole stream (which any unrelated rect fill would break —
+        // post-PR-#171 review P3). The square band is a plain rectangle fill of that size + colour…
+        static bool IsBand((double X, double Y, double W, double H) r) =>
+            Math.Abs(r.W - 75.0) < 0.5 && Math.Abs(r.H - 45.0) < 0.5;
+        var squareRects = AllRects(square);
+        var squareColors = RectFillColors(square);
+        var bandIdx = squareRects.FindIndex(IsBand);
+        Assert.True(bandIdx >= 0, "expected a 75×45pt rectangle fill (the square band)");
+        Assert.Equal("0.2 0.4 0.8", squareColors[bandIdx]);
+
+        // …while the rounded band is NO LONGER that exact rectangle (it's a Bézier-curve PATH).
+        Assert.DoesNotContain(AllRects(rounded), IsBand);
+        Assert.Contains(" c ", rounded);             // ... with Bézier-curve corners
+    }
+
+    [Fact]
     public void Background_repeat_space_distributes_equal_gaps()
     {
         // space-round cycle — `space` packs floor(area/tile) whole tiles flush to the edges with
@@ -3662,6 +3693,120 @@ public sealed class HtmlPdfConvertTests
         var placements = AllImagePlacements(sized);
         Assert.Equal(2, placements.Count);
         Assert.Equal(24.0, placements[0].W, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_background_origin_and_clip_apply()
+    {
+        // bg-origin / bg-clip cycles (margin boxes) — a bordered/padded @top-center box honors
+        // background-origin (content-box anchors the no-repeat tile +12px = +9pt right of
+        // border-box) and background-clip (content-box shrinks the clip rect by 12px/side = 18pt
+        // vs border-box). The body BackgroundAreaInset helper is reused on the margin box's style.
+        string Build(string decls) =>
+            "<!DOCTYPE html><html><head><style>@page { margin: 40px; " +
+            "@top-center { content: \"AB\"; width: 80px; border: 4px solid #000; padding: 8px; " +
+            $"background-image: url({PngDataUri(16, 16)}); background-repeat: no-repeat; {decls} }} }}" +
+            "</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var oBorder = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-origin: border-box"), opts)))[0];
+        var oContent = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-origin: content-box"), opts)))[0];
+        Assert.Equal(oBorder.X + 9.0, oContent.X, 1);
+        var cBorder = FirstClipRect(Latin1(HtmlPdf.Convert(Build("background-clip: border-box"), opts))).W;
+        var cContent = FirstClipRect(Latin1(HtmlPdf.Convert(Build("background-clip: content-box"), opts))).W;
+        Assert.Equal(cBorder - 18.0, cContent, 1);   // content-box clip is 12px/side narrower
+    }
+
+    [Fact]
+    public void Page_margin_box_content_box_clip_collapse_paints_nothing_no_crash()
+    {
+        // post-PR-#171 review P1 — a small @top-center box clamped to a narrow band whose border +
+        // padding EXCEED the box collapses a content-box clip to ≤ 0 (here negative width + zero
+        // height): the inset sums are clamped to ≥ 0 and the tiler skips the empty clip, so NO image
+        // is placed and conversion never throws (pre-fix a negative width/height reached the tiler).
+        // The default border-box clip still places the tile — proving the box exists and it's the
+        // content-box clip that collapses, not the box vanishing.
+        string Build(string clip) =>
+            "<!DOCTYPE html><html><head><style>@page { size: 100px 300px; margin: 40px; " +
+            "@top-center { content: \"X\"; width: 80px; border: 20px solid #000; padding: 20px; " +
+            $"background-image: url({PngDataUri(16, 16)}); background-repeat: no-repeat; {clip} }} }}" +
+            "</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        Assert.NotEmpty(AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-clip: border-box"), opts))));
+        Assert.Empty(AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-clip: content-box"), opts))));
+    }
+
+    [Fact]
+    public void Body_content_box_clip_collapse_paints_nothing_no_crash()
+    {
+        // post-PR-#171 review P1 (body counterpart) — a box whose border+padding meet/exceed its size
+        // under box-sizing: border-box collapses the content-box clip to ≤ 0; the same inset clamp +
+        // empty-clip skip mean no tile is placed and conversion doesn't throw. border-box clip (the
+        // default) still places it.
+        string Build(string clip) =>
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"box-sizing:border-box;width:40px;height:40px;border:20px solid #000;padding:20px;" +
+            $"background-image:url({PngDataUri(16, 16)});background-repeat:no-repeat;{clip}\"></div>" +
+            "</body></html>";
+        Assert.NotEmpty(AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-clip:border-box")))));
+        Assert.Empty(AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-clip:content-box")))));
+    }
+
+    [Fact]
+    public void Page_margin_box_background_origin_respects_importance()
+    {
+        // post-PR-#171 review P2 — background-origin now flows through the margin box's cascade, so
+        // `content-box !important` beats a LATER `border-box` (pre-fix RawDeclarationWinner took the
+        // last declaration → border-box). The winning content-box anchors the no-repeat tile +12px =
+        // +9pt right of the border-box origin.
+        string Build(string originDecls) =>
+            "<!DOCTYPE html><html><head><style>@page { margin: 40px; " +
+            "@top-center { content: \"AB\"; width: 80px; border: 4px solid #000; padding: 8px; " +
+            $"background-image: url({PngDataUri(16, 16)}); background-repeat: no-repeat; {originDecls} }} }}" +
+            "</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var borderBox = AllImagePlacements(Latin1(HtmlPdf.Convert(Build("background-origin: border-box"), opts)))[0];
+        var importantContent = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            Build("background-origin: content-box !important; background-origin: border-box"), opts)))[0];
+        Assert.Equal(borderBox.X + 9.0, importantContent.X, 1);   // !important content-box beat the later border-box
+    }
+
+    [Fact]
+    public void Page_margin_box_background_clip_invalid_value_is_diagnosed_and_falls_back()
+    {
+        // post-PR-#171 review P2 — an invalid background-clip on a margin box now flows through the
+        // cascade, so it's DIAGNOSED (CSS-PROPERTY-VALUE-INVALID-001) and falls back to the initial
+        // border-box (pre-fix the silent RawDeclarationWinner passed the garbage straight to the
+        // tiler, which silently treated it as border-box with no diagnostic). The clip rect matches
+        // border-box, and the warning is surfaced.
+        string Build(string clip) =>
+            "<!DOCTYPE html><html><head><style>@page { margin: 40px; " +
+            "@top-center { content: \"AB\"; width: 80px; border: 4px solid #000; padding: 8px; " +
+            $"background-image: url({PngDataUri(16, 16)}); background-repeat: no-repeat; {clip} }} }}" +
+            "</style></head><body></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var result = HtmlPdf.ConvertDetailed(Build("background-clip: bogus"), opts);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        var bogusW = FirstClipRect(Latin1(result.Pdf)).W;
+        var borderW = FirstClipRect(Latin1(HtmlPdf.Convert(Build("background-clip: border-box"), opts))).W;
+        Assert.Equal(borderW, bogusW, 1);   // invalid → the initial border-box, not garbage
+    }
+
+    [Fact]
+    public void Body_background_attachment_fixed_is_parse_only_no_diagnostic()
+    {
+        // post-PR-#171 review P2 — background-attachment is registered for VALIDATION only: a VALID
+        // value (`fixed`) is silently approximated (element-relative; page-relative is a documented
+        // deferral), so it must NOT surface a diagnostic, and the background image still paints. Pins
+        // the "parse-only metadata" contract the corrected KeywordResolver comment + docs describe.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-attachment:fixed;background-repeat:no-repeat\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.DoesNotContain(result.Warnings, d =>
+            d.Code == DiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("attachment", StringComparison.OrdinalIgnoreCase));
+        Assert.NotEmpty(AllImagePlacements(Latin1(result.Pdf)));   // the image still paints
     }
 
     [Fact]

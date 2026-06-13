@@ -124,13 +124,17 @@ internal static class FragmentPainter
                     // / bg-clip cycles).
                     var (oT, oR, oB, oL) = BackgroundAreaInset(style, bgSpec.OriginRaw, defaultArea: 'p');
                     var (cT, cR, cB, cL) = BackgroundAreaInset(style, bgSpec.ClipRaw, defaultArea: 'b');
+                    // Clamp the positioning-area + clip width/height to ≥ 0 — a thin box with large
+                    // border/padding + a content-box origin/clip can drive the inset sum past the box
+                    // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1,
+                    // the same guard as the margin-box site; the empty-clip skip below backstops it).
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt,
-                        leftPx + oL, topPx + oT, widthPx - oL - oR, heightPx - oT - oB,
+                        leftPx + oL, topPx + oT, Math.Max(0, widthPx - oL - oR), Math.Max(0, heightPx - oT - oB),
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
                         clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,
-                        clipWidthPx: widthPx - cL - cR, clipHeightPx: heightPx - cT - cB);
+                        clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB));
                 }
             }
 
@@ -181,6 +185,11 @@ internal static class FragmentPainter
         var clipT = clipTopPx ?? topPx;
         var clipW = clipWidthPx ?? widthPx;
         var clipH = clipHeightPx ?? heightPx;
+        // An empty (or negative) clip rect paints nothing — a content-box clip on a box whose
+        // border+padding meet/exceed its size collapses the paint window (post-PR-#171 review P1).
+        // Bail before the pattern/loop paths so neither a zero-area pattern fill nor a degenerate
+        // clip rectangle is emitted.
+        if (clipW <= 0 || clipH <= 0) return;
         // Each unsupported longhand falls back to ITS initial WHOLE (a failed parse may have
         // half-assigned its outs — e.g. a valid first axis before an invalid second).
         var anyVariantUnsupported = false;
@@ -298,7 +307,7 @@ internal static class FragmentPainter
     /// <c>content-box</c> → border + padding. An unset / unrecognized value uses
     /// <paramref name="defaultArea"/> — the property's initial (<c>'p'</c> padding-box for
     /// background-origin, <c>'b'</c> border-box for background-clip).</summary>
-    private static (double Top, double Right, double Bottom, double Left) BackgroundAreaInset(
+    internal static (double Top, double Right, double Bottom, double Left) BackgroundAreaInset(
         ComputedStyle style, string? raw, char defaultArea)
     {
         var area = raw?.Trim().ToLowerInvariant() switch
@@ -760,9 +769,30 @@ internal static class FragmentPainter
 
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        // A partial alpha (0 < alpha < 255) is composited faithfully via the page's ExtGState
-        // constant-alpha (/ca) — no longer painted fully opaque.
+        // border-radius (body-radius cycle, first cut): a UNIFORM absolute radius rounds the band
+        // (PdfPage.FillRoundedRectangle, clamped to half the shorter side); border strokes + the
+        // background-image clip stay rectangular (deferred, like the margin-box first cut). A
+        // partial alpha is composited faithfully via the page's ExtGState constant-alpha (/ca).
+        var radiusPx = UniformBorderRadiusPx(style);
+        if (radiusPx > 0)
+        {
+            var radiusPt = Math.Min(PdfUnits.PxToPt(radiusPx), Math.Min(w, h) / 2.0);
+            page.FillRoundedRectangle(x, y, w, h, radiusPt, r, g, b, alpha / 255.0);
+            return;
+        }
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+    }
+
+    /// <summary>The UNIFORM circular border-radius in px (body-radius cycle, first cut): the four
+    /// registered corner-radius longhands must all be the SAME absolute length — else 0 (per-corner
+    /// / elliptical / percentage rounding is deferred).</summary>
+    private static double UniformBorderRadiusPx(ComputedStyle style)
+    {
+        var tl = style.ReadLengthPxOrZero(PropertyId.BorderTopLeftRadius);
+        var tr = style.ReadLengthPxOrZero(PropertyId.BorderTopRightRadius);
+        var br = style.ReadLengthPxOrZero(PropertyId.BorderBottomRightRadius);
+        var bl = style.ReadLengthPxOrZero(PropertyId.BorderBottomLeftRadius);
+        return tl > 0 && tl == tr && tr == br && br == bl ? tl : 0;
     }
 
     private static void PaintBorderEdge(

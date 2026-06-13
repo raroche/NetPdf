@@ -266,6 +266,23 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_background_attachment_and_border_radius_evaluate_true()
+    {
+        // bg-attachment / body-radius cycles — newly registered: background-attachment (keyword) +
+        // the border-*-radius longhands (length-percentage, expanded from the `border-radius`
+        // shorthand). @supports reports both.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (background-attachment: fixed) { p { color: red } } " +
+            "@supports (border-top-left-radius: 8px) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));
+        Assert.NotNull(rules?.GetWinner("font-size"));
+    }
+
+    [Fact]
     public async Task Rec4_AtSupports_and_combines()
     {
         // Synthetic AST so the @supports prelude survives unambiguously through to the

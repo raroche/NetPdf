@@ -216,10 +216,11 @@ internal static class FragmentPainter
         }
         EmitVariantUnsupported(diagnostics, anyVariantUnsupported, ref variantUnsupportedReported);
 
-        // Per-axis tiling plan (space-round cycle): the first tile's offset + count + the
-        // ORIGIN STEP (= the tile size; tile + gap for `space`).
-        var (firstX, nx, stepX) = AxisTilingPlan(modeX, widthPx, tileW, posX);
-        var (firstY, ny, stepY) = AxisTilingPlan(modeY, heightPx, tileH, posY);
+        // Per-axis tiling plan (space-round cycle): the first tile's offset + count + the ORIGIN
+        // STEP (= the tile size; tile + gap for `space`). `repeat` covers the background-clip
+        // window (area-relative); space/round/no-repeat use the positioning area (review P1).
+        var (firstX, nx, stepX) = AxisTilingPlan(modeX, widthPx, tileW, posX, clipL - leftPx, clipL + clipW - leftPx);
+        var (firstY, ny, stepY) = AxisTilingPlan(modeY, heightPx, tileH, posY, clipT - topPx, clipT + clipH - topPx);
         if (nx <= 0 || ny <= 0) return;
 
         var imageRef = ImageResourceCache.GetOrRegister(document, entry);
@@ -236,17 +237,13 @@ internal static class FragmentPainter
             || ny > MaxLoopTilesPerFragment
             || nx > MaxLoopTilesPerFragment / ny)
         {
-            var singleX = nx == 1;
-            var singleY = ny == 1;
-            var fillLeftPx = singleX ? Math.Max(leftPx, leftPx + firstX) : leftPx;
-            var fillRightPx = singleX ? Math.Min(leftPx + widthPx, leftPx + firstX + tileW) : leftPx + widthPx;
-            var fillTopPx = singleY ? Math.Max(topPx, topPx + firstY) : topPx;
-            var fillBottomPx = singleY ? Math.Min(topPx + heightPx, topPx + firstY + tileH) : topPx + heightPx;
-            // Bound the pattern fill by the background-clip rect (bg-clip cycle).
-            fillLeftPx = Math.Max(fillLeftPx, clipL);
-            fillRightPx = Math.Min(fillRightPx, clipL + clipW);
-            fillTopPx = Math.Max(fillTopPx, clipT);
-            fillBottomPx = Math.Min(fillBottomPx, clipT + clipH);
+            // The fill is the TILED extent (first tile → last tile's far edge) clamped to the
+            // background-clip rect (review P1): a repeating axis now spans the clip [covering the
+            // border strip], space/round span the positioning area, no-repeat the single tile.
+            var fillLeftPx = Math.Max(clipL, leftPx + firstX);
+            var fillRightPx = Math.Min(clipL + clipW, leftPx + firstX + (nx - 1) * stepX + tileW);
+            var fillTopPx = Math.Max(clipT, topPx + firstY);
+            var fillBottomPx = Math.Min(clipT + clipH, topPx + firstY + (ny - 1) * stepY + tileH);
             if (fillRightPx - fillLeftPx <= 0 || fillBottomPx - fillTopPx <= 0) return;
             // The anchor tile's PDF rect gives the pattern Matrix origin (its bottom-left)
             // + the tile size in pt; the ORIGIN STEPS convert with the same px→pt scale
@@ -388,12 +385,17 @@ internal static class FragmentPainter
         }
     }
 
-    /// <summary>One axis's tiling plan (space-round cycle): the first tile's offset within the
-    /// positioning area, the tile count, and the step between tile ORIGINS (= the tile size
-    /// for repeat; tile + gap for <c>space</c>). INTERNAL so the unit tests can pin the §3.2
-    /// count/gap math directly.</summary>
+    /// <summary>One axis's tiling plan (space-round cycle; bg-clip coverage — PR #170 review P1):
+    /// the first tile's offset (positioning-area-relative), the tile count, and the step between
+    /// tile ORIGINS (= the tile size for repeat; tile + gap for <c>space</c>). <c>repeat</c> tiles
+    /// the PAINTING window <c>[coverStartPx, coverEndPx]</c> (the background-clip rect, area-relative)
+    /// with the grid PHASED at <paramref name="posPx"/> in the positioning area — so a padding-box
+    /// origin under a border-box clip still tiles the border strip; <c>space</c>/<c>round</c> fill
+    /// the positioning AREA (CSS B&amp;B §3.6.1 — they ignore the wider clip), <c>no-repeat</c>
+    /// places one positioned tile. INTERNAL so the unit tests pin the count/gap/coverage math.</summary>
     internal static (double First, long Count, double Step) AxisTilingPlan(
-        BackgroundRepeatMode mode, double areaPx, double tilePx, double posPx)
+        BackgroundRepeatMode mode, double areaPx, double tilePx, double posPx,
+        double coverStartPx, double coverEndPx)
     {
         switch (mode)
         {
@@ -401,23 +403,26 @@ internal static class FragmentPainter
                 return (posPx, 1, tilePx);
             case BackgroundRepeatMode.Space:
             {
-                // §3.2: floor(area/tile) whole tiles; the leftover becomes equal gaps between
-                // them (first/last flush with the area edges); 0–1 tiles degenerate to a
-                // single positioned tile.
+                // §3.6.1: floor(area/tile) whole tiles in the POSITIONING area; the leftover
+                // becomes equal gaps between them (first/last flush with the area edges); 0–1
+                // tiles degenerate to a single positioned tile.
                 var n = (long)Math.Floor(areaPx / tilePx);
                 if (n <= 1) return (posPx, 1, tilePx);
                 var gap = (areaPx - n * tilePx) / (n - 1);
                 return (0, n, tilePx + gap);
             }
             case BackgroundRepeatMode.Round:
-                // The caller already rescaled the tile so a whole number fits exactly —
-                // tiles run edge-to-edge from the area start.
+                // The caller already rescaled the tile so a whole number fits the positioning
+                // area exactly — tiles run edge-to-edge from the area start.
                 return (0, Math.Max(1, (long)Math.Round(areaPx / tilePx)), tilePx);
             default:
             {
-                var phase = posPx % tilePx;
-                if (phase > 0) phase -= tilePx;
-                return (phase, (long)Math.Ceiling((areaPx - phase) / tilePx), tilePx);
+                // `repeat` covers the PAINTING (clip) window, the grid phased at posPx in the
+                // positioning area — the first tile ≤ coverStart, the last ≥ coverEnd (review P1).
+                var k = (long)Math.Floor((coverStartPx - posPx) / tilePx);
+                var first = posPx + k * tilePx;
+                var count = (long)Math.Ceiling((coverEndPx - first) / tilePx);
+                return (first, Math.Max(0, count), tilePx);
             }
         }
     }

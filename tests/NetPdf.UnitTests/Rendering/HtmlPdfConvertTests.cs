@@ -3515,6 +3515,38 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Background_repeat_tiles_the_clip_border_strip_loop_path()
+    {
+        // PR #170 review P1 — with the default background-origin: padding-box + clip: border-box, a
+        // repeated grid must tile the BORDER strip (the clip), not just the padding box. 16px content
+        // + 8px padding + 4px border → padding box 32px (2 tiles), border box 40px. repeat-x: a tile
+        // at −12px and +36px also span the 4px border strips → 4 columns cover the clip (was 2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:16px;height:16px;border:4px solid #000;padding:8px;" +
+            $"background-image:url({PngDataUri(16, 16)});background-repeat:repeat-x\"></div>" +
+            "</body></html>"));
+        Assert.Equal(4, AllImagePlacements(pdf).Count);   // the border box, not just the padding box
+    }
+
+    [Fact]
+    public void Background_repeat_tiles_the_clip_border_strip_pattern_path()
+    {
+        // PR #170 review P1 — the same default-origin/clip border/padding case on the PATTERN path
+        // (a 1×1 tile → a huge grid): the single pattern FILL must span the BORDER box (the clip),
+        // not the padding box. 80px content + 8px padding + 4px border → border box 104px = 78pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:80px;border:4px solid #000;padding:8px;" +
+            $"background-image:url({PngDataUri(1, 1)});background-repeat:repeat\"></div>" +
+            "</body></html>"));
+        Assert.Contains("/PatternType 1", pdf);
+        var fill = AllRects(pdf)[0];   // the pattern fill paints first, before the border edges
+        Assert.Equal(78.0, fill.W, 1);
+        Assert.Equal(78.0, fill.H, 1);
+    }
+
+    [Fact]
     public void Background_repeat_space_distributes_equal_gaps()
     {
         // space-round cycle — `space` packs floor(area/tile) whole tiles flush to the edges with

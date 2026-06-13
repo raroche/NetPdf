@@ -156,6 +156,12 @@ internal static class KeywordResolver
         b[PropertyId.BorderBottomStyle] = borderStyle;
         b[PropertyId.BorderLeftStyle] = borderStyle;
 
+        // background-origin / background-clip — CSS B&B §3.4–§3.5 (bg-origin / bg-clip cycles): the
+        // positioning / painting box. Registered (PR #170 review P2) so @supports reports them and
+        // an invalid value is diagnosed; the tiler reads the resolved keyword.
+        b[PropertyId.BackgroundOrigin] = T("border-box", "padding-box", "content-box");
+        b[PropertyId.BackgroundClip] = T("border-box", "padding-box", "content-box");
+
         // border-collapse — CSS Tables 3 §6.
         b[PropertyId.BorderCollapse] = T("separate", "collapse");
 

@@ -56,7 +56,8 @@ public sealed class BackgroundVariantParserTests
         // §3.2 — 88px area / 16px tile → floor(88/16) = 5 whole tiles; the 8px leftover spreads
         // as 4 equal 2px gaps → the origin step is 16 + 2 = 18px, the first tile flush at 0.
         var (first, count, step) = FragmentPainter.AxisTilingPlan(
-            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 88, tilePx: 16, posPx: 0);
+            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 88, tilePx: 16, posPx: 0,
+            coverStartPx: 0, coverEndPx: 88);   // space fills the AREA, ignoring the cover window
         Assert.Equal(0.0, first, 6);
         Assert.Equal(5L, count);
         Assert.Equal(18.0, step, 6);
@@ -67,7 +68,8 @@ public sealed class BackgroundVariantParserTests
     {
         // 0–1 whole tiles fit → no gaps to distribute; a single tile at the resolved position.
         var (first, count, step) = FragmentPainter.AxisTilingPlan(
-            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 20, tilePx: 16, posPx: 5);
+            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 20, tilePx: 16, posPx: 5,
+            coverStartPx: 0, coverEndPx: 20);
         Assert.Equal(5.0, first, 6);
         Assert.Equal(1L, count);
         Assert.Equal(16.0, step, 6);
@@ -79,10 +81,26 @@ public sealed class BackgroundVariantParserTests
         // round pre-rescales the tile (in the caller) so a whole number fits; the plan then
         // counts round(area/tile) tiles flush from the area start, step = the rescaled tile.
         var (first, count, step) = FragmentPainter.AxisTilingPlan(
-            FragmentPainter.BackgroundRepeatMode.Round, areaPx: 60, tilePx: 15, posPx: 7);
+            FragmentPainter.BackgroundRepeatMode.Round, areaPx: 60, tilePx: 15, posPx: 7,
+            coverStartPx: 0, coverEndPx: 60);
         Assert.Equal(0.0, first, 6);
         Assert.Equal(4L, count);
         Assert.Equal(15.0, step, 6);
+    }
+
+    [Fact]
+    public void Axis_tiling_plan_repeat_covers_the_clip_window_phased_at_the_origin()
+    {
+        // PR #170 review P1 — `repeat` tiles the PAINTING (clip) window, not just the positioning
+        // area: an 80px area / 16px tile with the clip extending [−4, 84] (a 4px border strip each
+        // side under a padding-box origin) → the grid (phase 0) starts at the first tile ≤ −4 (−16)
+        // and runs to ≥ 84 → 7 tiles (−16,0,16,32,48,64,80) spanning [−16, 96] ⊇ [−4, 84].
+        var (first, count, step) = FragmentPainter.AxisTilingPlan(
+            FragmentPainter.BackgroundRepeatMode.Repeat, areaPx: 80, tilePx: 16, posPx: 0,
+            coverStartPx: -4, coverEndPx: 84);
+        Assert.Equal(-16.0, first, 6);
+        Assert.Equal(7L, count);
+        Assert.Equal(16.0, step, 6);
     }
 
     [Theory]

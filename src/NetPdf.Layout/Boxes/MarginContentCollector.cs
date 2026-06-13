@@ -758,15 +758,37 @@ internal static class MarginContentCollector
         {
             return 0;
         }
+        // An EXPLICIT absolute <length> width is taken AS DECLARED — incl. an explicit `0`/`0px`,
+        // a real zero-width border, NOT the medium default (PR #169 review P1). Everything else —
+        // unset, `thin`/`medium`/`thick`, a CSS-wide keyword (the `border` shorthand resolves an
+        // unspecified width to the literal `initial`), or a non-absolute `em`/`%` the collector
+        // can't resolve — keeps the §4.3 `medium` default on a painting edge.
         var raw = rules.GetWinner($"border-{side}-width")?.ResolvedValue?.Trim().ToLowerInvariant();
-        var declared = raw switch
+        if (raw == "thin") return 1.0;
+        if (raw == "thick") return 5.0;
+        if (!string.IsNullOrEmpty(raw) && TryExplicitAbsoluteBorderWidthPx(raw, out var explicitPx))
+            return explicitPx;
+        return 3.0;   // unset / medium / initial / CSS-wide / non-absolute / unparsable → medium
+    }
+
+    /// <summary>True for an EXPLICIT absolute <c>&lt;length&gt;</c> border width — incl. an explicit
+    /// <c>0</c>/<c>0px</c> → 0 — and false for a keyword (<c>medium</c>/<c>initial</c>/…), a
+    /// non-absolute unit, or junk (PR #169 review P1): the 0-vs-medium distinction the bare
+    /// <see cref="AbsoluteSidePx"/> can't make, since it returns 0 for an explicit zero AND an
+    /// unparsable value alike.</summary>
+    private static bool TryExplicitAbsoluteBorderWidthPx(string raw, out double px)
+    {
+        if (raw == "0") { px = 0; return true; }
+        if (LengthResolver.TrySplitNumberAndUnit(raw, out var n, out var unit)
+            && unit.Length > 0
+            && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out var p)
+            && double.IsFinite(p))
         {
-            "thin" => 1.0,
-            "medium" => 3.0,
-            "thick" => 5.0,
-            _ => Math.Max(0, AbsoluteSidePx(rules, $"border-{side}-width")),
-        };
-        return declared > 0 ? declared : 3.0;   // unset/unparsable width + painting style → medium.
+            px = Math.Max(0, p);
+            return true;
+        }
+        px = 0;
+        return false;
     }
 
     /// <summary>Fill the PRE-reserved container slot (container-bands cycle) with the

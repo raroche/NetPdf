@@ -3305,8 +3305,10 @@ flags the categories):
          and the pattern path; `RegisterTilingPattern` gained optional `xStepPt`/`yStepPt` (a
          `space` gap makes the step EXCEED the BBox — legal §8.7.3.1 — quantized + in the dedup
          key + on `/XStep`//`/YStep`). STILL DEFERRED: container WIDTH (sub-box wrap) +
-         inline-level spans; `object-position` edge-offset (4-value) forms;
-         `background-origin`/`-clip`/`-attachment`; gradients (Phase 4).
+         inline-level spans; `object-position` REGISTRATION (a `<position>` metadata type — it
+         renders from the raw winner, so `@supports (object-position: …)` does NOT report it; PR
+         #169 review P2) + edge-offset (4-value) forms; `background-origin`/`-clip`/`-attachment`;
+         gradients (Phase 4).
        - **Container inset propagation + PDF tiling patterns + object-fit — DONE
          (container-insets / tiling-patterns / object-fit cycles):** a running-element
          CONTAINER's horizontal margin+padding now propagate into its DESCENDANTS

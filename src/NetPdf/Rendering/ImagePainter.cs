@@ -84,9 +84,7 @@ internal static class ImagePainter
                     {
                         diagnostics.Emit(new Diagnostic(
                             DiagnosticCodes.CssPropertyValueInvalid001,
-                            $"object-position value '{posRaw}' is outside the supported set "
-                            + "(per-axis keywords, absolute lengths, percentages; one value → "
-                            + "the other axis centers); the initial 50% 50% is used.",
+                            BuildInvalidObjectPositionDiagnostic(posRaw),
                             DiagnosticSeverity.Warning));
                         unknownPositionReported = true;
                     }
@@ -154,4 +152,17 @@ internal static class ImagePainter
                 return (boxW, boxH);   // unreachable for a table-validated slot — fill.
         }
     }
+
+    /// <summary>The CSS-PROPERTY-VALUE-INVALID-001 message for an unsupported <c>object-position</c>
+    /// (object-position cycle; PR #169 review P3): the raw value flows through
+    /// <see cref="NetPdf.Css.Diagnostics.DiagnosticTextSanitizer"/> — C0/C1 control-char redaction
+    /// + a length cap — like
+    /// every other untrusted fragment reaching a diagnostics sink (an attacker-supplied inline
+    /// style could otherwise inject ANSI escapes / bloat the log). INTERNAL so the sanitization is
+    /// unit-tested directly: this path is otherwise reachable only via raw-recovery, not the facade
+    /// (AngleSharp drops an invalid <c>object-position</c> upstream).</summary>
+    internal static string BuildInvalidObjectPositionDiagnostic(string? rawPosition) =>
+        $"object-position value '{NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(rawPosition)}' "
+        + "is outside the supported set (per-axis keywords, absolute lengths, percentages; one value "
+        + "→ the other axis centers); the initial 50% 50% is used.";
 }

@@ -3209,6 +3209,27 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(centre.Y, p.Y, 1);
     }
 
+    [Fact]
+    public void Object_position_invalid_diagnostic_sanitizes_the_raw_value()
+    {
+        // PR #169 review P3 - the raw object-position flows through DiagnosticTextSanitizer
+        // before it reaches a diagnostics sink: C0/C1 control chars are redacted (U+FFFD) and the
+        // value is length-capped (120 chars + ellipsis). The painter's diagnostic path is reachable
+        // only via raw-recovery (AngleSharp drops an invalid object-position upstream), so this pins
+        // the sanitization at the message builder directly.
+        var crafted = "\u001b[31m\u0000" + new string('x', 500);   // ANSI ESC + NUL + bloat
+        var msg = NetPdf.Rendering.ImagePainter.BuildInvalidObjectPositionDiagnostic(crafted);
+        // The message embeds EXACTLY the sanitizer's output.
+        Assert.Contains(NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(crafted), msg);
+        Assert.Contains("object-position value", msg);
+        // Ordinal char search - Assert.DoesNotContain on a control-char STRING is culture-sensitive
+        // and treats control chars as ignorable (it would spuriously "find" them).
+        Assert.False(msg.Contains('\u001b'), "ESC must be redacted");
+        Assert.False(msg.Contains('\u0000'), "NUL must be redacted");
+        Assert.Contains("\uFFFD", msg);                       // the redaction marker is present
+        Assert.Contains("\u2026", msg);                       // the truncation ellipsis (input > 120)
+    }
+
     // ---- background-image: url(...) (bg-image cycle) ----
 
     [Fact]
@@ -3773,6 +3794,8 @@ public sealed class HtmlPdfConvertTests
     [InlineData("border-left: thin solid #00ff00", 0.75)]  // §4.3 thin = 1px
     [InlineData("border-left: thick solid #00ff00", 3.75)] // thick = 5px
     [InlineData("border-left-style: solid", 2.25)]         // painting edge, no width → medium 3px
+    [InlineData("border-left: 0 solid #00ff00", 0.0)]      // EXPLICIT zero → 0, not medium (review P1)
+    [InlineData("border-left: 0px solid #00ff00", 0.0)]    // explicit 0px → 0
     [InlineData("border-left: 10px none #00ff00", 0.0)]    // none → 0, no inset
     public void Page_margin_box_container_border_left_insets_its_descendant_line(string cRule, double insetPt)
     {

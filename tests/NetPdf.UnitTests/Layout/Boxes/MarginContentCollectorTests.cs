@@ -414,13 +414,15 @@ public sealed class MarginContentCollectorTests
     [InlineData("medium solid", 3.0)]
     [InlineData("thick solid", 5.0)]
     [InlineData("solid", 3.0)]         // a painting edge with no declared width → medium default
+    [InlineData("0 solid", 0.0)]       // EXPLICIT zero → 0, not the medium default (PR #169 review P1)
+    [InlineData("0px solid", 0.0)]     // explicit 0px → 0
     [InlineData("10px none", 0.0)]     // none → 0 even with a width
     [InlineData("10px hidden", 0.0)]   // hidden → 0
     public async Task Collect_container_border_top_width_is_gated_by_style(string borderTop, double expectedPx)
     {
         // CaptureSegmentBorderWidths' §4.3 gate: a border-top edge contributes its width to the
-        // band's leading inside extent only when its style PAINTS; none/hidden → 0; an unset width
-        // on a painting edge defaults to medium (3px).
+        // band's leading inside extent only when its style PAINTS; none/hidden → 0; an UNSET width
+        // on a painting edge defaults to medium (3px), but an EXPLICIT 0 stays 0 (review P1).
         var ctx = await CollectAsync(
             "<div class='rh'><div class='c'><div>AB</div></div></div>",
             ".rh { position: running(rh) } .c { border-top: " + borderTop + " }");

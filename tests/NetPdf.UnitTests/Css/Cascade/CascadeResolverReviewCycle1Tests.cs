@@ -233,6 +233,21 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_object_position_evaluates_false_unregistered()
+    {
+        // PR #169 review P2 — object-position renders from the RAW cascade winner but is NOT
+        // registered in properties.json (a 2-component <position> needs a metadata type — deferred,
+        // like border-radius), so `@supports (object-position: …)` evaluates FALSE and its block is
+        // skipped (the property is unknown to PropertyMetadata.NameToId). Pins the documented gap
+        // between the rendering support and the @supports report.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet("@supports (object-position: right bottom) { p { color: red } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        Assert.Null(result.TryGetStylesFor(Q(doc, "p")));
+    }
+
+    [Fact]
     public async Task Rec4_AtSupports_and_combines()
     {
         // Synthetic AST so the @supports prelude survives unambiguously through to the

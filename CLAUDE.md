@@ -436,7 +436,7 @@ margin-only inset); tilings above a 16-tile threshold emit ONE PDF tiling-patter
 REMOVED — O(1) for any count, phase exact via /Matrix); `object-fit` fits `<img>` content
 (fill/contain/cover/none/scale-down, centred per the object-position 50%50% initial, cover/none clipped at the
 content box). **Container vertical-padding/borders / object-position / repeat space-round cycles (in progress,
-branch `phase-3-task-21-23-container-vpad-objpos-repeat-space-round`, PR open):** a container's VERTICAL
+branch `phase-3-task-21-23-container-vpad-objpos-repeat-space-round`, PR #169 OPEN):** a container's VERTICAL
 border+padding now BLOCK the §8.3.1 margin collapse (ADD not max) + extend its band over its padding strip
 (`FoldContainerBoxModel` returns the band-inside `Leading/TrailingInsidePx`; border widths are §4.3-gated via
 `CaptureSegmentBorderWidths` — none/hidden→0, thin/medium/thick→1/3/5, unset-on-a-painting-edge→medium); its

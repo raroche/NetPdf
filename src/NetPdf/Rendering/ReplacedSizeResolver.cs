@@ -42,7 +42,7 @@ internal static class ReplacedSizeResolver
             && box.SourceElement is { } element)
         {
             ImageResourceCache.Entry? entry = null;
-            if (cache.ImageBoxes.TryGetValue(box, out var uri)) cache.TryGet(uri, out entry!);
+            if (cache.ImageBoxes.TryGetValue(box, out var spec)) cache.TryGet(spec.UriKey, out entry!);
             ResolveBox(box, element, entry);
         }
         foreach (var child in box.Children)

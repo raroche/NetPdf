@@ -3281,6 +3281,31 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Container inset propagation + PDF tiling patterns + object-fit — DONE
+         (container-insets / tiling-patterns / object-fit cycles):** a running-element
+         CONTAINER's horizontal margin+padding now propagate into its DESCENDANTS
+         (container-insets cycle): every descendant segment's line band + glyphs/extent inset
+         by the container's content-box offset (folded into the segment margin slots — the
+         leaf's own band moves too), and every NESTED container band insets under the outer's
+         content box (the outer's own band keeps its margin-only inset — its padding is inside
+         its band); runs for every recursed container, decorated or not. Background-image
+         tilings ABOVE the 16-tile per-fragment loop threshold emit ONE PDF tiling-pattern
+         fill (tiling-patterns cycle, ISO 32000-2 §8.7.3): `PdfDocument.RegisterTilingPattern`
+         (PatternType 1, the cell paints the image, the grid phase baked into `/Matrix` —
+         pattern space anchors to DEFAULT user space §8.7.3.1, deduped by image/size/anchor) +
+         `PdfPage.FillRectangleWithPattern` (`/Pattern cs … scn … re f`, per-object resource
+         dedup); the fill rect clamps per NON-repeating axis; the old 4096-tile cap +
+         `PAINT-BG-IMAGE-TILE-CAP-001` are REMOVED (unreachable — O(1) for any count); at or
+         below the threshold the per-tile loop stays byte-identical. `object-fit` fits an
+         `<img>`'s content in its content box (object-fit cycle, CSS Images 3 §5.5): `fill`
+         (initial — byte-identical), `contain`/`cover` (aspect-preserving), `none` (intrinsic),
+         `scale-down` (min of none/contain), all CENTRED (the `object-position` 50% 50%
+         initial), an overflowing concrete size (`cover`/`none`) clipped at the content box;
+         an unknown raw falls back to `fill` (AngleSharp drops invalid keywords upstream — the
+         painter fallback is defense-in-depth). STILL DEFERRED: container BORDER widths (need
+         the §4.3 style gate) + VERTICAL padding (band extension) + width (sub-box wrap) +
+         inline-level spans; `object-position` (non-center); `space`/`round` repeats;
+         edge-offset positions; `background-origin`/`-clip`/`-attachment`; gradients (Phase 4).
        - **element() nested CONTAINER bands + margin-box background-image + background
          position/size/repeat — DONE (container-bands / margin-box-bg-image / bg-variants
          cycles):** a DECORATED intermediate block between the running root and the leaf lines

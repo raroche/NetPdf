@@ -55,6 +55,13 @@ public sealed class KeywordResolverTests
     [Fact] public void FlexDirection_row_reverse_resolves() => AssertResolves("row-reverse", PropertyId.FlexDirection);
     [Fact] public void BorderTopStyle_solid_resolves()    => AssertResolves("solid", PropertyId.BorderTopStyle);
     [Fact] public void BorderTopStyle_dotted_resolves()   => AssertResolves("dotted", PropertyId.BorderTopStyle);
+    // object-fit (object-fit cycle + PR #168 review P2 — the registered keyword property).
+    [Fact] public void ObjectFit_fill_resolves()          => AssertResolves("fill", PropertyId.ObjectFit);
+    [Fact] public void ObjectFit_contain_resolves()       => AssertResolves("contain", PropertyId.ObjectFit);
+    [Fact] public void ObjectFit_cover_resolves()         => AssertResolves("cover", PropertyId.ObjectFit);
+    [Fact] public void ObjectFit_none_resolves()          => AssertResolves("none", PropertyId.ObjectFit);
+    [Fact] public void ObjectFit_scale_down_resolves()    => AssertResolves("scale-down", PropertyId.ObjectFit);
+    [Fact] public void ObjectFit_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.ObjectFit);
 
     [Fact] public void Display_foo_emits_diagnostic()         => AssertInvalid("foo", PropertyId.Display);
     [Fact] public void Display_block_flex_emits_diagnostic()  => AssertInvalid("block-flex", PropertyId.Display);

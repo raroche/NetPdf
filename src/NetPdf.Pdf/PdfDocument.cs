@@ -203,6 +203,91 @@ internal sealed class PdfDocument
     /// </summary>
     public int RegisteredImageCount => _imageCache.Count;
 
+    // ───── Tiling-pattern registration (tiling-patterns cycle) ───────────────
+
+    private readonly Dictionary<string, PdfIndirectRef> _patternCache = [];
+
+    /// <summary>
+    /// Register a TILING PATTERN (ISO 32000-2 §8.7.3, PatternType 1) that repeats one
+    /// registered Image XObject on a <paramref name="tileWidthPt"/> ×
+    /// <paramref name="tileHeightPt"/> grid anchored at
+    /// (<paramref name="anchorXPt"/>, <paramref name="anchorYPt"/>) in DEFAULT page space.
+    /// Pattern space is anchored to the default user space — NOT the CTM at fill time
+    /// (§8.7.3.1) — so the grid's phase is baked into the pattern's <c>/Matrix</c>; any
+    /// anchor congruent modulo the tile reproduces the same grid. Returns the indirect ref
+    /// for <see cref="PdfPage.FillRectangleWithPattern"/>. One pattern object replaces an
+    /// unbounded per-tile placement loop — O(1) content-stream size regardless of the tile
+    /// count. Dedup by (image ref, tile size, anchor): N boxes sharing one image + phase
+    /// emit one pattern.
+    /// </summary>
+    public PdfIndirectRef RegisterTilingPattern(
+        PdfIndirectRef imageRef, double tileWidthPt, double tileHeightPt,
+        double anchorXPt, double anchorYPt)
+    {
+        ArgumentNullException.ThrowIfNull(imageRef);
+        ThrowIfSaved();
+        if (!double.IsFinite(tileWidthPt) || !double.IsFinite(tileHeightPt)
+            || tileWidthPt <= 0 || tileHeightPt <= 0)
+        {
+            throw new ArgumentException(
+                $"Tiling pattern tile size must be finite and positive; got {tileWidthPt}×{tileHeightPt}.");
+        }
+        if (!double.IsFinite(anchorXPt) || !double.IsFinite(anchorYPt))
+        {
+            throw new ArgumentException(
+                $"Tiling pattern anchor must be finite; got ({anchorXPt}, {anchorYPt}).");
+        }
+
+        // ONE canonical numeric path (PR #168 review P2): quantize every input through the
+        // SAME 6-fractional-digit canonical form PdfReal/PdfWriter serialize with
+        // (CanonicalRealFormat), so the dedup KEY, the CELL content-stream numbers, and the
+        // dictionary's /BBox + /XStep//YStep + /Matrix all agree to the digit — the pre-fix
+        // 5-digit key/cell could disagree with the 6-digit dictionary AND dedup two distinct
+        // 6-digit patterns into one cached object.
+        var wText = tileWidthPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var hText = tileHeightPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var axText = anchorXPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var ayText = anchorYPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        tileWidthPt = double.Parse(wText, CultureInfo.InvariantCulture);
+        tileHeightPt = double.Parse(hText, CultureInfo.InvariantCulture);
+        anchorXPt = double.Parse(axText, CultureInfo.InvariantCulture);
+        anchorYPt = double.Parse(ayText, CultureInfo.InvariantCulture);
+
+        // FULL indirect-ref identity in the key (PR #168 Copilot) — object numbers repeat
+        // across stores (a foreign or synthetic StoreId-0 ref can share a number with a local
+        // one), and HasSameTarget's contract is number + generation + store; a number-only key
+        // could hand back a pattern for the WRONG image.
+        var key = $"{imageRef.ObjectNumber}:{imageRef.Generation}:{imageRef.StoreId}|{wText}|{hText}|{axText}|{ayText}";
+        if (_patternCache.TryGetValue(key, out var existing)) return existing;
+
+        // The cell paints the image stretched to the tile rect: q w 0 0 h 0 0 cm /ImP Do Q —
+        // the numbers are the SAME canonical strings the dictionary reals serialize to.
+        var content = $"q {wText} 0 0 {hText} 0 0 cm /ImP Do Q\n";
+        var xobjects = new PdfDictionary().Set(new PdfName("ImP"), imageRef);
+        var resources = new PdfDictionary().Set(PdfNames.XObject, xobjects);
+        var bbox = new PdfArray()
+            .Add(new PdfReal(0)).Add(new PdfReal(0))
+            .Add(new PdfReal(tileWidthPt)).Add(new PdfReal(tileHeightPt));
+        var matrix = new PdfArray()
+            .Add(new PdfReal(1)).Add(new PdfReal(0)).Add(new PdfReal(0))
+            .Add(new PdfReal(1)).Add(new PdfReal(anchorXPt)).Add(new PdfReal(anchorYPt));
+        var dict = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Pattern)           // ISO 32000-2 Table 74 (PR #168 Copilot)
+            .Set(PdfNames.PatternType, new PdfInteger(1))   // tiling
+            .Set(PdfNames.PaintType, new PdfInteger(1))     // colored (the image carries color)
+            .Set(PdfNames.TilingType, new PdfInteger(1))    // constant spacing
+            .Set(PdfNames.BBox, bbox)
+            .Set(PdfNames.XStep, new PdfReal(tileWidthPt))
+            .Set(PdfNames.YStep, new PdfReal(tileHeightPt))
+            .Set(PdfNames.Resources, resources)
+            .Set(PdfNames.Matrix, matrix);
+        var patternRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(patternRef, new PdfStream(
+            System.Text.Encoding.ASCII.GetBytes(content), dict));
+        _patternCache[key] = patternRef;
+        return patternRef;
+    }
+
     // ───── Embedded font registration (the deferred Phase 1 Task 22) ─────────
 
     /// <summary>

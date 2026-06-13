@@ -27,6 +27,7 @@ internal sealed class PdfPage
     private readonly PdfIndirectRef _parentRef;
     private readonly PdfDictionary _fontsResource = new();
     private readonly PdfDictionary _xobjectsResource = new();
+    private readonly PdfDictionary _patternsResource = new();   // tiling-patterns cycle.
     private readonly PdfDictionary _extGStateResource = new();
     // Content-stream payload is built byte-oriented from the start: PDF content streams
     // are byte sequences (operators are ASCII, but text-show operands and inline-image
@@ -227,6 +228,52 @@ internal sealed class PdfPage
         AppendNumber(sb, width); sb.Append(' ');
         AppendNumber(sb, height); sb.Append(" re f Q\n");
         AppendContent(sb.ToString());
+    }
+
+    /// <summary>Fill an axis-aligned rectangle with a registered TILING PATTERN
+    /// (tiling-patterns cycle, ISO 32000-2 §8.7.3): selects the <c>/Pattern</c> colour space,
+    /// sets the pattern as the fill colour (<c>scn</c>), fills the rect, and restores state —
+    /// <c>q /Pattern cs /Pn scn x y w h re f Q</c>. The pattern must already be registered with
+    /// the parent document (<see cref="PdfDocument.RegisterTilingPattern"/>); the grid's phase
+    /// lives in the PATTERN's <c>/Matrix</c> (pattern space anchors to DEFAULT user space, not
+    /// the CTM at fill time — §8.7.3.1). Idempotent per referenced pattern: one <c>/Pattern</c>
+    /// resource entry per object, same name returned.</summary>
+    public string FillRectangleWithPattern(
+        PdfIndirectRef patternRef, double x, double y, double width, double height)
+    {
+        ArgumentNullException.ThrowIfNull(patternRef);
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+        {
+            throw new ArgumentException(
+                $"FillRectangleWithPattern coordinates must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        }
+        if (width <= 0 || height <= 0) return string.Empty;
+
+        // Dedup by the referenced object, like AddFont — full-identity match incl. StoreId.
+        string? resourceName = null;
+        foreach (var entry in _patternsResource)
+        {
+            if (entry.Value is PdfIndirectRef existing && existing.HasSameTarget(patternRef))
+            {
+                resourceName = entry.Key.Value;
+                break;
+            }
+        }
+        if (resourceName is null)
+        {
+            resourceName = $"P{_patternsResource.Count + 1}";
+            _patternsResource.Set(new PdfName(resourceName), patternRef);
+        }
+
+        var sb = new StringBuilder(64);
+        sb.Append("q /Pattern cs /").Append(resourceName).Append(" scn ");
+        AppendNumber(sb, x); sb.Append(' ');
+        AppendNumber(sb, y); sb.Append(' ');
+        AppendNumber(sb, width); sb.Append(' ');
+        AppendNumber(sb, height); sb.Append(" re f Q\n");
+        AppendContent(sb.ToString());
+        return resourceName;
     }
 
     /// <summary>Fill an axis-aligned ROUNDED rectangle (border-radius cycle) — the same contract
@@ -469,6 +516,7 @@ internal sealed class PdfPage
         if (_fontsResource.Count > 0) Resources.Set(PdfNames.Font, _fontsResource);
         if (_xobjectsResource.Count > 0) Resources.Set(PdfNames.XObject, _xobjectsResource);
         if (_extGStateResource.Count > 0) Resources.Set(PdfNames.ExtGState, _extGStateResource);
+        if (_patternsResource.Count > 0) Resources.Set(PdfNames.Pattern, _patternsResource);
 
         var mediaBox = new PdfArray()
             .Add(new PdfReal(0))

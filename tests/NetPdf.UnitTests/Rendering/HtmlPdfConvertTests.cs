@@ -3036,6 +3036,89 @@ public sealed class HtmlPdfConvertTests
         Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
     }
 
+    // ---- object-fit (object-fit cycle) ----
+
+    [Fact]
+    public void Img_object_fit_contain_letterboxes_and_centres()
+    {
+        // A 16×16 (1:1) image in a 32×16 content box: contain → 16×16 px = 12pt square,
+        // centred → X = the fill control's X + (32 − 16)/2 px = +6pt; no clip.
+        var fill = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"32\" height=\"16\" style=\"display:block\">" +
+            "</body></html>")))[0];
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"32\" height=\"16\" " +
+            "style=\"display:block;object-fit:contain\">" +
+            "</body></html>"));
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(12.0, p.W, 1);
+        Assert.Equal(12.0, p.H, 1);
+        Assert.Equal(fill.X + 6.0, p.X, 1);
+        Assert.DoesNotContain(" re W n", pdf);
+    }
+
+    [Fact]
+    public void Img_object_fit_cover_fills_and_clips()
+    {
+        // cover in the 32×16 box scales the 1:1 image to 32×32 (24pt), centred — the overflow
+        // clips at the content box.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"32\" height=\"16\" " +
+            "style=\"display:block;object-fit:cover\">" +
+            "</body></html>"));
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(24.0, p.W, 1);
+        Assert.Equal(24.0, p.H, 1);
+        Assert.Contains(" re W n", pdf);
+    }
+
+    [Fact]
+    public void Img_object_fit_none_and_scale_down_use_the_intrinsic_size()
+    {
+        // none keeps the 8×8 intrinsic (6pt) centred in the 32×16 box; scale-down picks the
+        // SMALLER of none/contain — 8×8 stays 6pt, a 64×64 image contains down to 12pt.
+        var none = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(8, 8)}\" width=\"32\" height=\"16\" " +
+            "style=\"display:block;object-fit:none\">" +
+            "</body></html>")))[0];
+        Assert.Equal(6.0, none.W, 1);
+        Assert.Equal(6.0, none.H, 1);
+
+        var small = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(8, 8)}\" width=\"32\" height=\"16\" " +
+            "style=\"display:block;object-fit:scale-down\">" +
+            "</body></html>")))[0];
+        Assert.Equal(6.0, small.W, 1);
+
+        var big = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(64, 64)}\" width=\"32\" height=\"16\" " +
+            "style=\"display:block;object-fit:scale-down\">" +
+            "</body></html>")))[0];
+        Assert.Equal(12.0, big.W, 1);
+    }
+
+    [Fact]
+    public void Img_object_fit_unknown_value_falls_back_to_fill()
+    {
+        // AngleSharp validates object-fit's keyword grammar and DROPS `bogus` at parse (the
+        // known beta drop boundary), so the cascade winner is null → the initial `fill`. The
+        // painter's own unknown-value fallback (+ CSS-PROPERTY-VALUE-INVALID-001) stays as
+        // defense-in-depth for raw values arriving via recovery paths.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"32\" height=\"16\" " +
+            "style=\"display:block;object-fit:bogus\">" +
+            "</body></html>", new HtmlPdfOptions());
+        var p = Assert.Single(AllImagePlacements(Latin1(result.Pdf)));
+        Assert.Equal(24.0, p.W, 1);   // fill — the full 32px content box
+    }
+
     // ---- background-image: url(...) (bg-image cycle) ----
 
     [Fact]
@@ -3084,32 +3167,59 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Background_image_tile_cap_skips_and_diagnoses()
+    public void Background_image_large_tilings_emit_one_pattern_fill()
     {
-        // A 1×1 px tile over a 100×100 px box would need 10,000 tiles — over the 4096-tile
-        // content-stream cap → PAINT-BG-IMAGE-TILE-CAP-001 + no placements (the color band
-        // still paints).
+        // tiling-patterns cycle — a 1×1 px tile over a 100×100 px box (10,000 tiles, formerly
+        // the 4096-cap skip) now paints as ONE tiling-pattern fill: a /PatternType 1 object +
+        // a /Pattern cs … scn … re f fill; no per-tile placements in the PAGE stream (the one
+        // `cm /ImP Do` lives inside the pattern's own cell stream), and no diagnostic.
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             $"<div style=\"width:100px;height:100px;background-image:url({PngDataUri(1, 1)});" +
             "background-color:#3366cc\"></div>" +
             "</body></html>", new HtmlPdfOptions());
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBgImageTileCap001);
-        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+        var pdf = Latin1(result.Pdf);
+        Assert.Contains("/PatternType 1", pdf);
+        Assert.Contains("/Pattern cs /P1 scn", pdf);
+        Assert.DoesNotContain(result.Warnings, d => d.Code.StartsWith("PAINT-BG-IMAGE", StringComparison.Ordinal));
+        Assert.Contains(" re f", pdf);   // the pattern fill + the color band
     }
 
     [Fact]
-    public void Background_image_tile_cap_is_overflow_safe_for_huge_boxes()
+    public void Background_image_huge_boxes_pattern_fill_is_overflow_safe()
     {
-        // PR #166 review P1 — a 4e9 × 4e9 px box with a 1×1 tile needs ~1.6e19 tiles: the long
-        // product wraps NEGATIVE and the pre-fix `nx * ny > cap` compare bypassed the cap into
-        // a ~1.6e19-iteration placement loop. The division-based bound skips + diagnoses.
+        // PR #166 review P1 lineage — a 4e9 × 4e9 px box with a 1×1 tile (~1.6e19 tiles) must
+        // not enter a placement loop. The overflow-safe threshold compare routes it to the
+        // O(1) pattern fill.
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             $"<div style=\"width:4000000000px;height:4000000000px;background-image:url({PngDataUri(1, 1)})\"></div>" +
             "</body></html>", new HtmlPdfOptions());
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBgImageTileCap001);
-        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+        var pdf = Latin1(result.Pdf);
+        Assert.Contains("/PatternType 1", pdf);
+        Assert.Contains(" scn", pdf);
+    }
+
+    [Fact]
+    public void Background_image_pattern_fill_preserves_the_position_phase()
+    {
+        // The pattern's /Matrix anchors the grid at the phased first tile: position 8px with
+        // repeat over a 400×32 box (25 × 2 = 50 tiles > the 16-tile loop threshold) → one
+        // pattern whose cell is 12pt and whose anchor X sits at the −8px phase column
+        // (firstX = 8 − 16 = −8px = −6pt from the box's left edge).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:400px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-position:8px 0;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.Contains("/PatternType 1", pdf);
+        var band = FirstRect(pdf);
+        // The pattern Matrix: [1 0 0 1 tx ty] — tx = band.X − 6pt.
+        var idx = pdf.IndexOf("/Matrix [1 0 0 1 ", StringComparison.Ordinal);
+        Assert.True(idx > 0, "expected the pattern Matrix");
+        var tail = pdf[(idx + "/Matrix [1 0 0 1 ".Length)..];
+        var tx = double.Parse(tail[..tail.IndexOf(' ')], CultureInfo.InvariantCulture);
+        Assert.Equal(band.X - 6.0, tx, 1);
     }
 
     [Fact]
@@ -3430,6 +3540,61 @@ public sealed class HtmlPdfConvertTests
         Assert.True(rects.Count >= 2, "expected the container + leaf bands");
         Assert.Equal(28.8, rects[0].H, 1);   // the container spans both lines
         Assert.Equal(14.4, rects[1].H, 1);   // the leaf's own line band paints over it
+    }
+
+    [Fact]
+    public void Page_margin_box_container_padding_insets_its_descendant_lines()
+    {
+        // container-insets cycle — the container's padding-left propagates into its descendant
+        // lines: the contained line starts 20px = 15pt right of its uncontained sibling.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { padding-left: 20px } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"c\"><div>AB</div></div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] + 15.0, tds[1], 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_container_margin_and_padding_sum_into_descendants()
+    {
+        // margin-left 10px + padding-left 10px → the descendant line insets by the SUM (15pt);
+        // the container's own decorated band insets by its MARGIN only (7.5pt — its padding is
+        // inside the band).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { margin-left: 10px; padding-left: 10px; background-color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left; " +
+            "background-color: #eeeeee } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"c\"><div>AB</div></div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] + 15.0, tds[1], 1);
+        var rects = AllRects(pdf);
+        Assert.True(rects.Count >= 2, "expected the box band + the container band");
+        Assert.Equal(rects[0].X + 7.5, rects[1].X, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_nested_container_band_insets_under_the_outer()
+    {
+        // The OUTER container's padding propagates into a NESTED container's band too: the
+        // inner band starts 20px = 15pt right of the box band's edge.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .outer { padding-left: 20px } .rh .inner { background-color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left; " +
+            "background-color: #eeeeee } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"outer\"><div class=\"inner\"><div>AB</div></div></div></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.True(rects.Count >= 2, "expected the box band + the inner container band");
+        Assert.Equal(rects[0].X + 15.0, rects[1].X, 1);
     }
 
     [Fact]

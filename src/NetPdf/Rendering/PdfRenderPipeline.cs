@@ -261,7 +261,6 @@ internal static class PdfRenderPipeline
             // diagnosed at prefetch; its box paints color-only.
             if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
             {
-                var marginTileCapReported = false;
                 var marginVariantReported = false;
                 foreach (var bi in marginResult.BackgroundImages)
                 {
@@ -271,7 +270,7 @@ internal static class PdfRenderPipeline
                     FragmentPainter.PaintBackgroundImageTiles(
                         page, document, biEntry, mediaBox.HeightPts,
                         bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
-                        diagnostics, ref marginTileCapReported, ref marginVariantReported,
+                        diagnostics, ref marginVariantReported,
                         bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw);
                 }
             }

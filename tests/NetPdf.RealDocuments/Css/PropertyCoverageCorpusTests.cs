@@ -66,7 +66,10 @@ public sealed class PropertyCoverageCorpusTests
         "box-shadow", "text-shadow", "filter", "mix-blend-mode", "isolation",
         "transform", "transform-origin", "transform-style", "perspective", "perspective-origin",
         "will-change", "backface-visibility",
-        "object-fit", "object-position",
+        // object-fit was REGISTERED in properties.json (object-fit cycle + PR #168 review P2 —
+        // it computes via the keyword resolver and @supports sees it); object-position stays
+        // deferred (the painter centres per its 50% 50% initial).
+        "object-position",
         // Per Phase 3 Task 10 cycle 2 review (User #4) — list-style-type
         // + list-style-position were ALREADY registered in
         // properties.json but had been left in this allowlist as

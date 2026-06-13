@@ -293,6 +293,10 @@ internal static class KeywordResolver
         b[PropertyId.WordBreak] = T("normal", "break-all", "keep-all", "break-word");
         b[PropertyId.Hyphens] = T("none", "manual", "auto");
 
+        // object-fit — CSS Images 3 §5.4 (object-fit cycle; index order is the painter's
+        // contract: 0 = fill, the initial).
+        b[PropertyId.ObjectFit] = T("fill", "contain", "cover", "none", "scale-down");
+
         return b.ToFrozenDictionary();
     }
 

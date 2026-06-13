@@ -759,10 +759,18 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string PaintMarginBoxContentOverflow001 = "PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001";
 
-    // PAINT-BG-IMAGE-TILE-CAP-001 was REMOVED in the tiling-patterns cycle: tilings above the
-    // per-tile-loop threshold now emit ONE PDF tiling-pattern fill (ISO 32000-2 §8.7.3 — O(1)
-    // content-stream size for any count), so the 4096-tile DoS cap and its skip path became
-    // unreachable. See docs/diagnostics-codes.md's removal note.
+    /// <summary>
+    /// <b>Reserved — no longer emitted.</b> Was emitted (bg-image cycle) when a
+    /// <c>background-image</c> tiling exceeded the 4096-tile per-fragment cap (a tiny tile
+    /// over a large box — a content-stream DoS guard) and the image was skipped. The
+    /// tiling-patterns cycle made large tilings emit ONE PDF tiling-pattern fill
+    /// (ISO 32000-2 §8.7.3 — O(1) content-stream size for any count), so the cap and its
+    /// skip path became unreachable. Constant retained for code-registry stability
+    /// (PR #168 review P2 — codes never change meaning once published; prior resolved
+    /// PAINT approximations follow the same convention).
+    /// Severity (when it fired): <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PaintBgImageTileCap001 = "PAINT-BG-IMAGE-TILE-CAP-001";
 
     // endregion PAINT-*
 }

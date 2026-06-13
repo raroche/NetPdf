@@ -219,6 +219,20 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_object_fit_evaluates_true()
+    {
+        // PR #168 review P2 — object-fit is REGISTERED in properties.json (object-fit cycle),
+        // so `@supports (object-fit: contain)` gates its block IN. Pre-registration the
+        // unregistered property evaluated false and the rule was silently skipped while the
+        // compatibility matrix claimed support.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet("@supports (object-fit: contain) { p { color: red } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        Assert.NotNull(result.TryGetStylesFor(Q(doc, "p"))?.GetWinner("color"));
+    }
+
+    [Fact]
     public async Task Rec4_AtSupports_and_combines()
     {
         // Synthetic AST so the @supports prelude survives unambiguously through to the

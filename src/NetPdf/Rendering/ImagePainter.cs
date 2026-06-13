@@ -32,11 +32,9 @@ internal static class ImagePainter
         ImageResourceCache cache,
         double pageHeightPt,
         double contentOriginLeftPx,
-        double contentOriginTopPx,
-        IDiagnosticsSink? diagnostics = null)
+        double contentOriginTopPx)
     {
         if (cache.ImageBoxes.Count == 0) return;
-        var unknownFitReported = false;
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -66,8 +64,7 @@ internal static class ImagePainter
 
             // The CONCRETE OBJECT SIZE per object-fit (§5.5), centred in the content box.
             var (objWPx, objHPx) = ConcreteObjectSize(
-                spec.ObjectFitRaw, widthPx, heightPx, entry.WidthPx, entry.HeightPx,
-                diagnostics, ref unknownFitReported);
+                spec.ObjectFitKeyword, widthPx, heightPx, entry.WidthPx, entry.HeightPx);
             if (objWPx <= 0 || objHPx <= 0) continue;
             var objLeftPx = leftPx + (widthPx - objWPx) / 2.0;
             var objTopPx = topPx + (heightPx - objHPx) / 2.0;
@@ -92,46 +89,36 @@ internal static class ImagePainter
         }
     }
 
-    /// <summary>The §5.5 concrete object size for <paramref name="rawFit"/> in a
+    /// <summary>The §5.5 concrete object size for the computed <c>object-fit</c> keyword
+    /// (the KeywordResolver table order: 0 fill, 1 contain, 2 cover, 3 none, 4 scale-down —
+    /// object-fit is a registered property, so the cascade already validated the value; an
+    /// invalid declaration was diagnosed there and computed to the initial) in a
     /// <paramref name="boxW"/> × <paramref name="boxH"/> content box with the
-    /// <paramref name="intrinsicW"/> × <paramref name="intrinsicH"/> px natural size. An unknown
-    /// value surfaces once per render and falls back to the initial <c>fill</c>.</summary>
+    /// <paramref name="intrinsicW"/> × <paramref name="intrinsicH"/> px natural size.</summary>
     private static (double W, double H) ConcreteObjectSize(
-        string? rawFit, double boxW, double boxH, double intrinsicW, double intrinsicH,
-        IDiagnosticsSink? diagnostics, ref bool unknownFitReported)
+        int fitKeyword, double boxW, double boxH, double intrinsicW, double intrinsicH)
     {
-        var fit = rawFit?.Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(fit) || fit == "fill") return (boxW, boxH);
+        if (fitKeyword == 0) return (boxW, boxH);                  // fill — the initial.
         if (intrinsicW <= 0 || intrinsicH <= 0) return (boxW, boxH);
-        switch (fit)
+        switch (fitKeyword)
         {
-            case "contain":
-            case "cover":
+            case 1:   // contain
+            case 2:   // cover
             {
                 var sx = boxW / intrinsicW;
                 var sy = boxH / intrinsicH;
-                var s = fit == "contain" ? Math.Min(sx, sy) : Math.Max(sx, sy);
+                var s = fitKeyword == 1 ? Math.Min(sx, sy) : Math.Max(sx, sy);
                 return (intrinsicW * s, intrinsicH * s);
             }
-            case "none":
+            case 3:   // none
                 return (intrinsicW, intrinsicH);
-            case "scale-down":
+            case 4:   // scale-down — the smaller of `none` and `contain` (§5.5).
             {
-                // The smaller of `none` and `contain` (§5.5) — never upscale.
                 var s = Math.Min(1.0, Math.Min(boxW / intrinsicW, boxH / intrinsicH));
                 return (intrinsicW * s, intrinsicH * s);
             }
             default:
-                if (!unknownFitReported && diagnostics is not null)
-                {
-                    diagnostics.Emit(new Diagnostic(
-                        DiagnosticCodes.CssPropertyValueInvalid001,
-                        $"object-fit value '{fit}' is not recognized (fill / contain / cover / "
-                        + "none / scale-down are supported); the initial `fill` is used.",
-                        DiagnosticSeverity.Warning));
-                    unknownFitReported = true;
-                }
-                return (boxW, boxH);
+                return (boxW, boxH);   // unreachable for a table-validated slot — fill.
         }
     }
 }

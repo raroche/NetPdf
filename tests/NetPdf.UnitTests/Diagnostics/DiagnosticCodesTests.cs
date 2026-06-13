@@ -1011,6 +1011,34 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001", DiagnosticCodes.PaintMarginBoxContentOverflow001);
     }
 
+    // ============================================================
+    // bg-image / tiling-patterns cycles — PAINT-BG-IMAGE-TILE-CAP-001
+    // parity. RESERVED — no longer emitted (the tiling-patterns cycle
+    // made the cap unreachable); the code + constant are retained per
+    // the registry-stability convention (PR #168 review P2), like the
+    // resolved PAINT alpha approximations.
+    // ============================================================
+
+    [Fact]
+    public void Paint_bg_image_tile_cap_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PAINT-BG-IMAGE-TILE-CAP-001)`?\s*\|\s*(\w+)\s*\|\s*(.{0,40})");
+
+        Assert.True(match.Success, "PAINT-BG-IMAGE-TILE-CAP-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PAINT-BG-IMAGE-TILE-CAP-001", DiagnosticCodes.PaintBgImageTileCap001);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Contains("Reserved", match.Groups[3].Value);   // documented as no-longer-emitted.
+    }
+
+    [Fact]
+    public void Paint_bg_image_tile_cap_001_constant_value_is_stable()
+    {
+        Assert.Equal("PAINT-BG-IMAGE-TILE-CAP-001", DiagnosticCodes.PaintBgImageTileCap001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

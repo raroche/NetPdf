@@ -238,15 +238,27 @@ internal sealed class PdfDocument
                 $"Tiling pattern anchor must be finite; got ({anchorXPt}, {anchorYPt}).");
         }
 
-        var key = string.Create(CultureInfo.InvariantCulture,
-            $"{imageRef.ObjectNumber}|{tileWidthPt:0.#####}|{tileHeightPt:0.#####}|{anchorXPt:0.#####}|{anchorYPt:0.#####}");
+        // ONE canonical numeric path (PR #168 review P2): quantize every input through the
+        // SAME 6-fractional-digit canonical form PdfReal/PdfWriter serialize with
+        // (CanonicalRealFormat), so the dedup KEY, the CELL content-stream numbers, and the
+        // dictionary's /BBox + /XStep//YStep + /Matrix all agree to the digit — the pre-fix
+        // 5-digit key/cell could disagree with the 6-digit dictionary AND dedup two distinct
+        // 6-digit patterns into one cached object.
+        var wText = tileWidthPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var hText = tileHeightPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var axText = anchorXPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var ayText = anchorYPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        tileWidthPt = double.Parse(wText, CultureInfo.InvariantCulture);
+        tileHeightPt = double.Parse(hText, CultureInfo.InvariantCulture);
+        anchorXPt = double.Parse(axText, CultureInfo.InvariantCulture);
+        anchorYPt = double.Parse(ayText, CultureInfo.InvariantCulture);
+
+        var key = $"{imageRef.ObjectNumber}|{wText}|{hText}|{axText}|{ayText}";
         if (_patternCache.TryGetValue(key, out var existing)) return existing;
 
-        // The cell paints the image stretched to the tile rect: q w 0 0 h 0 0 cm /ImP Do Q.
-        // Numbers follow the page content-stream rule (no exponent, ≤ 5 fractional digits,
-        // ISO 32000-2 §7.3.3) so the emitted bytes stay deterministic.
-        var content = string.Create(CultureInfo.InvariantCulture,
-            $"q {tileWidthPt:0.#####} 0 0 {tileHeightPt:0.#####} 0 0 cm /ImP Do Q\n");
+        // The cell paints the image stretched to the tile rect: q w 0 0 h 0 0 cm /ImP Do Q —
+        // the numbers are the SAME canonical strings the dictionary reals serialize to.
+        var content = $"q {wText} 0 0 {hText} 0 0 cm /ImP Do Q\n";
         var xobjects = new PdfDictionary().Set(new PdfName("ImP"), imageRef);
         var resources = new PdfDictionary().Set(PdfNames.XObject, xobjects);
         var bbox = new PdfArray()

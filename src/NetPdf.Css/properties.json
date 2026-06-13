@@ -70,6 +70,7 @@
     { "name": "max-width", "id": "MaxWidth", "type": "MaxSize", "default": "none", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "min-height", "id": "MinHeight", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "min-width", "id": "MinWidth", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
+    { "name": "object-fit", "id": "ObjectFit", "type": "Keyword", "default": "fill", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "order", "id": "Order", "type": "Integer", "default": "0", "inherit": false, "applies_to": "FlexItems", "computed": "Specified" },
     { "name": "overflow-wrap", "id": "OverflowWrap", "type": "Keyword", "default": "normal", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "overflow-x", "id": "OverflowX", "type": "Keyword", "default": "visible", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },

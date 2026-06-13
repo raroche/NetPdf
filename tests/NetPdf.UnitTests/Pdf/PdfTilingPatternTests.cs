@@ -81,6 +81,31 @@ public sealed class PdfTilingPatternTests
     }
 
     [Fact]
+    public void Pattern_numbers_share_one_canonical_path()
+    {
+        // PR #168 review P2 — the dedup key, the cell stream, and the dictionary reals all
+        // quantize through PdfWriter.CanonicalRealFormat (6 fractional digits): two patterns
+        // differing in the 6th decimal stay DISTINCT; a 7-digit input quantizes to the same
+        // canonical value (and so the same cached object) as its 6-digit rounding; and the
+        // cell's `cm` numbers match /XStep//YStep to the digit.
+        var (doc, imageRef) = NewDocWithImage();
+        var a = doc.RegisterTilingPattern(imageRef, 12.123456, 12, 0, 0);
+        var b = doc.RegisterTilingPattern(imageRef, 12.123457, 12, 0, 0);
+        var c = doc.RegisterTilingPattern(imageRef, 12.1234567, 12, 0, 0);   // rounds to b's value
+        Assert.NotEqual(a.ObjectNumber, b.ObjectNumber);
+        Assert.Equal(b.ObjectNumber, c.ObjectNumber);
+
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.FillRectangleWithPattern(a, 0, 0, 10, 10);
+        page.FillRectangleWithPattern(b, 0, 20, 10, 10);
+        var pdf = Latin1(doc.Save());
+        Assert.Contains("/XStep 12.123456", pdf);
+        Assert.Contains("q 12.123456 0 0 12 0 0 cm /ImP Do Q", pdf);
+        Assert.Contains("/XStep 12.123457", pdf);
+        Assert.Contains("q 12.123457 0 0 12 0 0 cm /ImP Do Q", pdf);
+    }
+
+    [Fact]
     public void Pattern_fill_validates_inputs()
     {
         var (doc, imageRef) = NewDocWithImage();

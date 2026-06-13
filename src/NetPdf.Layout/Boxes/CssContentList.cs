@@ -122,15 +122,21 @@ internal static class CssContentList
     /// intermediate block-level element (between the running root and the leaf lines) carrying its
     /// OWN self-only decoration — its band spans its descendant leaf lines
     /// [<paramref name="FirstSegment"/>..<paramref name="LastSegment"/>]. Its own horizontal
-    /// margins inset ITS band (children's line geometry is untouched — the documented first cut);
-    /// its VERTICAL margins were folded into the boundary segments' gap margins at capture
-    /// (max-collapse, CSS 2.2 §8.3.1's simple case). <paramref name="OwnStyle"/> carries the
-    /// container's inherited <c>color</c> (its band's currentcolor owner).</summary>
+    /// margins inset ITS band; its horizontal margin+border+padding propagate into its
+    /// descendants (container-insets cycle); its VERTICAL margins were folded into the boundary
+    /// segments' gap margins at capture (max-collapse, CSS 2.2 §8.3.1's simple case — vertical
+    /// border+padding BLOCK the collapse and ADD instead, container-vpad cycle).
+    /// <paramref name="LeadingInsidePx"/> / <paramref name="TrailingInsidePx"/> are the parts of
+    /// the boundary gaps INSIDE the band (border+padding + the pre-fold inner gap), so the band
+    /// extends over its padding strip while the container's own margin stays outside.
+    /// <paramref name="OwnStyle"/> carries the container's inherited <c>color</c> (its band's
+    /// currentcolor owner).</summary>
     public readonly record struct RunningContainer(
         IReadOnlyList<KeyValuePair<string, string>> Decoration,
         IReadOnlyList<KeyValuePair<string, string>> OwnStyle,
         int FirstSegment, int LastSegment,
-        double MarginLeftPx = 0, double MarginRightPx = 0);
+        double MarginLeftPx = 0, double MarginRightPx = 0,
+        double LeadingInsidePx = 0, double TrailingInsidePx = 0);
 
     /// <summary>One stacked LINE of a running element's content (Task 23, segment-style cycle):
     /// the line's text plus the OWN font/color (property, value) pairs of the element that produced

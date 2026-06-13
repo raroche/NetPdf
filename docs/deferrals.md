@@ -3281,6 +3281,34 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Container vertical padding + §4.3-gated borders + `object-position` +
+         `background-repeat: space`/`round` — DONE (container-vpad / object-position /
+         space-round cycles):** a running-element CONTAINER's VERTICAL border+padding now
+         BLOCK the §8.3.1 margin collapse (ADD instead of max-collapse) and extend its
+         decoration band over its padding strip (container-vpad cycle): `FoldContainerBoxModel`
+         returns the boundary-gap parts INSIDE the band (`Leading/TrailingInsidePx` = border +
+         padding + the pre-fold inner gap), threaded through `RunningContainer` →
+         `PageMarginBoxPainter`'s `ContainerBand` so the band's Y range extends (top − Leading,
+         bottom + Trailing); its HORIZONTAL border+padding join the inset propagation into
+         descendants. Border widths are §4.3-GATED (new `CaptureSegmentBorderWidths` /
+         `GatedBorderWidthPx`: a `border-<side>-style` of `none`/`hidden`/unset → 0;
+         `thin`/`medium`/`thick` → 1/3/5; an unset width on a painting edge → the `medium`
+         default). `object-position` positions the object-fit-fitted `<img>` content in its
+         content box (object-position cycle, CSS Images 3 §5.6): the RAW winner rides `ImgSpec`
+         (the property stays UNREGISTERED — a 2-component position needs a new metadata type, a
+         documented seam), `ImagePainter` reuses `FragmentPainter.TryParseBackgroundPosition`
+         (the §3.6 grammar), unset → centre (byte-identical to the pre-cycle 50% 50%).
+         `background-repeat: space`/`round` are the two remaining modes (space-round cycle, CSS
+         B&B §3.2): new `BackgroundRepeatMode` (per-axis) + `AxisTilingPlan` (`space` =
+         floor(area/tile) tiles flush to the edges with the leftover as equal gaps folded into
+         the ORIGIN STEP; `round` rescales the tile so a whole number fits) drive both the loop
+         and the pattern path; `RegisterTilingPattern` gained optional `xStepPt`/`yStepPt` (a
+         `space` gap makes the step EXCEED the BBox — legal §8.7.3.1 — quantized + in the dedup
+         key + on `/XStep`//`/YStep`). STILL DEFERRED: container WIDTH (sub-box wrap) +
+         inline-level spans; `object-position` REGISTRATION (a `<position>` metadata type — it
+         renders from the raw winner, so `@supports (object-position: …)` does NOT report it; PR
+         #169 review P2) + edge-offset (4-value) forms; `background-origin`/`-clip`/`-attachment`;
+         gradients (Phase 4).
        - **Container inset propagation + PDF tiling patterns + object-fit — DONE
          (container-insets / tiling-patterns / object-fit cycles):** a running-element
          CONTAINER's horizontal margin+padding now propagate into its DESCENDANTS

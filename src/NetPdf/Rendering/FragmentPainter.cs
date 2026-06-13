@@ -163,10 +163,10 @@ internal static class FragmentPainter
         // Each unsupported longhand falls back to ITS initial WHOLE (a failed parse may have
         // half-assigned its outs — e.g. a valid first axis before an invalid second).
         var anyVariantUnsupported = false;
-        if (!TryParseBackgroundRepeat(repeatRaw, out var repeatX, out var repeatY))
+        if (!TryParseBackgroundRepeat(repeatRaw, out var modeX, out var modeY))
         {
             anyVariantUnsupported = true;
-            repeatX = repeatY = true;                           // the initial: repeat.
+            modeX = modeY = BackgroundRepeatMode.Repeat;        // the initial: repeat.
         }
         if (!TryParseBackgroundSize(
                 sizeRaw, widthPx, heightPx, entry.WidthPx, entry.HeightPx, out var tileW, out var tileH))
@@ -175,56 +175,30 @@ internal static class FragmentPainter
             tileW = entry.WidthPx;                              // the initial: auto (intrinsic).
             tileH = entry.HeightPx;
         }
+        if (tileW <= 0 || tileH <= 0)
+        {
+            EmitVariantUnsupported(diagnostics, anyVariantUnsupported, ref variantUnsupportedReported);
+            return;
+        }
+        // ROUND rescales the tile so a whole number fills its axis exactly (space-round cycle,
+        // CSS B&B §3.2/§3.9 — the size adjustment happens BEFORE the position resolves against
+        // the used tile size).
+        if (modeX == BackgroundRepeatMode.Round)
+            tileW = widthPx / Math.Max(1, Math.Round(widthPx / tileW));
+        if (modeY == BackgroundRepeatMode.Round)
+            tileH = heightPx / Math.Max(1, Math.Round(heightPx / tileH));
         if (!TryParseBackgroundPosition(
                 positionRaw, widthPx, heightPx, tileW, tileH, out var posX, out var posY))
         {
             anyVariantUnsupported = true;
             posX = posY = 0;                                    // the initial: 0% 0%.
         }
-        if (anyVariantUnsupported && !variantUnsupportedReported && diagnostics is not null)
-        {
-            diagnostics.Emit(new Diagnostic(
-                DiagnosticCodes.CssBackgroundImageUnsupported001,
-                "A background-repeat/-size/-position value outside the supported set "
-                + "(repeat/no-repeat/repeat-x/repeat-y incl. the two-value axis form; "
-                + "auto/contain/cover/<length|percentage>{1,2}; keyword/<length|percentage>{1,2}) "
-                + "was ignored — that longhand fell back to its initial value.",
-                DiagnosticSeverity.Warning));
-            variantUnsupportedReported = true;
-        }
-        if (tileW <= 0 || tileH <= 0) return;
+        EmitVariantUnsupported(diagnostics, anyVariantUnsupported, ref variantUnsupportedReported);
 
-        // The grid: a repeating axis covers the whole area at the position's PHASE (the first
-        // tile starts ≤ the area edge); a non-repeating axis paints exactly ONE tile at the
-        // position (it may protrude — the clip below bounds it).
-        double firstX;
-        long nx;
-        if (repeatX)
-        {
-            var phase = posX % tileW;
-            if (phase > 0) phase -= tileW;
-            firstX = phase;
-            nx = (long)Math.Ceiling((widthPx - firstX) / tileW);
-        }
-        else
-        {
-            firstX = posX;
-            nx = 1;
-        }
-        double firstY;
-        long ny;
-        if (repeatY)
-        {
-            var phase = posY % tileH;
-            if (phase > 0) phase -= tileH;
-            firstY = phase;
-            ny = (long)Math.Ceiling((heightPx - firstY) / tileH);
-        }
-        else
-        {
-            firstY = posY;
-            ny = 1;
-        }
+        // Per-axis tiling plan (space-round cycle): the first tile's offset + count + the
+        // ORIGIN STEP (= the tile size; tile + gap for `space`).
+        var (firstX, nx, stepX) = AxisTilingPlan(modeX, widthPx, tileW, posX);
+        var (firstY, ny, stepY) = AxisTilingPlan(modeY, heightPx, tileH, posY);
         if (nx <= 0 || ny <= 0) return;
 
         var imageRef = ImageResourceCache.GetOrRegister(document, entry);
@@ -241,18 +215,23 @@ internal static class FragmentPainter
             || ny > MaxLoopTilesPerFragment
             || nx > MaxLoopTilesPerFragment / ny)
         {
-            var fillLeftPx = repeatX ? leftPx : Math.Max(leftPx, leftPx + firstX);
-            var fillRightPx = repeatX ? leftPx + widthPx : Math.Min(leftPx + widthPx, leftPx + firstX + tileW);
-            var fillTopPx = repeatY ? topPx : Math.Max(topPx, topPx + firstY);
-            var fillBottomPx = repeatY ? topPx + heightPx : Math.Min(topPx + heightPx, topPx + firstY + tileH);
+            var singleX = nx == 1;
+            var singleY = ny == 1;
+            var fillLeftPx = singleX ? Math.Max(leftPx, leftPx + firstX) : leftPx;
+            var fillRightPx = singleX ? Math.Min(leftPx + widthPx, leftPx + firstX + tileW) : leftPx + widthPx;
+            var fillTopPx = singleY ? Math.Max(topPx, topPx + firstY) : topPx;
+            var fillBottomPx = singleY ? Math.Min(topPx + heightPx, topPx + firstY + tileH) : topPx + heightPx;
             if (fillRightPx - fillLeftPx <= 0 || fillBottomPx - fillTopPx <= 0) return;
             // The anchor tile's PDF rect gives the pattern Matrix origin (its bottom-left)
-            // + the tile size in pt; any anchor congruent modulo the tile reproduces the
-            // same grid, so the phase is exact.
+            // + the tile size in pt; the ORIGIN STEPS convert with the same px→pt scale
+            // (space-round cycle — a `space` gap rides /XStep //YStep; §8.7.3.1 allows steps
+            // beyond the BBox). Any anchor congruent modulo the step reproduces the grid.
             ToPdfRect(
                 leftPx + firstX, topPx + firstY, tileW, tileH, pageHeightPt,
                 out var ax, out var ay, out var aw, out var ah);
-            var patternRef = document.RegisterTilingPattern(imageRef, aw, ah, ax, ay);
+            var patternRef = document.RegisterTilingPattern(
+                imageRef, aw, ah, ax, ay,
+                xStepPt: PdfUnits.PxToPt(stepX), yStepPt: PdfUnits.PxToPt(stepY));
             ToPdfRect(
                 fillLeftPx, fillTopPx, fillRightPx - fillLeftPx, fillBottomPx - fillTopPx,
                 pageHeightPt, out var fx, out var fy, out var fw, out var fh);
@@ -268,7 +247,7 @@ internal static class FragmentPainter
             for (long col = 0; col < nx; col++)
             {
                 ToPdfRect(
-                    leftPx + firstX + col * tileW, topPx + firstY + row * tileH, tileW, tileH,
+                    leftPx + firstX + col * stepX, topPx + firstY + row * stepY, tileW, tileH,
                     pageHeightPt, out var x, out var y, out var w, out var h);
                 page.PlaceImage(imageRef, x, y, w, h);
             }
@@ -276,13 +255,40 @@ internal static class FragmentPainter
         page.RestoreGraphicsState();
     }
 
-    /// <summary>Parse <c>background-repeat</c> (bg-variants cycle): the four single keywords +
-    /// the two-value per-axis form. <c>space</c> / <c>round</c> / unknown → <see langword="false"/>
-    /// (the caller falls back to <c>repeat</c> + surfaces once). Null/empty = the initial.</summary>
-    internal static bool TryParseBackgroundRepeat(string? raw, out bool repeatX, out bool repeatY)
+    private static void EmitVariantUnsupported(
+        IDiagnosticsSink? diagnostics, bool anyVariantUnsupported, ref bool variantUnsupportedReported)
     {
-        repeatX = true;
-        repeatY = true;
+        if (!anyVariantUnsupported || variantUnsupportedReported || diagnostics is null) return;
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssBackgroundImageUnsupported001,
+            "A background-repeat/-size/-position value outside the supported set "
+            + "(repeat/no-repeat/repeat-x/repeat-y/space/round incl. the two-value axis form; "
+            + "auto/contain/cover/<length|percentage>{1,2}; keyword/<length|percentage>{1,2}) "
+            + "was ignored — that longhand fell back to its initial value.",
+            DiagnosticSeverity.Warning));
+        variantUnsupportedReported = true;
+    }
+
+    /// <summary>A per-axis <c>background-repeat</c> mode (bg-variants + space-round cycles,
+    /// CSS B&amp;B §3.2).</summary>
+    internal enum BackgroundRepeatMode
+    {
+        Repeat,
+        NoRepeat,
+        Space,   // floor(area/tile) tiles, the leftover distributed as equal gaps.
+        Round,   // the tile rescales so a whole number fills the area exactly.
+    }
+
+    /// <summary>Parse <c>background-repeat</c> (bg-variants + space-round cycles): the single
+    /// keywords (<c>repeat</c> / <c>no-repeat</c> / <c>repeat-x</c> / <c>repeat-y</c> /
+    /// <c>space</c> / <c>round</c>) + the two-value per-axis form. Unknown →
+    /// <see langword="false"/> (the caller falls back to <c>repeat</c> + surfaces once).
+    /// Null/empty = the initial.</summary>
+    internal static bool TryParseBackgroundRepeat(
+        string? raw, out BackgroundRepeatMode repeatX, out BackgroundRepeatMode repeatY)
+    {
+        repeatX = BackgroundRepeatMode.Repeat;
+        repeatY = BackgroundRepeatMode.Repeat;
         if (string.IsNullOrWhiteSpace(raw)) return true;
         var parts = raw.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 1)
@@ -290,9 +296,11 @@ internal static class FragmentPainter
             switch (parts[0])
             {
                 case "repeat": return true;
-                case "no-repeat": repeatX = repeatY = false; return true;
-                case "repeat-x": repeatY = false; return true;
-                case "repeat-y": repeatX = false; return true;
+                case "no-repeat": repeatX = repeatY = BackgroundRepeatMode.NoRepeat; return true;
+                case "repeat-x": repeatY = BackgroundRepeatMode.NoRepeat; return true;
+                case "repeat-y": repeatX = BackgroundRepeatMode.NoRepeat; return true;
+                case "space": repeatX = repeatY = BackgroundRepeatMode.Space; return true;
+                case "round": repeatX = repeatY = BackgroundRepeatMode.Round; return true;
                 default: return false;
             }
         }
@@ -301,10 +309,50 @@ internal static class FragmentPainter
             && TryAxisRepeat(parts[1], out repeatY);
     }
 
-    private static bool TryAxisRepeat(string token, out bool repeat)
+    private static bool TryAxisRepeat(string token, out BackgroundRepeatMode mode)
     {
-        repeat = token == "repeat";
-        return token is "repeat" or "no-repeat";
+        switch (token)
+        {
+            case "repeat": mode = BackgroundRepeatMode.Repeat; return true;
+            case "no-repeat": mode = BackgroundRepeatMode.NoRepeat; return true;
+            case "space": mode = BackgroundRepeatMode.Space; return true;
+            case "round": mode = BackgroundRepeatMode.Round; return true;
+            default: mode = BackgroundRepeatMode.Repeat; return false;
+        }
+    }
+
+    /// <summary>One axis's tiling plan (space-round cycle): the first tile's offset within the
+    /// positioning area, the tile count, and the step between tile ORIGINS (= the tile size
+    /// for repeat; tile + gap for <c>space</c>). INTERNAL so the unit tests can pin the §3.2
+    /// count/gap math directly.</summary>
+    internal static (double First, long Count, double Step) AxisTilingPlan(
+        BackgroundRepeatMode mode, double areaPx, double tilePx, double posPx)
+    {
+        switch (mode)
+        {
+            case BackgroundRepeatMode.NoRepeat:
+                return (posPx, 1, tilePx);
+            case BackgroundRepeatMode.Space:
+            {
+                // §3.2: floor(area/tile) whole tiles; the leftover becomes equal gaps between
+                // them (first/last flush with the area edges); 0–1 tiles degenerate to a
+                // single positioned tile.
+                var n = (long)Math.Floor(areaPx / tilePx);
+                if (n <= 1) return (posPx, 1, tilePx);
+                var gap = (areaPx - n * tilePx) / (n - 1);
+                return (0, n, tilePx + gap);
+            }
+            case BackgroundRepeatMode.Round:
+                // The caller already rescaled the tile so a whole number fits exactly —
+                // tiles run edge-to-edge from the area start.
+                return (0, Math.Max(1, (long)Math.Round(areaPx / tilePx)), tilePx);
+            default:
+            {
+                var phase = posPx % tilePx;
+                if (phase > 0) phase -= tilePx;
+                return (phase, (long)Math.Ceiling((areaPx - phase) / tilePx), tilePx);
+            }
+        }
     }
 
     /// <summary>Parse <c>background-size</c> (bg-variants cycle): <c>auto</c> (intrinsic — the

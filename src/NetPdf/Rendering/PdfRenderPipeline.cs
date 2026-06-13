@@ -224,7 +224,7 @@ internal static class PdfRenderPipeline
         // text-last paint-order approximation).
         ImagePainter.PaintImages(
             sink.Fragments, page, document, imageCache, mediaBox.HeightPts,
-            margins.LeftPx, margins.TopPx);
+            margins.LeftPx, margins.TopPx, diagnostics);
 
         // Page margin boxes (running headers/footers, Task 21 cycle 3): resolved from the same
         // bare @page rules, laid out into fragments in the page margins. They paint through the

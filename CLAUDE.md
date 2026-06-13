@@ -429,16 +429,25 @@ PrintBackgrounds-gated; its repeat/size/position raws wired through); body `back
 `-position` drive the shared tiler (per-axis repeat with position PHASE; auto/contain/cover/lengths/%;
 keywords + §3.6 percentages; AngleSharp splits repeat/position into `-x`/`-y` longhands → recomposed;
 unsupported forms fall back WHOLE to the initial + surface once). **Container-insets / tiling-patterns /
-object-fit cycles (in progress, branch `phase-3-task-21-23-container-insets-tiling-patterns-object-fit`,
-PR open):** a container's horizontal margin+padding propagate into its descendants' lines + nested bands
-(`FoldContainerBoxModel` — the outer's own band keeps its margin-only inset); tilings above a 16-tile
-threshold emit ONE PDF tiling-pattern fill (`RegisterTilingPattern` §8.7.3 + `FillRectangleWithPattern`;
-the 4096-tile cap + PAINT-BG-IMAGE-TILE-CAP-001 REMOVED — O(1) for any count, phase exact via /Matrix);
-`object-fit` fits `<img>` content (fill/contain/cover/none/scale-down, centred per the object-position
-50%50% initial, cover/none clipped at the content box). Next (in order): the multi-page driver
-(cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation
-first), optional riders: container width sub-box wrap / vertical-padding band extension,
-`object-position`, inline `<img>` atomics. Blocked (see `deferrals.md`):
+object-fit cycles (merged as PR #168 incl. its review):** a container's horizontal margin+padding propagate
+into its descendants' lines + nested bands (`FoldContainerBoxModel` — the outer's own band keeps its
+margin-only inset); tilings above a 16-tile threshold emit ONE PDF tiling-pattern fill
+(`RegisterTilingPattern` §8.7.3 + `FillRectangleWithPattern`; the 4096-tile cap + PAINT-BG-IMAGE-TILE-CAP-001
+REMOVED — O(1) for any count, phase exact via /Matrix); `object-fit` fits `<img>` content
+(fill/contain/cover/none/scale-down, centred per the object-position 50%50% initial, cover/none clipped at the
+content box). **Container vertical-padding/borders / object-position / repeat space-round cycles (in progress,
+branch `phase-3-task-21-23-container-vpad-objpos-repeat-space-round`, PR #169 OPEN):** a container's VERTICAL
+border+padding now BLOCK the §8.3.1 margin collapse (ADD not max) + extend its band over its padding strip
+(`FoldContainerBoxModel` returns the band-inside `Leading/TrailingInsidePx`; border widths are §4.3-gated via
+`CaptureSegmentBorderWidths` — none/hidden→0, thin/medium/thick→1/3/5, unset-on-a-painting-edge→medium); its
+horizontal border+padding join the inset propagation. `object-position` places the object-fit-fitted `<img>`
+content in its box (`ImgSpec` raw winner → the shared `TryParseBackgroundPosition` §3.6 grammar; unset →
+centre, byte-identical to the 50%50% initial). `background-repeat: space`/`round` are the last two modes (new
+`BackgroundRepeatMode` + `AxisTilingPlan`; `space` distributes equal gaps via the origin step, `round`
+rescales the tile to fit; `RegisterTilingPattern` gained `/XStep`//`/YStep` so a `space` step rides the
+pattern path). Next (in order): the multi-page driver (cross-page running + `@page :left`/`:right`/`:blank` +
+named pages — design/plan + scope confirmation first), optional riders: container width sub-box wrap,
+`object-position` edge-offsets, inline `<img>` atomics. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

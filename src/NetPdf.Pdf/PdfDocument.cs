@@ -222,7 +222,8 @@ internal sealed class PdfDocument
     /// </summary>
     public PdfIndirectRef RegisterTilingPattern(
         PdfIndirectRef imageRef, double tileWidthPt, double tileHeightPt,
-        double anchorXPt, double anchorYPt)
+        double anchorXPt, double anchorYPt,
+        double? xStepPt = null, double? yStepPt = null)
     {
         ArgumentNullException.ThrowIfNull(imageRef);
         ThrowIfSaved();
@@ -237,6 +238,15 @@ internal sealed class PdfDocument
             throw new ArgumentException(
                 $"Tiling pattern anchor must be finite; got ({anchorXPt}, {anchorYPt}).");
         }
+        // ORIGIN STEPS (space-round cycle) default to the tile size; a `space` gap makes the
+        // step EXCEED the cell BBox — legal per §8.7.3.1 (tiles with gaps between them).
+        var stepX = xStepPt ?? tileWidthPt;
+        var stepY = yStepPt ?? tileHeightPt;
+        if (!double.IsFinite(stepX) || !double.IsFinite(stepY) || stepX <= 0 || stepY <= 0)
+        {
+            throw new ArgumentException(
+                $"Tiling pattern steps must be finite and positive; got ({stepX}, {stepY}).");
+        }
 
         // ONE canonical numeric path (PR #168 review P2): quantize every input through the
         // SAME 6-fractional-digit canonical form PdfReal/PdfWriter serialize with
@@ -248,16 +258,20 @@ internal sealed class PdfDocument
         var hText = tileHeightPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
         var axText = anchorXPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
         var ayText = anchorYPt.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var sxText = stepX.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var syText = stepY.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
         tileWidthPt = double.Parse(wText, CultureInfo.InvariantCulture);
         tileHeightPt = double.Parse(hText, CultureInfo.InvariantCulture);
         anchorXPt = double.Parse(axText, CultureInfo.InvariantCulture);
         anchorYPt = double.Parse(ayText, CultureInfo.InvariantCulture);
+        stepX = double.Parse(sxText, CultureInfo.InvariantCulture);
+        stepY = double.Parse(syText, CultureInfo.InvariantCulture);
 
         // FULL indirect-ref identity in the key (PR #168 Copilot) — object numbers repeat
         // across stores (a foreign or synthetic StoreId-0 ref can share a number with a local
         // one), and HasSameTarget's contract is number + generation + store; a number-only key
         // could hand back a pattern for the WRONG image.
-        var key = $"{imageRef.ObjectNumber}:{imageRef.Generation}:{imageRef.StoreId}|{wText}|{hText}|{axText}|{ayText}";
+        var key = $"{imageRef.ObjectNumber}:{imageRef.Generation}:{imageRef.StoreId}|{wText}|{hText}|{axText}|{ayText}|{sxText}|{syText}";
         if (_patternCache.TryGetValue(key, out var existing)) return existing;
 
         // The cell paints the image stretched to the tile rect: q w 0 0 h 0 0 cm /ImP Do Q —
@@ -277,8 +291,8 @@ internal sealed class PdfDocument
             .Set(PdfNames.PaintType, new PdfInteger(1))     // colored (the image carries color)
             .Set(PdfNames.TilingType, new PdfInteger(1))    // constant spacing
             .Set(PdfNames.BBox, bbox)
-            .Set(PdfNames.XStep, new PdfReal(tileWidthPt))
-            .Set(PdfNames.YStep, new PdfReal(tileHeightPt))
+            .Set(PdfNames.XStep, new PdfReal(stepX))
+            .Set(PdfNames.YStep, new PdfReal(stepY))
             .Set(PdfNames.Resources, resources)
             .Set(PdfNames.Matrix, matrix);
         var patternRef = _writer.Objects.Allocate();

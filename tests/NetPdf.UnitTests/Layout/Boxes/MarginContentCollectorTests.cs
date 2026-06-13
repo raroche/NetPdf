@@ -391,6 +391,68 @@ public sealed class MarginContentCollectorTests
         Assert.Equal(8.0, segs[1].MarginBottomPx, 3);
     }
 
+    // ---- container vertical padding / §4.3-gated borders (container-vpad cycle) ----
+
+    [Fact]
+    public async Task Collect_container_vertical_padding_extends_the_band_inside()
+    {
+        // container-vpad cycle — a decorated container's vertical padding is the part of the
+        // boundary gap INSIDE its band (Leading/TrailingInsidePx), so the band extends over its
+        // padding strip: padding:10px → 10px leading + 10px trailing (the leaf's own gap is 0).
+        var ctx = await CollectAsync(
+            "<div class='rh'><div class='c'><div>AB</div></div></div>",
+            ".rh { position: running(rh) } .c { background-color: red; padding: 10px }");
+
+        var rec = Assert.Single(ctx.RunningElementContainersFirst!["rh"]);
+        Assert.Equal(10.0, rec.LeadingInsidePx, 3);
+        Assert.Equal(10.0, rec.TrailingInsidePx, 3);
+    }
+
+    [Theory]
+    [InlineData("2px solid", 2.0)]     // an absolute width paints as declared
+    [InlineData("thin solid", 1.0)]    // §4.3 keyword map
+    [InlineData("medium solid", 3.0)]
+    [InlineData("thick solid", 5.0)]
+    [InlineData("solid", 3.0)]         // a painting edge with no declared width → medium default
+    [InlineData("10px none", 0.0)]     // none → 0 even with a width
+    [InlineData("10px hidden", 0.0)]   // hidden → 0
+    public async Task Collect_container_border_top_width_is_gated_by_style(string borderTop, double expectedPx)
+    {
+        // CaptureSegmentBorderWidths' §4.3 gate: a border-top edge contributes its width to the
+        // band's leading inside extent only when its style PAINTS; none/hidden → 0; an unset width
+        // on a painting edge defaults to medium (3px).
+        var ctx = await CollectAsync(
+            "<div class='rh'><div class='c'><div>AB</div></div></div>",
+            ".rh { position: running(rh) } .c { border-top: " + borderTop + " }");
+
+        var rec = Assert.Single(ctx.RunningElementContainersFirst!["rh"]);
+        Assert.Equal(expectedPx, rec.LeadingInsidePx, 3);
+    }
+
+    [Fact]
+    public async Task Collect_container_vertical_padding_adds_to_the_boundary_gap_not_collapses()
+    {
+        // container-vpad cycle — vertical padding BLOCKS the §8.3.1 margin collapse and ADDS: a
+        // container with margin-top:20px collapses its first line's gap to 20px (Leading 0 — an
+        // empty padding strip); adding padding-top:10px blocks the collapse → the gap becomes
+        // 20+10 = 30px (the padding ADDED, not collapsed away) and Leading = 10px (band extends).
+        async Task<(double GapPx, double LeadingPx)> Probe(string cRule)
+        {
+            var ctx = await CollectAsync(
+                "<div class='rh'><div class='c'><div>AB</div></div></div>",
+                ".rh { position: running(rh) } .c { background-color: red; " + cRule + " }");
+            var seg = ctx.RunningElementSegmentsFirst!["rh"][0];
+            var rec = Assert.Single(ctx.RunningElementContainersFirst!["rh"]);
+            return (seg.MarginTopPx, rec.LeadingInsidePx);
+        }
+        var collapsed = await Probe("margin-top: 20px");
+        var added = await Probe("margin-top: 20px; padding-top: 10px");
+        Assert.Equal(20.0, collapsed.GapPx, 3);
+        Assert.Equal(0.0, collapsed.LeadingPx, 3);
+        Assert.Equal(30.0, added.GapPx, 3);
+        Assert.Equal(10.0, added.LeadingPx, 3);
+    }
+
     // ---- per-line SEGMENTS (segment-style cycle) ----
 
     [Fact]

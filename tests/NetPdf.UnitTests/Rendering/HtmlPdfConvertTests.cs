@@ -3119,6 +3119,96 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(24.0, p.W, 1);   // fill — the full 32px content box
     }
 
+    // ---- object-position (object-position cycle) ----
+
+    [Fact]
+    public void Img_object_position_left_top_anchors_to_the_content_box_corner()
+    {
+        // object-fit:none keeps the 16×16 (12pt) image in a 48×48 (36pt) content box → 24pt of
+        // slack each axis. The centred default (the initial 50% 50%) sits +12pt in from the
+        // top-left corner; `left top` pins it to the corner → 12pt left of + 12pt above (a LARGER
+        // PDF y is higher) the centre.
+        var centre = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none\">" +
+            "</body></html>")))[0];
+        var topLeft = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none;object-position:left top\">" +
+            "</body></html>")))[0];
+        Assert.Equal(centre.X - 12.0, topLeft.X, 1);
+        Assert.Equal(centre.Y + 12.0, topLeft.Y, 1);
+    }
+
+    [Fact]
+    public void Img_object_position_right_bottom_and_percent_pin_the_far_corner()
+    {
+        // `right bottom` and `100% 100%` both pin the object to the far corner: +12pt right of
+        // and 12pt below (a SMALLER PDF y) the centre — and the two spellings agree.
+        var centre = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none\">" +
+            "</body></html>")))[0];
+        var rightBottom = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none;object-position:right bottom\">" +
+            "</body></html>")))[0];
+        var percent = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none;object-position:100% 100%\">" +
+            "</body></html>")))[0];
+        Assert.Equal(centre.X + 12.0, rightBottom.X, 1);
+        Assert.Equal(centre.Y - 12.0, rightBottom.Y, 1);
+        Assert.Equal(rightBottom.X, percent.X, 1);
+        Assert.Equal(rightBottom.Y, percent.Y, 1);
+    }
+
+    [Fact]
+    public void Img_object_position_length_pair_offsets_from_the_origin()
+    {
+        // `10px 5px` places the object 10px right / 5px down from the content box's top-left
+        // origin → +7.5pt X and 3.75pt below (a smaller PDF y) the corner-pinned placement.
+        var topLeft = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none;object-position:left top\">" +
+            "</body></html>")))[0];
+        var offset = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none;object-position:10px 5px\">" +
+            "</body></html>")))[0];
+        Assert.Equal(topLeft.X + 7.5, offset.X, 1);
+        Assert.Equal(topLeft.Y - 3.75, offset.Y, 1);
+    }
+
+    [Fact]
+    public void Img_object_position_unsupported_form_falls_back_to_centre()
+    {
+        // AngleSharp validates object-position's <position> grammar and DROPS the 4-value edge-
+        // offset form `left 10px top 5px` at parse (the known beta drop boundary), so the cascade
+        // winner is null → the object centres (the initial 50% 50%), matching the unset placement.
+        // The painter's own unsupported-form fallback (+ CSS-PROPERTY-VALUE-INVALID-001) stays as
+        // defense-in-depth for raw values arriving via recovery paths (like object-fit's bogus).
+        var centre = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none\">" +
+            "</body></html>")))[0];
+        var p = Assert.Single(AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" width=\"48\" height=\"48\" " +
+            "style=\"display:block;object-fit:none;object-position:left 10px top 5px\">" +
+            "</body></html>"))));
+        Assert.Equal(centre.X, p.X, 1);
+        Assert.Equal(centre.Y, p.Y, 1);
+    }
+
     // ---- background-image: url(...) (bg-image cycle) ----
 
     [Fact]
@@ -3347,18 +3437,56 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Background_repeat_space_is_surfaced_and_falls_back_to_repeat()
+    public void Background_repeat_space_distributes_equal_gaps()
     {
-        // space/round are unsupported — surfaced once, the longhand falls back to repeat
-        // (4 × 2 = 8 tiles still paint).
-        var result = HtmlPdf.ConvertDetailed(
+        // space-round cycle — `space` packs floor(area/tile) whole tiles flush to the edges with
+        // equal gaps between: 88×32 box, 16×16 tile → floor(88/16)=5 cols × 2 rows = 10 tiles;
+        // the 8px leftover spreads as 2px gaps → the column step is 16+2 = 18px = 13.5pt (vs
+        // repeat's 6 cols at 16px). The first column is flush with the box's left edge.
+        var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><body>" +
-            $"<div style=\"width:64px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            $"<div style=\"width:88px;height:32px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:space;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        var placements = AllImagePlacements(pdf);
+        Assert.Equal(10, placements.Count);
+        var band = AllRects(pdf)[0];                      // the colour band = the border box
+        Assert.Equal(band.X, placements[0].X, 1);         // first column flush left
+        Assert.Equal(13.5, placements[1].X - placements[0].X, 1);   // 18px step = 16px tile + 2px gap
+    }
+
+    [Fact]
+    public void Background_repeat_round_rescales_the_tile_to_fit()
+    {
+        // space-round cycle — `round` resizes the tile so a whole number fills the axis exactly:
+        // 60×16 box, 16×16 tile → round(60/16)=4 cols, each rescaled to 60/4 = 15px = 11.25pt
+        // (vs the 12pt intrinsic), edge-to-edge; round(16/16)=1 row → 4 placements.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:60px;height:16px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:round\"></div>" +
+            "</body></html>"));
+        var placements = AllImagePlacements(pdf);
+        Assert.Equal(4, placements.Count);
+        Assert.Equal(11.25, placements[0].W, 2);                     // the rescaled tile width
+        Assert.Equal(11.25, placements[1].X - placements[0].X, 2);   // tiles run edge-to-edge
+    }
+
+    [Fact]
+    public void Background_repeat_space_pattern_path_rides_the_xstep()
+    {
+        // A `space` tiling above the 16-tile loop threshold emits ONE tiling pattern whose
+        // /XStep carries the tile+gap origin step: 350×16 box, 16×16 tile → floor(350/16)=21
+        // cols (>16) × 1 row; the 14px leftover spreads as 0.7px gaps → step 16.7px = 12.525pt
+        // on /XStep, while the single-row Y keeps /YStep at the 12pt tile.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:350px;height:16px;background-image:url({PngDataUri(16, 16)});" +
             "background-repeat:space\"></div>" +
-            "</body></html>", new HtmlPdfOptions());
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001
-            && d.Message.Contains("background-repeat"));
-        Assert.Equal(8, AllImagePlacements(Latin1(result.Pdf)).Count);
+            "</body></html>"));
+        Assert.Contains("/PatternType 1", pdf);
+        Assert.Contains("/XStep 12.525", pdf);
+        Assert.Contains("/YStep 12", pdf);
     }
 
     // ---- margin-box background images (margin-box-bg-image cycle) ----
@@ -3595,6 +3723,71 @@ public sealed class HtmlPdfConvertTests
         var rects = AllRects(pdf);
         Assert.True(rects.Count >= 2, "expected the box band + the inner container band");
         Assert.Equal(rects[0].X + 15.0, rects[1].X, 1);
+    }
+
+    // ---- container vertical padding / §4.3-gated borders (container-vpad cycle) ----
+
+    [Fact]
+    public void Page_margin_box_container_vertical_padding_extends_the_band()
+    {
+        // container-vpad cycle — vertical padding extends the container's band over its padding
+        // strip: padding:10px adds 10px above the first line + 10px below the last → the band is
+        // 20px = 15pt taller than the no-padding band (which spans the two leaf lines at 28.8pt).
+        const string head = "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } ";
+        const string page = "@page { @top-center { content: element(rh); width: 300px } }</style></head>";
+        const string body = "<body><div class=\"rh\"><div class=\"c\"><div>AB</div><div>AB</div></div></div></body></html>";
+        double BandHeight(string cRule)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                head + ".rh .c { background-color: #ff0000; " + cRule + " } " + page + body,
+                new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+            return AllRects(pdf)[0].H;   // backgrounds flush before borders → [0] = the band
+        }
+        var plain = BandHeight("");
+        Assert.Equal(28.8, plain, 1);
+        Assert.Equal(plain + 15.0, BandHeight("padding: 10px"), 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_container_border_extends_the_band_and_gates_on_style()
+    {
+        // §4.3-gated border-width — border:2px solid adds 2px above + 2px below the band → +3pt
+        // taller; border-style:none gates the width to 0, so the band stays the no-border height.
+        const string head = "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } ";
+        const string page = "@page { @top-center { content: element(rh); width: 300px } }</style></head>";
+        const string body = "<body><div class=\"rh\"><div class=\"c\"><div>AB</div><div>AB</div></div></div></body></html>";
+        double BandHeight(string cRule)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                head + ".rh .c { background-color: #ff0000; " + cRule + " } " + page + body,
+                new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+            return AllRects(pdf)[0].H;
+        }
+        var plain = BandHeight("");
+        Assert.Equal(plain + 3.0, BandHeight("border: 2px solid #00ff00"), 1);
+        Assert.Equal(plain, BandHeight("border: 2px none #00ff00"), 1);   // none → 0, no extension
+    }
+
+    [Theory]
+    [InlineData("border-left: 2px solid #00ff00", 1.5)]    // 2px = 1.5pt
+    [InlineData("border-left: thin solid #00ff00", 0.75)]  // §4.3 thin = 1px
+    [InlineData("border-left: thick solid #00ff00", 3.75)] // thick = 5px
+    [InlineData("border-left-style: solid", 2.25)]         // painting edge, no width → medium 3px
+    [InlineData("border-left: 10px none #00ff00", 0.0)]    // none → 0, no inset
+    public void Page_margin_box_container_border_left_insets_its_descendant_line(string cRule, double insetPt)
+    {
+        // container-insets cycle — the §4.3-gated border-left propagates into the descendant line
+        // like padding: the contained line starts `insetPt` right of its uncontained sibling (0 for
+        // a non-painting style).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .c { " + cRule + " } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"c\"><div>AB</div></div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] + insetPt, tds[1], 1);
     }
 
     [Fact]

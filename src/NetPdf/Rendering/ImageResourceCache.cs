@@ -48,12 +48,13 @@ internal sealed class ImageResourceCache
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
 
-    /// <summary>An <c>&lt;img&gt;</c> box's image reference (img-pipeline + object-fit cycles):
-    /// the resolved URI key + the COMPUTED <c>object-fit</c> keyword index (the KeywordResolver
-    /// table order — 0 = <c>fill</c>, the initial; object-fit is a registered property since
-    /// PR #168 review P2, so the slot carries the validated keyword and CSS-wide keywords get
-    /// property-aware handling for free).</summary>
-    internal readonly record struct ImgSpec(string UriKey, int ObjectFitKeyword);
+    /// <summary>An <c>&lt;img&gt;</c> box's image reference (img-pipeline + object-fit +
+    /// object-position cycles): the resolved URI key + the COMPUTED <c>object-fit</c> keyword
+    /// index (the KeywordResolver table order — 0 = <c>fill</c>, the initial; a registered
+    /// property since PR #168 review P2) + the RAW <c>object-position</c> winner (null = unset
+    /// → the 50% 50% initial; the property stays UNREGISTERED — a 2-component position needs a
+    /// new metadata type, so the raw read is the documented seam, like border-radius).</summary>
+    internal readonly record struct ImgSpec(string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw);
 
     /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its image spec. Only boxes whose fetch +
     /// decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
@@ -142,9 +143,14 @@ internal sealed class ImageResourceCache
             else
             {
                 // object-fit rides along as the COMPUTED keyword index (object-fit cycle;
-                // the registered property's slot — 0 = fill, the initial).
+                // the registered property's slot — 0 = fill, the initial); object-position as
+                // the RAW winner (object-position cycle — unregistered, the documented seam).
                 cache.ImageBoxes[box] = new ImgSpec(
-                    key, box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0));
+                    key,
+                    box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
+                    box.SourceElement is { } imgEl
+                        ? cascade.TryGetStylesFor(imgEl)?.GetWinner("object-position")?.ResolvedValue
+                        : null);
             }
         }
 

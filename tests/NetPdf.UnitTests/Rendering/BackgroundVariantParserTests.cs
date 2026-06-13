@@ -12,28 +12,78 @@ namespace NetPdf.UnitTests.Rendering;
 /// </summary>
 public sealed class BackgroundVariantParserTests
 {
+    // [InlineData] can't carry an internal enum member, so the rows pass the expected mode as a
+    // string and the body maps it (space-round cycle — TryParseBackgroundRepeat now yields a
+    // per-axis BackgroundRepeatMode, not a bool).
+    private static FragmentPainter.BackgroundRepeatMode Mode(string s) => s switch
+    {
+        "repeat" => FragmentPainter.BackgroundRepeatMode.Repeat,
+        "no-repeat" => FragmentPainter.BackgroundRepeatMode.NoRepeat,
+        "space" => FragmentPainter.BackgroundRepeatMode.Space,
+        "round" => FragmentPainter.BackgroundRepeatMode.Round,
+        _ => throw new System.ArgumentOutOfRangeException(nameof(s), s, "unknown repeat mode"),
+    };
+
     [Theory]
-    [InlineData(null, true, true)]            // unset → the initial (repeat)
-    [InlineData("repeat", true, true)]
-    [InlineData("no-repeat", false, false)]
-    [InlineData("repeat-x", true, false)]
-    [InlineData("repeat-y", false, true)]
-    [InlineData("repeat no-repeat", true, false)]   // the two-value axis form
-    [InlineData("no-repeat repeat", false, true)]
-    public void Repeat_supported_forms_parse(string? raw, bool expectX, bool expectY)
+    [InlineData(null, "repeat", "repeat")]            // unset → the initial (repeat)
+    [InlineData("repeat", "repeat", "repeat")]
+    [InlineData("no-repeat", "no-repeat", "no-repeat")]
+    [InlineData("repeat-x", "repeat", "no-repeat")]
+    [InlineData("repeat-y", "no-repeat", "repeat")]
+    [InlineData("space", "space", "space")]           // space-round cycle — now SUPPORTED
+    [InlineData("round", "round", "round")]
+    [InlineData("repeat no-repeat", "repeat", "no-repeat")]   // the two-value axis form
+    [InlineData("no-repeat repeat", "no-repeat", "repeat")]
+    [InlineData("repeat space", "repeat", "space")]   // two-value with a space axis
+    [InlineData("space round", "space", "round")]
+    public void Repeat_supported_forms_parse(string? raw, string expectX, string expectY)
     {
         Assert.True(FragmentPainter.TryParseBackgroundRepeat(raw, out var x, out var y));
-        Assert.Equal(expectX, x);
-        Assert.Equal(expectY, y);
+        Assert.Equal(Mode(expectX), x);
+        Assert.Equal(Mode(expectY), y);
     }
 
     [Theory]
-    [InlineData("space")]
-    [InlineData("round")]
-    [InlineData("repeat space")]
     [InlineData("bogus")]
+    [InlineData("repeat diagonal")]              // invalid second-axis token
+    [InlineData("repeat repeat repeat")]         // three values
     public void Repeat_unsupported_forms_reject(string raw) =>
         Assert.False(FragmentPainter.TryParseBackgroundRepeat(raw, out _, out _));
+
+    [Fact]
+    public void Axis_tiling_plan_space_packs_whole_tiles_with_equal_gaps()
+    {
+        // §3.2 — 88px area / 16px tile → floor(88/16) = 5 whole tiles; the 8px leftover spreads
+        // as 4 equal 2px gaps → the origin step is 16 + 2 = 18px, the first tile flush at 0.
+        var (first, count, step) = FragmentPainter.AxisTilingPlan(
+            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 88, tilePx: 16, posPx: 0);
+        Assert.Equal(0.0, first, 6);
+        Assert.Equal(5L, count);
+        Assert.Equal(18.0, step, 6);
+    }
+
+    [Fact]
+    public void Axis_tiling_plan_space_degenerates_to_a_single_positioned_tile()
+    {
+        // 0–1 whole tiles fit → no gaps to distribute; a single tile at the resolved position.
+        var (first, count, step) = FragmentPainter.AxisTilingPlan(
+            FragmentPainter.BackgroundRepeatMode.Space, areaPx: 20, tilePx: 16, posPx: 5);
+        Assert.Equal(5.0, first, 6);
+        Assert.Equal(1L, count);
+        Assert.Equal(16.0, step, 6);
+    }
+
+    [Fact]
+    public void Axis_tiling_plan_round_runs_pre_rescaled_tiles_edge_to_edge()
+    {
+        // round pre-rescales the tile (in the caller) so a whole number fits; the plan then
+        // counts round(area/tile) tiles flush from the area start, step = the rescaled tile.
+        var (first, count, step) = FragmentPainter.AxisTilingPlan(
+            FragmentPainter.BackgroundRepeatMode.Round, areaPx: 60, tilePx: 15, posPx: 7);
+        Assert.Equal(0.0, first, 6);
+        Assert.Equal(4L, count);
+        Assert.Equal(15.0, step, 6);
+    }
 
     [Theory]
     [InlineData(null, 16, 16)]                 // unset → auto (intrinsic)

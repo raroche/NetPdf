@@ -474,10 +474,14 @@ internal static class MarginContentCollector
                         AppendLine(output, block, maxChars);
                         if (segments is not null)
                         {
-                            FoldContainerBoxModel(
+                            var (leadingInside, trailingInside) = FoldContainerBoxModel(
                                 el, cascade, segments, firstSegment, containers, firstDescendantContainer);
                             if (containerSlot >= 0)
-                                FillContainerBand(containers!, containerSlot, el, cascade, segments, firstSegment);
+                            {
+                                FillContainerBand(
+                                    containers!, containerSlot, el, cascade, segments, firstSegment,
+                                    leadingInside, trailingInside);
+                            }
                         }
                     }
                     else
@@ -652,42 +656,59 @@ internal static class MarginContentCollector
     }
 
     /// <summary>Fold a recursed CONTAINER's box model into its descendants. VERTICAL
-    /// (container-bands cycle): its margin-top max-collapses into its FIRST descendant line's
-    /// gap margin, its margin-bottom into the LAST's (CSS 2.2 §8.3.1's parent/first-child +
-    /// parent/last-child adjoining collapse, the simple max case — the existing per-line gap
-    /// machinery then renders them). HORIZONTAL (container-insets cycle): its margin+padding
-    /// (left/right, absolute, ≥ 0 — the container's CONTENT box) propagate into every
-    /// descendant SEGMENT's margin slots (the leaf's line band + glyphs/extent inset — the
-    /// margin slot, so the leaf's own band moves too) AND every descendant CONTAINER band's
-    /// margin slots (nested bands inset under the outer's content box; the container's OWN
+    /// (container-bands + container-vpad cycles): with NO vertical border/padding its margins
+    /// max-collapse into the boundary segments' gap margins (CSS 2.2 §8.3.1's
+    /// parent/first-last-child adjoining case — the shipped rule); a vertical border/padding
+    /// BLOCKS the collapse (§8.3.1), so the gap becomes margin + border + padding + the
+    /// pre-fold inner gap, and the INSIDE part (border + padding + inner — the strip the
+    /// container's band must extend over) is RETURNED for the band record. HORIZONTAL
+    /// (container-insets cycle): its margin + §4.3-gated border width + padding (left/right,
+    /// absolute, ≥ 0 — the container's CONTENT box) propagate into every descendant SEGMENT's
+    /// margin slots AND every descendant CONTAINER band's margin slots (the container's OWN
     /// reserved slot starts before <paramref name="firstDescendantContainer"/>, so it is never
-    /// bumped by its own fold — its own padding stays INSIDE its band). Border widths stay
-    /// deferred (they need the §4.3 style gate); container VERTICAL padding (band extension)
-    /// stays deferred — deferrals.md. Runs for EVERY recursed container, decorated or
-    /// not.</summary>
-    private static void FoldContainerBoxModel(
+    /// bumped by its own fold — its border+padding stay INSIDE its band). Runs for EVERY
+    /// recursed container, decorated or not.</summary>
+    private static (double LeadingInsidePx, double TrailingInsidePx) FoldContainerBoxModel(
         IElement el, ResolvedCascadeResult cascade,
         List<CssContentList.RunningSegment> segments, int firstSegment,
         List<CssContentList.RunningContainer>? containers, int firstDescendantContainer)
     {
         var lastSegment = segments.Count - 1;
-        if (lastSegment < firstSegment) return;
+        if (lastSegment < firstSegment) return (0, 0);
         var (top, bottom, left, right) = CaptureSegmentMargins(el, cascade);
-        if (top != 0)
+        var (padTop, padBottom, padLeft, padRight) = CaptureSegmentPadding(el, cascade);
+        var (bTop, bBottom, bLeft, bRight) = CaptureSegmentBorderWidths(el, cascade);
+
+        var leadingInside = 0.0;
+        if (bTop + padTop > 0)
+        {
+            // Border/padding BLOCK the collapse: the inner gap (the leaf's own margin, plus
+            // anything an inner container already folded) sits INSIDE the band.
+            leadingInside = bTop + padTop + segments[firstSegment].MarginTopPx;
+            segments[firstSegment] = segments[firstSegment] with
+            { MarginTopPx = top + leadingInside };
+        }
+        else if (top != 0)
         {
             segments[firstSegment] = segments[firstSegment] with
             { MarginTopPx = Math.Max(segments[firstSegment].MarginTopPx, top) };
         }
-        if (bottom != 0)
+        var trailingInside = 0.0;
+        if (bBottom + padBottom > 0)
+        {
+            trailingInside = bBottom + padBottom + segments[lastSegment].MarginBottomPx;
+            segments[lastSegment] = segments[lastSegment] with
+            { MarginBottomPx = bottom + trailingInside };
+        }
+        else if (bottom != 0)
         {
             segments[lastSegment] = segments[lastSegment] with
             { MarginBottomPx = Math.Max(segments[lastSegment].MarginBottomPx, bottom) };
         }
 
-        var (_, _, padLeft, padRight) = CaptureSegmentPadding(el, cascade);
-        var insetL = left + padLeft;
-        var insetR = right + padRight;
-        if (insetL <= 0 && insetR <= 0) return;
+        var insetL = left + bLeft + padLeft;
+        var insetR = right + bRight + padRight;
+        if (insetL <= 0 && insetR <= 0) return (leadingInside, trailingInside);
         for (var i = firstSegment; i <= lastSegment; i++)
         {
             segments[i] = segments[i] with
@@ -696,19 +717,56 @@ internal static class MarginContentCollector
                 MarginRightPx = segments[i].MarginRightPx + insetR,
             };
         }
-        if (containers is null) return;
-        for (var c = firstDescendantContainer; c < containers.Count; c++)
+        if (containers is not null)
         {
-            var rc = containers[c];
-            // Descendants only (prior siblings'/uncles' ranges end before firstSegment);
-            // inert empty-recursion records are skipped.
-            if (rc.LastSegment < rc.FirstSegment || rc.FirstSegment < firstSegment) continue;
-            containers[c] = rc with
+            for (var c = firstDescendantContainer; c < containers.Count; c++)
             {
-                MarginLeftPx = rc.MarginLeftPx + insetL,
-                MarginRightPx = rc.MarginRightPx + insetR,
-            };
+                var rc = containers[c];
+                // Descendants only (prior siblings'/uncles' ranges end before firstSegment);
+                // inert empty-recursion records are skipped.
+                if (rc.LastSegment < rc.FirstSegment || rc.FirstSegment < firstSegment) continue;
+                containers[c] = rc with
+                {
+                    MarginLeftPx = rc.MarginLeftPx + insetL,
+                    MarginRightPx = rc.MarginRightPx + insetR,
+                };
+            }
         }
+        return (leadingInside, trailingInside);
+    }
+
+    /// <summary>The container's §4.3-GATED border widths in used px (container-vpad cycle):
+    /// an edge contributes its width only when its <c>border-&lt;side&gt;-style</c> is set and
+    /// paints (<c>none</c>/<c>hidden</c> → 0); a painting edge with an unset / keyword /
+    /// unparsable width uses the keyword map (<c>thin</c> 1 / <c>medium</c> 3 / <c>thick</c> 5;
+    /// unset → the <c>medium</c> default, §4.3).</summary>
+    private static (double TopPx, double BottomPx, double LeftPx, double RightPx) CaptureSegmentBorderWidths(
+        IElement element, ResolvedCascadeResult cascade)
+    {
+        var rules = cascade.TryGetStylesFor(element);
+        if (rules is null) return (0, 0, 0, 0);
+        return (GatedBorderWidthPx(rules, "top"), GatedBorderWidthPx(rules, "bottom"),
+                GatedBorderWidthPx(rules, "left"), GatedBorderWidthPx(rules, "right"));
+    }
+
+    private static double GatedBorderWidthPx(ResolvedRuleSet rules, string side)
+    {
+        var style = rules.GetWinner($"border-{side}-style")?.ResolvedValue?.Trim();
+        if (string.IsNullOrEmpty(style)
+            || style.Equals("none", StringComparison.OrdinalIgnoreCase)
+            || style.Equals("hidden", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+        var raw = rules.GetWinner($"border-{side}-width")?.ResolvedValue?.Trim().ToLowerInvariant();
+        var declared = raw switch
+        {
+            "thin" => 1.0,
+            "medium" => 3.0,
+            "thick" => 5.0,
+            _ => Math.Max(0, AbsoluteSidePx(rules, $"border-{side}-width")),
+        };
+        return declared > 0 ? declared : 3.0;   // unset/unparsable width + painting style → medium.
     }
 
     /// <summary>Fill the PRE-reserved container slot (container-bands cycle) with the
@@ -719,7 +777,8 @@ internal static class MarginContentCollector
     /// produced NO lines leaves an inert record (Last &lt; First) the painter skips.</summary>
     private static void FillContainerBand(
         List<CssContentList.RunningContainer> containers, int slot, IElement el,
-        ResolvedCascadeResult cascade, List<CssContentList.RunningSegment> segments, int firstSegment)
+        ResolvedCascadeResult cascade, List<CssContentList.RunningSegment> segments, int firstSegment,
+        double leadingInsidePx, double trailingInsidePx)
     {
         var lastSegment = segments.Count - 1;
         if (lastSegment < firstSegment)
@@ -731,7 +790,8 @@ internal static class MarginContentCollector
         var (_, _, marginLeftPx, marginRightPx) = CaptureSegmentMargins(el, cascade);
         containers[slot] = new CssContentList.RunningContainer(
             CaptureSegmentDecoration(el, cascade), CaptureSegmentStyle(el, cascade),
-            firstSegment, lastSegment, marginLeftPx, marginRightPx);
+            firstSegment, lastSegment, marginLeftPx, marginRightPx,
+            leadingInsidePx, trailingInsidePx);
     }
 
     /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)

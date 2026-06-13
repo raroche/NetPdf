@@ -397,7 +397,8 @@ internal static class PageMarginBoxPainter
                             ? cc : DefaultColorArgb;
                         built.Add(new ContainerBand(
                             bandStyle, bandColor, rc.FirstSegment, rc.LastSegment,
-                            rc.MarginLeftPx, rc.MarginRightPx));
+                            rc.MarginLeftPx, rc.MarginRightPx,
+                            rc.LeadingInsidePx, rc.TrailingInsidePx));
                     }
                     if (built.Count > 0) containerBands = built;
                 }
@@ -960,10 +961,16 @@ internal static class PageMarginBoxPainter
                             lastLi = li;
                         }
                         if (firstLi < 0) continue;   // fully truncated.
+                        // The band extends over its own border+padding strip (container-vpad
+                        // cycle): the boundary gaps reserved margin + border + padding + the
+                        // inner gap; the INSIDE part (Leading/TrailingInsidePx) belongs to the
+                        // band, the container's own margin stays outside it.
                         var topPx = absTopPx + insetTopPx
-                            + PrefixSum(perLineHeights, perLineGaps!, firstLi) + perLineGaps![firstLi];
+                            + PrefixSum(perLineHeights, perLineGaps!, firstLi) + perLineGaps![firstLi]
+                            - cb.LeadingInsidePx;
                         var bottomPx = absTopPx + insetTopPx
-                            + PrefixSum(perLineHeights, perLineGaps!, lastLi + 1);
+                            + PrefixSum(perLineHeights, perLineGaps!, lastLi + 1)
+                            + cb.TrailingInsidePx;
                         var cbX = boxXPx + insetLeftPx + cb.MarginLeftPx;
                         var cbW = Math.Max(0, contentBoxWidthPx - cb.MarginLeftPx - cb.MarginRightPx);
                         var cbH = Math.Max(0, bottomPx - topPx);
@@ -1781,10 +1788,13 @@ internal static class PageMarginBoxPainter
 
     /// <summary>A BUILT nested-container band (container-bands cycle): the container's own
     /// decoration style + its colour (the band's currentcolor owner) + the segment range it
-    /// spans + its own horizontal margins (insetting its band only).</summary>
+    /// spans + its own horizontal margins (insetting its band only) + the boundary-gap parts
+    /// INSIDE the band (its vertical border+padding strip + the inner gap — container-vpad
+    /// cycle).</summary>
     private readonly record struct ContainerBand(
         ComputedStyle Style, uint ColorArgb, int FirstSegment, int LastSegment,
-        double MarginLeftPx, double MarginRightPx);
+        double MarginLeftPx, double MarginRightPx,
+        double LeadingInsidePx, double TrailingInsidePx);
 
     /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
     /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The

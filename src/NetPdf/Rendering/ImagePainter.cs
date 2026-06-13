@@ -32,9 +32,11 @@ internal static class ImagePainter
         ImageResourceCache cache,
         double pageHeightPt,
         double contentOriginLeftPx,
-        double contentOriginTopPx)
+        double contentOriginTopPx,
+        IDiagnosticsSink? diagnostics = null)
     {
         if (cache.ImageBoxes.Count == 0) return;
+        var unknownPositionReported = false;   // object-position cycle — once per render.
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -62,12 +64,43 @@ internal static class ImagePainter
             var heightPx = fragment.BlockSize - insetT - insetB;
             if (widthPx <= 0 || heightPx <= 0) continue;
 
-            // The CONCRETE OBJECT SIZE per object-fit (§5.5), centred in the content box.
+            // The CONCRETE OBJECT SIZE per object-fit (§5.5), positioned per object-position
+            // (object-position cycle, CSS Images 3 §5.6 — the SAME §3.6 component grammar as
+            // background-position: keywords / lengths / percentages, one value → the other
+            // axis centers; the initial is 50% 50%, so an unset raw centres — the pre-cycle
+            // behavior, byte-identical). An unsupported form (edge-offsets, relative units)
+            // surfaces once + falls back to the centre.
             var (objWPx, objHPx) = ConcreteObjectSize(
                 spec.ObjectFitKeyword, widthPx, heightPx, entry.WidthPx, entry.HeightPx);
             if (objWPx <= 0 || objHPx <= 0) continue;
-            var objLeftPx = leftPx + (widthPx - objWPx) / 2.0;
-            var objTopPx = topPx + (heightPx - objHPx) / 2.0;
+            double objLeftPx;
+            double objTopPx;
+            if (spec.ObjectPositionRaw is { } posRaw)
+            {
+                if (!FragmentPainter.TryParseBackgroundPosition(
+                        posRaw, widthPx, heightPx, objWPx, objHPx, out var posX, out var posY))
+                {
+                    if (!unknownPositionReported && diagnostics is not null)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.CssPropertyValueInvalid001,
+                            $"object-position value '{posRaw}' is outside the supported set "
+                            + "(per-axis keywords, absolute lengths, percentages; one value → "
+                            + "the other axis centers); the initial 50% 50% is used.",
+                            DiagnosticSeverity.Warning));
+                        unknownPositionReported = true;
+                    }
+                    posX = (widthPx - objWPx) / 2.0;
+                    posY = (heightPx - objHPx) / 2.0;
+                }
+                objLeftPx = leftPx + posX;
+                objTopPx = topPx + posY;
+            }
+            else
+            {
+                objLeftPx = leftPx + (widthPx - objWPx) / 2.0;
+                objTopPx = topPx + (heightPx - objHPx) / 2.0;
+            }
 
             var imageRef = ImageResourceCache.GetOrRegister(document, entry);
             // cover / none can overflow the content box — clip there (CSS Images 3 §5.5: the

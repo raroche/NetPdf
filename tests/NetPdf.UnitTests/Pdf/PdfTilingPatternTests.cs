@@ -107,6 +107,26 @@ public sealed class PdfTilingPatternTests
     }
 
     [Fact]
+    public void Pattern_space_step_rides_the_xstep_and_joins_the_key()
+    {
+        // space-round cycle — a `space` gap rides /XStep//YStep: the origin step (tile + gap)
+        // EXCEEDS the cell BBox (legal per §8.7.3.1 — tiles with gaps between them), and the step
+        // is part of the dedup key, so two patterns sharing image/size/anchor but differing in
+        // step stay DISTINCT.
+        var (doc, imageRef) = NewDocWithImage();
+        var spaced = doc.RegisterTilingPattern(imageRef, 12, 12, 0, 0, xStepPt: 18, yStepPt: 12);
+        var tight = doc.RegisterTilingPattern(imageRef, 12, 12, 0, 0);   // default steps = the tile
+        Assert.NotEqual(spaced.ObjectNumber, tight.ObjectNumber);
+
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.FillRectangleWithPattern(spaced, 0, 0, 200, 100);
+        var pdf = Latin1(doc.Save());
+        Assert.Contains("/BBox [0 0 12 12]", pdf);
+        Assert.Contains("/XStep 18", pdf);   // tile 12 + gap 6 — exceeds the 12pt BBox
+        Assert.Contains("/YStep 12", pdf);
+    }
+
+    [Fact]
     public void Pattern_fill_validates_inputs()
     {
         var (doc, imageRef) = NewDocWithImage();

@@ -454,7 +454,7 @@ MARGIN-BOX raws, the BODY + `object-position` 4-value forms AngleSharp-dropped);
 `background-image` honors `background-origin` (positioning area) + `background-clip` (paint/clip rect), `repeat`
 now tiling the clip window (review P1; `BackgroundAreaInset`/`UsedBorderEdgeWidthPx`). **body `border-radius` /
 `background-attachment` / margin-box `background-origin`/`-clip` cycles (in progress, branch
-`phase-3-task-21-23-bg-attachment-mbox-origin-clip-body-radius`, PR open):** a UNIFORM absolute `border-radius`
+`phase-3-task-21-23-bg-attachment-mbox-origin-clip-body-radius`, PR #171 OPEN):** a UNIFORM absolute `border-radius`
 rounds a BODY block's background COLOR band (`PaintBackground` → `PdfPage.FillRoundedRectangle`; the 4 corner
 longhands REGISTERED so `@supports` sees them; strokes/image-clip/elliptical/per-corner deferred);
 `background-attachment` is REGISTERED (scroll[initial]/fixed/local — scroll/local element-relative correct for

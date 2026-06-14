@@ -3290,18 +3290,22 @@ flags the categories):
          horizontal radius and the box HEIGHT for the vertical — so a non-square `50%` box is an ELLIPSE,
          CSS B&B 3 §4.1), filled by the new per-corner elliptical `PdfPage.FillRoundedRectangle(…,
          CornerRadii, …)` (§4.2 overlap-scaling via `CornerRadii.NormalizedFor`); the UNIFORM-circular
-         case keeps the byte-stable single-radius path. **(Task 2 — rounded uniform border strokes)** a
-         box with a border-radius AND a uniform border (same paintable style/width/colour on all four
-         edges) strokes ONE rounded path (`PdfPage.StrokeRoundedRectangle`, along the border-box
-         CENTERLINE — inset by half the border width, radii reduced likewise so the stroke's outer edge
-         tracks the corners) instead of the four square edge rects. **(Task 3 — rounded background-image
-         clip)** a border-radius rounds the background-image clip (`PdfPage.BeginRoundedRectangleClip`,
-         the background-clip box's radii inset per side) on BOTH the per-tile loop and the tiling-pattern
-         paths; zero radii fall back to the rectangular clip (byte-identical). STILL DEFERRED: the
-         explicit two-radii `Rx / Ry` slash spelling (AngleSharp drops it → all-zero → square); rounded
-         NON-uniform border strokes (per-corner arc segments transitioning between edge widths/colours);
-         the MARGIN-box border-radius staying its own uniform-circular fill-only first cut (its corner
-         longhands aren't cascaded); a rounded `outline`.
+         case keeps the byte-stable single-radius path. **(Task 2 — rounded uniform border)** a box with
+         a border-radius AND a uniform border (same paintable style/width/colour on all four edges,
+         `FragmentPainter.TryUniformBorder` — widths compared with a tolerance so equivalent mixed-unit
+         lengths don't fall back) paints ONE filled RING (`PdfPage.FillRoundedRectangleRing` — the
+         even-odd annulus between the border box [outer, the border-box radii] and the padding box
+         [inner, radii reduced by the full border width]) instead of the four square edge rects. A FILLED
+         ring, NOT a centerline stroke (post-PR-#172 review P1+P2): its outer corner is EXACT for any
+         border width — a small radius under a thick border keeps its rounding (the inner corner goes
+         sharp, exactly CSS) — and it composites the border colour's alpha correctly (a fill → `/ca`, not
+         a stroke's `/CA`). **(Task 3 — rounded background-image clip)** a border-radius rounds the
+         background-image clip (`PdfPage.BeginRoundedRectangleClip`, the background-clip box's radii inset
+         per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
+         rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
+         spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
+         segments transitioning between edge widths/colours); the MARGIN-box border-radius staying its own
+         uniform-circular fill-only first cut (its corner longhands aren't cascaded); a rounded `outline`.
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band

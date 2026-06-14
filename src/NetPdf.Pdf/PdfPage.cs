@@ -368,32 +368,50 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
-    /// <summary>Stroke a per-corner rounded rectangle (a rounded BORDER edge) — <c>q [gs] r g b RG
-    /// lw w &lt;path&gt; S Q</c>. <paramref name="lineWidth"/> is the stroke width in points; the path is
-    /// the stroke CENTERLINE, so callers inset the box by half the border width and reduce the radii
-    /// likewise. A non-positive width/height/line-width no-ops.</summary>
-    public void StrokeRoundedRectangle(
-        double x, double y, double width, double height, CornerRadii radii, double lineWidth,
+    /// <summary>Fill the RING (annulus) between an OUTER and an INNER per-corner rounded rectangle — the
+    /// region inside the outer path but outside the inner one — via an even-odd fill
+    /// (<c>q [gs] r g b rg &lt;outer path&gt; &lt;inner path&gt; f* Q</c>). This is how a UNIFORM rounded
+    /// BORDER paints (border-radius-completion cycle, Task 2): the outer path is the border box, so its
+    /// outer corner radius is EXACT for any border width (unlike a centerline stroke, which loses a small
+    /// radius under a thick border); the inner path is the padding box with radii reduced by the border
+    /// width. An empty/degenerate inner box fills the whole outer rounded rect (the border covers the
+    /// box). Each rounded path falls back to a plain <c>re</c> rectangle subpath when its radii are all
+    /// zero. Uses the FILL constant-alpha (<c>/ca</c>) — correct, since this is a fill, not a stroke. Same
+    /// colour/alpha/finite-validation contract as the other fills.</summary>
+    public void FillRoundedRectangleRing(
+        double outerX, double outerY, double outerWidth, double outerHeight, CornerRadii outerRadii,
+        double innerX, double innerY, double innerWidth, double innerHeight, CornerRadii innerRadii,
         double r, double g, double b, double alpha = 1.0)
     {
         ThrowIfFinalized();
-        ValidateRoundedArgs(x, y, width, height, alpha);
-        if (!double.IsFinite(lineWidth))
-            throw new ArgumentException($"StrokeRoundedRectangle lineWidth must be finite; got {lineWidth}.", nameof(lineWidth));
-        if (width <= 0 || height <= 0 || lineWidth <= 0) return;
-        var nr = radii.NormalizedFor(width, height);
+        ValidateRoundedArgs(outerX, outerY, outerWidth, outerHeight, alpha);
+        ValidateRoundedArgs(innerX, innerY, innerWidth, innerHeight, alpha);
+        if (outerWidth <= 0 || outerHeight <= 0) return;
 
         r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
         alpha = Math.Clamp(alpha, 0.0, 1.0);
-        var sb = new StringBuilder(320);
+        var sb = new StringBuilder(560);
         sb.Append("q ");
         if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
         AppendNumber(sb, r); sb.Append(' ');
         AppendNumber(sb, g); sb.Append(' ');
-        AppendNumber(sb, b); sb.Append(" RG ");
-        AppendNumber(sb, lineWidth); sb.Append(" w ");
-        AppendRoundedRectPath(sb, x, y, width, height, nr);
-        sb.Append("S Q\n");
+        AppendNumber(sb, b); sb.Append(" rg ");
+        var outerNr = outerRadii.NormalizedFor(outerWidth, outerHeight);
+        if (outerNr.AnyPositive) AppendRoundedRectPath(sb, outerX, outerY, outerWidth, outerHeight, outerNr);
+        else AppendRectPath(sb, outerX, outerY, outerWidth, outerHeight);
+        if (innerWidth > 0 && innerHeight > 0)
+        {
+            // Even-odd: the inner subpath cuts the annulus out of the outer fill (winding-direction
+            // independent). A border thicker than the radius leaves a sharp inner corner — exactly CSS.
+            var innerNr = innerRadii.NormalizedFor(innerWidth, innerHeight);
+            if (innerNr.AnyPositive) AppendRoundedRectPath(sb, innerX, innerY, innerWidth, innerHeight, innerNr);
+            else AppendRectPath(sb, innerX, innerY, innerWidth, innerHeight);
+            sb.Append("f* Q\n");
+        }
+        else
+        {
+            sb.Append("f Q\n");   // no inner cut-out (border ≥ half the box) → a solid rounded rect
+        }
         AppendContent(sb.ToString());
     }
 
@@ -458,6 +476,16 @@ internal sealed class PdfPage
         P(x, y + bly); sb.Append("l ");
         P(x, y + K(bly)); P(x + K(blx), y); P(x + blx, y); sb.Append("c ");
         sb.Append("h ");
+    }
+
+    /// <summary>Append a plain rectangle subpath (<c>x y w h re</c>) — the zero-radius fallback the ring
+    /// fill uses for a square outer/inner edge, combinable with a Bézier subpath under one fill.</summary>
+    private static void AppendRectPath(StringBuilder sb, double x, double y, double width, double height)
+    {
+        AppendNumber(sb, x); sb.Append(' ');
+        AppendNumber(sb, y); sb.Append(' ');
+        AppendNumber(sb, width); sb.Append(' ');
+        AppendNumber(sb, height); sb.Append(" re ");
     }
 
     /// <summary>

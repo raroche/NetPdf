@@ -130,29 +130,80 @@ public sealed class PdfPageRoundedFillTests
     }
 
     [Fact]
-    public void StrokeRoundedRectangle_emits_a_stroked_bezier_path()
+    public void FillRoundedRectangleRing_fills_the_annulus_with_even_odd()
     {
+        // A uniform rounded border = the ring between the border box (radii 8) and the padding box
+        // (inset 4 per side, radii 8−4 = 4): two rounded subpaths (8 Béziers) filled even-odd (`f*`)
+        // with the border colour (a FILL, /ca — never a stroke /CA).
         var doc = new PdfDocument();
         var page = doc.AddPage(MediaBoxSize.A4);
 
-        page.StrokeRoundedRectangle(10, 20, 100, 50, CornerRadii.Uniform(8), 2, 0, 0, 0);
+        page.FillRoundedRectangleRing(
+            10, 20, 100, 50, CornerRadii.Uniform(8),
+            14, 24, 92, 42, CornerRadii.Uniform(4), 0, 0, 0);
 
         var content = ContentOf(page);
-        Assert.Contains("0 0 0 RG", content);                  // stroke colour
-        Assert.Contains("2 w", content);                       // line width
-        Assert.Equal(4, CountOccurrences(content, " c "));
-        Assert.Contains(" S Q", content);                      // stroked + state restored
+        Assert.Contains("0 0 0 rg", content);                  // border colour, FILL (rg) not stroke (RG)
+        Assert.Equal(8, CountOccurrences(content, " c "));     // outer + inner each = 4 corner arcs
+        Assert.Contains(" f* Q", content);                     // even-odd fill = the ring
+        Assert.DoesNotContain(" S", content);                  // never stroked (no /CA pitfall)
     }
 
     [Fact]
-    public void StrokeRoundedRectangle_non_positive_line_width_is_a_no_op()
+    public void FillRoundedRectangleRing_small_radius_thick_border_keeps_the_outer_rounding()
     {
+        // border-radius 2 + a 4px border: the OUTER path still rounds at 2 (the ring's outer corner is
+        // exact for any border width — a centerline stroke would lose it), while the inner corner goes
+        // sharp (max(0, 2−4) = 0 → a plain `re` inner subpath). post-PR-#172 review P2.
         var doc = new PdfDocument();
         var page = doc.AddPage(MediaBoxSize.A4);
 
-        page.StrokeRoundedRectangle(10, 20, 100, 50, CornerRadii.Uniform(8), 0, 0, 0, 0);
+        page.FillRoundedRectangleRing(
+            10, 20, 100, 50, CornerRadii.Uniform(2),
+            14, 24, 92, 42, default, 0, 0, 0);
 
-        Assert.DoesNotContain(" S", ContentOf(page));
+        var content = ContentOf(page);
+        Assert.Equal(4, CountOccurrences(content, " c "));     // ONLY the outer rounds (inner is square)
+        Assert.Contains(" re ", content);                      // the sharp inner subpath
+        Assert.Contains(" f* Q", content);
+    }
+
+    [Fact]
+    public void FillRoundedRectangleRing_uses_fill_alpha_via_extgstate_not_a_stroke()
+    {
+        // A semi-transparent ring selects an ExtGState (gs) for the alpha and FILLS (f*) — never a stroke
+        // (no RG/S, so no /CA pitfall). The constant alpha lives as /ca in the ExtGState dict (its value
+        // is asserted at the facade level on the full PDF; post-PR-#172 review P1).
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.FillRoundedRectangleRing(
+            10, 20, 100, 50, CornerRadii.Uniform(8),
+            14, 24, 92, 42, CornerRadii.Uniform(4), 0, 0, 0, 0.501961);
+
+        var content = ContentOf(page);
+        Assert.Contains(" gs ", content);                      // an ExtGState (constant alpha) is selected
+        Assert.Contains(" f* Q", content);                     // ... for a FILL
+        Assert.DoesNotContain(" S", content);                  // never a stroke
+        Assert.DoesNotContain(" RG", content);                 // ... and no stroke colour
+    }
+
+    [Fact]
+    public void FillRoundedRectangleRing_degenerate_inner_fills_a_solid_rounded_rect()
+    {
+        // A border ≥ half the box collapses the inner box (≤ 0) → the ring fills the WHOLE outer rounded
+        // rect (plain `f`, no cut-out, no `f*`).
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.FillRoundedRectangleRing(
+            10, 20, 40, 40, CornerRadii.Uniform(8),
+            30, 40, 0, 0, default, 0, 0, 0);
+
+        var content = ContentOf(page);
+        Assert.Contains(" f Q", content);
+        Assert.DoesNotContain(" f* ", content);
+        Assert.Equal(4, CountOccurrences(content, " c "));     // outer only
     }
 
     [Fact]

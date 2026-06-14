@@ -33,8 +33,10 @@ namespace NetPdf.Rendering;
 /// <c>none</c> and <c>hidden</c> paint nothing (CSS Backgrounds &amp; Borders 3
 /// §4.3 — the used border width is 0 for those styles; layout reserves no space and
 /// the painter skips them). Edges span the full box extent on their long axis, so
-/// corners overlap — exact for uniform borders; mitered / per-corner joins are a
-/// refinement. Border <c>border-radius</c> is deferred.
+/// corners overlap — exact for uniform SQUARE borders; mitered / per-corner joins are a
+/// refinement. A UNIFORM border on a box with a <c>border-radius</c> instead paints as ONE
+/// filled rounded RING that follows the rounded corners (border-radius-completion cycle);
+/// a non-uniform border keeps the square per-edge rects (rounded non-uniform borders deferred).
 /// </para>
 /// <para>
 /// <b>Alpha.</b> A partial-alpha background or border color is composited faithfully
@@ -770,16 +772,17 @@ internal static class FragmentPainter
             return;
 
         // Rounded UNIFORM border (border-radius-completion cycle, Task 2): a box with a border-radius
-        // AND a uniform border (same paintable style, width, and resolved colour on all four edges)
-        // strokes ONE rounded-rect path instead of the four square edge rects, so the border follows
-        // the fill's rounded corners. The stroke runs along the border-box CENTERLINE (inset by half
-        // the border width) with the radii reduced likewise, so its OUTER edge tracks the corner radii.
-        // A non-uniform border, or a margin box (whose corner-radius longhands aren't cascaded, so the
-        // radii read as zero), or a degenerate thick border falls through to the per-edge rects below.
+        // AND a uniform border (same paintable style, width, and resolved colour on all four edges) paints
+        // ONE filled RING — the annulus between the border box (outer, the border-box radii) and the
+        // padding box (inner, radii reduced by the FULL border width) — so the border follows the fill's
+        // rounded corners. A FILLED ring (not a centerline stroke): its outer corner is EXACT for any
+        // border width (a small radius under a thick border keeps its rounding; post-PR-#172 review P1+P2)
+        // and it composites the border colour's alpha correctly (a fill, /ca). A non-uniform border, or a
+        // margin box (whose corner-radius longhands aren't cascaded → radii read zero), falls through to
+        // the per-edge square rects below.
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
         if (radiiPx.AnyPositive
-            && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid)
-            && widthPx > borderWidthPx && heightPx > borderWidthPx)
+            && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid))
         {
             if (nonSolid && !styleApproximationReported)
             {
@@ -791,13 +794,18 @@ internal static class FragmentPainter
                     DiagnosticSeverity.Info));
                 styleApproximationReported = true;
             }
-            var half = borderWidthPx / 2.0;
-            var centerRadii = ReduceRadii(radiiPx.NormalizedFor(widthPx, heightPx), half);
-            ToPdfRect(leftPx + half, topPx + half, widthPx - borderWidthPx, heightPx - borderWidthPx,
-                pageHeightPt, out var sx, out var sy, out var sw, out var sh);
+            // Outer = border box with the border-box radii; inner = padding box (inset by the border
+            // width on every side) with radii reduced by the full border width. An inner box that
+            // collapses (border ≥ half the box) makes the ring fill the whole outer rounded rect.
+            var outerRadiiPx = radiiPx.NormalizedFor(widthPx, heightPx);
+            var innerRadiiPx = ReduceRadii(outerRadiiPx, borderWidthPx);
+            ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
+            ToPdfRect(leftPx + borderWidthPx, topPx + borderWidthPx,
+                widthPx - 2 * borderWidthPx, heightPx - 2 * borderWidthPx,
+                pageHeightPt, out var ix, out var iy, out var iw, out var ih);
             ColorChannels(borderArgb, out var cr, out var cg, out var cb);
-            page.StrokeRoundedRectangle(sx, sy, sw, sh, ToPt(centerRadii),
-                PdfUnits.PxToPt(borderWidthPx), cr, cg, cb, Alpha(borderArgb) / 255.0);
+            page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadiiPx),
+                ix, iy, iw, ih, ToPt(innerRadiiPx), cr, cg, cb, Alpha(borderArgb) / 255.0);
             return;
         }
 
@@ -811,13 +819,15 @@ internal static class FragmentPainter
             currentColors.Left, diagnostics, ref styleApproximationReported);
     }
 
-    /// <summary>Whether all four border edges form a UNIFORM border that a single rounded stroke can
+    /// <summary>Whether all four border edges form a UNIFORM border that a single rounded RING can
     /// render (border-radius-completion cycle, Task 2): every edge has a PAINTABLE style (not
-    /// none/hidden/unset), the SAME positive width, and the SAME resolved colour (each edge's colour
-    /// resolved against ITS currentcolor). <paramref name="widthPx"/>/<paramref name="argb"/> are the
-    /// shared width/colour; <paramref name="nonSolid"/> flags a non-solid style (still painted, but as
-    /// solid — the caller diagnoses it once). A non-uniform border returns <see langword="false"/> so
-    /// the caller keeps the per-edge square rects (rounded non-uniform borders are deferred).</summary>
+    /// none/hidden/unset), the SAME positive width (compared with a small tolerance — used widths come
+    /// from unit conversions [cm/mm/pt/…] and could differ by float rounding), and the SAME resolved
+    /// colour (each edge's colour resolved against ITS currentcolor). <paramref name="widthPx"/>/
+    /// <paramref name="argb"/> are the shared width/colour; <paramref name="nonSolid"/> flags a non-solid
+    /// style (still painted, but as solid — the caller diagnoses it once). A non-uniform border returns
+    /// <see langword="false"/> so the caller keeps the per-edge square rects (rounded non-uniform borders
+    /// are deferred).</summary>
     private static bool TryUniformBorder(
         ComputedStyle style, in BorderEdgeCurrentColors cc,
         out double widthPx, out uint argb, out bool nonSolid)
@@ -845,14 +855,18 @@ internal static class FragmentPainter
             || !ReadEdge(PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth, PropertyId.BorderBottomColor, cc.Bottom, out var wb, out var ab, out var solidB)
             || !ReadEdge(PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth, PropertyId.BorderLeftColor, cc.Left, out var wl, out var al, out var solidL))
             return false;
-        if (wt != wr || wr != wb || wb != wl) return false;   // equal widths
+        // Used widths come from unit conversions, so compare against the top edge with a tolerance well
+        // below a visible difference (rather than exact `==`, which equivalent lengths from different
+        // units / calc could miss); colours are exact 8-bit ARGB, so an exact compare is right there.
+        static bool SameWidth(double a, double b) => Math.Abs(a - b) <= 1e-4;
+        if (!SameWidth(wt, wr) || !SameWidth(wt, wb) || !SameWidth(wt, wl)) return false;
         if (at != ar || ar != ab || ab != al) return false;   // equal colours
         widthPx = wt; argb = at; nonSolid = !(solidT && solidR && solidB && solidL);
         return true;
     }
 
     /// <summary>Each radius component reduced by <paramref name="amount"/> px (clamped ≥ 0) — the
-    /// border-box radii minus half the border width give the stroke CENTERLINE radii (Task 2).</summary>
+    /// border-box radii minus the full border width give the INNER (padding-box) ring radii (Task 2).</summary>
     private static CornerRadii ReduceRadii(CornerRadii r, double amount) => new(
         Math.Max(0, r.TopLeftX - amount), Math.Max(0, r.TopLeftY - amount),
         Math.Max(0, r.TopRightX - amount), Math.Max(0, r.TopRightY - amount),
@@ -925,11 +939,11 @@ internal static class FragmentPainter
                 _ => (0.0, 0.0),
             };
         }
-        var (tlx, tly) = Corner(PropertyId.BorderTopLeftRadius);
-        var (trx, trYy) = Corner(PropertyId.BorderTopRightRadius);
-        var (brx, bry) = Corner(PropertyId.BorderBottomRightRadius);
-        var (blx, bly) = Corner(PropertyId.BorderBottomLeftRadius);
-        return new CornerRadii(tlx, tly, trx, trYy, brx, bry, blx, bly);
+        var (tlX, tlY) = Corner(PropertyId.BorderTopLeftRadius);
+        var (trX, trY) = Corner(PropertyId.BorderTopRightRadius);
+        var (brX, brY) = Corner(PropertyId.BorderBottomRightRadius);
+        var (blX, blY) = Corner(PropertyId.BorderBottomLeftRadius);
+        return new CornerRadii(tlX, tlY, trX, trY, brX, brY, blX, blY);
     }
 
     /// <summary>Convert a px <see cref="CornerRadii"/> to PDF points (the unit PdfPage's path builder

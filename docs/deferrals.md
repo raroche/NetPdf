@@ -3281,6 +3281,21 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
+         `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
+         are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
+         an AngleSharp-beta drop via `CssPreprocessor.KnownDroppedProperties` (a verbatim longhand recovery,
+         like `white-space`). **(Task 1 — paint)** the outline paints as a filled RING just OUTSIDE the border
+         box — it does NOT affect layout — via the shared `PdfPage.FillRoundedRectangleRing` (the annulus
+         between the border box grown by `outline-offset` [inner] and again by `outline-width` [outer]), in
+         `outline-color` (initial currentcolor); `outline-style: none`/`hidden` or a non-positive width paints
+         nothing. **(Task 2 — `outline-offset`)** a positive offset pushes the outline outward, a negative one
+         inward (the inner box clamped ≥ 0). **(Task 3 — rounded outline)** a `border-radius` rounds the outline
+         to follow the box (each box corner radius grown by the gap to that outline edge — offset + width for the
+         outer, offset for the inner; a SHARP box corner stays sharp, §5.3), reusing `CornerRadii`. STILL
+         DEFERRED: non-solid `outline-style` (dotted/dashed/double/groove/ridge/inset/outset + `auto` painted as
+         SOLID + diagnosed `PAINT-BORDER-STYLE-APPROXIMATED-001`); `outline-color: invert` (approximated as
+         currentcolor — it isn't representable as a colour value).
        - **body `border-radius` COMPLETION (per-corner + `%` band fill, rounded uniform border
          strokes, rounded background-image clip) — DONE (border-radius-completion cycle, 3 tasks):**
          the body border-radius first cut (uniform-circular band fill only) is finished. **(Task 1 —
@@ -3305,7 +3320,7 @@ flags the categories):
          rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
          spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
          segments transitioning between edge widths/colours); the MARGIN-box border-radius staying its own
-         uniform-circular fill-only first cut (its corner longhands aren't cascaded); a rounded `outline`.
+         uniform-circular fill-only first cut (its corner longhands aren't cascaded).
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band

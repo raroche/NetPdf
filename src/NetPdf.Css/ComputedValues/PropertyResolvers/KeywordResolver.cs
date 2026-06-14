@@ -156,6 +156,13 @@ internal static class KeywordResolver
         b[PropertyId.BorderBottomStyle] = borderStyle;
         b[PropertyId.BorderLeftStyle] = borderStyle;
 
+        // outline-style — CSS UI 4 §5.2 (outline cycle): the border-style keywords PLUS `auto` (a
+        // UA-chosen style, rendered as `solid` here). `none`/`hidden` paint nothing; index order keeps
+        // the shared border-style keywords aligned (none=0, hidden=1, solid=4 — the FragmentPainter
+        // constants), with `auto` appended.
+        b[PropertyId.OutlineStyle] = T("none", "hidden", "dotted", "dashed", "solid", "double",
+            "groove", "ridge", "inset", "outset", "auto");
+
         // background-origin / background-clip — CSS B&B §3.4–§3.5 (bg-origin / bg-clip cycles): the
         // positioning / painting box. Registered (PR #170 review P2) so @supports reports them and
         // an invalid value is diagnosed; the tiler reads the resolved keyword.

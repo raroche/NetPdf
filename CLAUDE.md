@@ -483,10 +483,17 @@ for any border width (a small radius under a thick border keeps its rounding); *
 now; **(P3)** added fill-alpha / mixed-unit / small-radius tests + dropped `StrokeRoundedRectangle`; **(P3)** renamed the
 `trYy` local + refreshed a stale class comment. DEFERRED: the `Rx / Ry`
 elliptical slash spelling (AngleSharp drop), rounded NON-uniform borders, the margin-box per-corner radius.
+**`outline` cycle (3 tasks, one PR — branch `phase-3-outline`, CSS UI 4 §5):** **(Task 1)** `outline-width`/`-style`/
+`-color` + the `outline` shorthand (AngleSharp expands it) + `outline-offset` are REGISTERED (`properties.json` + the
+`outline-style` keyword table; `@supports` sees them); the outline paints a filled RING just OUTSIDE the border box (no
+layout effect) via the shared `PdfPage.FillRoundedRectangleRing`, in `outline-color` (initial currentcolor). **(Task 2)**
+`outline-offset` (DROPPED by AngleSharp → recovered via `CssPreprocessor.KnownDroppedProperties`) pushes the ring out (+) /
+in (−). **(Task 3)** a `border-radius` rounds the outline to follow the box (`GrowRadii`; a sharp corner stays sharp,
+§5.3). DEFERRED: non-solid `outline-style` (painted SOLID + diagnosed), `outline-color: invert` (→ currentcolor).
 Next (in order): the MULTI-PAGE DRIVER
 (cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation first);
 the remaining riders are mostly LARGER features now (container width sub-box wrap, inline `<img>` atomics,
-`outline`, `object-position` registration). Blocked (see
+`object-position` registration, the margin-box per-corner border-radius). Blocked (see
 `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

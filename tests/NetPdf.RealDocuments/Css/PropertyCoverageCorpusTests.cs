@@ -60,14 +60,14 @@ public sealed class PropertyCoverageCorpusTests
         "background-image", "background-position", "background-position-x", "background-position-y",
         "background-repeat", "background-repeat-x", "background-repeat-y",
         "background-size",
-        "outline-color", "outline-style", "outline-width", "outline-offset",
         "box-shadow", "text-shadow", "filter", "mix-blend-mode", "isolation",
         "transform", "transform-origin", "transform-style", "perspective", "perspective-origin",
         "will-change", "backface-visibility",
-        // object-fit + background-origin/-clip are REGISTERED in properties.json (object-fit cycle
-        // / PR #168 review P2 / PR #170 review P2 — they compute via the keyword resolver and
-        // @supports sees them); object-position stays deferred (a 2-component <position> needs a
-        // new metadata type — the painter centres per its 50% 50% initial).
+        // object-fit + background-origin/-clip + outline-* are REGISTERED in properties.json (object-fit
+        // cycle / PR #168 review P2 / PR #170 review P2 / outline cycle — they compute + @supports sees
+        // them; the `outline` shorthand above decomposes into the registered outline-width/-style/-color);
+        // object-position stays deferred (a 2-component <position> needs a new metadata type — the
+        // painter centres per its 50% 50% initial).
         "object-position",
         // Per Phase 3 Task 10 cycle 2 review (User #4) — list-style-type
         // + list-style-position were ALREADY registered in

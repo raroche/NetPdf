@@ -93,6 +93,13 @@ internal static class CssPreprocessor
         // valid-value emit is tolerated by the cascade per CSS
         // last-decl-wins rules.
         "white-space",
+        // Per Phase 3 outline cycle — AngleSharp.Css 1.0.0-beta drops `outline-offset`
+        // (CSS UI 4 §5.4) entirely (it expands the `outline` shorthand into
+        // outline-width/-style/-color but doesn't recognize outline-offset). The
+        // recovery path emits the declaration verbatim so the cascade's LengthResolver
+        // resolves it onto the registered `OutlineOffset` slot; a simple longhand
+        // recovery (no expander), same precedent as `white-space` / `overflow-wrap`.
+        "outline-offset",
         // Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#4 —
         // AngleSharp.Css 1.0.0-beta.144 accepts the bare
         // `justify-content` values (flex-start / flex-end / center /

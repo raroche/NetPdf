@@ -93,6 +93,7 @@ internal static class FragmentPainter
         PdfDocument? document = null)
     {
         var borderStyleApproximationReported = false;
+        var outlineStyleApproximationReported = false;   // outline cycle — once per render.
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
 
         for (var i = 0; i < fragments.Count; i++)
@@ -149,6 +150,11 @@ internal static class FragmentPainter
             // Borders (foreground — always painted regardless of PrintBackgrounds).
             PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                 currentColorArgb, diagnostics, ref borderStyleApproximationReported);
+
+            // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
+            // and it does NOT affect layout. Always painted (it's not a background).
+            PaintOutline(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                currentColorArgb, diagnostics, ref outlineStyleApproximationReported);
         }
     }
 
@@ -819,6 +825,81 @@ internal static class FragmentPainter
             currentColors.Left, diagnostics, ref styleApproximationReported);
     }
 
+    /// <summary>Paint the CSS <c>outline</c> (CSS UI 4 §5 — outline cycle): a uniform line just OUTSIDE
+    /// the border box that does NOT affect layout. It occupies the ring between the border box grown by
+    /// <c>outline-offset</c> (inner edge) and grown again by <c>outline-width</c> (outer edge), filled
+    /// with <c>outline-color</c> via the shared rounded-ring fill (the same machinery as a rounded border).
+    /// <c>outline-style: none/hidden</c>, an unset style, or a non-positive width paints nothing; a
+    /// non-solid style is approximated as solid + diagnosed once. A <c>border-radius</c> rounds the
+    /// outline to follow the box (its corner radii grown by the gap to each outline edge; a sharp box
+    /// corner stays sharp — CSS UI §5.3). <c>outline-color: invert</c> is approximated as currentcolor
+    /// (deferred). A negative <c>outline-offset</c> pulls the outline inward (inner box clamped ≥ 0).</summary>
+    private static void PaintOutline(
+        PdfPage page, ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
+    {
+        if (!(widthPx > 0 && heightPx > 0)
+            || !double.IsFinite(leftPx) || !double.IsFinite(topPx)
+            || !double.IsFinite(widthPx) || !double.IsFinite(heightPx))
+            return;
+
+        var styleSlot = style.Get(PropertyId.OutlineStyle);
+        if (styleSlot.Tag != ComputedSlotTag.Keyword) return;          // unset → none
+        var styleKw = styleSlot.AsKeyword();
+        if (styleKw is BorderStyleNone or BorderStyleHidden) return;    // none=0 / hidden=1 (indices aligned with border-style)
+
+        var widthSlot = style.Get(PropertyId.OutlineWidth);
+        var outlineWidthPx = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0;
+        if (outlineWidthPx <= 0) return;
+
+        // outline-color initial is currentcolor; `invert` isn't represented (deferred) → currentcolor.
+        if (!TryResolveColor(style.Get(PropertyId.OutlineColor), currentColorArgb, out var argb))
+            argb = currentColorArgb;
+        if (Alpha(argb) == 0) return;
+
+        if (styleKw != BorderStyleSolid && !styleApproximationReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.PaintBorderStyleApproximated001,
+                "A non-solid outline-style (dotted / dashed / double / groove / ridge / inset / outset / " +
+                "auto) was painted as a solid line. Styled outline rendering is a tracked follow-up " +
+                "(deferrals.md#layout-to-pdf-pipeline).",
+                DiagnosticSeverity.Info));
+            styleApproximationReported = true;
+        }
+
+        // outline-offset (may be negative). AngleSharp drops the declaration, so it is recovered via the
+        // Css preprocessor (outline-offset cycle); an unset/unresolved slot reads 0 (flush with the border box).
+        var offsetSlot = style.Get(PropertyId.OutlineOffset);
+        var offsetPx = offsetSlot.Tag == ComputedSlotTag.LengthPx ? offsetSlot.AsLengthPx() : 0;
+
+        // The ring: inner = the border box grown by the offset; outer = grown again by the width. A
+        // negative offset shrinks the inner box (clamped ≥ 0 so it never inverts).
+        var innerLeft = leftPx - offsetPx;
+        var innerTop = topPx - offsetPx;
+        var innerW = Math.Max(0, widthPx + 2 * offsetPx);
+        var innerH = Math.Max(0, heightPx + 2 * offsetPx);
+        var outerLeft = innerLeft - outlineWidthPx;
+        var outerTop = innerTop - outlineWidthPx;
+        var outerW = innerW + 2 * outlineWidthPx;
+        var outerH = innerH + 2 * outlineWidthPx;
+
+        // Rounded outline (CSS UI §5.3): a box corner with a border-radius grows outward by the gap to
+        // the outline edge (offset + width for the outer, offset for the inner); a SHARP box corner stays
+        // sharp. No border-radius → a square outline (zero radii → the ring's `re` fast path).
+        var boxRadii = ReadCornerRadii(style, widthPx, heightPx);
+        var rounded = boxRadii.AnyPositive;
+        var outerRadii = rounded ? GrowRadii(boxRadii, offsetPx + outlineWidthPx) : default;
+        var innerRadii = rounded ? GrowRadii(boxRadii, offsetPx) : default;
+
+        ToPdfRect(outerLeft, outerTop, outerW, outerH, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
+        ToPdfRect(innerLeft, innerTop, innerW, innerH, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
+        ColorChannels(argb, out var r, out var g, out var b);
+        page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadii), ix, iy, iw, ih, ToPt(innerRadii),
+            r, g, b, Alpha(argb) / 255.0);
+    }
+
     /// <summary>Whether all four border edges form a UNIFORM border that a single rounded RING can
     /// render (border-radius-completion cycle, Task 2): every edge has a PAINTABLE style (not
     /// none/hidden/unset), the SAME positive width (compared with a small tolerance — used widths come
@@ -872,6 +953,17 @@ internal static class FragmentPainter
         Math.Max(0, r.TopRightX - amount), Math.Max(0, r.TopRightY - amount),
         Math.Max(0, r.BottomRightX - amount), Math.Max(0, r.BottomRightY - amount),
         Math.Max(0, r.BottomLeftX - amount), Math.Max(0, r.BottomLeftY - amount));
+
+    /// <summary>Each POSITIVE radius component grown by <paramref name="amount"/> px (a zero component
+    /// stays 0 — a sharp box corner gives a sharp outline corner, CSS UI 4 §5.3). The outline's outer/inner
+    /// corner radii are the box radii grown by the gap from the border box to that outline edge.</summary>
+    private static CornerRadii GrowRadii(CornerRadii r, double amount)
+    {
+        static double G(double c, double by) => c > 0 ? c + by : 0;
+        return new CornerRadii(
+            G(r.TopLeftX, amount), G(r.TopLeftY, amount), G(r.TopRightX, amount), G(r.TopRightY, amount),
+            G(r.BottomRightX, amount), G(r.BottomRightY, amount), G(r.BottomLeftX, amount), G(r.BottomLeftY, amount));
+    }
 
     /// <summary>Border-box radii inset PER SIDE to an inner box (the background-clip box, Task 3): each
     /// corner's horizontal radius reduces by the inset on its vertical edge, its vertical radius by the

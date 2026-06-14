@@ -102,7 +102,7 @@ Phase column shows the milestone in which the feature first ships.
 | `box-shadow` (sharp) | ✅ | 4 | Native PDF emit. |
 | `box-shadow` (blurred) | 🧪 | 4 | Skia raster fallback. |
 | `text-shadow` (sharp / blurred) | 🧪 | 4 | Same as box-shadow. |
-| `outline` | ✅ | 3 | |
+| `outline` | 🧪 | 3 | First cut (outline cycle, CSS UI 4 §5): `outline-width` / `outline-style` / `outline-color` + the `outline` shorthand (AngleSharp expands it) + `outline-offset` are registered (`@supports` reports them); `outline-offset` is recovered from an AngleSharp-beta drop via `CssPreprocessor`. The outline paints as a filled ring OUTSIDE the border box (it does NOT affect layout) via the shared `PdfPage.FillRoundedRectangleRing` — the annulus between the border box grown by `outline-offset` (inner) and again by `outline-width` (outer), in `outline-color` (initial currentcolor). A `border-radius` rounds the outline to follow the box (corner radii grown by the gap to each outline edge, a sharp box corner staying sharp — §5.3). A negative `outline-offset` pulls it inward. DEFERRED: non-solid `outline-style` (dotted/dashed/… + `auto` painted as solid + diagnosed `PAINT-BORDER-STYLE-APPROXIMATED-001`); `outline-color: invert` (→ currentcolor) ([deferrals.md](deferrals.md#layout-to-pdf-pipeline)). |
 | `opacity` | ✅ | 4 | PDF ExtGState `/ca`. |
 | `mix-blend-mode` | ✅ | 4 | PDF ExtGState `/BM`. |
 | `clip-path: rect()` / `inset()` / `polygon()` | ✅ | 4 | Native PDF clipping. |

@@ -283,6 +283,22 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_outline_properties_evaluate_true()
+    {
+        // outline cycle — newly registered outline-style (keyword) + outline-width (line-width) +
+        // outline-color (color). @supports reports them.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (outline-style: solid) { p { color: red } } " +
+            "@supports (outline-width: 2px) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));
+        Assert.NotNull(rules?.GetWinner("font-size"));
+    }
+
+    [Fact]
     public async Task Rec4_AtSupports_and_combines()
     {
         // Synthetic AST so the @supports prelude survives unambiguously through to the

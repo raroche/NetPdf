@@ -4638,26 +4638,195 @@ public sealed class BlockLayouterTests
     //  Phase 3 Task 7 cycle 2d deferral pin — true mid-subtree splits
     // ====================================================================
 
-    [Fact(Skip = "Phase 3 Task 7 cycle 2d — true mid-subtree pagination splits. "
-        + "Cycle 2c MVP (this revision) treats subtrees as ATOMIC for "
-        + "pagination — an oversized subtree is pushed to the next page "
-        + "via break-before, OR forced-overflowed atomically if it's "
-        + "first on a fresh page. Real CSS allows breaks INSIDE a "
-        + "subtree (parent's first half on page 1 + parent's second "
-        + "half on page 2). That requires recursive continuation tokens "
-        + "(`BlockContinuation.NestedContinuation`) + break consultation "
-        + "inside `EmitBlockSubtreeRecursive` + recursive resume on retry. "
-        + "Failing-skip pin per cycle 2c MVP scope decision.")]
+    [Fact]
     public void Cycle2d_oversized_subtree_splits_across_two_pages_at_inner_break()
     {
-        // Tree: parent (height=auto) > [child1 (h=400), child2 (h=500)]
-        // Page = 800. Subtree extent = 0 + 400 + 500 = 900 (no margins).
-        // Cycle 2c MVP: break-before parent → page 1 empty, page 2 has
-        //   parent + both children + overflow diagnostic.
-        // Cycle 2d expectation: parent partial fragment on page 1 (with
-        //   child1 inside it), then continuation pointing INSIDE parent
-        //   to child2 on page 2; parent fragment on page 2 holds child2
-        //   (with header repetition behavior TBD).
+        // Phase 3 multi-page driver, cycle 1 — nested-container fragmentation
+        // (docs/design/multi-page-driver.md §4.1). This was the failing-skip
+        // pin for "true mid-subtree pagination splits"; cycle 1 implements it
+        // via break consultation INSIDE EmitBlockSubtreeRecursive returning a
+        // chained BlockContinuation (carried in the existing LayouterState
+        // slot — the proposed dedicated NestedContinuation field was
+        // unnecessary; LayouterState is already the nested-resume slot).
+        //
+        // Tree: root > parent(height=auto) > [child1 (h=400), child2 (h=500)]
+        // Page = 800. Subtree extent = 0 + 400 + 500 = 900 > 800.
+        //   child1 fits (bottom 400 <= 800) → page 1; child2 (bottom 900)
+        //   overflows → break BEFORE it → resume INSIDE the parent at child2
+        //   on page 2. The parent fragment repeats on each page it spans
+        //   (full-size; per-page "partial" sizing is a later refinement).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        root.AppendChild(parent);
+        var child1Style = MakeStyle();
+        SetLengthPx(child1Style, PropertyId.Height, 400);
+        var child1 = Box.ForElement(BoxKind.BlockContainer, child1Style, MakeElement());
+        parent.AppendChild(child1);
+        var child2Style = MakeStyle();
+        SetLengthPx(child2Style, PropertyId.Height, 500);
+        var child2 = Box.ForElement(BoxKind.BlockContainer, child2Style, MakeElement());
+        parent.AppendChild(child2);
+
+        // Page 1.
+        using var page1Layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var page1 = page1Layouter.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page1.Outcome);
+        // The continuation is a CHAIN: resume at the parent (root child 0),
+        // and INSIDE the parent at child2 (parent child 1).
+        var outer = Assert.IsType<BlockContinuation>(page1.Continuation);
+        Assert.Equal(0, outer.ResumeAtChild);   // the parent
+        var inner = Assert.IsType<BlockContinuation>(outer.LayouterState);
+        Assert.Equal(1, inner.ResumeAtChild);    // child2, INSIDE the parent
+        // Page 1 emitted the parent + child1 only; child2 broke to page 2.
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, child1));
+        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, child2));
+
+        // Page 2 — resume with the chained continuation.
+        var sink2 = new RecordingFragmentSink();
+        using var page2Layouter = new BlockLayouter(
+            root, sink2, incomingContinuation: outer, diagnostics: diagSink);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        ctx2.PageIndex = 1;
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        page2Layouter.AttemptLayout(ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.Strict);
+
+        // child2 emitted on page 2; child1 NOT re-emitted (no duplication).
+        Assert.Contains(sink2.Fragments, f => ReferenceEquals(f.Box, child2));
+        Assert.DoesNotContain(sink2.Fragments, f => ReferenceEquals(f.Box, child1));
+    }
+
+    [Fact]
+    public void MultiPageDriver_cycle1_nested_wrapper_children_split_across_pages_at_child_boundaries()
+    {
+        // Phase 3 multi-page driver, cycle 1 — nested-container fragmentation
+        // (docs/design/multi-page-driver.md §4.1). This WAS the blocker:
+        // `EmitBlockSubtreeRecursive` never consulted the resolver, so a
+        // nested container laid out ALL its children on the current page —
+        // content nested under `html > body` never paginated. Cycle 1 breaks
+        // at child boundaries INSIDE the subtree.
+        //
+        //   root > wrapper(auto height) > [6 × (h=200)]   on a 500px page.
+        //   Two children fit per page (400 <= 500; the 3rd's bottom 600
+        //   overflows), so the wrapper's children split 2 / 2 / 2 across
+        //   three pages. The wrapper fragment repeats on each page it spans
+        //   (per-page wrapper sizing is a later refinement).
+        var root = Box.CreateRoot(MakeStyle());
+        var wrapper = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        root.AppendChild(wrapper);
+        var children = new List<Box>();
+        for (var i = 0; i < 6; i++)
+        {
+            var childStyle = MakeStyle();
+            SetLengthPx(childStyle, PropertyId.Height, 200);
+            var c = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+            children.Add(c);
+            wrapper.AppendChild(c);
+        }
+
+        // Drive the multi-page loop manually (the pipeline-level driver is
+        // cycle 3): a fresh sink + fragmentainer per page, resuming via the
+        // returned continuation.
+        LayoutContinuation? continuation = null;
+        var perPageChildren = new List<List<Box>>();
+        for (var pageIndex = 0; pageIndex < 8; pageIndex++)
+        {
+            var sink = new RecordingFragmentSink();
+            using var layouter = new BlockLayouter(root, sink, continuation);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            ctx.PageIndex = pageIndex;
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+            perPageChildren.Add(sink.Fragments.Select(f => f.Box).Where(children.Contains).ToList());
+
+            if (result.Outcome != LayoutAttemptOutcome.PageComplete || result.Continuation is null)
+            {
+                break;
+            }
+            continuation = result.Continuation;
+        }
+
+        // Core pagination invariant: every child appears exactly once, in
+        // document order — no child lost or duplicated across the split.
+        var flattened = perPageChildren.SelectMany(p => p).ToList();
+        Assert.Equal(children, flattened);
+
+        // It actually paginated (the blocker put everything on page 0), in
+        // the expected 2 / 2 / 2 split across three CONTENT pages. NOTE: the
+        // forced-overflow continuation protocol signals one trailing EMPTY
+        // resume page (the resume-page subtree measure isn't yet resume-aware,
+        // so the wrapper re-measures as oversized even once its remaining
+        // children fit). The cycle-3 driver skips painting an empty resume
+        // page; resume-aware measure is a later refinement
+        // (docs/design/multi-page-driver.md §4.5).
+        var contentPages = perPageChildren.Where(p => p.Count > 0).ToList();
+        Assert.Equal(3, contentPages.Count);
+        Assert.Equal(new[] { children[0], children[1] }, contentPages[0]);
+        Assert.Equal(new[] { children[2], children[3] }, contentPages[1]);
+        Assert.Equal(new[] { children[4], children[5] }, contentPages[2]);
+    }
+
+    [Fact]
+    public void MultiPageDriver_cycle1_nested_fragmentation_works_at_arbitrary_depth()
+    {
+        // Phase 3 multi-page driver, cycle 1 — the break consultation lives
+        // INSIDE EmitBlockSubtreeRecursive, whose self-call threads the
+        // resolver + fragmentainer down and whose caller chains the returned
+        // BlockContinuation. So a TWO-level nest paginates with no extra
+        // work (the planned "arbitrary depth" follow-up comes for free).
+        //   root > outer > inner > [4 × (h=200)]   on a 500px page.
+        //   Two children fit per page → split 2 / 2 across two content pages.
+        var root = Box.CreateRoot(MakeStyle());
+        var outer = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        root.AppendChild(outer);
+        var inner = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        outer.AppendChild(inner);
+        var children = new List<Box>();
+        for (var i = 0; i < 4; i++)
+        {
+            var cs = MakeStyle();
+            SetLengthPx(cs, PropertyId.Height, 200);
+            var c = Box.ForElement(BoxKind.BlockContainer, cs, MakeElement());
+            children.Add(c);
+            inner.AppendChild(c);
+        }
+
+        LayoutContinuation? continuation = null;
+        var perPageChildren = new List<List<Box>>();
+        for (var pageIndex = 0; pageIndex < 8; pageIndex++)
+        {
+            var sink = new RecordingFragmentSink();
+            using var layouter = new BlockLayouter(root, sink, continuation);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            ctx.PageIndex = pageIndex;
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+            perPageChildren.Add(sink.Fragments.Select(f => f.Box).Where(children.Contains).ToList());
+            if (result.Outcome != LayoutAttemptOutcome.PageComplete || result.Continuation is null)
+            {
+                break;
+            }
+            continuation = result.Continuation;
+        }
+
+        Assert.Equal(children, perPageChildren.SelectMany(p => p).ToList());
+        var contentPages = perPageChildren.Where(p => p.Count > 0).ToList();
+        Assert.Equal(2, contentPages.Count);
+        Assert.Equal(new[] { children[0], children[1] }, contentPages[0]);
+        Assert.Equal(new[] { children[2], children[3] }, contentPages[1]);
     }
 
     // ====================================================================

@@ -4614,6 +4614,46 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var childBlockOffset = contentTop + childCursor + topShift;
             var childInlineOffset = contentLeft + marginInlineStart;
 
+            // Phase 3 multi-page driver, cycle 1 — nested-container
+            // fragmentation (docs/design/multi-page-driver.md §4.1). Before
+            // committing a nested child, break the page when its border-box
+            // (visual extent, incl. its own descendants) would overflow the
+            // fragmentainer's block axis, AS LONG AS at least one child has
+            // already committed at this level (childCursor advanced past 0 =
+            // forward progress; an oversized FIRST child force-emits instead,
+            // mirroring the top-level loop's forced-overflow path — so
+            // pagination always makes progress + never spins). The break is
+            // returned as a BlockContinuation pointing at THIS child; the
+            // recursion's callers (the normal walk's `recursiveReturn`
+            // handler + the forced-overflow path's `forcedNestedRet` handler)
+            // wrap it into the chain + propagate PageComplete, and the resume
+            // page skips the committed children via `startIdx`. Gated on a
+            // propagating resolver + fragmentainer: the float recursion sites
+            // omit both, so float subtrees stay atomic (float continuation is
+            // a separate deferral). Suppressed when the fragmentainer
+            // disables pagination (position: fixed content, Task 20). Child-
+            // boundary granularity only — a single child taller than the page
+            // still force-overflows (no intra-child line split this cycle).
+            //
+            // ONLY break before a plain block-flow container (the kinds this
+            // layouter owns). A flex / grid / table / multicol child
+            // paginates INTERNALLY via its own dispatch below (returning a
+            // chained continuation when it splits); breaking before it would
+            // wrongly push the whole box to the next page + waste the
+            // current page's remaining space (a flex container that can fit
+            // its first lines must not be deferred wholesale).
+            if (propagatingResolver is not null
+                && propagatingFragmentainer is { SuppressBlockPagination: false } pf
+                && IsBlockFlowContainerOwnedByBlockLayouter(child)
+                && childCursor > 0
+                && childBlockOffset + childEffectiveBlockSize
+                    > pf.BlockSize + NestedFragmentationTolerancePx)
+            {
+                return new BlockContinuation(
+                    ResumeAtChild: childIdx,
+                    ConsumedBlockSize: 0);
+            }
+
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) — for nested Table / InlineTable wrappers, pre-
             // measure the table content + fold it into the wrapper's
@@ -7250,6 +7290,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the recursion with an explicit stack to avoid the depth limit
     /// entirely. For cycle 2b's MVP scope the limit is sufficient.</para></summary>
     private const int MaxRecursionDepth = 256;
+
+    /// <summary>Phase 3 multi-page driver, cycle 1 — sub-pixel slack on the
+    /// nested-container fragmentation overflow test (see the break check in
+    /// <see cref="EmitBlockSubtreeRecursive"/>). A child whose border-box
+    /// bottom exceeds the fragmentainer block-size by less than this is
+    /// treated as fitting, so floating-point drift across a stack of
+    /// children can't spuriously break a page on an exact fit. Mirrors the
+    /// greedy resolver's <c>ChunkBlockSize &lt;= RemainingBlockSize</c>
+    /// (≤, exact fit continues) tolerance.</summary>
+    private const double NestedFragmentationTolerancePx = 0.5;
 
     /// <summary>Per Phase 3 Task 7 cycle 2c — pre-measure pass that
     /// computes the maximum block-axis extent reached by any

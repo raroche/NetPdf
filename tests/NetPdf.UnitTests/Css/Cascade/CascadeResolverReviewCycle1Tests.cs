@@ -283,6 +283,38 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_outline_properties_evaluate_true()
+    {
+        // outline cycle — newly registered outline-style (keyword) + outline-width (line-width) +
+        // outline-color (color). @supports reports them.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (outline-style: solid) { p { color: red } } " +
+            "@supports (outline-width: 2px) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));
+        Assert.NotNull(rules?.GetWinner("font-size"));
+    }
+
+    [Fact]
+    public async Task AtSupports_outline_style_hidden_false_and_outline_color_auto_true()
+    {
+        // post-PR-#173 review P2 — `outline-style: hidden` is INVALID (CSS UI 4 excludes hidden), so
+        // @supports is FALSE; `outline-color: auto` is admitted (→ currentcolor), so @supports is TRUE.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (outline-style: hidden) { p { color: red } } " +
+            "@supports (outline-color: auto) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.Null(rules?.GetWinner("color"));        // hidden unsupported → rule didn't apply
+        Assert.NotNull(rules?.GetWinner("font-size")); // auto supported → rule applied
+    }
+
+    [Fact]
     public async Task Rec4_AtSupports_and_combines()
     {
         // Synthetic AST so the @supports prelude survives unambiguously through to the

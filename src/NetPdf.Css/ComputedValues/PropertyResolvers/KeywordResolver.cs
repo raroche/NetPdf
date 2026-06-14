@@ -156,6 +156,14 @@ internal static class KeywordResolver
         b[PropertyId.BorderBottomStyle] = borderStyle;
         b[PropertyId.BorderLeftStyle] = borderStyle;
 
+        // outline-style — CSS UI 4 §5.2 (outline cycle; post-PR-#173 review P2): `auto |
+        // <outline-line-style>`, where <outline-line-style> is the border-style values EXCEPT `hidden`
+        // (which is invalid for an outline). So `@supports (outline-style: hidden)` is FALSE and a later
+        // `outline-style: hidden` can't suppress an earlier valid value. Indices (none=0, solid=3,
+        // auto=9) are the FragmentPainter outline constants; `none` paints nothing, `auto` paints solid.
+        b[PropertyId.OutlineStyle] = T("none", "dotted", "dashed", "solid", "double",
+            "groove", "ridge", "inset", "outset", "auto");
+
         // background-origin / background-clip — CSS B&B §3.4–§3.5 (bg-origin / bg-clip cycles): the
         // positioning / painting box. Registered (PR #170 review P2) so @supports reports them and
         // an invalid value is diagnosed; the tiler reads the resolved keyword.

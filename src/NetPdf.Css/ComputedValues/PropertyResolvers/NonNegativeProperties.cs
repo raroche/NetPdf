@@ -78,6 +78,10 @@ internal static class NonNegativeProperties
         PropertyId.BorderTopWidth, PropertyId.BorderRightWidth,
         PropertyId.BorderBottomWidth, PropertyId.BorderLeftWidth,
         PropertyId.ColumnRuleWidth,
+        // Per the outline cycle (PR #173 Copilot review) — outline-width is also a
+        // <line-width> (CSS UI 4 §5.1), so a negative value invalidates + falls back
+        // to the initial (medium) rather than resolving to a negative LengthPx.
+        PropertyId.OutlineWidth,
         // Per Phase 5 layout→PDF cycle 4 — font-size is non-negative (CSS Fonts 4
         // §3.4). FontSizeResolver delegates absolute <length> forms to
         // LengthResolver, which consults this set to reject a negative size.

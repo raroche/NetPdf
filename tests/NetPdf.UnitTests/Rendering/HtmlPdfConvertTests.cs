@@ -3699,6 +3699,174 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Outline_paints_a_ring_outside_the_border_box()
+    {
+        // outline cycle, Task 1 — `outline` paints a ring OUTSIDE the border box (it doesn't affect
+        // layout): a 4px outline on a 100×60px box → an even-odd ring whose OUTER rect is 108×68px =
+        // 81×51pt (the box grown by the outline width on each side), filled in the outline colour.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;outline:4px solid #ff0000\"></div>" +
+            "</body></html>"));
+        Assert.Contains("1 0 0 rg", pdf);            // the red outline, FILLED
+        Assert.Contains(" 81 51 re", pdf);           // the outer ring rect = box + 4px each side
+        Assert.Contains(" f* Q", pdf);               // even-odd ring (outline = outer minus border box)
+    }
+
+    [Fact]
+    public void Outline_none_and_zero_width_paint_nothing()
+    {
+        // outline cycle, Task 1 — `outline-style: none` (the initial) and a zero width paint no ring.
+        var none = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:100px;height:60px\"></div></body></html>"));
+        Assert.DoesNotContain(" f* Q", none);
+
+        var zero = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;outline-style:solid;outline-width:0\"></div></body></html>"));
+        Assert.DoesNotContain(" f* Q", zero);
+    }
+
+    [Fact]
+    public void Outline_color_defaults_to_currentcolor()
+    {
+        // outline cycle, Task 1 — outline-color's initial is currentcolor (CSS UI §5.5; `invert`
+        // deferred): an outline with no colour uses the element's `color`.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;color:#0000ff;outline-style:solid;outline-width:3px\"></div>" +
+            "</body></html>"));
+        Assert.Contains("0 0 1 rg", pdf);            // the blue currentcolor outline
+        Assert.Contains(" f* Q", pdf);
+    }
+
+    [Fact]
+    public void Outline_offset_pushes_the_outline_outward()
+    {
+        // outline cycle, Task 2 — outline-offset (recovered from the AngleSharp drop via CssPreprocessor)
+        // pushes the outline OUT from the border box: offset 4px + width 2px on a 100×60 box → the outer
+        // ring rect = 100+2·(4+2)=112px=84pt × 60+2·(4+2)=72px=54pt (vs 78×48pt with no offset).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;outline:2px solid #ff0000;outline-offset:4px\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" 84 54 re", pdf);           // outer rect reflects the +4px offset
+        Assert.Contains(" f* Q", pdf);
+    }
+
+    [Fact]
+    public void Outline_follows_border_radius_with_rounded_corners()
+    {
+        // outline cycle, Task 3 — a border-radius rounds the outline so it follows the box (CSS UI §5.3).
+        // The box has NO background/border, so the only painted geometry is the outline ring — its curve
+        // operators confirm the rounded corners (a square outline would have none).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;outline:2px solid #ff0000\"></div>" +
+            "</body></html>"));
+        Assert.Contains("1 0 0 rg", pdf);            // the outline ring
+        Assert.Contains(" c ", pdf);                 // ... with rounded (Bézier) corners
+        Assert.Contains(" f* Q", pdf);
+    }
+
+    [Fact]
+    public void Outline_style_hidden_is_invalid_and_paints_no_outline()
+    {
+        // post-PR-#173 review P2 — `hidden` is invalid for outline-style (CSS UI 4 §5.2): the cascade
+        // rejects it and the property falls back to its initial `none`, so NO outline paints (a `solid`
+        // control does). `@supports (outline-style: hidden)` is also false (cascade test). (Note:
+        // AngleSharp collapses inline `outline-style` duplicates to the last value at parse, so the
+        // "solid then hidden preserves solid" form isn't reachable via an inline style here — the
+        // standalone rejection + @supports cover the fix.)
+        var hidden = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;outline-width:3px;outline-color:#ff0000;outline-style:hidden\"></div>" +
+            "</body></html>"));
+        Assert.DoesNotContain(" f* Q", hidden);      // hidden → invalid → initial none → no outline
+
+        var solid = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;outline-width:3px;outline-color:#ff0000;outline-style:solid\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" f* Q", solid);             // solid control → outline paints
+    }
+
+    [Fact]
+    public void Outline_color_auto_resolves_to_currentcolor()
+    {
+        // post-PR-#173 review P2 — CSS UI 4 retired `invert` and makes `outline-color: auto` the initial,
+        // computing to a UA colour we approximate as currentcolor: an explicit `auto` paints in the
+        // element's `color` (pre-fix ColorResolver rejected `auto`).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;color:#0000ff;outline-style:solid;outline-width:3px;" +
+            "outline-color:auto\"></div>" +
+            "</body></html>"));
+        Assert.Contains("0 0 1 rg", pdf);            // the blue currentcolor outline
+        Assert.Contains(" f* Q", pdf);
+    }
+
+    [Fact]
+    public void Outline_extreme_negative_offset_stays_centered_no_drift()
+    {
+        // post-PR-#173 review P2 — a negative outline-offset past half the box collapses the outline to a
+        // zero-size box CENTERED on the box (the per-axis clamp constrains the ORIGIN, not just the size),
+        // instead of drifting far to one side. With margin:0, the box is at (0,0); a -999px offset on a
+        // 100×60 box → the outline's outer rect sits near the box centre (x well under 100pt), not ~750pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page{margin:0}body{margin:0}</style></head><body>" +
+            "<div style=\"width:100px;height:60px;outline:4px solid #ff0000;outline-offset:-999px\"></div>" +
+            "</body></html>"));
+        // The inner box collapses to 0 → the ring fills the whole (tiny) outer rect (`f`, not `f*`).
+        var i = pdf.IndexOf(" 6 6 re", StringComparison.Ordinal);   // the collapsed 8×8px = 6×6pt outer
+        Assert.True(i > 0, "expected a collapsed 6×6pt outline outer rect");
+        var nums = pdf[..i].TrimEnd().Split(' ');     // … <x> <y> (before "6 6 re")
+        var x = double.Parse(nums[^2], CultureInfo.InvariantCulture);
+        Assert.True(x is > 0 and < 100, $"outline should stay centred near the box, not drift; x={x}pt");
+    }
+
+    [Fact]
+    public void Outline_rounded_with_negative_offset_does_not_crash()
+    {
+        // post-PR-#173 review P3 — a negative outline-offset larger than the border-radius would drive a
+        // grown corner radius below 0; GrowRadii clamps it. The rounded outline still renders, no throw.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:4px;outline:2px solid #ff0000;" +
+            "outline-offset:-20px\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" f* Q", pdf);               // renders (clamped radii, no negative-radius blow-up)
+    }
+
+    [Fact]
+    public void Outline_width_negative_is_invalid_and_falls_back_to_medium()
+    {
+        // post-PR-#173 Copilot review — outline-width is a <line-width> (non-negative, CSS UI §5.1): a
+        // negative value is INVALID (diagnosed) and falls back to the initial `medium` (3px), so a solid
+        // outline still paints (pre-fix a negative LengthPx made the painter draw nothing).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;outline-style:solid;outline-color:#ff0000;" +
+            "outline-width:-1px\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.Contains(" f* Q", Latin1(result.Pdf));   // medium (3px) outline still paints
+    }
+
+    [Fact]
+    public void Outline_and_border_style_approximation_diagnosed_once()
+    {
+        // post-PR-#173 Copilot review — PAINT-BORDER-STYLE-APPROXIMATED-001 is once-per-conversion, and
+        // borders + outline SHARE the flag: a document with BOTH a non-solid border and a non-solid
+        // outline surfaces the diagnostic exactly ONCE (not twice).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border:2px dashed #000;outline:2px dotted #f00\"></div>" +
+            "</body></html>", new HtmlPdfOptions());
+        Assert.Equal(1, result.Warnings.Count(d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001));
+    }
+
+    [Fact]
     public void Background_repeat_space_distributes_equal_gaps()
     {
         // space-round cycle — `space` packs floor(area/tile) whole tiles flush to the edges with

@@ -3281,6 +3281,30 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
+         `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
+         are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
+         an AngleSharp-beta drop via `CssPreprocessor.KnownDroppedProperties` (a verbatim longhand recovery,
+         like `white-space`). **(Task 1 — paint)** the outline paints as a filled RING just OUTSIDE the border
+         box — it does NOT affect layout — via the shared `PdfPage.FillRoundedRectangleRing` (the annulus
+         between the border box grown by `outline-offset` [inner] and again by `outline-width` [outer]), in
+         `outline-color` (initial `auto` → currentcolor); `outline-style: none` or a non-positive width paints
+         nothing. **(Task 2 — `outline-offset`)** a positive offset pushes the outline outward, a negative one
+         inward. **(Task 3 — rounded outline)** a `border-radius` rounds the outline to follow the box (each box
+         corner radius grown by the gap to that outline edge — offset + width for the outer, offset for the
+         inner; a SHARP box corner stays sharp, §5.3), reusing `CornerRadii`. **Post-PR-#173 review (4 numbered +
+         2 Copilot, replied + resolved):** **(P2)** `outline-style: hidden` is INVALID (CSS UI 4 §5.2 excludes
+         hidden — `@supports (outline-style: hidden)` is now FALSE; outline-style uses its OWN keyword indices
+         since the table differs from border-style); **(P2)** `outline-color: auto` is admitted (CSS UI 4 retired
+         `invert` and makes `auto` the initial) → currentcolor, via a dispatch special-case; **(P2)** an extreme
+         negative `outline-offset` clamps PER AXIS to ≥ −½ the box dimension BEFORE the origin + size, so the
+         collapsed outline stays CENTERED instead of drifting; **(P3 + Copilot)** `GrowRadii` clamps a component
+         a large negative offset would drive below 0 (matching `ReduceRadii`); **(Copilot)** `outline-width` is a
+         non-negative `<line-width>` (`NonNegativeProperties` — a negative value invalidates + falls back to
+         `medium`); **(Copilot)** borders + outline SHARE one style-approximation flag so
+         `PAINT-BORDER-STYLE-APPROXIMATED-001` fires once per conversion. STILL DEFERRED: non-solid
+         `outline-style` (dotted/dashed/double/groove/ridge/inset/outset painted SOLID + diagnosed; `auto` paints
+         solid without a diagnostic); `outline-color: auto`'s true UA colour (approximated currentcolor).
        - **body `border-radius` COMPLETION (per-corner + `%` band fill, rounded uniform border
          strokes, rounded background-image clip) — DONE (border-radius-completion cycle, 3 tasks):**
          the body border-radius first cut (uniform-circular band fill only) is finished. **(Task 1 —
@@ -3305,7 +3329,7 @@ flags the categories):
          rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
          spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
          segments transitioning between edge widths/colours); the MARGIN-box border-radius staying its own
-         uniform-circular fill-only first cut (its corner longhands aren't cascaded); a rounded `outline`.
+         uniform-circular fill-only first cut (its corner longhands aren't cascaded).
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band

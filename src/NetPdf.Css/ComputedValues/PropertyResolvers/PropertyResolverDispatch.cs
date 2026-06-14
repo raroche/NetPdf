@@ -72,6 +72,14 @@ internal static class PropertyResolverDispatch
             return ResolverResult.Invalid();
         }
 
+        // outline-color: auto (CSS UI 4 §5.3 — post-PR-#173 review P2). CSS UI 4 RETIRED `invert` and
+        // makes `auto` the initial, computing to a UA-chosen colour. We approximate it as currentcolor
+        // (the same slot the explicit keyword resolves to), since `auto` isn't a <color> ColorResolver
+        // would accept. Only outline-color admits `auto` — border-color: auto stays invalid.
+        if (propertyId == PropertyId.OutlineColor
+            && trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            return ResolverResult.Resolved(ComputedSlot.CurrentColor);
+
         return meta.Type switch
         {
             PropertyType.Color => ColorResolver.Resolve(

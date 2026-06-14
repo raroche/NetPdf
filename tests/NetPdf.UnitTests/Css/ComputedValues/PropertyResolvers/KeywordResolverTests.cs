@@ -78,6 +78,13 @@ public sealed class KeywordResolverTests
     [Fact] public void BackgroundAttachment_local_resolves()  => AssertResolves("local", PropertyId.BackgroundAttachment);
     [Fact] public void BackgroundAttachment_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.BackgroundAttachment);
 
+    // outline-style (outline cycle — border-style keywords EXCEPT `hidden`, PLUS `auto`; post-PR-#173 P2).
+    [Fact] public void OutlineStyle_solid_resolves() => AssertResolves("solid", PropertyId.OutlineStyle);
+    [Fact] public void OutlineStyle_auto_resolves()  => AssertResolves("auto", PropertyId.OutlineStyle);
+    [Fact] public void OutlineStyle_none_resolves()  => AssertResolves("none", PropertyId.OutlineStyle);
+    [Fact] public void OutlineStyle_hidden_emits_diagnostic() => AssertInvalid("hidden", PropertyId.OutlineStyle);   // invalid for outline
+    [Fact] public void OutlineStyle_bogus_emits_diagnostic() => AssertInvalid("bogus", PropertyId.OutlineStyle);
+
     [Fact] public void Display_foo_emits_diagnostic()         => AssertInvalid("foo", PropertyId.Display);
     [Fact] public void Display_block_flex_emits_diagnostic()  => AssertInvalid("block-flex", PropertyId.Display);
     [Fact] public void Position_stickys_emits_diagnostic()    => AssertInvalid("stickys", PropertyId.Position);

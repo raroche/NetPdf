@@ -2346,6 +2346,12 @@ public sealed class HtmlPdfConvertTests
             "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
+        // `em` is a valid-but-DEFERRED length (the resolver returns Deferred, not Invalid), so it
+        // expands + silently squares — NO diagnostic (post-PR-#174 review P3 — pin the silent contract
+        // so a future resolver/diagnostic change can't regress it unnoticed; contrast the malformed +
+        // negative cases below, which ARE diagnosed).
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
         var pdf = Latin1(result.Pdf);
         var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
         Assert.True(i >= 0);
@@ -2406,6 +2412,46 @@ public sealed class HtmlPdfConvertTests
         var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
         Assert.True(i >= 0);
         Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // rounded (calc evaluated to 5px)
+    }
+
+    [Theory]
+    [InlineData("8px bogus")]   // a malformed token
+    [InlineData("-5px")]        // negative (invalid per CSS B&B §6.1)
+    [InlineData("calc(10px")]   // an unbalanced function
+    public void Page_margin_box_border_radius_invalid_form_is_diagnosed(string value)
+    {
+        // post-PR-#174 review P2 — a MALFORMED / invalid margin-box border-radius is now SURFACED
+        // (CSS-PROPERTY-VALUE-INVALID-001) instead of being silently dropped as an unknown raw
+        // declaration; it still renders square (CLAUDE.md #7 — diagnostics, not silent corruption).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: " + value + " } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_elliptical_slash_defers_without_a_diagnostic()
+    {
+        // post-PR-#174 review P2 — the elliptical `Rx / Ry` form stays the DOCUMENTED silent deferral
+        // (square, NO diagnostic), distinct from the malformed cases above.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: 8px / 4px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square (deferred)
     }
 
     [Fact]

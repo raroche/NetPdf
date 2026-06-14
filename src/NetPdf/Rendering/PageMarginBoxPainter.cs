@@ -119,11 +119,11 @@ internal static class PageMarginBoxPainter
     /// P1 — margin-box declarations are raw CSS, so the authored values arrive intact; null =
     /// unset → the initial). The pipeline resolves the url against the per-render image cache
     /// and tiles it over the rect via the SHARED body tiler
-    /// (<c>PrintBackgrounds</c>-gated like the fill). A declared border-radius keeps the tiles
-    /// RECTANGULAR (the rounded-band corners may show square tiles — a documented
-    /// approximation, like the square border strokes). <c>LeftPx..HeightPx</c> is the
-    /// background-origin (positioning) area; <c>ClipLeftPx..ClipHeightPx</c> the background-clip
-    /// (paint) rect (bg-origin / bg-clip cycles).</summary>
+    /// (<c>PrintBackgrounds</c>-gated like the fill). A declared border-radius now ROUNDS the tile clip
+    /// (margin-box-border-radius cycle): <see cref="ClipRadiiPx"/> carries the per-corner radii of the
+    /// background-clip box (the box radii inset to it), and the shared tiler clips to a rounded path.
+    /// <c>LeftPx..HeightPx</c> is the background-origin (positioning) area;
+    /// <c>ClipLeftPx..ClipHeightPx</c> the background-clip (paint) rect (bg-origin / bg-clip cycles).</summary>
     internal readonly record struct MarginBoxBackgroundImage(
         double LeftPx, double TopPx, double WidthPx, double HeightPx, string RawUrl,
         string? RepeatRaw, string? SizeRaw, string? PositionRaw,

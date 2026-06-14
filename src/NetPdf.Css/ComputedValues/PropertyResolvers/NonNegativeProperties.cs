@@ -86,5 +86,12 @@ internal static class NonNegativeProperties
         // §3.4). FontSizeResolver delegates absolute <length> forms to
         // LengthResolver, which consults this set to reject a negative size.
         PropertyId.FontSize,
+        // Per the margin-box-border-radius cycle (PR #174 review P2) — a border-radius
+        // is non-negative (CSS Backgrounds & Borders 3 §6.1: negative values are
+        // invalid), so a negative corner radius invalidates cleanly + falls back to the
+        // initial 0 (square) instead of resolving to a negative LengthPx the painter
+        // would silently clamp. Applies to body + margin boxes (the longhands are shared).
+        PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
+        PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius,
     }.ToFrozenSet();
 }

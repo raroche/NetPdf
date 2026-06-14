@@ -3297,9 +3297,13 @@ flags the categories):
          style through `FragmentPainter.PaintBorders`, which already reads the corner longhands + paints the
          filled ring. **(Task 3)** the background-image clip rounds (`MarginBoxBackgroundImage.ClipRadiiPx`
          = the box radii inset to the clip box via `FragmentPainter.InsetRadii`, threaded to the shared
-         tiler). DEFERRED: the elliptical `Rx / Ry` slash form (square fallback); font-/viewport-relative
-         margin-box radii (`em`/`vw` defer in the margin-box cascade → square, like the body); rounded
-         NON-uniform borders.
+         tiler). Post-PR-#174 review: an INVALID/malformed margin-box `border-radius` (`8px bogus`, an
+         unbalanced function, or a NEGATIVE radius — `border-*-radius` joined `NonNegativeProperties`) is
+         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped
+         (`BorderRadiusShorthandExpander.IsDeferredElliptical` distinguishes the silent square deferral);
+         a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). DEFERRED (still
+         render square, SILENTLY): the elliptical `Rx / Ry` slash form; font-/viewport-relative margin-box
+         radii (`em`/`vw` defer in the margin-box cascade, like the body). Rounded NON-uniform borders.
        - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from

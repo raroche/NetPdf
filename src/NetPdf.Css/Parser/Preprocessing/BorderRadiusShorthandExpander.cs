@@ -39,6 +39,16 @@ internal static class BorderRadiusShorthandExpander
     public static bool IsBorderRadiusShorthand(string propertyName) =>
         propertyName.Equals("border-radius", System.StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Whether <paramref name="rawValue"/> is the INTENTIONALLY-deferred elliptical
+    /// <c>Rx / Ry</c> form (a top-level <c>/</c>) rather than a malformed value. Lets a caller that sees
+    /// a <c>border-radius</c> declaration which failed to expand (<see cref="TryExpand"/> returned
+    /// <see langword="false"/>) tell the documented square deferral (silent) from invalid input (which
+    /// should be diagnosed — PR #174 review P2). Comment-stripped + paren-aware, matching
+    /// <see cref="TryExpand"/>.</summary>
+    public static bool IsDeferredElliptical(string rawValue) =>
+        !string.IsNullOrWhiteSpace(rawValue)
+        && HasTopLevelSlash(CssShorthandHelpers.StripBlockComments(rawValue).Trim());
+
     /// <summary>Expand <c>border-radius</c> into its four corner longhands. Returns
     /// <see langword="false"/> (the caller keeps the raw declaration) for the elliptical slash form, a
     /// malformed value, the wrong value count, or any part that fails resolver validation.</summary>

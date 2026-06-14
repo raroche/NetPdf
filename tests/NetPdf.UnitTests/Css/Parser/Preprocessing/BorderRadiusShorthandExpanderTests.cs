@@ -43,6 +43,17 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
+    public void Three_values_are_tl_then_tr_bl_then_br()
+    {
+        // PR #174 review P3 — `a b c` → TL=a; TR=BL=b; BR=c (CSS Backgrounds & Borders L3 §6.1).
+        var d = Expand("1px 2px 3px");
+        Assert.Equal("1px", d["border-top-left-radius"]);
+        Assert.Equal("2px", d["border-top-right-radius"]);
+        Assert.Equal("3px", d["border-bottom-right-radius"]);
+        Assert.Equal("2px", d["border-bottom-left-radius"]);
+    }
+
+    [Fact]
     public void Four_values_are_tl_tr_br_bl()
     {
         var d = Expand("1px 2px 3px 4px");
@@ -50,6 +61,25 @@ public sealed class BorderRadiusShorthandExpanderTests
         Assert.Equal("2px", d["border-top-right-radius"]);
         Assert.Equal("3px", d["border-bottom-right-radius"]);
         Assert.Equal("4px", d["border-bottom-left-radius"]);
+    }
+
+    [Fact]
+    public void Negative_radius_rejects_the_shorthand()
+    {
+        // PR #174 review P2 — a border-radius is non-negative (CSS B&B §6.1); a negative value fails
+        // resolver validation → the shorthand is rejected (→ MarginBoxStyle diagnoses + renders square).
+        Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "-5px", out _));
+    }
+
+    [Fact]
+    public void IsDeferredElliptical_tells_a_top_level_slash_from_calc_or_malformed()
+    {
+        // PR #174 review P2 — only a TOP-LEVEL `/` is the deferred elliptical form; a `/` inside calc()
+        // (a division) and a malformed value are NOT — so MarginBoxStyle diagnoses the latter two.
+        Assert.True(BorderRadiusShorthandExpander.IsDeferredElliptical("8px / 4px"));
+        Assert.False(BorderRadiusShorthandExpander.IsDeferredElliptical("calc(10px / 2)"));
+        Assert.False(BorderRadiusShorthandExpander.IsDeferredElliptical("8px bogus"));
+        Assert.False(BorderRadiusShorthandExpander.IsDeferredElliptical("8px"));
     }
 
     [Fact]

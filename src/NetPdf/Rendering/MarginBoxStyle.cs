@@ -125,7 +125,8 @@ internal static class MarginBoxStyle
             // box's ComputedStyle brings margin boxes to PARITY with the body — the band fill reads
             // per-corner radii (FragmentPainter.ReadCornerRadii), the rounded uniform-border ring comes
             // free (FragmentPainter.PaintBorders already reads them), and the bg-image clip rounds. The
-            // `border-radius` shorthand expands to these four (AngleSharp), each absolute or `%`.
+            // `border-radius` shorthand expands to these four via BorderRadiusShorthandExpander (margin-box
+            // bodies bypass AngleSharp), each absolute or `%`; a malformed/elliptical value is handled above.
             PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
             PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius);
 
@@ -216,6 +217,24 @@ internal static class MarginBoxStyle
                         "(<length>{1,4}); use the padding-<side> longhands.",
                         CssDiagnosticSeverity.Warning,
                         decl.Location));
+                    continue;
+                }
+                // A `border-radius` shorthand reaching here failed to expand (a valid 1–4-value form
+                // becomes the four corner longhands upstream). It's either the INTENTIONALLY-deferred
+                // elliptical `Rx / Ry` form (a top-level `/`, silent → square per the documented
+                // deferral) or a MALFORMED value (`8px bogus`, an unbalanced function, a negative
+                // radius) — only the latter is surfaced instead of silently dropping (PR #174 review P2).
+                if (BorderRadiusShorthandExpander.IsBorderRadiusShorthand(decl.Property))
+                {
+                    if (!BorderRadiusShorthandExpander.IsDeferredElliptical(decl.Value.RawText))
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssPropertyValueInvalid001,
+                            $"Could not apply 'border-radius: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' " +
+                            "in an @page margin box — the value is an unsupported or malformed border-radius " +
+                            "(<length-percentage>{1,4}, non-negative); the elliptical `Rx / Ry` slash form is a " +
+                            "documented deferral (it renders square).",
+                            CssDiagnosticSeverity.Warning,
+                            decl.Location));
                     continue;
                 }
                 if (!PropertyMetadata.NameToId.TryGetValue(decl.Property, out var id)) continue;

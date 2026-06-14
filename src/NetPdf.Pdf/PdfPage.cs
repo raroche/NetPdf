@@ -339,6 +339,155 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Fill a rectangle with PER-CORNER elliptical <c>border-radius</c> (CSS Backgrounds &amp;
+    /// Borders 3 §4.1) — the general form of the uniform single-radius
+    /// <see cref="FillRoundedRectangle(double,double,double,double,double,double,double,double,double)"/>.
+    /// Radii are normalized (clamped ≥ 0, §4.2 overlap-scaled to half-extents) before the path is built;
+    /// a set with NO positive radius delegates to the plain rectangle. Same colour/alpha/finite-validation
+    /// contract as the other fills.</summary>
+    public void FillRoundedRectangle(
+        double x, double y, double width, double height, CornerRadii radii,
+        double r, double g, double b, double alpha = 1.0)
+    {
+        ThrowIfFinalized();
+        ValidateRoundedArgs(x, y, width, height, alpha);
+        if (width <= 0 || height <= 0) return;
+        var nr = radii.NormalizedFor(width, height);
+        if (!nr.AnyPositive) { FillRectangle(x, y, width, height, r, g, b, alpha); return; }
+
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var sb = new StringBuilder(320);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" rg ");
+        AppendRoundedRectPath(sb, x, y, width, height, nr);
+        sb.Append("f Q\n");
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Fill the RING (annulus) between an OUTER and an INNER per-corner rounded rectangle — the
+    /// region inside the outer path but outside the inner one — via an even-odd fill
+    /// (<c>q [gs] r g b rg &lt;outer path&gt; &lt;inner path&gt; f* Q</c>). This is how a UNIFORM rounded
+    /// BORDER paints (border-radius-completion cycle, Task 2): the outer path is the border box, so its
+    /// outer corner radius is EXACT for any border width (unlike a centerline stroke, which loses a small
+    /// radius under a thick border); the inner path is the padding box with radii reduced by the border
+    /// width. An empty/degenerate inner box fills the whole outer rounded rect (the border covers the
+    /// box). Each rounded path falls back to a plain <c>re</c> rectangle subpath when its radii are all
+    /// zero. Uses the FILL constant-alpha (<c>/ca</c>) — correct, since this is a fill, not a stroke. Same
+    /// colour/alpha/finite-validation contract as the other fills.</summary>
+    public void FillRoundedRectangleRing(
+        double outerX, double outerY, double outerWidth, double outerHeight, CornerRadii outerRadii,
+        double innerX, double innerY, double innerWidth, double innerHeight, CornerRadii innerRadii,
+        double r, double g, double b, double alpha = 1.0)
+    {
+        ThrowIfFinalized();
+        ValidateRoundedArgs(outerX, outerY, outerWidth, outerHeight, alpha);
+        ValidateRoundedArgs(innerX, innerY, innerWidth, innerHeight, alpha);
+        if (outerWidth <= 0 || outerHeight <= 0) return;
+
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var sb = new StringBuilder(560);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" rg ");
+        var outerNr = outerRadii.NormalizedFor(outerWidth, outerHeight);
+        if (outerNr.AnyPositive) AppendRoundedRectPath(sb, outerX, outerY, outerWidth, outerHeight, outerNr);
+        else AppendRectPath(sb, outerX, outerY, outerWidth, outerHeight);
+        if (innerWidth > 0 && innerHeight > 0)
+        {
+            // Even-odd: the inner subpath cuts the annulus out of the outer fill (winding-direction
+            // independent). A border thicker than the radius leaves a sharp inner corner — exactly CSS.
+            var innerNr = innerRadii.NormalizedFor(innerWidth, innerHeight);
+            if (innerNr.AnyPositive) AppendRoundedRectPath(sb, innerX, innerY, innerWidth, innerHeight, innerNr);
+            else AppendRectPath(sb, innerX, innerY, innerWidth, innerHeight);
+            sb.Append("f* Q\n");
+        }
+        else
+        {
+            sb.Append("f Q\n");   // no inner cut-out (border ≥ half the box) → a solid rounded rect
+        }
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Push the graphics state and intersect the clip with a PER-CORNER rounded rectangle —
+    /// <c>q &lt;path&gt; W n</c> (the rounded analogue of <see cref="BeginRectangleClip"/>). Everything
+    /// painted until the balancing <see cref="RestoreGraphicsState"/> is clipped to the rounded box. An
+    /// all-zero radius set (or a degenerate size) falls back to the rectangular clip (identical result,
+    /// fewer operators). Callers MUST balance with <see cref="RestoreGraphicsState"/>.</summary>
+    public void BeginRoundedRectangleClip(double x, double y, double width, double height, CornerRadii radii)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+            throw new ArgumentException(
+                $"BeginRoundedRectangleClip coordinates must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        var nr = (width > 0 && height > 0) ? radii.NormalizedFor(width, height) : default;
+        if (!nr.AnyPositive) { BeginRectangleClip(x, y, width, height); return; }
+        var sb = new StringBuilder(300);
+        sb.Append("q ");
+        AppendRoundedRectPath(sb, x, y, width, height, nr);
+        sb.Append("W n\n");
+        AppendContent(sb.ToString());
+    }
+
+    private static void ValidateRoundedArgs(double x, double y, double width, double height, double alpha)
+    {
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+            throw new ArgumentException(
+                $"Rounded-rectangle arguments must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        if (!double.IsFinite(alpha))
+            throw new ArgumentException($"Rounded-rectangle alpha must be finite; got {alpha}.", nameof(alpha));
+    }
+
+    /// <summary>Append a per-corner rounded-rectangle PATH (no paint operator) to <paramref name="sb"/>:
+    /// <c>m</c> then four edge <c>l</c> + corner <c>c</c> pairs + <c>h</c>, counter-clockwise from the
+    /// bottom edge (matching the uniform overload's vertex order). Each corner is one cubic-Bézier
+    /// quadrant (k ≈ 0.5523, ISO 32000-2 §8.5.2.2) using its own horizontal/vertical radius — a circle
+    /// for X == Y, an ellipse otherwise. CSS corner names map to this bottom-left-origin space: top-left
+    /// → (x, y+h), bottom-left → (x, y). Radii MUST already be normalized
+    /// (<see cref="CornerRadii.NormalizedFor"/>).</summary>
+    private static void AppendRoundedRectPath(
+        StringBuilder sb, double x, double y, double width, double height, CornerRadii radii)
+    {
+        const double kappa = 0.55228474983079; // 4/3 × (√2 − 1) — the cubic circle-quadrant constant.
+        double tlx = radii.TopLeftX, tly = radii.TopLeftY;
+        double trx = radii.TopRightX, tryy = radii.TopRightY;
+        double brx = radii.BottomRightX, bry = radii.BottomRightY;
+        double blx = radii.BottomLeftX, bly = radii.BottomLeftY;
+        static double K(double radius) => radius * (1.0 - kappa);
+
+        void P(double vx, double vy) { AppendNumber(sb, vx); sb.Append(' '); AppendNumber(sb, vy); sb.Append(' '); }
+        // Bottom edge → bottom-right corner.
+        P(x + blx, y); sb.Append("m ");
+        P(x + width - brx, y); sb.Append("l ");
+        P(x + width - K(brx), y); P(x + width, y + K(bry)); P(x + width, y + bry); sb.Append("c ");
+        // Right edge → top-right corner.
+        P(x + width, y + height - tryy); sb.Append("l ");
+        P(x + width, y + height - K(tryy)); P(x + width - K(trx), y + height); P(x + width - trx, y + height); sb.Append("c ");
+        // Top edge → top-left corner.
+        P(x + tlx, y + height); sb.Append("l ");
+        P(x + K(tlx), y + height); P(x, y + height - K(tly)); P(x, y + height - tly); sb.Append("c ");
+        // Left edge → bottom-left corner (closes to the start).
+        P(x, y + bly); sb.Append("l ");
+        P(x, y + K(bly)); P(x + K(blx), y); P(x + blx, y); sb.Append("c ");
+        sb.Append("h ");
+    }
+
+    /// <summary>Append a plain rectangle subpath (<c>x y w h re</c>) — the zero-radius fallback the ring
+    /// fill uses for a square outer/inner edge, combinable with a Bézier subpath under one fill.</summary>
+    private static void AppendRectPath(StringBuilder sb, double x, double y, double width, double height)
+    {
+        AppendNumber(sb, x); sb.Append(' ');
+        AppendNumber(sb, y); sb.Append(' ');
+        AppendNumber(sb, width); sb.Append(' ');
+        AppendNumber(sb, height); sb.Append(" re ");
+    }
+
     /// <summary>
     /// Push the graphics state and intersect the clip path with an axis-aligned rectangle —
     /// <c>q &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re W n</c> (ISO 32000-2 §8.5.4: <c>W</c> sets the

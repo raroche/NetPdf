@@ -466,6 +466,23 @@ tiler); **(P2)** margin-box origin/clip flow through `MarginBoxStyle`'s cascade 
 read via `ReadBackgroundAreaKeyword`) — `!important` + CSS-wide + invalid-value diagnostics, not
 `RawDeclarationWinner`; **(P2)** the misleading `KeywordResolver` `background-attachment` comment + matrix +
 `deferrals.md` were corrected to "parse-only"; **(P3)** the rounded-band test targets the exact 75×45pt band.
+**body `border-radius` COMPLETION cycle (3 tasks, one PR — branch `phase-3-body-border-radius-completion`):** finishes
+the PR #171 first cut (which rounded only a uniform-circular fill band). **(Task 1)** a BODY block's background band
+rounds with PER-CORNER radii — the `border-radius` shorthand + the four corner longhands, each absolute (circular) or a
+`%` resolving against the box width (horizontal) / height (vertical), so a non-square `50%` box is an ELLIPSE (CSS B&B
+§4.1) — via the new per-corner elliptical `PdfPage.FillRoundedRectangle(CornerRadii)` (§4.2 overlap clamp in
+`CornerRadii.NormalizedFor`); the uniform-circular case keeps the byte-stable single-radius path. **(Task 2)** a uniform
+border (same style/width/colour on all edges, `FragmentPainter.TryUniformBorder` — widths compared with a TOLERANCE so
+equivalent mixed-unit lengths don't fall back) + a radius paints ONE filled RING (`PdfPage.FillRoundedRectangleRing`, the
+even-odd annulus between the border box and the padding box) instead of the square edge rects (non-uniform → square
+fallback). **(Task 3)** a radius rounds the background-image clip (`PdfPage.BeginRoundedRectangleClip`, both the per-tile
+loop and tiling-pattern paths). The margin-box radius stays its own uniform-circular first cut. Post-PR-#172 review: Task 2
+was reworked from a centerline STROKE to a filled RING — **(P1)** a stroke needs `/CA` not the fill `/ca` (a
+semi-transparent rounded border was rendering opaque); a fill uses `/ca` correctly; **(P2)** the ring's OUTER path is exact
+for any border width (a small radius under a thick border keeps its rounding); **(P2)** the width compare is tolerance-based
+now; **(P3)** added fill-alpha / mixed-unit / small-radius tests + dropped `StrokeRoundedRectangle`; **(P3)** renamed the
+`trYy` local + refreshed a stale class comment. DEFERRED: the `Rx / Ry`
+elliptical slash spelling (AngleSharp drop), rounded NON-uniform borders, the margin-box per-corner radius.
 Next (in order): the MULTI-PAGE DRIVER
 (cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation first);
 the remaining riders are mostly LARGER features now (container width sub-box wrap, inline `<img>` atomics,

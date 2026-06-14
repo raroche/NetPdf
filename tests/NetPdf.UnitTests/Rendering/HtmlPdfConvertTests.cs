@@ -3578,6 +3578,127 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Border_radius_per_corner_rounds_the_band_with_distinct_corners()
+    {
+        // border-radius-completion cycle, Task 1 — a per-corner shorthand (8px 24px → TL=BR=8, TR=BL=24)
+        // rounds the 75×45pt #3366cc band as a Bézier PATH, not the uniform single-radius path and not
+        // a plain rectangle. The path starts at the bottom edge right of the BL corner (x + 18pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px 24px;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.DoesNotContain(AllRects(pdf), r => Math.Abs(r.W - 75.0) < 0.5 && Math.Abs(r.H - 45.0) < 0.5);
+        Assert.Contains(" c ", pdf);                 // Bézier corners
+        Assert.Contains("0.2 0.4 0.8 rg", pdf);      // the band colour
+    }
+
+    [Fact]
+    public void Border_radius_percentage_rounds_the_band_as_an_ellipse()
+    {
+        // border-radius-completion cycle, Task 1 — `50%` on a non-square box resolves to rx = 50% of
+        // width, ry = 50% of height (an ellipse, CSS B&B §4.1): the band paints as a curve path, never
+        // a square rect (pre-cycle a percentage was deferred → square).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:50%;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.DoesNotContain(AllRects(pdf), r => Math.Abs(r.W - 75.0) < 0.5 && Math.Abs(r.H - 45.0) < 0.5);
+        Assert.Contains(" c ", pdf);
+    }
+
+    [Fact]
+    public void Border_radius_with_uniform_border_paints_a_rounded_ring()
+    {
+        // border-radius-completion cycle, Task 2 — a uniform border + a border-radius paints ONE filled
+        // ring (the annulus between the border box and the padding box, even-odd `f*`) in the border
+        // colour, instead of four square edge rects. A FILL (rg), never a stroke (no S / RG) — so the
+        // outer corner is exact and the alpha composites correctly (post-PR-#172 review P1+P2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;border:4px solid #000;" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" f* Q", pdf);               // the even-odd ring fill
+        Assert.Contains("0 0 0 rg", pdf);            // the black border, FILLED
+        Assert.DoesNotContain(" S Q", pdf);          // not a stroke (no /CA pitfall)
+    }
+
+    [Fact]
+    public void Border_radius_small_radius_thick_border_keeps_outer_rounding()
+    {
+        // border-radius-completion cycle, Task 2 (post-PR-#172 review P2) — a SMALL radius under a THICK
+        // border (radius 2px, border 4px) still rounds the OUTER corner (the ring's outer path is exact
+        // for any width; a centerline stroke would have lost it). The ring paints (f*), not square edges.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:2px;border:4px solid #000\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" f* Q", pdf);               // the rounded ring still paints
+        Assert.DoesNotContain(" re f Q", pdf);       // ... not square per-edge fills (the inner `re f*` is part of the ring)
+    }
+
+    [Fact]
+    public void Border_radius_semi_transparent_border_composites_alpha()
+    {
+        // border-radius-completion cycle, Task 2 (post-PR-#172 review P1) — a semi-transparent rounded
+        // border composites via the FILL constant-alpha /ca (the ring is a fill). rgba(0,0,0,.5) →
+        // 8-bit-quantized 128/255 = 0.501961. Pre-fix the centerline stroke wrongly used /ca for a
+        // stroke (which needs /CA) → fully opaque.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;border:4px solid rgba(0,0,0,0.5)\"></div>" +
+            "</body></html>"));
+        Assert.Contains("/ca 0.501961", pdf);        // fill alpha for the border ring
+        Assert.Contains(" f* Q", pdf);
+    }
+
+    [Fact]
+    public void Border_radius_uniform_border_mixed_units_still_rings()
+    {
+        // border-radius-completion cycle, Task 2 (post-PR-#172 review P2) — equivalent border widths
+        // expressed in DIFFERENT units (1px ≡ 0.75pt) are treated as uniform via a tolerance (not exact
+        // `==`), so the rounded ring still paints rather than silently falling back to square edges.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;border-style:solid;border-color:#000;" +
+            "border-top-width:1px;border-right-width:0.75pt;border-bottom-width:1px;border-left-width:0.75pt\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" f* Q", pdf);               // mixed-but-equal widths → still the rounded ring
+        Assert.DoesNotContain(" re f", pdf);
+    }
+
+    [Fact]
+    public void Non_uniform_border_with_radius_falls_back_to_square_edges()
+    {
+        // border-radius-completion cycle, Task 2 — a NON-uniform border (different per-edge widths)
+        // can't be one ring, so it falls back to the per-edge square rects (no ring fill). The radius
+        // still rounds the background band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;border-style:solid;border-color:#f00;" +
+            "border-top-width:6px;border-right-width:2px;border-bottom-width:6px;border-left-width:2px\"></div>" +
+            "</body></html>"));
+        Assert.DoesNotContain(" f* Q", pdf);         // no rounded ring
+        Assert.Contains(" re f", pdf);               // per-edge square border rects
+    }
+
+    [Fact]
+    public void Border_radius_rounds_the_background_image_clip()
+    {
+        // border-radius-completion cycle, Task 3 — a border-radius rounds the background-image CLIP: a
+        // no-repeat tile is clipped by a rounded path (curve operators before `W n`), not the
+        // rectangular `re W n`.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:100px;height:60px;border-radius:8px;background-image:url({PngDataUri(16, 16)});" +
+            "background-repeat:no-repeat\"></div>" +
+            "</body></html>"));
+        Assert.Contains(" W n", pdf);                // a clip is established
+        Assert.DoesNotContain(" re W n", pdf);       // ... and it is the ROUNDED clip, not rectangular
+        Assert.Single(AllImagePlacements(pdf));      // the tile still paints
+    }
+
+    [Fact]
     public void Background_repeat_space_distributes_equal_gaps()
     {
         // space-round cycle — `space` packs floor(area/tile) whole tiles flush to the edges with

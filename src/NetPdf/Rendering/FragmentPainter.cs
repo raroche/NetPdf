@@ -33,8 +33,10 @@ namespace NetPdf.Rendering;
 /// <c>none</c> and <c>hidden</c> paint nothing (CSS Backgrounds &amp; Borders 3
 /// §4.3 — the used border width is 0 for those styles; layout reserves no space and
 /// the painter skips them). Edges span the full box extent on their long axis, so
-/// corners overlap — exact for uniform borders; mitered / per-corner joins are a
-/// refinement. Border <c>border-radius</c> is deferred.
+/// corners overlap — exact for uniform SQUARE borders; mitered / per-corner joins are a
+/// refinement. A UNIFORM border on a box with a <c>border-radius</c> instead paints as ONE
+/// filled rounded RING that follows the rounded corners (border-radius-completion cycle);
+/// a non-uniform border keeps the square per-edge rects (rounded non-uniform borders deferred).
 /// </para>
 /// <para>
 /// <b>Alpha.</b> A partial-alpha background or border color is composited faithfully
@@ -124,6 +126,11 @@ internal static class FragmentPainter
                     // / bg-clip cycles).
                     var (oT, oR, oB, oL) = BackgroundAreaInset(style, bgSpec.OriginRaw, defaultArea: 'p');
                     var (cT, cR, cB, cL) = BackgroundAreaInset(style, bgSpec.ClipRaw, defaultArea: 'b');
+                    // A border-radius rounds the background-image CLIP too (border-radius-completion
+                    // cycle, Task 3): the border-box corner radii, inset per side to the background-clip
+                    // box (border-box clip → no reduction; padding/content-box → reduced by the clip
+                    // inset). Zero radii → a rectangular clip (the tiler's fast path, byte-identical).
+                    var clipRadiiPx = InsetRadii(ReadCornerRadii(style, widthPx, heightPx), cT, cR, cB, cL);
                     // Clamp the positioning-area + clip width/height to ≥ 0 — a thin box with large
                     // border/padding + a content-box origin/clip can drive the inset sum past the box
                     // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1,
@@ -134,7 +141,8 @@ internal static class FragmentPainter
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
                         clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,
-                        clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB));
+                        clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB),
+                        clipRadiiPx: clipRadiiPx);
                 }
             }
 
@@ -175,7 +183,8 @@ internal static class FragmentPainter
         IDiagnosticsSink? diagnostics, ref bool variantUnsupportedReported,
         string? repeatRaw = null, string? sizeRaw = null, string? positionRaw = null,
         double? clipLeftPx = null, double? clipTopPx = null,
-        double? clipWidthPx = null, double? clipHeightPx = null)
+        double? clipWidthPx = null, double? clipHeightPx = null,
+        CornerRadii clipRadiiPx = default)
     {
         // background-clip (bg-clip cycle): the PAINT area, defaulting to the POSITIONING area —
         // the body caller passes the border box here while the area (leftPx..heightPx) is the
@@ -267,14 +276,29 @@ internal static class FragmentPainter
             ToPdfRect(
                 fillLeftPx, fillTopPx, fillRightPx - fillLeftPx, fillBottomPx - fillTopPx,
                 pageHeightPt, out var fx, out var fy, out var fw, out var fh);
-            page.FillRectangleWithPattern(patternRef, fx, fy, fw, fh);
+            // A border-radius rounds the pattern fill too (border-radius-completion cycle, Task 3):
+            // wrap it in a rounded clip of the background-clip box. No radius → no clip wrap, so the
+            // pattern path stays byte-identical.
+            if (clipRadiiPx.AnyPositive)
+            {
+                ToPdfRect(clipL, clipT, clipW, clipH, pageHeightPt, out var pcx, out var pcy, out var pcw, out var pch);
+                page.BeginRoundedRectangleClip(pcx, pcy, pcw, pch, ToPt(clipRadiiPx));
+                page.FillRectangleWithPattern(patternRef, fx, fy, fw, fh);
+                page.RestoreGraphicsState();
+            }
+            else
+            {
+                page.FillRectangleWithPattern(patternRef, fx, fy, fw, fh);
+            }
             return;
         }
         // Clip partial / protruding tiles to the background-clip rect (bg-clip cycle; the initial
-        // background-clip: border-box, which the body caller passes explicitly while the tiled
-        // area is the background-origin box).
+        // background-clip: border-box, which the body caller passes explicitly while the tiled area is
+        // the background-origin box). A border-radius rounds this clip (border-radius-completion cycle,
+        // Task 3); BeginRoundedRectangleClip falls back to the rectangular clip for zero radii, so the
+        // common (no-radius) tile loop stays byte-identical.
         ToPdfRect(clipL, clipT, clipW, clipH, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
-        page.BeginRectangleClip(cx, cy, cw, ch);
+        page.BeginRoundedRectangleClip(cx, cy, cw, ch, ToPt(clipRadiiPx));
         for (long row = 0; row < ny; row++)
         {
             for (long col = 0; col < nx; col++)
@@ -747,6 +771,44 @@ internal static class FragmentPainter
             || !double.IsFinite(widthPx) || !double.IsFinite(heightPx))
             return;
 
+        // Rounded UNIFORM border (border-radius-completion cycle, Task 2): a box with a border-radius
+        // AND a uniform border (same paintable style, width, and resolved colour on all four edges) paints
+        // ONE filled RING — the annulus between the border box (outer, the border-box radii) and the
+        // padding box (inner, radii reduced by the FULL border width) — so the border follows the fill's
+        // rounded corners. A FILLED ring (not a centerline stroke): its outer corner is EXACT for any
+        // border width (a small radius under a thick border keeps its rounding; post-PR-#172 review P1+P2)
+        // and it composites the border colour's alpha correctly (a fill, /ca). A non-uniform border, or a
+        // margin box (whose corner-radius longhands aren't cascaded → radii read zero), falls through to
+        // the per-edge square rects below.
+        var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
+        if (radiiPx.AnyPositive
+            && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid))
+        {
+            if (nonSolid && !styleApproximationReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.PaintBorderStyleApproximated001,
+                    "A non-solid border-style (dotted / dashed / double / groove / ridge / inset / outset) " +
+                    "was painted as a solid line. Styled border rendering is a tracked follow-up " +
+                    "(deferrals.md#layout-to-pdf-pipeline).",
+                    DiagnosticSeverity.Info));
+                styleApproximationReported = true;
+            }
+            // Outer = border box with the border-box radii; inner = padding box (inset by the border
+            // width on every side) with radii reduced by the full border width. An inner box that
+            // collapses (border ≥ half the box) makes the ring fill the whole outer rounded rect.
+            var outerRadiiPx = radiiPx.NormalizedFor(widthPx, heightPx);
+            var innerRadiiPx = ReduceRadii(outerRadiiPx, borderWidthPx);
+            ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
+            ToPdfRect(leftPx + borderWidthPx, topPx + borderWidthPx,
+                widthPx - 2 * borderWidthPx, heightPx - 2 * borderWidthPx,
+                pageHeightPt, out var ix, out var iy, out var iw, out var ih);
+            ColorChannels(borderArgb, out var cr, out var cg, out var cb);
+            page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadiiPx),
+                ix, iy, iw, ih, ToPt(innerRadiiPx), cr, cg, cb, Alpha(borderArgb) / 255.0);
+            return;
+        }
+
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
             currentColors.Top, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
@@ -756,6 +818,70 @@ internal static class FragmentPainter
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
             currentColors.Left, diagnostics, ref styleApproximationReported);
     }
+
+    /// <summary>Whether all four border edges form a UNIFORM border that a single rounded RING can
+    /// render (border-radius-completion cycle, Task 2): every edge has a PAINTABLE style (not
+    /// none/hidden/unset), the SAME positive width (compared with a small tolerance — used widths come
+    /// from unit conversions [cm/mm/pt/…] and could differ by float rounding), and the SAME resolved
+    /// colour (each edge's colour resolved against ITS currentcolor). <paramref name="widthPx"/>/
+    /// <paramref name="argb"/> are the shared width/colour; <paramref name="nonSolid"/> flags a non-solid
+    /// style (still painted, but as solid — the caller diagnoses it once). A non-uniform border returns
+    /// <see langword="false"/> so the caller keeps the per-edge square rects (rounded non-uniform borders
+    /// are deferred).</summary>
+    private static bool TryUniformBorder(
+        ComputedStyle style, in BorderEdgeCurrentColors cc,
+        out double widthPx, out uint argb, out bool nonSolid)
+    {
+        widthPx = 0; argb = 0; nonSolid = false;
+
+        bool ReadEdge(PropertyId styleId, PropertyId widthId, PropertyId colorId, uint edgeCc,
+            out double w, out uint a, out bool solid)
+        {
+            w = 0; a = 0; solid = false;
+            var styleSlot = style.Get(styleId);
+            if (styleSlot.Tag != ComputedSlotTag.Keyword) return false;       // unset → none
+            var kw = styleSlot.AsKeyword();
+            if (kw is BorderStyleNone or BorderStyleHidden) return false;
+            solid = kw == BorderStyleSolid;
+            var widthSlot = style.Get(widthId);
+            w = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0;
+            if (w <= 0) return false;
+            if (!TryResolveColor(style.Get(colorId), edgeCc, out a)) a = edgeCc; // initial: currentcolor
+            return Alpha(a) != 0;
+        }
+
+        if (!ReadEdge(PropertyId.BorderTopStyle, PropertyId.BorderTopWidth, PropertyId.BorderTopColor, cc.Top, out var wt, out var at, out var solidT)
+            || !ReadEdge(PropertyId.BorderRightStyle, PropertyId.BorderRightWidth, PropertyId.BorderRightColor, cc.Right, out var wr, out var ar, out var solidR)
+            || !ReadEdge(PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth, PropertyId.BorderBottomColor, cc.Bottom, out var wb, out var ab, out var solidB)
+            || !ReadEdge(PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth, PropertyId.BorderLeftColor, cc.Left, out var wl, out var al, out var solidL))
+            return false;
+        // Used widths come from unit conversions, so compare against the top edge with a tolerance well
+        // below a visible difference (rather than exact `==`, which equivalent lengths from different
+        // units / calc could miss); colours are exact 8-bit ARGB, so an exact compare is right there.
+        static bool SameWidth(double a, double b) => Math.Abs(a - b) <= 1e-4;
+        if (!SameWidth(wt, wr) || !SameWidth(wt, wb) || !SameWidth(wt, wl)) return false;
+        if (at != ar || ar != ab || ab != al) return false;   // equal colours
+        widthPx = wt; argb = at; nonSolid = !(solidT && solidR && solidB && solidL);
+        return true;
+    }
+
+    /// <summary>Each radius component reduced by <paramref name="amount"/> px (clamped ≥ 0) — the
+    /// border-box radii minus the full border width give the INNER (padding-box) ring radii (Task 2).</summary>
+    private static CornerRadii ReduceRadii(CornerRadii r, double amount) => new(
+        Math.Max(0, r.TopLeftX - amount), Math.Max(0, r.TopLeftY - amount),
+        Math.Max(0, r.TopRightX - amount), Math.Max(0, r.TopRightY - amount),
+        Math.Max(0, r.BottomRightX - amount), Math.Max(0, r.BottomRightY - amount),
+        Math.Max(0, r.BottomLeftX - amount), Math.Max(0, r.BottomLeftY - amount));
+
+    /// <summary>Border-box radii inset PER SIDE to an inner box (the background-clip box, Task 3): each
+    /// corner's horizontal radius reduces by the inset on its vertical edge, its vertical radius by the
+    /// inset on its horizontal edge (clamped ≥ 0) — CSS B&amp;B 3 §4.1's inner-rounding rule. A zero
+    /// inset (background-clip: border-box) leaves the radii unchanged.</summary>
+    private static CornerRadii InsetRadii(CornerRadii r, double top, double right, double bottom, double left) => new(
+        Math.Max(0, r.TopLeftX - left), Math.Max(0, r.TopLeftY - top),
+        Math.Max(0, r.TopRightX - right), Math.Max(0, r.TopRightY - top),
+        Math.Max(0, r.BottomRightX - right), Math.Max(0, r.BottomRightY - bottom),
+        Math.Max(0, r.BottomLeftX - left), Math.Max(0, r.BottomLeftY - bottom));
 
     private static void PaintBackground(
         PdfPage page, ComputedStyle style, double pageHeightPt,
@@ -769,31 +895,64 @@ internal static class FragmentPainter
 
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        // border-radius (body-radius cycle, first cut): a UNIFORM absolute radius rounds the band
-        // (PdfPage.FillRoundedRectangle, clamped to half the shorter side); border strokes + the
-        // background-image clip stay rectangular (deferred, like the margin-box first cut). A
-        // partial alpha is composited faithfully via the page's ExtGState constant-alpha (/ca).
-        var radiusPx = UniformBorderRadiusPx(style);
-        if (radiusPx > 0)
+        // border-radius (body-radius / border-radius-completion cycles): per-corner ABSOLUTE + %
+        // radii round the COLOR band. The UNIFORM-circular case keeps the byte-stable single-radius
+        // path (PdfPage.FillRoundedRectangle, clamped to half the shorter side); the general case
+        // (per-corner / elliptical-via-%) uses the per-corner fill (§4.2 overlap-clamped in PdfPage).
+        // Border strokes (PaintBorders) + the background-image clip honor the SAME radii (the
+        // completion cycle's other two tasks). The explicit `Rx / Ry` slash form is an AngleSharp drop
+        // (deferred). A partial alpha composites via the page's ExtGState constant-alpha (/ca).
+        var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
+        if (radiiPx.AnyPositive)
         {
-            var radiusPt = Math.Min(PdfUnits.PxToPt(radiusPx), Math.Min(w, h) / 2.0);
-            page.FillRoundedRectangle(x, y, w, h, radiusPt, r, g, b, alpha / 255.0);
+            if (radiiPx.IsUniformCircular(out var rPx))
+            {
+                var radiusPt = Math.Min(PdfUnits.PxToPt(rPx), Math.Min(w, h) / 2.0);
+                page.FillRoundedRectangle(x, y, w, h, radiusPt, r, g, b, alpha / 255.0);
+            }
+            else
+            {
+                page.FillRoundedRectangle(x, y, w, h, ToPt(radiiPx), r, g, b, alpha / 255.0);
+            }
             return;
         }
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
     }
 
-    /// <summary>The UNIFORM circular border-radius in px (body-radius cycle, first cut): the four
-    /// registered corner-radius longhands must all be the SAME absolute length — else 0 (per-corner
-    /// / elliptical / percentage rounding is deferred).</summary>
-    private static double UniformBorderRadiusPx(ComputedStyle style)
+    /// <summary>The four <c>border-radius</c> corners in CSS px (border-radius-completion cycle): each
+    /// registered corner longhand read as an ABSOLUTE length (circular, X == Y) or a PERCENTAGE, which
+    /// resolves against the box WIDTH for the horizontal radius and the box HEIGHT for the vertical
+    /// (CSS B&amp;B 3 §4.1 — so a non-square box gets an ellipse). The explicit two-radii `Rx / Ry`
+    /// spelling is dropped by AngleSharp upstream (all-zero → square, a documented deferral). §4.2
+    /// overlap clamping happens later, in <see cref="CornerRadii.NormalizedFor"/>.</summary>
+    private static CornerRadii ReadCornerRadii(ComputedStyle style, double widthPx, double heightPx)
     {
-        var tl = style.ReadLengthPxOrZero(PropertyId.BorderTopLeftRadius);
-        var tr = style.ReadLengthPxOrZero(PropertyId.BorderTopRightRadius);
-        var br = style.ReadLengthPxOrZero(PropertyId.BorderBottomRightRadius);
-        var bl = style.ReadLengthPxOrZero(PropertyId.BorderBottomLeftRadius);
-        return tl > 0 && tl == tr && tr == br && br == bl ? tl : 0;
+        (double Rx, double Ry) Corner(PropertyId id)
+        {
+            var slot = style.Get(id);
+            return slot.Tag switch
+            {
+                ComputedSlotTag.LengthPx => (Math.Max(0, slot.AsLengthPx()), Math.Max(0, slot.AsLengthPx())),
+                ComputedSlotTag.Percentage => (
+                    Math.Max(0, slot.AsPercentage() / 100.0 * widthPx),
+                    Math.Max(0, slot.AsPercentage() / 100.0 * heightPx)),
+                _ => (0.0, 0.0),
+            };
+        }
+        var (tlX, tlY) = Corner(PropertyId.BorderTopLeftRadius);
+        var (trX, trY) = Corner(PropertyId.BorderTopRightRadius);
+        var (brX, brY) = Corner(PropertyId.BorderBottomRightRadius);
+        var (blX, blY) = Corner(PropertyId.BorderBottomLeftRadius);
+        return new CornerRadii(tlX, tlY, trX, trY, brX, brY, blX, blY);
     }
+
+    /// <summary>Convert a px <see cref="CornerRadii"/> to PDF points (the unit PdfPage's path builder
+    /// works in); the §4.2 overlap scaling is unit-invariant so it still happens in PdfPage.</summary>
+    private static CornerRadii ToPt(CornerRadii px) => new(
+        PdfUnits.PxToPt(px.TopLeftX), PdfUnits.PxToPt(px.TopLeftY),
+        PdfUnits.PxToPt(px.TopRightX), PdfUnits.PxToPt(px.TopRightY),
+        PdfUnits.PxToPt(px.BottomRightX), PdfUnits.PxToPt(px.BottomRightY),
+        PdfUnits.PxToPt(px.BottomLeftX), PdfUnits.PxToPt(px.BottomLeftY));
 
     private static void PaintBorderEdge(
         PdfPage page, ComputedStyle style, double pageHeightPt, BorderEdge edge,

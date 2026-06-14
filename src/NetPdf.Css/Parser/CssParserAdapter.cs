@@ -1058,6 +1058,14 @@ internal static class CssParserAdapter
                 foreach (var (prop, val) in paddingLonghands)
                     output.Add(new CssDeclaration(prop, new CssValue(val), isImportant, parentLocation));
             }
+            else if (BorderRadiusShorthandExpander.IsBorderRadiusShorthand(propertyName)
+                && BorderRadiusShorthandExpander.TryExpand(propertyName, valueText, out var radiusLonghands))
+            {
+                // margin-box-border-radius cycle — `border-radius: <1-4 values>` → the four corner
+                // longhands (the elliptical slash form defers; the raw is then kept + simply unrounds).
+                foreach (var (prop, val) in radiusLonghands)
+                    output.Add(new CssDeclaration(prop, new CssValue(val), isImportant, parentLocation));
+            }
             else if (propertyName == "font"
                 && FontShorthandExpander.TryExpand(
                     valueText, out var fStyle, out var fWeight, out var fSize, out var fFamily))

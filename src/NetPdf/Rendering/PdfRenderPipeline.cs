@@ -274,7 +274,8 @@ internal static class PdfRenderPipeline
                         bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
                         diagnostics, ref marginVariantReported,
                         bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw,
-                        bi.ClipLeftPx, bi.ClipTopPx, bi.ClipWidthPx, bi.ClipHeightPx);
+                        bi.ClipLeftPx, bi.ClipTopPx, bi.ClipWidthPx, bi.ClipHeightPx,
+                        bi.ClipRadiiPx); // a margin-box border-radius rounds the image clip (Task 3)
                 }
             }
             // Margin-box borders (border cycle) paint over the bands, before the text — NOT gated by

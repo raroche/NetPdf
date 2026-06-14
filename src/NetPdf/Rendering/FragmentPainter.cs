@@ -992,7 +992,7 @@ internal static class FragmentPainter
     /// corner's horizontal radius reduces by the inset on its vertical edge, its vertical radius by the
     /// inset on its horizontal edge (clamped ≥ 0) — CSS B&amp;B 3 §4.1's inner-rounding rule. A zero
     /// inset (background-clip: border-box) leaves the radii unchanged.</summary>
-    private static CornerRadii InsetRadii(CornerRadii r, double top, double right, double bottom, double left) => new(
+    internal static CornerRadii InsetRadii(CornerRadii r, double top, double right, double bottom, double left) => new(
         Math.Max(0, r.TopLeftX - left), Math.Max(0, r.TopLeftY - top),
         Math.Max(0, r.TopRightX - right), Math.Max(0, r.TopRightY - top),
         Math.Max(0, r.BottomRightX - right), Math.Max(0, r.BottomRightY - bottom),
@@ -1040,7 +1040,7 @@ internal static class FragmentPainter
     /// (CSS B&amp;B 3 §4.1 — so a non-square box gets an ellipse). The explicit two-radii `Rx / Ry`
     /// spelling is dropped by AngleSharp upstream (all-zero → square, a documented deferral). §4.2
     /// overlap clamping happens later, in <see cref="CornerRadii.NormalizedFor"/>.</summary>
-    private static CornerRadii ReadCornerRadii(ComputedStyle style, double widthPx, double heightPx)
+    internal static CornerRadii ReadCornerRadii(ComputedStyle style, double widthPx, double heightPx)
     {
         (double Rx, double Ry) Corner(PropertyId id)
         {
@@ -1063,7 +1063,7 @@ internal static class FragmentPainter
 
     /// <summary>Convert a px <see cref="CornerRadii"/> to PDF points (the unit PdfPage's path builder
     /// works in); the §4.2 overlap scaling is unit-invariant so it still happens in PdfPage.</summary>
-    private static CornerRadii ToPt(CornerRadii px) => new(
+    internal static CornerRadii ToPt(CornerRadii px) => new(
         PdfUnits.PxToPt(px.TopLeftX), PdfUnits.PxToPt(px.TopLeftY),
         PdfUnits.PxToPt(px.TopRightX), PdfUnits.PxToPt(px.TopRightY),
         PdfUnits.PxToPt(px.BottomRightX), PdfUnits.PxToPt(px.BottomRightY),

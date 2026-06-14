@@ -2336,13 +2336,96 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_border_radius_em_trap_is_surfaced_not_misparsed()
+    public void Page_margin_box_border_radius_em_is_deferred_to_a_square()
     {
-        // The shared tokenizer's `2em` trap guard: the `e` is the unit's first letter, not an
-        // exponent — `em` is a (relative) unit the absolute fold rejects → surfaced + square.
+        // margin-box-border-radius cycle — the radius now cascades through the corner longhands. A
+        // font-relative `em` defers (no font context in the margin-box cascade) → the band reads it as
+        // 0 → SQUARE, SILENTLY (matching the body; relative margin-box radii are a documented deferral).
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
             "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        // `em` is a valid-but-DEFERRED length (the resolver returns Deferred, not Invalid), so it
+        // expands + silently squares — NO diagnostic (post-PR-#174 review P3 — pin the silent contract
+        // so a future resolver/diagnostic change can't regress it unnoticed; contrast the malformed +
+        // negative cases below, which ARE diagnosed).
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square band (em deferred)
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_percentage_rounds_the_band()
+    {
+        // margin-box-border-radius cycle — a `%` radius is now SUPPORTED (parity with the body): it
+        // resolves against the box width/height (an ellipse), rounding the band, with NO diagnostic
+        // (the first-cut "unsupported" surfacing is gone now per-corner/% cascade through).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: 50% } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // rounded (ellipse) band
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_per_corner_rounds_the_band()
+    {
+        // margin-box-border-radius cycle — a PER-CORNER shorthand (`8px 24px`) is now supported
+        // (parity with the body): the band rounds with distinct corners (Bézier path, no diagnostic).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: 8px 24px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_calc_with_division_rounds_the_band()
+    {
+        // post-PR-#174 review P3 — a `/` inside `calc()` is a DIVISION the resolver evaluates, not the
+        // elliptical separator: `calc(10px / 2)` = 5px rounds the band (parity with the body), with NO
+        // diagnostic. Pre-fix the naive `Contains('/')` deferred it to square.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: calc(10px / 2) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // rounded (calc evaluated to 5px)
+    }
+
+    [Theory]
+    [InlineData("8px bogus")]   // a malformed token
+    [InlineData("-5px")]        // negative (invalid per CSS B&B §6.1)
+    [InlineData("calc(10px")]   // an unbalanced function
+    public void Page_margin_box_border_radius_invalid_form_is_diagnosed(string value)
+    {
+        // post-PR-#174 review P2 — a MALFORMED / invalid margin-box border-radius is now SURFACED
+        // (CSS-PROPERTY-VALUE-INVALID-001) instead of being silently dropped as an unknown raw
+        // declaration; it still renders square (CLAUDE.md #7 — diagnostics, not silent corruption).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: " + value + " } }</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
@@ -2350,20 +2433,52 @@ public sealed class HtmlPdfConvertTests
         var pdf = Latin1(result.Pdf);
         var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
         Assert.True(i >= 0);
-        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square band
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square
     }
 
     [Fact]
-    public void Page_margin_box_border_radius_unsupported_form_is_surfaced()
+    public void Page_margin_box_border_radius_elliptical_slash_defers_without_a_diagnostic()
     {
-        // %, per-corner, elliptical, relative forms are diagnosed + ignored (first cut).
+        // post-PR-#174 review P2 — the elliptical `Rx / Ry` form stays the DOCUMENTED silent deferral
+        // (square, NO diagnostic), distinct from the malformed cases above.
         var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
-            "background-color: #3366cc; border-radius: 50% } }</style></head><body></body></html>",
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: 8px / 4px } }</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
             && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square (deferred)
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_with_uniform_border_paints_a_ring()
+    {
+        // margin-box-border-radius cycle, Task 2 — a margin box with a border-radius AND a uniform
+        // border paints a rounded RING (even-odd `f*`) for the border (free via FragmentPainter.
+        // PaintBorders reading the now-cascaded corner longhands), instead of square edge rects.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "border: 4px solid #000; border-radius: 8px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains(" f* Q", pdf);               // the rounded border ring
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_rounds_the_image_clip()
+    {
+        // margin-box-border-radius cycle, Task 3 — a border-radius rounds the margin box's
+        // background-image clip (a rounded clip path, not the rectangular `re W n`).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            $"background-image: url({PngDataUri(16, 16)}); background-repeat: no-repeat; border-radius: 8px }} }}" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains(" W n", pdf);                // a clip is established
+        Assert.DoesNotContain(" re W n", pdf);       // ... and it's the ROUNDED clip, not rectangular
     }
 
     [Fact]

@@ -101,7 +101,7 @@ internal static class PageMarginBoxPainter
     /// <see cref="PaintBackgrounds"/> before the shared text pass, so the text paints over it.</summary>
     internal readonly record struct MarginBoxBackgroundFill(
         double LeftPx, double TopPx, double WidthPx, double HeightPx, uint Argb,
-        double RadiusPx = 0); // > 0 → rounded corners (border-radius cycle).
+        CornerRadii Radii = default); // per-corner border-radius (margin-box-border-radius cycle); default = square.
 
     /// <summary>A margin box's declared borders to stroke around its region rect (border cycle):
     /// the page-px rect + the box's <see cref="ComputedStyle"/> (carrying the <c>border-*</c>
@@ -119,15 +119,16 @@ internal static class PageMarginBoxPainter
     /// P1 — margin-box declarations are raw CSS, so the authored values arrive intact; null =
     /// unset → the initial). The pipeline resolves the url against the per-render image cache
     /// and tiles it over the rect via the SHARED body tiler
-    /// (<c>PrintBackgrounds</c>-gated like the fill). A declared border-radius keeps the tiles
-    /// RECTANGULAR (the rounded-band corners may show square tiles — a documented
-    /// approximation, like the square border strokes). <c>LeftPx..HeightPx</c> is the
-    /// background-origin (positioning) area; <c>ClipLeftPx..ClipHeightPx</c> the background-clip
-    /// (paint) rect (bg-origin / bg-clip cycles).</summary>
+    /// (<c>PrintBackgrounds</c>-gated like the fill). A declared border-radius now ROUNDS the tile clip
+    /// (margin-box-border-radius cycle): <see cref="ClipRadiiPx"/> carries the per-corner radii of the
+    /// background-clip box (the box radii inset to it), and the shared tiler clips to a rounded path.
+    /// <c>LeftPx..HeightPx</c> is the background-origin (positioning) area;
+    /// <c>ClipLeftPx..ClipHeightPx</c> the background-clip (paint) rect (bg-origin / bg-clip cycles).</summary>
     internal readonly record struct MarginBoxBackgroundImage(
         double LeftPx, double TopPx, double WidthPx, double HeightPx, string RawUrl,
         string? RepeatRaw, string? SizeRaw, string? PositionRaw,
-        double ClipLeftPx, double ClipTopPx, double ClipWidthPx, double ClipHeightPx);
+        double ClipLeftPx, double ClipTopPx, double ClipWidthPx, double ClipHeightPx,
+        CornerRadii ClipRadiiPx = default); // per-corner border-radius of the clip box (margin-box-border-radius cycle).
 
     /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
     /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle)
@@ -472,13 +473,11 @@ internal static class PageMarginBoxPainter
                     ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics);
             }
 
-            // Margin-box BORDER-RADIUS (border-radius cycle, first cut): a single uniform
-            // non-negative absolute <length> rounds the BACKGROUND band's corners
-            // (PdfPage.FillRoundedRectangle). Border strokes stay rectangular (per-edge strokes
-            // with arc joins are the follow-up); %, per-corner, elliptical, relative/calc()
-            // values, and the BODY path are deferred (border-radius isn't a cascaded PropertyId
-            // yet — read from the box's RAW declaration; unsupported forms are surfaced + ignored).
-            var borderRadiusPx = ReadBorderRadiusPx(mb.Declarations, mb.Name, diagnostics);
+            // Margin-box BORDER-RADIUS (margin-box-border-radius cycle): the four corner-radius longhands
+            // are now cascaded onto the box's ComputedStyle (the `border-radius` shorthand expands to
+            // them via BorderRadiusShorthandExpander), so the band fill, the rounded border, and the
+            // image clip read PER-CORNER radii (absolute or `%`) from the style at PASS 2 — against the
+            // FINAL box dimensions. The elliptical `Rx / Ry` slash form stays deferred (square fallback).
             // Margin-box background-image (margin-box-bg-image cycle) — the raw declared winner
             // (the established non-slot read); a single url(...) is carried to PASS 2 (the band
             // rect is final there); any other non-none form surfaces once per Layout. The three
@@ -681,7 +680,6 @@ internal static class PageMarginBoxPainter
                 SegmentColorArgbs = contentRuns is null ? null : segmentColorArgbs,
                 BoxAlignDeclared = MarginBoxDeclares(mb.Declarations, "text-align"),
                 ElementDecorStyle = elementDecorStyle, ElementColorArgb = elementColor,
-                RadiusPx = borderRadiusPx,
                 BackgroundImageUrl = backgroundImageUrl,
                 BackgroundRepeatRaw = backgroundRepeatRaw,
                 BackgroundSizeRaw = backgroundSizeRaw,
@@ -756,11 +754,17 @@ internal static class PageMarginBoxPainter
             // Background-color (cycle 8): fills the BOX behind the content. `currentcolor` resolves
             // against the OWNER's color (the box's if the box declares the background, else the running
             // element's — review P1); transparent (initial) / unset paints nothing.
+            // Per-corner border-radius (margin-box-border-radius cycle) — read from the box's cascaded
+            // style (the corner longhands joined MarginBoxStyle's CascadedStyleIds) against the FINAL box
+            // dimensions, so a `%` radius resolves correctly; absolute or `%` (→ ellipse on a non-square
+            // box). Reuses the body's reader. Shared by the band fill, the rounded border (free, via
+            // FragmentPainter.PaintBorders reading the same longhands), and the image clip below.
+            var radii = FragmentPainter.ReadCornerRadii(style, boxWidthPx, boxHeightPx);
             if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), bgCurrentColor, out var bgArgb)
                 && FragmentPainter.Alpha(bgArgb) != 0)
             {
                 backgrounds.Add(new MarginBoxBackgroundFill(
-                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb, item.RadiusPx));
+                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb, radii));
             }
 
             // background-image (margin-box-bg-image cycle): the SAME band rect as the fill —
@@ -778,10 +782,15 @@ internal static class PageMarginBoxPainter
                 // sum past the box dimension, so clamp the positioning-area + clip width/height to ≥ 0 —
                 // a negative dimension must never reach the tiler (post-PR-#171 review P1; the body call
                 // site + PaintBackgroundImageTiles' empty-clip skip mirror this).
+                // A border-radius rounds the image clip too (margin-box-border-radius cycle, Task 3): the
+                // box's corner radii inset per side to the background-clip box (border-box clip → no
+                // reduction). Reuses the body inset helper.
+                var clipRadii = FragmentPainter.InsetRadii(radii, cT, cR, cB, cL);
                 backgroundImages.Add(new MarginBoxBackgroundImage(
                     boxXPx + oL, boxYPx + oT, Math.Max(0, boxWidthPx - oL - oR), Math.Max(0, boxHeightPx - oT - oB), bgImageUrl,
                     item.BackgroundRepeatRaw, item.BackgroundSizeRaw, item.BackgroundPositionRaw,
-                    boxXPx + cL, boxYPx + cT, Math.Max(0, boxWidthPx - cL - cR), Math.Max(0, boxHeightPx - cT - cB)));
+                    boxXPx + cL, boxYPx + cT, Math.Max(0, boxWidthPx - cL - cR), Math.Max(0, boxHeightPx - cT - cB),
+                    clipRadii));
             }
 
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
@@ -1109,10 +1118,18 @@ internal static class PageMarginBoxPainter
             FragmentPainter.ColorChannels(bg.Argb, out var r, out var g, out var b);
             FragmentPainter.ToPdfRect(
                 bg.LeftPx, bg.TopPx, bg.WidthPx, bg.HeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-            if (bg.RadiusPx > 0)
+            // Per-corner border-radius (margin-box-border-radius cycle): the UNIFORM-circular case keeps
+            // the byte-stable single-radius path (px→pt ×0.75; FillRoundedRectangle clamps to half the
+            // shorter side); the general per-corner / `%`-ellipse case uses the per-corner fill. Square
+            // (no radius) stays a plain rectangle.
+            if (bg.Radii.IsUniformCircular(out var rPx) && rPx > 0)
             {
-                // border-radius cycle — the radius converts px→pt like the rect (PdfUnits ×0.75).
-                page.FillRoundedRectangle(x, y, w, h, PdfUnits.PxToPt(bg.RadiusPx),
+                page.FillRoundedRectangle(x, y, w, h, PdfUnits.PxToPt(rPx),
+                    r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
+            }
+            else if (bg.Radii.AnyPositive)
+            {
+                page.FillRoundedRectangle(x, y, w, h, FragmentPainter.ToPt(bg.Radii),
                     r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
             }
             else
@@ -1701,7 +1718,7 @@ internal static class PageMarginBoxPainter
     /// (margin-box-bg-image cycle), or <see langword="null"/> for unset / <c>none</c> / an
     /// unsupported form (gradient / multi-layer / unrecognized — surfaced once per Layout via
     /// the shared body code; callers that only PROBE pass a pre-set flag to suppress it). The
-    /// RAW declaration winner is read like <see cref="ReadBorderRadiusPx"/> (last declaration
+    /// RAW declaration winner is read via <see cref="RawDeclarationWinner"/> (last declaration
     /// wins — cascade order). INTERNAL so the pipeline's prefetch can collect the urls.</summary>
     internal static string? TryReadBackgroundImageUrl(
         ImmutableArray<CssDeclaration> declarations, IDiagnosticsSink diagnostics,
@@ -1727,8 +1744,7 @@ internal static class PageMarginBoxPainter
 
     /// <summary>The LAST declaration of <paramref name="property"/> in the margin box's body
     /// (cascade order — last wins), or <see langword="null"/> when unset/blank. The raw-read
-    /// fold shared by the background-image url + variant reads (the same loop shape as
-    /// <see cref="ReadBorderRadiusPx"/>).</summary>
+    /// fold shared by the background-image url + variant reads.</summary>
     private static string? RawDeclarationWinner(
         ImmutableArray<CssDeclaration> declarations, string property)
     {
@@ -1759,61 +1775,6 @@ internal static class PageMarginBoxPainter
             _ => null,
         };
     }
-
-    /// <summary>The box's declared uniform <c>border-radius</c> in used px (border-radius cycle,
-    /// first cut) — a single non-negative absolute <c>&lt;length&gt;</c> (or the 0 literal); the
-    /// LAST declaration wins (cascade order). Percentages, multi-value/per-corner forms, elliptical
-    /// <c>/</c> radii, and relative/calc() values are SURFACED + ignored (deferrals.md). 0 = square
-    /// (no radius declared, or an unsupported form).</summary>
-    private static double ReadBorderRadiusPx(
-        ImmutableArray<CssDeclaration> declarations, string boxName, IDiagnosticsSink diagnostics)
-    {
-        if (declarations.IsDefaultOrEmpty) return 0;
-        string? raw = null;
-        foreach (var d in declarations)
-            if (d.Property.Equals("border-radius", StringComparison.OrdinalIgnoreCase))
-                raw = d.Value.RawText;
-        if (string.IsNullOrWhiteSpace(raw)) return 0;
-
-        var v = raw.Trim();
-        // Multi-token (per-corner) / elliptical forms — unsupported in the first cut.
-        if (v.Contains('/') || v.Contains(' ') || v.Contains('\t'))
-        {
-            EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
-            return 0;
-        }
-        // Post-PR-#161 review P2 — parse through the PRODUCTION tokenizer
-        // (LengthResolver.TrySplitNumberAndUnit), not a bespoke scan, so border-radius accepts
-        // exactly the grammar every other raw length does: sign + decimal + e-notation per CSS
-        // Syntax §4.3.12 (`1e2px` = 100px, matching the body path and the calc evaluator's pinned
-        // row) with the `2em` trap guard (the `e` only reads as an exponent before a digit).
-        // Relative/percent/unknown units then fail the ABSOLUTE-unit fold below → surfaced.
-        if (LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit))
-        {
-            // The unitless ZERO (CSS Values §6.2) — valid in ANY zero spelling the number token
-            // admits ("0" / "0.0" / "-0" / "0e0"), not just the literal "0" (PR #161 Copilot).
-            if (unit.Length == 0 && n == 0.0) return 0;
-            if (unit.Length > 0 && n >= 0
-                && LengthResolver.TryAbsoluteUnitToPx(unit, n, out var px)
-                && double.IsFinite(px) && px >= 0)
-            {
-                return px;
-            }
-        }
-        EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
-        return 0;
-    }
-
-    private static void EmitBorderRadiusUnsupported(
-        IDiagnosticsSink diagnostics, string boxName, string raw) =>
-        diagnostics.Emit(new Diagnostic(
-            DiagnosticCodes.CssPropertyValueInvalid001,
-            $"The page margin box @{boxName} declares 'border-radius: " +
-            DiagnosticTextSanitizer.Sanitize(raw) + "', but only a single non-negative absolute " +
-            "<length> is supported (border-radius cycle first cut) — percentages, per-corner " +
-            "values, elliptical radii, and relative/calc() values are deferred " +
-            "(deferrals.md#layout-to-pdf-pipeline). The radius was ignored.",
-            DiagnosticSeverity.Warning));
 
     /// <summary>The <c>currentcolor</c> OWNER colour for ONE border edge (per-edge currentcolor
     /// cycle — replaces the whole-border ownership rule, whose mixed-origin case used the box colour
@@ -1874,7 +1835,6 @@ internal static class PageMarginBoxPainter
         public ComputedStyle? ElementDecorStyle; // the running element's OWN decoration for the NESTED band
                                                  // (separately-decorated cycle) — null = coinciding single band.
         public uint ElementColorArgb;            // the element's own colour — the nested band's currentcolor.
-        public double RadiusPx;                  // uniform border-radius for the box's background band (0 = square).
         public string? BackgroundImageUrl;       // raw url from background-image (margin-box-bg-image cycle).
         public string? BackgroundRepeatRaw;      // raw background-repeat/-size/-position winners
         public string? BackgroundSizeRaw;        //   (PR #167 review P1 — margin-box variants

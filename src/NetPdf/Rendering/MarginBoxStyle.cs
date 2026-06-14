@@ -120,7 +120,14 @@ internal static class MarginBoxStyle
             PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,
             PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor,
             PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft,
-            PropertyId.Width, PropertyId.Height, PropertyId.BoxSizing);
+            PropertyId.Width, PropertyId.Height, PropertyId.BoxSizing,
+            // border-radius corner longhands (margin-box-border-radius cycle): cascading them onto the
+            // box's ComputedStyle brings margin boxes to PARITY with the body — the band fill reads
+            // per-corner radii (FragmentPainter.ReadCornerRadii), the rounded uniform-border ring comes
+            // free (FragmentPainter.PaintBorders already reads them), and the bg-image clip rounds. The
+            // `border-radius` shorthand expands to these four (AngleSharp), each absolute or `%`.
+            PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
+            PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 

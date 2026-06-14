@@ -3281,6 +3281,24 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
+         image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
+         brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
+         shorthand is expanded by the NEW `BorderRadiusShorthandExpander` (1–4 values → the four corner
+         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; the `Rx / Ry` slash form defers) inside
+         `CssParserAdapter.ParseRawDeclarations`, and the four corner longhands JOINED
+         `MarginBoxStyle.CascadedStyleIds` so they cascade onto the box's `ComputedStyle` (importance +
+         CSS-wide + validation for free). **(Task 1)** the band fill reads PER-CORNER radii
+         (`FragmentPainter.ReadCornerRadii`, now internal) against the FINAL box dims at PASS 2 — absolute
+         or `%`-ellipse — via the per-corner `PdfPage.FillRoundedRectangle(CornerRadii)` (the uniform-circular
+         case keeps the byte-stable single-radius path); the old raw `ReadBorderRadiusPx` first cut is
+         removed. **(Task 2)** the rounded uniform border comes FREE — `MarginBoxBorder` carries the box's
+         style through `FragmentPainter.PaintBorders`, which already reads the corner longhands + paints the
+         filled ring. **(Task 3)** the background-image clip rounds (`MarginBoxBackgroundImage.ClipRadiiPx`
+         = the box radii inset to the clip box via `FragmentPainter.InsetRadii`, threaded to the shared
+         tiler). DEFERRED: the elliptical `Rx / Ry` slash form (square fallback); font-/viewport-relative
+         margin-box radii (`em`/`vw` defer in the margin-box cascade → square, like the body); rounded
+         NON-uniform borders.
        - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
@@ -3328,8 +3346,8 @@ flags the categories):
          per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
          rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
          spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
-         segments transitioning between edge widths/colours); the MARGIN-box border-radius staying its own
-         uniform-circular fill-only first cut (its corner longhands aren't cascaded).
+         segments transitioning between edge widths/colours). (The MARGIN-box border-radius reached parity
+         in the margin-box-border-radius cycle — see the entry above.)
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
@@ -3350,8 +3368,9 @@ flags the categories):
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
          negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
          border-radius-completion cycle — see the entry above): the explicit `Rx / Ry` elliptical slash
-         spelling + rounded NON-uniform border strokes + the MARGIN-box per-corner radius;
-         `background-attachment: fixed` PAGE-relative positioning; `outline`; gradients (Phase 4).
+         spelling + rounded NON-uniform border strokes (the margin-box per-corner radius + rounded border +
+         image clip reached parity in the margin-box-border-radius cycle);
+         `background-attachment: fixed` PAGE-relative positioning; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared
          `FragmentPainter.TryParseBackgroundPosition` (used by `object-position` +

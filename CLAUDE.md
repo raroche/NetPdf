@@ -495,10 +495,19 @@ outline-style has its OWN keyword indices); **(P2)** `outline-color: auto` → c
 **(P3)** `GrowRadii` clamps ≥ 0; **(Copilot)** `outline-width` is non-negative (→ `medium`); **(Copilot)** borders +
 outline share ONE style-approximation flag (once per conversion). DEFERRED: non-solid `outline-style` (painted SOLID +
 diagnosed), `outline-color: auto`'s true UA colour (→ currentcolor).
+**margin-box `border-radius` PARITY cycle (3 tasks, one PR — branch `phase-3-margin-box-border-radius`):** brings the
+margin box to parity with the body, reusing the border-radius primitives. Margin-box bodies BYPASS AngleSharp, so the
+`border-radius` shorthand is expanded by the NEW `BorderRadiusShorthandExpander` (1–4 values → the four corner longhands;
+the `Rx / Ry` slash defers) in `CssParserAdapter.ParseRawDeclarations`, and the corner longhands JOINED
+`MarginBoxStyle.CascadedStyleIds`. **(Task 1)** the band reads PER-CORNER/`%` radii (`FragmentPainter.ReadCornerRadii`,
+internal) at PASS 2; the old raw `ReadBorderRadiusPx` first cut is removed. **(Task 2)** the rounded uniform border is
+FREE (`MarginBoxBorder` → `FragmentPainter.PaintBorders` reads the cascaded longhands). **(Task 3)** the image clip rounds
+(`MarginBoxBackgroundImage.ClipRadiiPx`). DEFERRED: the `Rx / Ry` slash + relative margin-box radii (→ square), rounded
+NON-uniform borders.
 Next (in order): the MULTI-PAGE DRIVER
 (cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation first);
 the remaining riders are mostly LARGER features now (container width sub-box wrap, inline `<img>` atomics,
-`object-position` registration, the margin-box per-corner border-radius). Blocked (see
+`object-position` registration, the `Rx / Ry` elliptical slash form). Blocked (see
 `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

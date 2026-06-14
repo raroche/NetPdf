@@ -3285,7 +3285,8 @@ flags the categories):
          image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
          shorthand is expanded by the NEW `BorderRadiusShorthandExpander` (1–4 values → the four corner
-         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; the `Rx / Ry` slash form defers) inside
+         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; a TOP-LEVEL `Rx / Ry` slash defers, but a
+         `/` inside `calc()` is a division that evaluates — post-PR-#174 self-review) inside
          `CssParserAdapter.ParseRawDeclarations`, and the four corner longhands JOINED
          `MarginBoxStyle.CascadedStyleIds` so they cascade onto the box's `ComputedStyle` (importance +
          CSS-wide + validation for free). **(Task 1)** the band fill reads PER-CORNER radii

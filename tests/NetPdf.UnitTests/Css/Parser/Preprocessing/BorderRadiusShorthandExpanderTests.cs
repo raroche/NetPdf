@@ -75,6 +75,20 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
+    public void Slash_inside_calc_is_a_division_not_the_elliptical_separator()
+    {
+        // A `/` INSIDE a function is a division the corner-longhand resolver evaluates — only a
+        // TOP-LEVEL `/` is the elliptical separator (post-PR-#174 review P3). `calc(10px / 2)` must
+        // EXPAND (to the calc value on all four corners), not defer to square.
+        Assert.True(BorderRadiusShorthandExpander.TryExpand("border-radius", "calc(10px / 2)", out var longhands));
+        var map = new Dictionary<string, string>();
+        foreach (var (prop, val) in longhands) map[prop] = val;
+        Assert.Equal("calc(10px / 2)", map["border-top-left-radius"]);
+        // ... but a real top-level slash inside an otherwise calc-bearing value still defers.
+        Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "calc(10px) / 4px", out _));
+    }
+
+    [Fact]
     public void Invalid_value_rejects_the_whole_shorthand()
     {
         Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "8px bogus", out _));

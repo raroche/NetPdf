@@ -2390,6 +2390,25 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_border_radius_calc_with_division_rounds_the_band()
+    {
+        // post-PR-#174 review P3 — a `/` inside `calc()` is a DIVISION the resolver evaluates, not the
+        // elliptical separator: `calc(10px / 2)` = 5px rounds the band (parity with the body), with NO
+        // diagnostic. Pre-fix the naive `Contains('/')` deferred it to square.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
+            "background-color: #3366cc; border-radius: calc(10px / 2) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // rounded (calc evaluated to 5px)
+    }
+
+    [Fact]
     public void Page_margin_box_border_radius_with_uniform_border_paints_a_ring()
     {
         // margin-box-border-radius cycle, Task 2 — a margin box with a border-radius AND a uniform

@@ -53,7 +53,10 @@ internal static class BorderRadiusShorthandExpander
 
         // The elliptical `<horizontal> / <vertical>` form needs per-corner (rx, ry) pairs the single-value
         // corner longhands can't store — defer it (square fallback, matching the body's AngleSharp drop).
-        if (trimmed.Contains('/')) return false;
+        // Detect a TOP-LEVEL `/` only (paren-aware): a `/` INSIDE a function — e.g. `calc(10px / 2)` — is a
+        // division the corner-longhand resolver evaluates (→ 5px), NOT the elliptical separator, so it must
+        // pass through (parity with the body, which resolves such a calc).
+        if (HasTopLevelSlash(trimmed)) return false;
 
         // A whole-value CSS-wide keyword applies to every corner (resolved at the cascade by MarginBoxStyle).
         if (CssWideKeyword.Is(trimmed))
@@ -85,4 +88,20 @@ internal static class BorderRadiusShorthandExpander
     private static bool IsValidLonghand(string property, string value) =>
         PropertyMetadata.NameToId.TryGetValue(property, out var id)
         && !PropertyResolverDispatch.Resolve(id, value).IsInvalid;
+
+    /// <summary>Whether <paramref name="value"/> contains a <c>/</c> at paren depth 0 (the elliptical
+    /// <c>Rx / Ry</c> separator), ignoring any <c>/</c> nested inside a function such as
+    /// <c>calc(10px / 2)</c> (a division). Brackets aren't part of the border-radius grammar, so only
+    /// parentheses are tracked.</summary>
+    private static bool HasTopLevelSlash(string value)
+    {
+        var depth = 0;
+        foreach (var c in value)
+        {
+            if (c == '(') depth++;
+            else if (c == ')') { if (depth > 0) depth--; }
+            else if (c == '/' && depth == 0) return true;
+        }
+        return false;
+    }
 }

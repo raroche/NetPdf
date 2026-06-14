@@ -466,6 +466,17 @@ tiler); **(P2)** margin-box origin/clip flow through `MarginBoxStyle`'s cascade 
 read via `ReadBackgroundAreaKeyword`) — `!important` + CSS-wide + invalid-value diagnostics, not
 `RawDeclarationWinner`; **(P2)** the misleading `KeywordResolver` `background-attachment` comment + matrix +
 `deferrals.md` were corrected to "parse-only"; **(P3)** the rounded-band test targets the exact 75×45pt band.
+**body `border-radius` COMPLETION cycle (3 tasks, one PR — branch `phase-3-body-border-radius-completion`):** finishes
+the PR #171 first cut (which rounded only a uniform-circular fill band). **(Task 1)** a BODY block's background band
+rounds with PER-CORNER radii — the `border-radius` shorthand + the four corner longhands, each absolute (circular) or a
+`%` resolving against the box width (horizontal) / height (vertical), so a non-square `50%` box is an ELLIPSE (CSS B&B
+§4.1) — via the new per-corner elliptical `PdfPage.FillRoundedRectangle(CornerRadii)` (§4.2 overlap clamp in
+`CornerRadii.NormalizedFor`); the uniform-circular case keeps the byte-stable single-radius path. **(Task 2)** a uniform
+border (same style/width/colour on all edges, `FragmentPainter.TryUniformBorder`) + a radius strokes ONE rounded path
+(`PdfPage.StrokeRoundedRectangle`, the border-box centerline) instead of the square edge rects (non-uniform → square
+fallback). **(Task 3)** a radius rounds the background-image clip (`PdfPage.BeginRoundedRectangleClip`, both the per-tile
+loop and tiling-pattern paths). The margin-box radius stays its own uniform-circular first cut. DEFERRED: the `Rx / Ry`
+elliptical slash spelling (AngleSharp drop), rounded NON-uniform border strokes, the margin-box per-corner radius.
 Next (in order): the MULTI-PAGE DRIVER
 (cross-page running + `@page :left`/`:right`/`:blank` + named pages — design/plan + scope confirmation first);
 the remaining riders are mostly LARGER features now (container width sub-box wrap, inline `<img>` atomics,

@@ -339,6 +339,127 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Fill a rectangle with PER-CORNER elliptical <c>border-radius</c> (CSS Backgrounds &amp;
+    /// Borders 3 §4.1) — the general form of the uniform single-radius
+    /// <see cref="FillRoundedRectangle(double,double,double,double,double,double,double,double,double)"/>.
+    /// Radii are normalized (clamped ≥ 0, §4.2 overlap-scaled to half-extents) before the path is built;
+    /// a set with NO positive radius delegates to the plain rectangle. Same colour/alpha/finite-validation
+    /// contract as the other fills.</summary>
+    public void FillRoundedRectangle(
+        double x, double y, double width, double height, CornerRadii radii,
+        double r, double g, double b, double alpha = 1.0)
+    {
+        ThrowIfFinalized();
+        ValidateRoundedArgs(x, y, width, height, alpha);
+        if (width <= 0 || height <= 0) return;
+        var nr = radii.NormalizedFor(width, height);
+        if (!nr.AnyPositive) { FillRectangle(x, y, width, height, r, g, b, alpha); return; }
+
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var sb = new StringBuilder(320);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" rg ");
+        AppendRoundedRectPath(sb, x, y, width, height, nr);
+        sb.Append("f Q\n");
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Stroke a per-corner rounded rectangle (a rounded BORDER edge) — <c>q [gs] r g b RG
+    /// lw w &lt;path&gt; S Q</c>. <paramref name="lineWidth"/> is the stroke width in points; the path is
+    /// the stroke CENTERLINE, so callers inset the box by half the border width and reduce the radii
+    /// likewise. A non-positive width/height/line-width no-ops.</summary>
+    public void StrokeRoundedRectangle(
+        double x, double y, double width, double height, CornerRadii radii, double lineWidth,
+        double r, double g, double b, double alpha = 1.0)
+    {
+        ThrowIfFinalized();
+        ValidateRoundedArgs(x, y, width, height, alpha);
+        if (!double.IsFinite(lineWidth))
+            throw new ArgumentException($"StrokeRoundedRectangle lineWidth must be finite; got {lineWidth}.", nameof(lineWidth));
+        if (width <= 0 || height <= 0 || lineWidth <= 0) return;
+        var nr = radii.NormalizedFor(width, height);
+
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var sb = new StringBuilder(320);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" RG ");
+        AppendNumber(sb, lineWidth); sb.Append(" w ");
+        AppendRoundedRectPath(sb, x, y, width, height, nr);
+        sb.Append("S Q\n");
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Push the graphics state and intersect the clip with a PER-CORNER rounded rectangle —
+    /// <c>q &lt;path&gt; W n</c> (the rounded analogue of <see cref="BeginRectangleClip"/>). Everything
+    /// painted until the balancing <see cref="RestoreGraphicsState"/> is clipped to the rounded box. An
+    /// all-zero radius set (or a degenerate size) falls back to the rectangular clip (identical result,
+    /// fewer operators). Callers MUST balance with <see cref="RestoreGraphicsState"/>.</summary>
+    public void BeginRoundedRectangleClip(double x, double y, double width, double height, CornerRadii radii)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+            throw new ArgumentException(
+                $"BeginRoundedRectangleClip coordinates must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        var nr = (width > 0 && height > 0) ? radii.NormalizedFor(width, height) : default;
+        if (!nr.AnyPositive) { BeginRectangleClip(x, y, width, height); return; }
+        var sb = new StringBuilder(300);
+        sb.Append("q ");
+        AppendRoundedRectPath(sb, x, y, width, height, nr);
+        sb.Append("W n\n");
+        AppendContent(sb.ToString());
+    }
+
+    private static void ValidateRoundedArgs(double x, double y, double width, double height, double alpha)
+    {
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+            throw new ArgumentException(
+                $"Rounded-rectangle arguments must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        if (!double.IsFinite(alpha))
+            throw new ArgumentException($"Rounded-rectangle alpha must be finite; got {alpha}.", nameof(alpha));
+    }
+
+    /// <summary>Append a per-corner rounded-rectangle PATH (no paint operator) to <paramref name="sb"/>:
+    /// <c>m</c> then four edge <c>l</c> + corner <c>c</c> pairs + <c>h</c>, counter-clockwise from the
+    /// bottom edge (matching the uniform overload's vertex order). Each corner is one cubic-Bézier
+    /// quadrant (k ≈ 0.5523, ISO 32000-2 §8.5.2.2) using its own horizontal/vertical radius — a circle
+    /// for X == Y, an ellipse otherwise. CSS corner names map to this bottom-left-origin space: top-left
+    /// → (x, y+h), bottom-left → (x, y). Radii MUST already be normalized
+    /// (<see cref="CornerRadii.NormalizedFor"/>).</summary>
+    private static void AppendRoundedRectPath(
+        StringBuilder sb, double x, double y, double width, double height, CornerRadii radii)
+    {
+        const double kappa = 0.55228474983079; // 4/3 × (√2 − 1) — the cubic circle-quadrant constant.
+        double tlx = radii.TopLeftX, tly = radii.TopLeftY;
+        double trx = radii.TopRightX, tryy = radii.TopRightY;
+        double brx = radii.BottomRightX, bry = radii.BottomRightY;
+        double blx = radii.BottomLeftX, bly = radii.BottomLeftY;
+        static double K(double radius) => radius * (1.0 - kappa);
+
+        void P(double vx, double vy) { AppendNumber(sb, vx); sb.Append(' '); AppendNumber(sb, vy); sb.Append(' '); }
+        // Bottom edge → bottom-right corner.
+        P(x + blx, y); sb.Append("m ");
+        P(x + width - brx, y); sb.Append("l ");
+        P(x + width - K(brx), y); P(x + width, y + K(bry)); P(x + width, y + bry); sb.Append("c ");
+        // Right edge → top-right corner.
+        P(x + width, y + height - tryy); sb.Append("l ");
+        P(x + width, y + height - K(tryy)); P(x + width - K(trx), y + height); P(x + width - trx, y + height); sb.Append("c ");
+        // Top edge → top-left corner.
+        P(x + tlx, y + height); sb.Append("l ");
+        P(x + K(tlx), y + height); P(x, y + height - K(tly)); P(x, y + height - tly); sb.Append("c ");
+        // Left edge → bottom-left corner (closes to the start).
+        P(x, y + bly); sb.Append("l ");
+        P(x, y + K(bly)); P(x + K(blx), y); P(x + blx, y); sb.Append("c ");
+        sb.Append("h ");
+    }
+
     /// <summary>
     /// Push the graphics state and intersect the clip path with an axis-aligned rectangle —
     /// <c>q &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re W n</c> (ISO 32000-2 §8.5.4: <c>W</c> sets the

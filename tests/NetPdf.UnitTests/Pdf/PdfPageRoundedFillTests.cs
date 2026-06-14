@@ -8,8 +8,9 @@ using Xunit;
 namespace NetPdf.UnitTests.Pdf;
 
 /// <summary>
-/// Unit tests for <see cref="PdfPage.FillRoundedRectangle"/> (border-radius cycle) — the rounded
-/// background-band fill. Inspects the raw (uncompressed) content-stream operators.
+/// Unit tests for <see cref="PdfPage"/>'s rounded-rectangle operators (border-radius cycles) — the
+/// uniform + per-corner fill, the rounded border stroke, and the rounded clip. Inspects the raw
+/// (uncompressed) content-stream operators.
 /// </summary>
 public sealed class PdfPageRoundedFillTests
 {
@@ -72,6 +73,132 @@ public sealed class PdfPageRoundedFillTests
         page.FillRoundedRectangle(10, 20, 0, 50, 8, 0, 0, 0);
 
         Assert.DoesNotContain(" f", ContentOf(page));
+    }
+
+    // ============================================================
+    // Per-corner elliptical radii (border-radius-completion cycle)
+    // ============================================================
+
+    [Fact]
+    public void FillRoundedRectangle_per_corner_emits_distinct_corner_arcs()
+    {
+        // Distinct circular radii per corner (TL=4, TR=8, BR=12, BL=16): four Bézier arcs, the path
+        // starting at the bottom edge right of the BL corner (x + BL = 10 + 16 = 26).
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.FillRoundedRectangle(10, 20, 100, 50,
+            new CornerRadii(4, 4, 8, 8, 12, 12, 16, 16), 0.2, 0.4, 0.8);
+
+        var content = ContentOf(page);
+        Assert.Contains("0.2 0.4 0.8 rg", content);
+        Assert.Contains("26 20 m", content);                   // start = x + BL radius
+        Assert.Contains("98 20 l", content);                   // bottom edge → left of BR (x+w-BR = 98)
+        Assert.Equal(4, CountOccurrences(content, " c "));      // one Bézier per corner
+        Assert.Contains(" f Q", content);
+        Assert.DoesNotContain(" re ", content);                // not the square fast path
+    }
+
+    [Fact]
+    public void FillRoundedRectangle_per_corner_all_zero_delegates_to_the_square_fill()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.FillRoundedRectangle(10, 20, 100, 50, default(CornerRadii), 0.2, 0.4, 0.8);
+
+        var content = ContentOf(page);
+        Assert.Contains("10 20 100 50 re f Q", content);
+        Assert.DoesNotContain(" c ", content);
+    }
+
+    [Fact]
+    public void FillRoundedRectangle_percentage_ellipse_uses_distinct_horizontal_and_vertical_radii()
+    {
+        // `border-radius: 50%` on a 100×60 box → rx = 50, ry = 30 (an ellipse): the path starts at
+        // x + rx = 50 and the bottom-right corner ends at y + ry = 30 (different from a circle).
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.FillRoundedRectangle(0, 0, 100, 60,
+            new CornerRadii(50, 30, 50, 30, 50, 30, 50, 30), 0, 0, 0);
+
+        var content = ContentOf(page);
+        Assert.Contains("50 0 m", content);     // start = x + rx
+        Assert.Contains("100 30 c", content);   // BR corner ends at (x+w, y+ry)
+        Assert.Equal(4, CountOccurrences(content, " c "));
+    }
+
+    [Fact]
+    public void StrokeRoundedRectangle_emits_a_stroked_bezier_path()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.StrokeRoundedRectangle(10, 20, 100, 50, CornerRadii.Uniform(8), 2, 0, 0, 0);
+
+        var content = ContentOf(page);
+        Assert.Contains("0 0 0 RG", content);                  // stroke colour
+        Assert.Contains("2 w", content);                       // line width
+        Assert.Equal(4, CountOccurrences(content, " c "));
+        Assert.Contains(" S Q", content);                      // stroked + state restored
+    }
+
+    [Fact]
+    public void StrokeRoundedRectangle_non_positive_line_width_is_a_no_op()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.StrokeRoundedRectangle(10, 20, 100, 50, CornerRadii.Uniform(8), 0, 0, 0, 0);
+
+        Assert.DoesNotContain(" S", ContentOf(page));
+    }
+
+    [Fact]
+    public void BeginRoundedRectangleClip_emits_a_rounded_clip_path()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.BeginRoundedRectangleClip(10, 20, 100, 50, CornerRadii.Uniform(8));
+        page.RestoreGraphicsState();
+
+        var content = ContentOf(page);
+        Assert.Contains(" m ", content);
+        Assert.Equal(4, CountOccurrences(content, " c "));
+        Assert.Contains(" W n", content);                      // clip from the path
+        Assert.DoesNotContain(" re W n", content);             // not the rectangular clip
+    }
+
+    [Fact]
+    public void BeginRoundedRectangleClip_all_zero_falls_back_to_the_rectangular_clip()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.BeginRoundedRectangleClip(10, 20, 100, 50, default);
+        page.RestoreGraphicsState();
+
+        var content = ContentOf(page);
+        Assert.Contains("10 20 100 50 re W n", content);
+        Assert.DoesNotContain(" c ", content);
+    }
+
+    [Fact]
+    public void CornerRadii_NormalizedFor_clamps_negatives_and_scales_overlap()
+    {
+        // Negatives clamp to 0; uniform 40 on a 50×50 box overlaps (40+40 > 50 on every edge) →
+        // scaled by f = 50/80 = 0.625 → 25 everywhere (a circle inscribed, per §4.2).
+        var n = CornerRadii.Uniform(40).NormalizedFor(50, 50);
+        Assert.Equal(25, n.TopLeftX, 5);
+        Assert.Equal(25, n.BottomRightY, 5);
+
+        var withNeg = new CornerRadii(-5, -5, 10, 10, 0, 0, 0, 0).NormalizedFor(100, 100);
+        Assert.Equal(0, withNeg.TopLeftX, 5);     // negative → 0
+        Assert.Equal(10, withNeg.TopRightX, 5);   // within extents → unscaled
+
+        Assert.False(CornerRadii.Uniform(8).NormalizedFor(0, 50).AnyPositive);   // degenerate → all 0
     }
 
     private static int CountOccurrences(string haystack, string needle)

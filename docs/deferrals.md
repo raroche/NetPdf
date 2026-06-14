@@ -3281,6 +3281,27 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **body `border-radius` COMPLETION (per-corner + `%` band fill, rounded uniform border
+         strokes, rounded background-image clip) — DONE (border-radius-completion cycle, 3 tasks):**
+         the body border-radius first cut (uniform-circular band fill only) is finished. **(Task 1 —
+         per-corner + `%` band)** the band rounds with PER-CORNER radii (the `border-radius` 1–4-value
+         shorthand expands to the four corner longhands; `FragmentPainter.ReadCornerRadii` reads each as
+         an absolute length [circular] or a PERCENTAGE, which resolves against the box WIDTH for the
+         horizontal radius and the box HEIGHT for the vertical — so a non-square `50%` box is an ELLIPSE,
+         CSS B&B 3 §4.1), filled by the new per-corner elliptical `PdfPage.FillRoundedRectangle(…,
+         CornerRadii, …)` (§4.2 overlap-scaling via `CornerRadii.NormalizedFor`); the UNIFORM-circular
+         case keeps the byte-stable single-radius path. **(Task 2 — rounded uniform border strokes)** a
+         box with a border-radius AND a uniform border (same paintable style/width/colour on all four
+         edges) strokes ONE rounded path (`PdfPage.StrokeRoundedRectangle`, along the border-box
+         CENTERLINE — inset by half the border width, radii reduced likewise so the stroke's outer edge
+         tracks the corners) instead of the four square edge rects. **(Task 3 — rounded background-image
+         clip)** a border-radius rounds the background-image clip (`PdfPage.BeginRoundedRectangleClip`,
+         the background-clip box's radii inset per side) on BOTH the per-tile loop and the tiling-pattern
+         paths; zero radii fall back to the rectangular clip (byte-identical). STILL DEFERRED: the
+         explicit two-radii `Rx / Ry` slash spelling (AngleSharp drops it → all-zero → square); rounded
+         NON-uniform border strokes (per-corner arc segments transitioning between edge widths/colours);
+         the MARGIN-box border-radius staying its own uniform-circular fill-only first cut (its corner
+         longhands aren't cascaded); a rounded `outline`.
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
@@ -3299,9 +3320,10 @@ flags the categories):
          into the shared tiler (the origin/clip keywords flow through the box's cascade — importance
          + CSS-wide + invalid-value diagnostics — post-PR-#171 review P2, not RawDeclarationWinner;
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
-         negative paint rect — review P1). STILL DEFERRED: body `border-radius` for the BORDER
-         strokes + the background-image clip (rounded clip path) + elliptical / per-corner / `%`
-         radii; `background-attachment: fixed` PAGE-relative positioning; `outline`; gradients (Phase 4).
+         negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
+         border-radius-completion cycle — see the entry above): the explicit `Rx / Ry` elliptical slash
+         spelling + rounded NON-uniform border strokes + the MARGIN-box per-corner radius;
+         `background-attachment: fixed` PAGE-relative positioning; `outline`; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared
          `FragmentPainter.TryParseBackgroundPosition` (used by `object-position` +

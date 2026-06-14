@@ -156,11 +156,12 @@ internal static class KeywordResolver
         b[PropertyId.BorderBottomStyle] = borderStyle;
         b[PropertyId.BorderLeftStyle] = borderStyle;
 
-        // outline-style — CSS UI 4 §5.2 (outline cycle): the border-style keywords PLUS `auto` (a
-        // UA-chosen style, rendered as `solid` here). `none`/`hidden` paint nothing; index order keeps
-        // the shared border-style keywords aligned (none=0, hidden=1, solid=4 — the FragmentPainter
-        // constants), with `auto` appended.
-        b[PropertyId.OutlineStyle] = T("none", "hidden", "dotted", "dashed", "solid", "double",
+        // outline-style — CSS UI 4 §5.2 (outline cycle; post-PR-#173 review P2): `auto |
+        // <outline-line-style>`, where <outline-line-style> is the border-style values EXCEPT `hidden`
+        // (which is invalid for an outline). So `@supports (outline-style: hidden)` is FALSE and a later
+        // `outline-style: hidden` can't suppress an earlier valid value. Indices (none=0, solid=3,
+        // auto=9) are the FragmentPainter outline constants; `none` paints nothing, `auto` paints solid.
+        b[PropertyId.OutlineStyle] = T("none", "dotted", "dashed", "solid", "double",
             "groove", "ridge", "inset", "outset", "auto");
 
         // background-origin / background-clip — CSS B&B §3.4–§3.5 (bg-origin / bg-clip cycles): the

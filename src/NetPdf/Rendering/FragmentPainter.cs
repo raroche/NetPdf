@@ -55,6 +55,14 @@ internal static class FragmentPainter
     private const int BorderStyleHidden = 1;
     private const int BorderStyleSolid = 4;
 
+    // outline-style keyword ids (outline cycle; post-PR-#173 review P2): CSS UI 4 §5.2 admits the
+    // border-style values EXCEPT `hidden`, PLUS `auto`. The KeywordResolver table is
+    // none, dotted, dashed, solid, double, groove, ridge, inset, outset, auto — so the indices differ
+    // from border-style (no hidden ⇒ solid is 3, not 4). `none` paints nothing; `auto` paints solid.
+    private const int OutlineStyleNone = 0;
+    private const int OutlineStyleSolid = 3;
+    private const int OutlineStyleAuto = 9;
+
     /// <summary>Fallback when <c>currentcolor</c> can't be resolved — opaque
     /// black, the canvas default text color.</summary>
     private const uint DefaultColorArgb = 0xFF000000;
@@ -92,8 +100,10 @@ internal static class FragmentPainter
         ImageResourceCache? imageCache = null,
         PdfDocument? document = null)
     {
-        var borderStyleApproximationReported = false;
-        var outlineStyleApproximationReported = false;   // outline cycle — once per render.
+        // ONE "a line-style was approximated as solid" flag, SHARED by borders + outline (post-PR-#173
+        // Copilot review): PAINT-BORDER-STYLE-APPROXIMATED-001 is a once-per-conversion diagnostic, so a
+        // document with both a non-solid border and a non-solid outline still surfaces it only once.
+        var styleApproximationReported = false;
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
 
         for (var i = 0; i < fragments.Count; i++)
@@ -149,12 +159,13 @@ internal static class FragmentPainter
 
             // Borders (foreground — always painted regardless of PrintBackgrounds).
             PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
+                currentColorArgb, diagnostics, ref styleApproximationReported);
 
             // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
-            // and it does NOT affect layout. Always painted (it's not a background).
+            // and it does NOT affect layout. Always painted (it's not a background). It shares the
+            // borders' style-approximation flag (one diagnostic per conversion).
             PaintOutline(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref outlineStyleApproximationReported);
+                currentColorArgb, diagnostics, ref styleApproximationReported);
         }
     }
 
@@ -847,23 +858,26 @@ internal static class FragmentPainter
         var styleSlot = style.Get(PropertyId.OutlineStyle);
         if (styleSlot.Tag != ComputedSlotTag.Keyword) return;          // unset → none
         var styleKw = styleSlot.AsKeyword();
-        if (styleKw is BorderStyleNone or BorderStyleHidden) return;    // none=0 / hidden=1 (indices aligned with border-style)
+        if (styleKw == OutlineStyleNone) return;                       // `hidden` is invalid for outline (rejected at cascade)
 
         var widthSlot = style.Get(PropertyId.OutlineWidth);
         var outlineWidthPx = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0;
         if (outlineWidthPx <= 0) return;
 
-        // outline-color initial is currentcolor; `invert` isn't represented (deferred) → currentcolor.
+        // outline-color initial is `auto` → currentcolor (CSS UI 4 §5.3; `auto` is admitted by the
+        // dispatch as the CurrentColor slot, `invert` is retired). currentcolor resolves to the box colour.
         if (!TryResolveColor(style.Get(PropertyId.OutlineColor), currentColorArgb, out var argb))
             argb = currentColorArgb;
         if (Alpha(argb) == 0) return;
 
-        if (styleKw != BorderStyleSolid && !styleApproximationReported)
+        // `auto` paints solid (the UA's choice) WITHOUT a diagnostic; only a genuine non-solid LINE style
+        // (dotted / dashed / double / groove / ridge / inset / outset) is the approximated case.
+        if (styleKw != OutlineStyleSolid && styleKw != OutlineStyleAuto && !styleApproximationReported)
         {
             diagnostics?.Emit(new Diagnostic(
                 DiagnosticCodes.PaintBorderStyleApproximated001,
-                "A non-solid outline-style (dotted / dashed / double / groove / ridge / inset / outset / " +
-                "auto) was painted as a solid line. Styled outline rendering is a tracked follow-up " +
+                "A non-solid outline-style (dotted / dashed / double / groove / ridge / inset / outset) " +
+                "was painted as a solid line. Styled outline rendering is a tracked follow-up " +
                 "(deferrals.md#layout-to-pdf-pipeline).",
                 DiagnosticSeverity.Info));
             styleApproximationReported = true;
@@ -875,11 +889,17 @@ internal static class FragmentPainter
         var offsetPx = offsetSlot.Tag == ComputedSlotTag.LengthPx ? offsetSlot.AsLengthPx() : 0;
 
         // The ring: inner = the border box grown by the offset; outer = grown again by the width. A
-        // negative offset shrinks the inner box (clamped ≥ 0 so it never inverts).
-        var innerLeft = leftPx - offsetPx;
-        var innerTop = topPx - offsetPx;
-        var innerW = Math.Max(0, widthPx + 2 * offsetPx);
-        var innerH = Math.Max(0, heightPx + 2 * offsetPx);
+        // NEGATIVE offset insets the inner box; CLAMP the effective offset PER AXIS to ≥ −½ the box
+        // dimension BEFORE computing the origin AND the size (post-PR-#173 review P2) — so an extreme
+        // negative offset (past half the box) collapses the outline to a zero-size box CENTERED on the
+        // box rather than letting the origin drift past one side. A positive (outward) offset isn't
+        // clamped. The two axes clamp independently (the offset is a single value, the limits differ).
+        var effOffX = Math.Max(offsetPx, -widthPx / 2.0);
+        var effOffY = Math.Max(offsetPx, -heightPx / 2.0);
+        var innerLeft = leftPx - effOffX;
+        var innerTop = topPx - effOffY;
+        var innerW = widthPx + 2 * effOffX;     // ≥ 0 by the per-axis clamp
+        var innerH = heightPx + 2 * effOffY;
         var outerLeft = innerLeft - outlineWidthPx;
         var outerTop = innerTop - outlineWidthPx;
         var outerW = innerW + 2 * outlineWidthPx;
@@ -887,7 +907,8 @@ internal static class FragmentPainter
 
         // Rounded outline (CSS UI §5.3): a box corner with a border-radius grows outward by the gap to
         // the outline edge (offset + width for the outer, offset for the inner); a SHARP box corner stays
-        // sharp. No border-radius → a square outline (zero radii → the ring's `re` fast path).
+        // sharp, and GrowRadii clamps a component a large negative offset would drive below 0. No
+        // border-radius → a square outline (zero radii → the ring's `re` fast path).
         var boxRadii = ReadCornerRadii(style, widthPx, heightPx);
         var rounded = boxRadii.AnyPositive;
         var outerRadii = rounded ? GrowRadii(boxRadii, offsetPx + outlineWidthPx) : default;
@@ -954,12 +975,14 @@ internal static class FragmentPainter
         Math.Max(0, r.BottomRightX - amount), Math.Max(0, r.BottomRightY - amount),
         Math.Max(0, r.BottomLeftX - amount), Math.Max(0, r.BottomLeftY - amount));
 
-    /// <summary>Each POSITIVE radius component grown by <paramref name="amount"/> px (a zero component
-    /// stays 0 — a sharp box corner gives a sharp outline corner, CSS UI 4 §5.3). The outline's outer/inner
-    /// corner radii are the box radii grown by the gap from the border box to that outline edge.</summary>
+    /// <summary>Each POSITIVE radius component grown by <paramref name="amount"/> px, then CLAMPED ≥ 0 (a
+    /// zero component stays 0 — a sharp box corner gives a sharp outline corner, CSS UI 4 §5.3; a large
+    /// NEGATIVE amount, from a negative outline-offset, can't drive a corner below 0). The outline's
+    /// outer/inner corner radii are the box radii grown by the gap from the border box to that outline
+    /// edge — post-PR-#173 review P3 (clamp in the helper, matching <see cref="ReduceRadii"/>).</summary>
     private static CornerRadii GrowRadii(CornerRadii r, double amount)
     {
-        static double G(double c, double by) => c > 0 ? c + by : 0;
+        static double G(double c, double by) => c > 0 ? Math.Max(0, c + by) : 0;
         return new CornerRadii(
             G(r.TopLeftX, amount), G(r.TopLeftY, amount), G(r.TopRightX, amount), G(r.TopRightY, amount),
             G(r.BottomRightX, amount), G(r.BottomRightY, amount), G(r.BottomLeftX, amount), G(r.BottomLeftY, amount));

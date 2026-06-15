@@ -223,7 +223,11 @@ internal static class BoxBuilder
                 break;
         }
 
-        var box = Box.ForElement(kind, style, element);
+        // The box's used `page` value (CSS Page 3 §3.4) — the layouter forces a page break before a
+        // block-flow child whose name differs from the preceding box's, and the driver reads the starting
+        // box's name to select `@page <name>` (multi-page driver / PR #179 review P1).
+        var box = Box.ForElement(
+            kind, style, element, NetPdf.Css.PagedMedia.AtPageRules.ResolveUsedPageName(element, cascade));
 
         // Per Task 14: collect ::first-line / ::first-letter cascade styles
         // for Phase 3 line-layout to apply during fragment rendering. Box

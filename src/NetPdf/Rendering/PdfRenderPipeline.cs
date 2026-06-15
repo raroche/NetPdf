@@ -297,11 +297,11 @@ internal static class PdfRenderPipeline
         var totalPages = pageFragments.Count;
 
         // Cache the per-page margin-box resolution by selector context (post-PR-#178 review P3): which
-        // @page rules apply to a page depends ONLY on (first, parity, blank), so at most a handful of
-        // distinct contexts exist across the whole document — resolve each once instead of re-walking the
-        // stylesheets (× specificity tiers, × 2 for boxes + declarations) for every page.
+        // @page rules apply to a page depends ONLY on (first, parity, blank, named-page), so at most a
+        // handful of distinct contexts exist across the whole document — resolve each once instead of
+        // re-walking the stylesheets (× specificity tiers, × 2 for boxes + declarations) for every page.
         var marginBoxCache = hasMarginBoxes
-            ? new Dictionary<(bool First, bool Right, bool Blank),
+            ? new Dictionary<(bool First, bool Right, bool Blank, string? Name),
                 (ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox> Boxes,
                  ImmutableArray<NetPdf.Css.Parser.CssDeclaration> Decls)>()
             : null;
@@ -337,6 +337,13 @@ internal static class PdfRenderPipeline
         // PHASE B — paint each laid-out page (cycle 3/4). Pages are page-local (a fresh
         // fragmentainer per page), so every page shares the same content origin; the only
         // per-page variation is the page-number counters.
+        // Font-dedup-across-pages: ONE text-paint session spans every page — it collects all pages'
+        // glyphs (one HarfBuzz shaping pass) and, in Finish() after the loop, subsets + embeds each font
+        // ONCE from the cross-page union (so a shared font is embedded once, not once per page). The
+        // background/border/image painting stays per page inside the loop; the per-page text replay in
+        // Finish() appends AFTER it, preserving the "text over backgrounds" layering.
+        var textSession = new TextPainter.TextPaintSession(
+            shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics);
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -365,9 +372,16 @@ internal static class PdfRenderPipeline
                 // the LTR mapping (page 0 = right). Per-page GEOMETRY (margins / size differing by
                 // `:left`/`:right`) needs an iterative layout and stays deferred — only the margin-box
                 // CONTENT/STYLE varies per page here.
+                // Named page (cycle 7 + PR #179 review P1): the page's name is the used `page` value of
+                // its break-triggering box — the first CONTENT box on the page. The layouter now forces a
+                // page break before a box whose `page` differs (CSS Page 3 §3.4), so the box that STARTS a
+                // named page carries the name (computed at build time onto `Box.PageName`). A `@page <name>`
+                // selector then applies to pages with that name.
+                var pageName = FirstContentPageName(bodyFragments);
                 var pageCtx = new AtPageRules.PageSelectorContext(
-                    pageIndex, IsBlank: bodyFragments.Count == 0);
-                var ctxKey = (pageCtx.IsFirstPage, pageCtx.IsRightPage, pageCtx.IsBlank);
+                    pageIndex, IsBlank: bodyFragments.Count == 0,
+                    AssignedPageName: pageName.Length == 0 ? null : pageName);
+                var ctxKey = (pageCtx.IsFirstPage, pageCtx.IsRightPage, pageCtx.IsBlank, pageCtx.AssignedPageName);
                 if (!marginBoxCache!.TryGetValue(ctxKey, out var resolvedForCtx))
                 {
                     resolvedForCtx = (
@@ -419,12 +433,16 @@ internal static class PdfRenderPipeline
             }
 
             // Text paints OVER backgrounds + borders, ONE pass over body + margin-box fragments.
-            // The kept-alive shaper lets the painter subset + embed the exact font program layout
-            // shaped, then emit glyph runs at their baselines.
-            TextPainter.PaintText(
-                textFragments, page, document, shaper, mediaBox.HeightPts,
-                margins.LeftPx, margins.TopPx, diagnostics);
+            // Collect this page's glyphs + draw commands now (the kept-alive shaper shapes once); the
+            // actual glyph runs are replayed in Finish() below, after every font is subset + embedded
+            // once from the cross-page union.
+            textSession.CollectPage(page, textFragments);
         }
+
+        // Build each font ONCE (cross-page union) + replay every page's text — font-dedup-across-pages.
+        // Honors the caller's cancellation/timeout (this pass subsets/embeds fonts + replays all pages'
+        // text after the per-page loop — review P2).
+        textSession.Finish(document, cancellationToken);
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
@@ -442,6 +460,23 @@ internal static class PdfRenderPipeline
         foreach (var child in box.Children)
             if (FindRootElementBox(child) is { } found) return found;
         return null;
+    }
+
+    /// <summary>The used <c>page</c> name (CSS Page 3 §3.4) of the FIRST CONTENT box on a page — the page's
+    /// break-triggering box (cycle 7 + PR #179 review P1; <see cref="Box.PageName"/> computed at build
+    /// time). The <c>&lt;html&gt;</c> / <c>&lt;body&gt;</c> structural wrappers SPAN every page with
+    /// <c>page: auto</c>, so their fragment leads the list but doesn't name the page; they're skipped to
+    /// reach the first real content box (which, since the layouter forces a break on a <c>page</c> change,
+    /// is the named element on a named page). Anonymous fragments (no source element) are skipped too; the
+    /// empty string for an empty / unnamed page.</summary>
+    private static string FirstContentPageName(IReadOnlyList<BoxFragment> fragments)
+    {
+        foreach (var fragment in fragments)
+            if (fragment.Box.SourceElement is { } el
+                && !el.LocalName.Equals("html", StringComparison.OrdinalIgnoreCase)
+                && !el.LocalName.Equals("body", StringComparison.OrdinalIgnoreCase))
+                return fragment.Box.PageName;
+        return string.Empty;
     }
 
     private static void EmitTextFontUnresolved(IDiagnosticsSink diagnostics, string detail) =>

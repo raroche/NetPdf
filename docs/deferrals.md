@@ -2914,6 +2914,18 @@ flags the categories):
        paginate until **nested-container fragmentation** lands in `BlockLayouter` (a
        substantial Phase 3 layout task — NOT a pipeline change). Until then, content past
        the first fragmentainer is clipped + surfaced via `PDF-CONTENT-OVERFLOW-TRUNCATED-001`.
+       **UPDATE (multi-page driver cycles 1–2 — DONE):** nested-container fragmentation landed —
+       `EmitBlockSubtreeRecursive` consults the resolver before each plain BLOCK-FLOW child + returns a
+       `BlockContinuation` on block-axis overflow, so nested block content paginates at child boundaries at
+       arbitrary depth. **REMAINING (cycle 8 finding, NON-block layout modes still don't paginate across
+       pages):** the fragmentation is gated to BLOCK-FLOW children (`IsBlockFlowContainerOwnedByBlockLayouter`),
+       so a tall `display: flex`/`grid`/`table`/multicol container lays all its children on the current page
+       — flex/multicol overflow-truncate (`PDF-CONTENT-OVERFLOW-TRUNCATED-001`), a table doesn't split rows,
+       and `<thead>`/`<tfoot>` don't repeat per page. These layout modes HAVE continuation types
+       (`TableContinuation` / `FlexContinuation` / `GridContinuation` / `MulticolContinuation`) + unit tests
+       but are NOT yet wired into the driver loop (the layouters don't propagate a continuation through the
+       fragmentainer the way `BlockLayouter` now does). Wiring each is its own substantial layout task; the
+       multi-page composition golden (`Multi_page_composition_…`) exercises the working BLOCK path end-to-end.
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`
@@ -3590,14 +3602,26 @@ flags the categories):
          driver builds an `AtPageRules.PageSelectorContext(pageIndex, IsBlank)` (the LTR parity: page 0 =
          recto/right, alternating; a body-fragment-less page is `:blank`), and `AtPageRules.MatchTier` (the
          page-context generalization of `ClassifyPageSelector`) picks the applicable `@page` rules in CSS
-         Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank`), which the per-page
-         `AtPageMarginBoxResolver.Resolve(ctx)` paints. STILL DEFERRED: (a) per-page GEOMETRY — a
-         `@page :left`/`:right` that changes `margin`/`size` would reflow LAYOUT per page (the content box
-         differs left vs right), which needs an iterative layout pass (the margin/size resolvers stay
-         single-page, bare + `:first`); (b) named-page selectors (cycle 7); (c) compound selectors
-         (`:first:left`) → `MatchTier` returns no-match; (d) `:blank` is implemented but latent — the driver
-         doesn't yet emit mid-document blank pages (no forced parity breaks). RTL parity flip out of scope.
-         `calc()` / font-relative margin units also deferred (absolute lengths + percentages are done).
+         Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank` < `@page <name>`), which
+         the per-page `AtPageMarginBoxResolver.Resolve(ctx)` paints. NAMED pages (cycle 7 + PR #179 review)
+         also select MARGIN BOXES per page AND FORCE a page break: the `page` property (`auto | <custom-ident>`,
+         dropped by AngleSharp → recovered by `CssPreprocessor`, read raw) is resolved by
+         `AtPageRules.ResolveUsedPageName` (§3.4 used value — nearest VALID-`<custom-ident>` ancestor; CSS-wide
+         keywords + invalid raws like `-1` resolve to the parent, NOT literal names — PR #179 P1) and stored on
+         `Box.PageName` at build time. `BlockLayouter` FORCES a page break before a block-flow child whose
+         `Box.PageName` differs from the preceding one (CSS Page 3 §3.4 — so a named section that FITS the
+         current page still starts a new one); the driver reads each page's name from its first content box's
+         `Box.PageName` (skipping the `<html>`/`<body>` wrappers) and `MatchTier` matches a bare
+         `<custom-ident>` `@page` selector at tier 3. STILL DEFERRED: (a) per-page GEOMETRY — a
+         `@page :left`/`:right`/`<name>` that changes `margin`/`size` would reflow LAYOUT per page (the content
+         box differs), which needs an iterative layout pass (the margin/size resolvers stay single-page, bare +
+         `:first`); (b) COMPOUND selectors (`:first:left`, `chapter:first`) → `MatchTier` returns no-match
+         (`DeclaredPageNames` still collects a compound's leading name for the union); (c) `:blank` is
+         implemented but latent — the driver doesn't yet emit mid-document blank pages (no forced parity
+         breaks); (d) `page` is not a registered first-class property (no `@supports` — recovery + raw read,
+         but CSS-wide/`<custom-ident>` validation IS applied at use). The forced break compares ADJACENT
+         block-flow SIBLINGS (a first cut of §3.4's "preceding box"). RTL parity flip out of scope. `calc()` /
+         font-relative margin units also deferred (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

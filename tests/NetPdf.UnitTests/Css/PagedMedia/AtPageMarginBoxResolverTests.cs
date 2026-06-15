@@ -236,6 +236,52 @@ public sealed class AtPageMarginBoxResolverTests
         Assert.Empty(AtPageMarginBoxResolver.Resolve(new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(0)));
     }
 
+    // ---- Cycle 7: named pages (@page <name>) ----
+
+    [Fact]
+    public async Task Resolve_named_page_box_applies_only_to_a_page_with_that_name()
+    {
+        var sheet = await BuildSheet("@page chapter { @top-center { content: \"C\" } }");
+        Assert.Equal("\"C\"", Assert.Single(AtPageMarginBoxResolver.Resolve(
+            new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter"))).ContentRawValue);
+        Assert.Empty(AtPageMarginBoxResolver.Resolve(
+            new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(2)));                          // unnamed
+        Assert.Empty(AtPageMarginBoxResolver.Resolve(
+            new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(2, AssignedPageName: "index"))); // other name
+    }
+
+    [Fact]
+    public async Task Resolve_named_page_box_overrides_first_on_a_named_first_page()
+    {
+        // Named (tier 3) > :first (tier 2) > bare (tier 0). On a "cover"-named first page, the named box wins.
+        var sheet = await BuildSheet(
+            "@page { @top-center { content: \"B\" } }" +
+            "@page :first { @top-center { content: \"F\" } }" +
+            "@page cover { @top-center { content: \"C\" } }");
+        Assert.Equal("\"C\"", Assert.Single(AtPageMarginBoxResolver.Resolve(
+            new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(0, AssignedPageName: "cover"))).ContentRawValue);
+    }
+
+    [Fact]
+    public async Task ResolveAll_includes_named_page_boxes()
+    {
+        // The structural/prefetch union must include a named-page box (it never matches an anonymous
+        // representative context), else the pipeline would skip the margin pass for a named-only document.
+        var sheet = await BuildSheet("@page chapter { @top-center { content: \"C\" } }");
+        Assert.Contains(AtPageMarginBoxResolver.ResolveAll(new[] { sheet }, PrintContext),
+            b => b.Name == "top-center" && b.ContentRawValue == "\"C\"");
+    }
+
+    [Fact]
+    public async Task DeclaredPageNames_collects_named_selectors_including_a_compounds_leading_name()
+    {
+        var sheet = await BuildSheet("@page chapter { } @page index:first { } @page :left { } @page { }");
+        var names = System.Linq.Enumerable.ToList(AtPageRules.DeclaredPageNames(new[] { sheet }, PrintContext));
+        Assert.Contains("chapter", names);
+        Assert.Contains("index", names);           // the leading name of `index:first`
+        Assert.DoesNotContain(":left", names);     // a pseudo, not a name
+    }
+
     private static readonly CssMediaContext PrintContext = new(
         MediaType: "print", ViewportWidthPx: 800, ViewportHeightPx: 1000,
         DevicePixelRatio: 1.0, PreferredColorScheme: "light");

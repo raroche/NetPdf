@@ -933,6 +933,86 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_named_page_selects_its_margin_box()
+    {
+        // Cycle 7 — named pages. The second block sets `page: chapter`, so the page it starts is a
+        // "chapter" page and paints @page chapter's header ("AB"); the first (unnamed) page paints the bare
+        // @page header ("AA"). Pre-cycle, @page <name> was deferred and never applied (both "AA").
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page chapter { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: \"AA\" } }" +
+            ".ch { page: chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div class=\"ch\" style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 bare "AA" ≠ page 2 chapter "AB"
+    }
+
+    [Fact]
+    public void Named_page_forces_a_break_even_when_the_content_fits()
+    {
+        // Post-PR-#179 review P1: CSS Page 3 §3.4 — a change in the used `page` value forces a page break
+        // even when the content fits the current page. A short unnamed intro (100px) + a short named
+        // section (100px) both fit one A4 page, but the section's `page: chapter` must START a new page —
+        // so its @page chapter header ("AB") paints on page 2, distinct from page 1's bare header ("AA").
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page chapter { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: \"AA\" } }" +
+            ".ch { page: chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:100px\"></div><section class=\"ch\" style=\"height:100px\"></section>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);       // the named section forced a break (both fit one page)
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);             // one header per page
+        Assert.NotEqual(runs[0], runs[1]);        // page 1 bare "AA" ≠ page 2 chapter "AB"
+    }
+
+    [Fact]
+    public void Multi_page_composition_paginates_with_running_header_footer_counter_and_named_page()
+    {
+        // Cycle 8 — end-to-end composition (golden): a three-section report paginates at block boundaries
+        // (cycles 1–3); every page gets a running header from string-set carry-forward (cycle 5), a
+        // "Page N of T" footer from counter(page)/counter(pages) (cycle 4), and the second section is a
+        // named page (page: ref) that swaps in its own @page ref header (cycles 6/7). Verifies the whole
+        // arc composes on one document, with deterministic bytes and no overflow truncation.
+        const string html =
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"H\" string(sect) } " +
+            "@bottom-center { content: counter(page) \"/\" counter(pages) } }" +
+            "@page ref { @top-center { content: \"R\" string(sect) } " +
+            "@bottom-center { content: counter(page) \"/\" counter(pages) } }" +
+            ".s1 { string-set: sect \"A\"; height: 600px }" +
+            ".s2 { string-set: sect \"B\"; height: 600px; page: ref }" +
+            ".s3 { string-set: sect \"C\"; height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"s1\"></div><div class=\"s2\"></div><div class=\"s3\"></div>" +
+            "</body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var result = HtmlPdf.ConvertDetailed(html, opts);
+
+        // Three 600px sections far exceed an A4 content box (~931px) and split at section boundaries.
+        Assert.True(result.PageCount >= 2, $"expected multi-page, got {result.PageCount}");
+        // Block content FLOWS across pages — no inline-overflow truncation.
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // Every page paints exactly one header + one footer (the named page swaps the header text, not its
+        // presence), so the painted text-run count is 2 per page.
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(result.PageCount * 2, runs.Count);
+        // Determinism (CLAUDE.md §4): same input → identical bytes.
+        Assert.Equal(Latin1(result.Pdf), Latin1(HtmlPdf.Convert(html, opts)));
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic
@@ -1028,6 +1108,65 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(1, pdf.Split("/FontFile2").Length - 1);   // exactly ONE embedded font program
         Assert.Contains("BT", pdf);
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintTextFontUnresolved001);
+    }
+
+    [Fact]
+    public void Multi_page_shares_one_embedded_font_across_pages()
+    {
+        // Font-dedup-across-pages: a font used on EVERY page is subset + embedded ONCE (from the cross-page
+        // glyph UNION), not once per page. Two empty 600px sections split across two A4 pages, each with a
+        // counter(page) footer: page 1's footer is "A", page 2's is "B" — DISTINCT glyphs on distinct pages.
+        // Pre-dedup each page embedded its OWN subset ({A} then {B}) → two /FontFile2 programs; now the
+        // union {A, B} is embedded once.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @bottom-center { content: counter(page, upper-alpha) } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Equal(2, result.PageCount);
+        Assert.Equal(1, pdf.Split("/FontFile2").Length - 1);   // ONE embedded program shared across both pages
+        // Both footers still paint (the union maps each page's glyph), one show per page.
+        Assert.Equal(2, GlyphRuns(pdf).Count);
+    }
+
+    [Fact]
+    public void Multi_page_no_text_document_paginates_without_text_runs()
+    {
+        // Post-PR-#179 review P3: a multi-page document with NO text (background-only) paginates correctly
+        // — the text-paint session stores no empty page draw lists, and the page count + (text-free) output
+        // are unchanged. Two 600px background blocks split across two A4 pages.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"height:600px;background-color:#abcdef\"></div>" +
+            "<div style=\"height:600px;background-color:#abcdef\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Equal(2, result.PageCount);
+        Assert.DoesNotContain("BT", pdf);            // no text-show operators at all
+        Assert.Empty(GlyphRuns(pdf));
+        Assert.Contains("re f", pdf);                // the backgrounds still paint
+    }
+
+    [Fact]
+    public async Task Multi_page_render_honors_cancellation()
+    {
+        // Post-PR-#179 review P2: a cancelled token aborts the render, including the post-layout
+        // text-finish pass (font subset/embed + per-page replay). A large multi-page text document with a
+        // pre-cancelled token throws rather than running to completion.
+        var sb = new StringBuilder("<!DOCTYPE html><html><body>");
+        for (var i = 0; i < 40; i++) sb.Append("<p style=\"height:300px\">paragraph text</p>");
+        sb.Append("</body></html>");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await HtmlPdf.ConvertAsync(
+                sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }, cts.Token));
     }
 
     [Fact]

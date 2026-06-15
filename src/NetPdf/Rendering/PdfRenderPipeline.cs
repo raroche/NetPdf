@@ -260,8 +260,10 @@ internal static class PdfRenderPipeline
         cancellationToken.ThrowIfCancellationRequested();
 
         // Emit: page size (CSS px) → /MediaBox (PDF pt). ONE PdfDocument + MediaBox for the
-        // whole run (fonts dedup across pages). The painters read the box-tree styles, so they
-        // run before phase2 is disposed (method end).
+        // whole run; the document + shaper are shared across pages. (NOTE: text is currently
+        // subset PER PAGE in the loop below, so a font shared across pages is NOT yet deduped —
+        // a size/efficiency follow-up, deferrals.md#layout-to-pdf-pipeline.) The painters read
+        // the box-tree styles, so they run before phase2 is disposed (method end).
         var document = new PdfDocument(PdfVersionString(options.EmittedPdfVersion));
         if (!string.IsNullOrEmpty(options.Title)) document.Title = options.Title;
         if (!string.IsNullOrEmpty(options.Author)) document.Author = options.Author;
@@ -287,6 +289,12 @@ internal static class PdfRenderPipeline
             : default;
 
         var totalPages = pageFragments.Count;
+
+        // CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 is a once-per-RENDER diagnostic (matching the body's
+        // FragmentPainter flag), so this lives OUTSIDE the per-page loop — a margin box with an
+        // unsupported background-image variant is diagnosed once for the document, not once per page
+        // (PR #176 Copilot review).
+        var marginVariantReported = false;
 
         // PHASE B — paint each laid-out page (cycle 3/4). Pages are page-local (a fresh
         // fragmentainer per page), so every page shares the same content origin; the only
@@ -327,7 +335,6 @@ internal static class PdfRenderPipeline
                 // Background images tile over the bands, under borders/text; PrintBackgrounds-gated.
                 if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
                 {
-                    var marginVariantReported = false;
                     foreach (var bi in marginResult.BackgroundImages)
                     {
                         if (!imageCache.TryGetByRawUrl(bi.RawUrl, out var biEntry)) continue;

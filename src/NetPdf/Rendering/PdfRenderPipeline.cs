@@ -297,11 +297,11 @@ internal static class PdfRenderPipeline
         var totalPages = pageFragments.Count;
 
         // Cache the per-page margin-box resolution by selector context (post-PR-#178 review P3): which
-        // @page rules apply to a page depends ONLY on (first, parity, blank), so at most a handful of
-        // distinct contexts exist across the whole document — resolve each once instead of re-walking the
-        // stylesheets (× specificity tiers, × 2 for boxes + declarations) for every page.
+        // @page rules apply to a page depends ONLY on (first, parity, blank, named-page), so at most a
+        // handful of distinct contexts exist across the whole document — resolve each once instead of
+        // re-walking the stylesheets (× specificity tiers, × 2 for boxes + declarations) for every page.
         var marginBoxCache = hasMarginBoxes
-            ? new Dictionary<(bool First, bool Right, bool Blank),
+            ? new Dictionary<(bool First, bool Right, bool Blank, string? Name),
                 (ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox> Boxes,
                  ImmutableArray<NetPdf.Css.Parser.CssDeclaration> Decls)>()
             : null;
@@ -365,9 +365,15 @@ internal static class PdfRenderPipeline
                 // the LTR mapping (page 0 = right). Per-page GEOMETRY (margins / size differing by
                 // `:left`/`:right`) needs an iterative layout and stays deferred — only the margin-box
                 // CONTENT/STYLE varies per page here.
+                // Named page (cycle 7): the page's name is the USED `page` value of its break-triggering
+                // box — the first body box on the page (its source element, walking ancestors for a
+                // non-auto `page`). A `@page <name>` selector then applies to pages with that name.
+                var pageName = AtPageRules.ResolveUsedPageName(
+                    FirstSourceElement(bodyFragments), phase2.Cascade);
                 var pageCtx = new AtPageRules.PageSelectorContext(
-                    pageIndex, IsBlank: bodyFragments.Count == 0);
-                var ctxKey = (pageCtx.IsFirstPage, pageCtx.IsRightPage, pageCtx.IsBlank);
+                    pageIndex, IsBlank: bodyFragments.Count == 0,
+                    AssignedPageName: pageName.Length == 0 ? null : pageName);
+                var ctxKey = (pageCtx.IsFirstPage, pageCtx.IsRightPage, pageCtx.IsBlank, pageCtx.AssignedPageName);
                 if (!marginBoxCache!.TryGetValue(ctxKey, out var resolvedForCtx))
                 {
                     resolvedForCtx = (
@@ -441,6 +447,22 @@ internal static class PdfRenderPipeline
         if (box.SourceElement is not null) return box;
         foreach (var child in box.Children)
             if (FindRootElementBox(child) is { } found) return found;
+        return null;
+    }
+
+    /// <summary>The source element of the FIRST CONTENT fragment on a page — the page's break-triggering
+    /// box, whose used <c>page</c> property names the page (cycle 7). The <c>&lt;html&gt;</c> / <c>&lt;body&gt;</c>
+    /// structural wrappers SPAN every page, so they don't name any particular page (their fragment leads the
+    /// list but their <c>page</c> is auto); they're skipped to reach the first real content box, whose
+    /// <see cref="AtPageRules.ResolveUsedPageName"/> still walks back up through them for an inherited name.
+    /// Anonymous fragments (no source element) are skipped too; <see langword="null"/> for an empty page.</summary>
+    private static IElement? FirstSourceElement(IReadOnlyList<BoxFragment> fragments)
+    {
+        foreach (var fragment in fragments)
+            if (fragment.Box.SourceElement is { } el
+                && !el.LocalName.Equals("html", StringComparison.OrdinalIgnoreCase)
+                && !el.LocalName.Equals("body", StringComparison.OrdinalIgnoreCase))
+                return el;
         return null;
     }
 

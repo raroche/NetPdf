@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.Parser;
 
@@ -93,9 +94,12 @@ internal static class AtPageRules
 
     /// <summary>Multi-page driver cycle 6 — the per-page selector context the resolvers match an
     /// <c>@page</c> selector against (CSS Page 3 §3.1): the 0-based <paramref name="PageIndex"/> (→
-    /// first-page + LTR parity) and whether the page is intentionally <paramref name="IsBlank"/>. RTL
-    /// parity flip + named-page assignment are out of scope here (the basic LTR parity mapping; cycle 7).</summary>
-    public readonly record struct PageSelectorContext(int PageIndex, bool IsBlank = false)
+    /// first-page + LTR parity), whether the page is intentionally <paramref name="IsBlank"/>, and the
+    /// NAMED page assigned to it (<paramref name="AssignedPageName"/> — cycle 7, the used value of the
+    /// <c>page</c> property on the page's break-triggering box; <see langword="null"/>/empty = unnamed). RTL
+    /// parity flip is out of scope (the basic LTR parity mapping).</summary>
+    public readonly record struct PageSelectorContext(
+        int PageIndex, bool IsBlank = false, string? AssignedPageName = null)
     {
         /// <summary>The first page (index 0) matches <c>:first</c>.</summary>
         public bool IsFirstPage => PageIndex == 0;
@@ -107,9 +111,9 @@ internal static class AtPageRules
     }
 
     /// <summary>The highest page-selector specificity tier (CSS Page 3 §3.1) the context-aware
-    /// enumeration walks: bare (0) → <c>:left</c>/<c>:right</c> (1) → <c>:first</c>/<c>:blank</c> (2).
-    /// A named page (cycle 7) would add tier 3.</summary>
-    private const int MaxSelectorTier = 2;
+    /// enumeration walks: bare (0) → <c>:left</c>/<c>:right</c> (1) → <c>:first</c>/<c>:blank</c> (2) →
+    /// a NAMED page (3, cycle 7).</summary>
+    private const int MaxSelectorTier = 3;
 
     /// <summary>Yields the <c>@page</c> rules applicable TO A GIVEN PAGE (cycle 6) in CASCADE
     /// SPECIFICITY ORDER — bare first, then the matching <c>:left</c>/<c>:right</c> parity rules, then
@@ -240,17 +244,91 @@ internal static class AtPageRules
     }
 
     /// <summary>Match ONE page selector against the context, returning its specificity tier + whether
-    /// it matches. Only the single pseudo-class selectors are modeled (first cut): <c>:first</c> /
-    /// <c>:blank</c> (tier 2), <c>:left</c> / <c>:right</c> (tier 1). A bare token can't appear inside a
-    /// list (a bare page has an empty prelude, handled by <see cref="MatchTier"/>). Anything else — a
-    /// named page, a compound, an unknown pseudo — returns (no tier, no match): deferred (cycle 7).</summary>
+    /// it matches. The single pseudo-class selectors <c>:first</c> / <c>:blank</c> (tier 2) and
+    /// <c>:left</c> / <c>:right</c> (tier 1), plus a bare NAMED page <c>&lt;custom-ident&gt;</c> (tier 3 —
+    /// matches a page assigned that name; cycle 7). A bare-pseudo token can't be a bare page (the empty
+    /// prelude is handled by <see cref="MatchTier"/>). A COMPOUND (<c>chapter:first</c>, <c>:first:left</c>)
+    /// or unknown pseudo returns (no tier, no match): deferred.</summary>
     private static (int Tier, bool Matches) MatchSelector(string selector, PageSelectorContext ctx)
     {
         if (selector.Equals(":first", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsFirstPage);
         if (selector.Equals(":blank", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsBlank);
         if (selector.Equals(":left", StringComparison.OrdinalIgnoreCase)) return (1, !ctx.IsRightPage);
         if (selector.Equals(":right", StringComparison.OrdinalIgnoreCase)) return (1, ctx.IsRightPage);
-        return (-1, false);   // named / compound / unknown → deferred (cycle 7)
+        // A bare <custom-ident> is a NAMED page selector (cycle 7) — matches a page whose break-triggering
+        // box assigned it that name (case-SENSITIVE, CSS custom-idents). Compounds stay deferred.
+        if (IsBarePageName(selector))
+            return (3, !string.IsNullOrEmpty(ctx.AssignedPageName)
+                       && string.Equals(ctx.AssignedPageName, selector, StringComparison.Ordinal));
+        return (-1, false);   // compound / unknown → deferred
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="selector"/> is a bare CSS
+    /// <c>&lt;custom-ident&gt;</c> usable as a named-page selector (cycle 7): a non-empty identifier — a
+    /// leading letter / <c>_</c> / non-leading-digit, then letters / digits / <c>-</c> / <c>_</c> — that is
+    /// NOT a CSS-wide keyword or <c>auto</c> (which are not page names). Rejects anything containing a
+    /// <c>:</c> (a pseudo or compound) or other punctuation.</summary>
+    private static bool IsBarePageName(string selector)
+    {
+        if (selector.Length == 0) return false;
+        var first = selector[0];
+        var startOk = (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_'
+                      || (first == '-' && selector.Length > 1);   // a single '-' is not an ident
+        if (!startOk) return false;
+        foreach (var ch in selector)
+        {
+            var ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+                     || ch == '-' || ch == '_';
+            if (!ok) return false;
+        }
+        return !selector.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            && !selector.Equals("inherit", StringComparison.OrdinalIgnoreCase)
+            && !selector.Equals("initial", StringComparison.OrdinalIgnoreCase)
+            && !selector.Equals("unset", StringComparison.OrdinalIgnoreCase)
+            && !selector.Equals("revert", StringComparison.OrdinalIgnoreCase)
+            && !selector.Equals("revert-layer", StringComparison.OrdinalIgnoreCase)
+            && !selector.Equals("default", StringComparison.OrdinalIgnoreCase);   // reserved (CSS Page 3)
+    }
+
+    /// <summary>The DISTINCT named pages declared by <c>@page &lt;name&gt;</c> rules applicable to
+    /// <paramref name="media"/> (cycle 7) — for the structural/prefetch union, which must include a context
+    /// per named page so a named margin box isn't missed (it never matches an anonymous representative
+    /// context). A compound selector (<c>chapter:first</c>) contributes its leading name too.</summary>
+    internal static IEnumerable<string> DeclaredPageNames(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        HashSet<string>? seen = null;
+        foreach (var at in WalkAllPageRules(sheets, media))
+        {
+            if (string.IsNullOrWhiteSpace(at.Prelude)) continue;
+            foreach (var raw in at.Prelude.Split(','))
+            {
+                var sel = raw.Trim();
+                // The leading ident before any pseudo (`chapter` or `chapter:first` → "chapter").
+                var colon = sel.IndexOf(':');
+                var name = (colon >= 0 ? sel[..colon] : sel).Trim();
+                if (IsBarePageName(name) && (seen ??= new(StringComparer.Ordinal)).Add(name))
+                    yield return name;
+            }
+        }
+    }
+
+    /// <summary>The USED value of the <c>page</c> property (CSS Page 3 §3.4) for
+    /// <paramref name="element"/> — its nearest self-or-ancestor element that declares a non-<c>auto</c>
+    /// <c>page</c> (the property is read raw from the cascade; AngleSharp drops it, so
+    /// <c>CssPreprocessor</c> recovers it). Returns the empty string when nothing in the chain names a page.
+    /// Models <c>page: auto</c> resolving to the parent's used value via the ancestor walk (an approximation
+    /// of the registered-inherited form — the property isn't a first-class registered property yet).</summary>
+    public static string ResolveUsedPageName(IElement? element, ResolvedCascadeResult cascade)
+    {
+        ArgumentNullException.ThrowIfNull(cascade);
+        for (IElement? el = element; el is not null; el = el.ParentElement)
+        {
+            var raw = cascade.TryGetStylesFor(el)?.GetWinner("page")?.ResolvedValue?.Trim();
+            if (!string.IsNullOrEmpty(raw) && !raw.Equals("auto", StringComparison.OrdinalIgnoreCase))
+                return raw;
+        }
+        return string.Empty;
     }
 
     /// <summary>Rule-only recursive walk (cycle 6) yielding EVERY applicable <c>@page</c> rule in source

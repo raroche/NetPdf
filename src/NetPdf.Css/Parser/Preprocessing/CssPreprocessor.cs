@@ -100,6 +100,12 @@ internal static class CssPreprocessor
         // resolves it onto the registered `OutlineOffset` slot; a simple longhand
         // recovery (no expander), same precedent as `white-space` / `overflow-wrap`.
         "outline-offset",
+        // Per the multi-page driver named-pages cycle (cycle 7) — AngleSharp.Css drops the
+        // `page` PROPERTY (CSS Page 3 §3.4, `auto | <custom-ident>`) entirely. The recovery
+        // emits it verbatim so the cascade keeps the raw value; the named-page driver reads it
+        // (and walks ancestors for the used value, since `auto` resolves to the parent's). It is
+        // not yet a registered property (no `@supports`/validation) — a documented follow-up.
+        "page",
         // Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#4 —
         // AngleSharp.Css 1.0.0-beta.144 accepts the bare
         // `justify-content` values (flex-start / flex-end / center /

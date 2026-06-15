@@ -933,6 +933,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_named_page_selects_its_margin_box()
+    {
+        // Cycle 7 — named pages. The second block sets `page: chapter`, so the page it starts is a
+        // "chapter" page and paints @page chapter's header ("AB"); the first (unnamed) page paints the bare
+        // @page header ("AA"). Pre-cycle, @page <name> was deferred and never applied (both "AA").
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page chapter { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: \"AA\" } }" +
+            ".ch { page: chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div class=\"ch\" style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 bare "AA" ≠ page 2 chapter "AB"
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic

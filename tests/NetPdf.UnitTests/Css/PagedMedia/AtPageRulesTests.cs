@@ -1,7 +1,14 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Immutable;
+using System.Threading.Tasks;
+using AngleSharp;
+using AngleSharp.Css;
+using AngleSharp.Dom;
+using NetPdf.Css.Cascade;
 using NetPdf.Css.PagedMedia;
+using NetPdf.Css.Parser;
 using Xunit;
 
 namespace NetPdf.UnitTests.Css.PagedMedia;
@@ -78,13 +85,73 @@ public sealed class AtPageRulesTests
         Assert.Equal(-1, AtPageRules.MatchTier(":first, :left", new AtPageRules.PageSelectorContext(2)));
     }
 
-    [Theory]
-    [InlineData("chapter")]      // named page — cycle 7
-    [InlineData(":first:left")]  // a compound — deferred
-    [InlineData(":nth(2)")]      // an unknown pseudo
-    public void MatchTier_named_or_compound_selectors_never_match_first_cut(string prelude)
+    // ---- Named pages (cycle 7) ----
+
+    [Fact]
+    public void MatchTier_named_page_matches_an_assigned_page_at_tier_3()
     {
-        Assert.Equal(-1, AtPageRules.MatchTier(prelude, new AtPageRules.PageSelectorContext(0)));
-        Assert.Equal(-1, AtPageRules.MatchTier(prelude, new AtPageRules.PageSelectorContext(1, IsBlank: true)));
+        Assert.Equal(3, AtPageRules.MatchTier("chapter",
+            new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter")));
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter",
+            new AtPageRules.PageSelectorContext(2, AssignedPageName: "index")));   // different name
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter",
+            new AtPageRules.PageSelectorContext(2)));                              // unnamed page
+    }
+
+    [Fact]
+    public void MatchTier_named_page_outranks_first_on_a_named_first_page()
+    {
+        // CSS Page 3 §3.1 specificity: a named selector (tier 3) outranks :first (tier 2).
+        var ctx = new AtPageRules.PageSelectorContext(0, AssignedPageName: "cover");
+        Assert.Equal(3, AtPageRules.MatchTier("cover", ctx));
+        Assert.Equal(2, AtPageRules.MatchTier(":first", ctx));
+    }
+
+    [Fact]
+    public void MatchTier_named_page_is_case_sensitive()
+    {
+        // CSS custom-idents are case-sensitive.
+        Assert.Equal(-1, AtPageRules.MatchTier("Chapter",
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter")));
+    }
+
+    [Theory]
+    [InlineData("auto")]           // the initial page value, not a name
+    [InlineData("inherit")]        // a CSS-wide keyword, not a name
+    [InlineData("chapter:first")]  // a compound — deferred
+    [InlineData("123")]            // leading digit — not an ident
+    [InlineData(":nth(2)")]        // an unknown pseudo
+    public void MatchTier_rejects_non_name_or_compound_selectors(string prelude)
+    {
+        Assert.Equal(-1, AtPageRules.MatchTier(prelude,
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter")));
+    }
+
+    [Fact]
+    public async Task ResolveUsedPageName_reads_the_nearest_non_auto_ancestor()
+    {
+        // CSS Page 3 §3.4 used value: a `page: auto` (the default) resolves to the parent's used value, so
+        // a <p> inside a `.chapter { page: chapter }` inherits "chapter". AngleSharp drops `page`, so this
+        // also exercises the CssPreprocessor recovery.
+        var (doc, cascade) = await ResolveAsync(
+            "<html><body><div class='chapter'><p id='p'>x</p></div><p id='q'>y</p></body></html>",
+            ".chapter { page: chapter }");
+        Assert.Equal("chapter", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#p"), cascade));
+        Assert.Equal("", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#q"), cascade));  // no page in chain
+        Assert.Equal("", AtPageRules.ResolveUsedPageName(null, cascade));                     // a blank page
+    }
+
+    private static async Task<(IDocument Doc, ResolvedCascadeResult Cascade)> ResolveAsync(
+        string html, string css)
+    {
+        var ctx = BrowsingContext.New(Configuration.Default.WithCss());
+        var doc = await ctx.OpenAsync(req => req.Content(html));
+        var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
+        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css),
+            NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
+            mediaQuery: null, isDisabled: false, order: 0);
+        var cascade = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet), CssMediaContext.DefaultPrint);
+        return (doc, VarResolver.Resolve(cascade, doc));
     }
 }

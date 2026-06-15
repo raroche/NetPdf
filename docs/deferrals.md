@@ -3590,14 +3590,20 @@ flags the categories):
          driver builds an `AtPageRules.PageSelectorContext(pageIndex, IsBlank)` (the LTR parity: page 0 =
          recto/right, alternating; a body-fragment-less page is `:blank`), and `AtPageRules.MatchTier` (the
          page-context generalization of `ClassifyPageSelector`) picks the applicable `@page` rules in CSS
-         Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank`), which the per-page
-         `AtPageMarginBoxResolver.Resolve(ctx)` paints. STILL DEFERRED: (a) per-page GEOMETRY — a
-         `@page :left`/`:right` that changes `margin`/`size` would reflow LAYOUT per page (the content box
-         differs left vs right), which needs an iterative layout pass (the margin/size resolvers stay
-         single-page, bare + `:first`); (b) named-page selectors (cycle 7); (c) compound selectors
-         (`:first:left`) → `MatchTier` returns no-match; (d) `:blank` is implemented but latent — the driver
-         doesn't yet emit mid-document blank pages (no forced parity breaks). RTL parity flip out of scope.
-         `calc()` / font-relative margin units also deferred (absolute lengths + percentages are done).
+         Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank` < `@page <name>`), which
+         the per-page `AtPageMarginBoxResolver.Resolve(ctx)` paints. NAMED pages (cycle 7) also select MARGIN
+         BOXES per page: the `page` property (`auto | <custom-ident>`, dropped by AngleSharp → recovered by
+         `CssPreprocessor`, read raw) names a page via `AtPageRules.ResolveUsedPageName` (§3.4 used value —
+         the nearest non-`auto` ancestor; the driver reads the page's first CONTENT box, skipping the
+         `<html>`/`<body>` wrappers), and `MatchTier` matches a bare `<custom-ident>` `@page` selector at tier
+         3. STILL DEFERRED: (a) per-page GEOMETRY — a `@page :left`/`:right`/`<name>` that changes
+         `margin`/`size` would reflow LAYOUT per page (the content box differs), which needs an iterative
+         layout pass (the margin/size resolvers stay single-page, bare + `:first`); (b) COMPOUND selectors
+         (`:first:left`, `chapter:first`) → `MatchTier` returns no-match (`DeclaredPageNames` still collects a
+         compound's leading name for the union); (c) `:blank` is implemented but latent — the driver doesn't
+         yet emit mid-document blank pages (no forced parity breaks); (d) `page` is not a registered first-class
+         property (no `@supports`/validation — recovery + raw read). RTL parity flip out of scope. `calc()` /
+         font-relative margin units also deferred (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

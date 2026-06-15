@@ -150,155 +150,247 @@ internal static class PdfRenderPipeline
             .ConfigureAwait(false);
         ReplacedSizeResolver.ResolveTreeInPlace(phase2.BoxRoot, imageCache);
 
-        var sink = new ListFragmentSink();
-        var overflowReported = false;
         // Keep the shaper alive PAST paint (method-scoped using): the TextPainter subsets the
-        // SAME font program layout shaped, so the shaped glyph ids index the same font. The
-        // layouter + break resolver are layout-only and stay in their own scope below,
-        // disposed as soon as layout finishes.
+        // SAME font program layout shaped, so the shaped glyph ids index the same font.
         using var shaper = new HarfBuzzShaperResolver(options.FontResolver ?? new SystemFontResolver());
         var fontResolutionFailed = false;
+        var clippedOrTruncated = false;
+
+        // PHASE A — the multi-page driver (Task 21 / layout→PDF cycle 3). Lay out one
+        // fragmentainer per page, resuming via the continuation, accumulating each page's
+        // fragments. LAYOUT-ALL-THEN-PAINT (docs/design/multi-page-driver.md §4.5) so
+        // counter(pages) (the document total) is known before any page paints (cycle 4). The
+        // LayoutRetryCoordinator drives each page Strict (clean breaks) → … → LastResort, so
+        // block content overflowing the page now FLOWS onto the next page instead of
+        // force-overflowing a single page.
+        var pageFragments = new List<IReadOnlyList<BoxFragment>>();
+        LayoutContinuation? continuation = null;
         try
         {
-            using var layouter = new BlockLayouter(
-                rootBox: phase2.BoxRoot,
-                sink: sink,
-                incomingContinuation: null,
-                diagnostics: new PaginateToPublicDiagnosticsAdapter(diagnostics),
-                shaperResolver: shaper);
-            var fragmentainer = new FragmentainerContext(contentInlinePx, contentBlockPx);
-            var layout = new LayoutContext(fragmentainer);
-            using var breaks = new BreakResolver();
-
-            var result = layouter.AttemptLayout(
-                fragmentainer, ref layout, breaks, LayoutAttemptStrategy.LastResort, cancellationToken);
-
-            if (result.Outcome == LayoutAttemptOutcome.PageComplete && result.Continuation is not null)
+            for (var pageIndex = 0; ; pageIndex++)
             {
-                EmitOverflowTruncated(diagnostics);
-                overflowReported = true;
+                cancellationToken.ThrowIfCancellationRequested();
+                var sink = new ListFragmentSink();
+                var paginate = new PaginateToPublicDiagnosticsAdapter(diagnostics);
+                LayoutAttemptResult result;
+                using (var layouter = new BlockLayouter(
+                    rootBox: phase2.BoxRoot,
+                    sink: sink,
+                    incomingContinuation: continuation,
+                    diagnostics: paginate,
+                    shaperResolver: shaper))
+                {
+                    var fragmentainer = new FragmentainerContext(contentInlinePx, contentBlockPx)
+                    {
+                        PageIndex = pageIndex,
+                    };
+                    var layout = new LayoutContext(fragmentainer);
+                    using var breaks = new BreakResolver();
+                    // Drive each page through the retry coordinator: Strict (clean breaks)
+                    // first, only escalating (DropAvoidInside → LastResort) when a constraint
+                    // genuinely can't be met. A single direct LastResort attempt would instead
+                    // force-overflow the remainder onto one page rather than paginating.
+                    var coordinator = new LayoutRetryCoordinator(diagnostics: paginate, fragmentSink: sink);
+                    result = coordinator.Run(layouter, fragmentainer, ref layout, breaks, cancellationToken);
+                }
+
+                // Skip the trailing EMPTY resume page ONLY when it's TERMINAL — the forced-overflow
+                // continuation protocol's sentinel: an empty page that ALSO reports it's done
+                // (AllDone, or PageComplete with no further continuation; the resume-page subtree
+                // measure isn't yet resume-aware — docs/design/multi-page-driver.md). An empty page
+                // that STILL carries a real continuation is NOT this sentinel (it would be a future
+                // `@page :blank` / forced-parity / margin-box-only page) — keep it: fall through to
+                // add it + advance below, so the driver never silently drops a legitimate blank
+                // page. The MaxPages cap guards forward progress against a non-advancing loop.
+                // (An empty document still gets one page emitted below.)
+                var isTerminalEmptyResume = sink.Fragments.Count == 0
+                    && (result.Outcome != LayoutAttemptOutcome.PageComplete
+                        || result.Continuation is null);
+                if (pageIndex > 0 && isTerminalEmptyResume)
+                {
+                    break;
+                }
+
+                // A fragment outside the content box — wider than the content area (we paginate
+                // the block axis, not the inline axis), or a negative / absolute offset — is
+                // still clipped; surface it once. Block content that flows onto further pages
+                // is NOT overflow now.
+                if (FragmentsOverflowContentRect(sink.Fragments, contentInlinePx, contentBlockPx))
+                {
+                    clippedOrTruncated = true;
+                }
+
+                pageFragments.Add(sink.Fragments);
+
+                if (result.Outcome != LayoutAttemptOutcome.PageComplete || result.Continuation is null)
+                {
+                    break;
+                }
+                continuation = result.Continuation;
+
+                // Forward progress is guaranteed by the forced-overflow penalty; this cap
+                // backstops a layouter that fails to advance, so we never spin forever.
+                if (pageIndex + 1 >= MaxPages)
+                {
+                    clippedOrTruncated = true;
+                    break;
+                }
             }
         }
         catch (FontResolutionException ex)
         {
             // Text shaping runs DURING layout, so a font that can't be resolved (no matching
             // face) or whose bytes are unsafe / WOFF-wrapped surfaces here — not at paint time
-            // (the async-resolver case is a separate NotSupportedException already handled at the
-            // inline-layout seam). Degrade to a valid PDF — painting whatever fragments laid out
+            // (the async-resolver case is a separate NotSupportedException already handled at
+            // the inline-layout seam). Degrade to a valid PDF — keeping any pages laid out
             // before the failure — plus a diagnostic, rather than failing the whole conversion
-            // (CLAUDE.md #7, post-PR-#127 review P1). Per-block continuation past the failing run
-            // is a tracked follow-up. A bundled fallback font (cycle 5b) makes the default path
-            // never reach this.
+            // (CLAUDE.md #7, post-PR-#127 review P1). A bundled fallback font (cycle 5b) makes
+            // the default path never reach this.
             EmitTextFontUnresolved(diagnostics, ex.Message);
             fontResolutionFailed = true;
         }
 
-        // Overflow that didn't surface as a page break — a fragment wider/taller than the
-        // content box, a forced-overflow AllDone, or a negative/absolute offset — would paint
-        // outside the MediaBox and be clipped silently. Surface it with the same diagnostic
-        // (PR #118 review P2).
-        if (!fontResolutionFailed && !overflowReported
-            && FragmentsOverflowContentRect(sink.Fragments, contentInlinePx, contentBlockPx))
-            EmitOverflowTruncated(diagnostics);
+        // Always emit at least one page (an empty document, or a font failure before page 1,
+        // would otherwise produce a page-less — invalid — PDF).
+        if (pageFragments.Count == 0)
+        {
+            pageFragments.Add(System.Array.Empty<BoxFragment>());
+        }
+
+        // Inline overflow / the page-count cap clips content; surface once. Block content past
+        // page 1 now FLOWS onto further pages, so it is no longer truncated.
+        if (!fontResolutionFailed && clippedOrTruncated)
+        {
+            EmitOverflowClipped(diagnostics);
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Emit: page size (CSS px) → /MediaBox (PDF pt). The painter reads the
-        // box-tree styles, so it must run before phase2 is disposed.
+        // Emit: page size (CSS px) → /MediaBox (PDF pt). ONE PdfDocument + MediaBox for the
+        // whole run; the document + shaper are shared across pages. (NOTE: text is currently
+        // subset PER PAGE in the loop below, so a font shared across pages is NOT yet deduped —
+        // a size/efficiency follow-up, deferrals.md#layout-to-pdf-pipeline.) The painters read
+        // the box-tree styles, so they run before phase2 is disposed (method end).
         var document = new PdfDocument(PdfVersionString(options.EmittedPdfVersion));
         if (!string.IsNullOrEmpty(options.Title)) document.Title = options.Title;
         if (!string.IsNullOrEmpty(options.Author)) document.Author = options.Author;
-
         var mediaBox = new MediaBoxSize(
             PdfUnits.PxToPt(pageSize.WidthPx),
             PdfUnits.PxToPt(pageSize.HeightPx));
-        var page = document.AddPage(mediaBox);
 
-        FragmentPainter.PaintFragments(
-            sink.Fragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
-            paintBackgrounds: options.PrintBackgrounds, diagnostics,
-            imageCache, document);
+        // Page margin boxes (running headers/footers, Task 21): resolved from the @page rules +
+        // the generated-content context (string()/element()), computed ONCE for the document —
+        // only the per-page counter(page)/counter(pages) values vary in the paint loop (cycle
+        // 4). The root element box is the attr() host + the top of the inheritance chain (root
+        // → page context → margin box); element-free documents skip margin boxes. `var` keeps
+        // the resolver/collector return types from leaking into this method's locals.
+        var marginRootElBox = marginBoxes.IsDefaultOrEmpty ? null : FindRootElementBox(phase2.BoxRoot);
+        var marginHost = marginRootElBox?.SourceElement;
+        var hasMarginBoxes = marginHost is not null;
+        var marginPageDecls = hasMarginBoxes
+            ? AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media)
+            : default;
+        var marginRootStyle = marginRootElBox?.Style;
+        var totalPages = pageFragments.Count;
 
-        // Replaced-element content (img-pipeline cycle): each <img> fragment places its decoded
-        // XObject at its content box — over every band/border, under the glyphs (the documented
-        // text-last paint-order approximation).
-        ImagePainter.PaintImages(
-            sink.Fragments, page, document, imageCache, mediaBox.HeightPts,
-            margins.LeftPx, margins.TopPx, diagnostics);
+        // CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 is a once-per-RENDER diagnostic (matching the body's
+        // FragmentPainter flag), so this lives OUTSIDE the per-page loop — a margin box with an
+        // unsupported background-image variant is diagnosed once for the document, not once per page
+        // (PR #176 Copilot review).
+        var marginVariantReported = false;
 
-        // Page margin boxes (running headers/footers, Task 21 cycle 3): resolved from the same
-        // bare @page rules, laid out into fragments in the page margins. They paint through the
-        // SAME TextPainter pass as the body (post-PR-#132 review P3) so a font shared by body +
-        // header/footer is subset + embedded ONCE, not per-pass. Their fragments are offset
-        // relative to the body's content origin (the margins), exactly like body fragments.
-        // Literal + attr() content only this cycle; needs a host element (for attr()) —
-        // element-free documents skip them.
-        var textFragments = sink.Fragments;
-        if (!marginBoxes.IsDefaultOrEmpty
-            && FindRootElementBox(phase2.BoxRoot) is { SourceElement: { } host } rootEl)
+        // Cross-page running content (cycle 5): one MarginContentContext PER PAGE for the named strings
+        // (CSS GCPM L3) — per page, string(name)/first reads the FIRST string-set on that page (or the
+        // value carried forward from earlier pages if the page sets nothing), and string(name, last)
+        // reads the LAST on the page (or carried). Map each laid-out element to its first page from the
+        // per-page fragment lists; CollectPerPage buckets the string-set assignments by that page (an
+        // inline setter falls back to its nearest rendered ancestor's page) and carries each named
+        // string forward. (element() running content stays whole-document this cycle — cycle 5b.)
+        var marginContexts = System.Array.Empty<CssContentList.MarginContentContext>();
+        if (hasMarginBoxes)
         {
-            // The root element box gives both the attr() host + the top of the inheritance chain;
-            // the @page rules' own declarations form the page context the boxes inherit from.
-            var pageDecls = AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media);
-            // Page counters for counter(page)/counter(pages) (cycle 9). Single page → (1, 1); the
-            // blocked multi-page driver will supply the real per-page number + total once it lands.
-            var pageCounters = new CssContentList.PageCounters(page: 1, pages: 1);
-            // Generated-content context for string(name) (Task 22 — string-set) + element(name) (Task 23
-            // — position: running()), collected from the document in document order.
-            var marginContext = MarginContentCollector.Collect(host, phase2.Cascade);
-            var marginResult = PageMarginBoxPainter.Layout(
-                marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
-                margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
-                margins.LeftPx, margins.TopPx, host, rootEl.Style, pageDecls, pageCounters, marginContext, shaper, diagnostics);
-            // Margin-box background bands (cycle 8) paint BEHIND the header/footer text: after the
-            // body backgrounds above, before the shared text pass — same bg → text content order.
-            // Gated by PrintBackgrounds, exactly like body backgrounds (post-PR-#137 review P1).
-            if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
-                PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
-            // Margin-box background IMAGES (margin-box-bg-image cycle) tile over the color bands,
-            // under borders/text — the SAME body tiler (initial repeat, border-box clip, the tile
-            // cap), the same PrintBackgrounds gate. A url that failed to fetch/decode was already
-            // diagnosed at prefetch; its box paints color-only.
-            if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
+            var elementToPage = new Dictionary<IElement, int>();
+            for (var p = 0; p < pageFragments.Count; p++)
             {
-                var marginVariantReported = false;
-                foreach (var bi in marginResult.BackgroundImages)
+                foreach (var frag in pageFragments[p])
                 {
-                    if (!imageCache.TryGetByRawUrl(bi.RawUrl, out var biEntry)) continue;
-                    // The box's declared repeat/size/position raws drive the shared tiler
-                    // (PR #167 review P1 — margin-box variants wired; null = the initial). The
-                    // positioning area (LeftPx..) is the background-origin box, the clip params the
-                    // background-clip box (bg-origin / bg-clip cycles).
-                    FragmentPainter.PaintBackgroundImageTiles(
-                        page, document, biEntry, mediaBox.HeightPts,
-                        bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
-                        diagnostics, ref marginVariantReported,
-                        bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw,
-                        bi.ClipLeftPx, bi.ClipTopPx, bi.ClipWidthPx, bi.ClipHeightPx,
-                        bi.ClipRadiiPx); // a margin-box border-radius rounds the image clip (Task 3)
+                    if (frag.Box.SourceElement is { } el) elementToPage.TryAdd(el, p);
                 }
             }
-            // Margin-box borders (border cycle) paint over the bands, before the text — NOT gated by
-            // PrintBackgrounds (borders aren't background graphics; body borders always paint too).
-            if (marginResult.Borders.Count > 0)
-                PageMarginBoxPainter.PaintBorders(page, marginResult.Borders, mediaBox.HeightPts, diagnostics);
-            if (marginResult.Fragments.Count > 0)
-            {
-                var combined = new List<BoxFragment>(sink.Fragments.Count + marginResult.Fragments.Count);
-                combined.AddRange(sink.Fragments);
-                combined.AddRange(marginResult.Fragments);
-                textFragments = combined;
-            }
+            marginContexts = MarginContentCollector.CollectPerPage(
+                marginHost!, phase2.Cascade, elementToPage, totalPages);
         }
 
-        // Text paints OVER backgrounds + borders, ONE pass over body + margin-box fragments. The
-        // shaper (kept alive above) lets the painter subset + embed the exact font program layout
-        // shaped, then emit glyph runs at their baselines. With the default SystemFontResolver this
-        // is not yet deterministic-for-text (a bundled fallback font is the next cycle); a fixed
-        // IFontResolver makes it fully reproducible.
-        TextPainter.PaintText(
-            textFragments, page, document, shaper, mediaBox.HeightPts,
-            margins.LeftPx, margins.TopPx, diagnostics);
+        // PHASE B — paint each laid-out page (cycle 3/4). Pages are page-local (a fresh
+        // fragmentainer per page), so every page shares the same content origin; the only
+        // per-page variation is the page-number counters.
+        for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var page = document.AddPage(mediaBox);
+            var bodyFragments = pageFragments[pageIndex];
+
+            FragmentPainter.PaintFragments(
+                bodyFragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
+                paintBackgrounds: options.PrintBackgrounds, diagnostics,
+                imageCache, document);
+
+            // Replaced-element content (img-pipeline cycle): each <img> fragment places its
+            // decoded XObject at its content box — over every band/border, under the glyphs.
+            ImagePainter.PaintImages(
+                bodyFragments, page, document, imageCache, mediaBox.HeightPts,
+                margins.LeftPx, margins.TopPx, diagnostics);
+
+            var textFragments = bodyFragments;
+            if (hasMarginBoxes)
+            {
+                // Real per-page counters (cycle 4): counter(page) = this page's 1-based number;
+                // counter(pages) = the now-known document total. Margin boxes paint through the
+                // SAME TextPainter pass as the body so a shared font is subset + embedded once.
+                var pageCounters = new CssContentList.PageCounters(
+                    page: pageIndex + 1, pages: totalPages);
+                var marginResult = PageMarginBoxPainter.Layout(
+                    marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
+                    margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
+                    margins.LeftPx, margins.TopPx, marginHost!, marginRootStyle!,
+                    marginPageDecls, pageCounters, marginContexts[pageIndex], shaper, diagnostics);
+                // Background bands paint BEHIND the header/footer text; PrintBackgrounds-gated.
+                if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
+                    PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
+                // Background images tile over the bands, under borders/text; PrintBackgrounds-gated.
+                if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
+                {
+                    foreach (var bi in marginResult.BackgroundImages)
+                    {
+                        if (!imageCache.TryGetByRawUrl(bi.RawUrl, out var biEntry)) continue;
+                        FragmentPainter.PaintBackgroundImageTiles(
+                            page, document, biEntry, mediaBox.HeightPts,
+                            bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
+                            diagnostics, ref marginVariantReported,
+                            bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw,
+                            bi.ClipLeftPx, bi.ClipTopPx, bi.ClipWidthPx, bi.ClipHeightPx,
+                            bi.ClipRadiiPx); // a margin-box border-radius rounds the image clip
+                    }
+                }
+                // Margin-box borders paint over the bands, before the text — NOT PrintBackgrounds-gated.
+                if (marginResult.Borders.Count > 0)
+                    PageMarginBoxPainter.PaintBorders(page, marginResult.Borders, mediaBox.HeightPts, diagnostics);
+                if (marginResult.Fragments.Count > 0)
+                {
+                    var combined = new List<BoxFragment>(bodyFragments.Count + marginResult.Fragments.Count);
+                    combined.AddRange(bodyFragments);
+                    combined.AddRange(marginResult.Fragments);
+                    textFragments = combined;
+                }
+            }
+
+            // Text paints OVER backgrounds + borders, ONE pass over body + margin-box fragments.
+            // The kept-alive shaper lets the painter subset + embed the exact font program layout
+            // shaped, then emit glyph runs at their baselines.
+            TextPainter.PaintText(
+                textFragments, page, document, shaper, mediaBox.HeightPts,
+                margins.LeftPx, margins.TopPx, diagnostics);
+        }
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
@@ -327,13 +419,19 @@ internal static class PdfRenderPipeline
             "(deferrals.md#layout-to-pdf-pipeline).",
             DiagnosticSeverity.Warning));
 
-    private static void EmitOverflowTruncated(IDiagnosticsSink diagnostics) =>
+    /// <summary>Backstop page count for the multi-page driver loop (layout→PDF cycle 3).
+    /// Forward progress is guaranteed by the forced-overflow penalty, so this never trips for
+    /// real content; it bounds the loop if a layouter fails to advance its continuation.</summary>
+    private const int MaxPages = 20_000;
+
+    private static void EmitOverflowClipped(IDiagnosticsSink diagnostics) =>
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.PdfContentOverflowTruncated001,
-            "Document content does not fit the single page the cycle-2 renderer emits — it " +
-            "overflows the page content area (block and/or inline), and content beyond the " +
-            "first page / content box is not rendered. Multi-page output + overflow handling " +
-            "are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).",
+            "Some content does not fit its page's content box and is clipped — e.g. an element " +
+            "wider than the content area (NetPdf paginates the block axis across pages but does " +
+            "not split the inline axis), a negative / absolute offset outside the page, or " +
+            "content that exceeded the page-count safety cap. Block content that overflows the " +
+            "block axis now FLOWS onto further pages (deferrals.md#layout-to-pdf-pipeline).",
             DiagnosticSeverity.Warning));
 
     // A fragment whose border box leaves the content rect [0,contentInline]×[0,contentBlock]

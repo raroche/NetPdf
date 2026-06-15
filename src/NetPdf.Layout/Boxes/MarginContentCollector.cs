@@ -63,12 +63,121 @@ internal static class MarginContentCollector
             c.RunningContainers, c.RunningContainersFirst);
     }
 
+    /// <summary>Cross-page running content (Task 22, multi-page driver cycle 5): one
+    /// <see cref="CssContentList.MarginContentContext"/> PER PAGE for the NAMED STRINGS, implementing
+    /// CSS GCPM L3's carry-forward + first/last-on-page model rather than a single "current" value. A
+    /// named string set by an element laid out on page <c>p</c> is the value from page <c>p</c> onward
+    /// until re-set. Per page:
+    /// <list type="bullet">
+    /// <item><see cref="CssContentList.MarginContentContext.NamedStringsFirst"/> (what
+    /// <c>string(name)</c> / <c>string(name, first)</c> read) = the FIRST assignment ON that page, or
+    /// the carried-forward value if the page sets nothing;</item>
+    /// <item><see cref="CssContentList.MarginContentContext.NamedStrings"/> (what
+    /// <c>string(name, last)</c> reads) = the LAST assignment on the page, or the carried value.</item>
+    /// </list>
+    /// <paramref name="elementToPage"/> maps each laid-out element to its (first) page (built by the
+    /// render pipeline from the per-page fragment lists); a setting element with no fragment of its own
+    /// (e.g. an inline <c>&lt;span style="string-set:…"&gt;</c>) is resolved to its nearest rendered
+    /// ANCESTOR's page, because GCPM <c>string-set</c> applies to ALL elements, not just block ones. An
+    /// assignment whose element + ancestors never rendered is dropped.
+    /// <para><b>Deferred (cycle 5b):</b> <c>element()</c> running content (text + own styles / segments /
+    /// containers) stays WHOLE-DOCUMENT — applying the same per-page bucketing to the richer running-
+    /// occurrence record is a follow-up (deferrals.md). For a SINGLE running element this is already
+    /// correct on every page; multiple same-named running elements across pages is the deferred case.</para></summary>
+    public static CssContentList.MarginContentContext[] CollectPerPage(
+        IElement root, ResolvedCascadeResult cascade,
+        IReadOnlyDictionary<IElement, int> elementToPage, int pageCount)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(cascade);
+        ArgumentNullException.ThrowIfNull(elementToPage);
+        if (pageCount < 1) pageCount = 1;
+
+        var c = new Collected();
+        Walk(root, cascade, c);
+
+        // The element() running content (whole-document this cycle) is shared by every page.
+        var wholeDoc = new CssContentList.MarginContentContext(
+            c.Named, c.Running, c.NamedFirst, c.RunningFirst, c.RunningStyles, c.RunningStylesFirst,
+            c.RunningSegments, c.RunningSegmentsFirst, c.RunningContainers, c.RunningContainersFirst);
+
+        var contexts = new CssContentList.MarginContentContext[pageCount];
+
+        // No string-set anywhere → no per-page named-string variation; every page is the whole-doc
+        // context. Skip the per-page dictionary churn (Copilot review — avoid the per-page Dictionary/
+        // HashSet allocations for margin boxes that use only counters / element()).
+        if (c.NamedOrdered is null)
+        {
+            for (var i = 0; i < pageCount; i++) contexts[i] = wholeDoc;
+            return contexts;
+        }
+
+        // Bucket the string-set assignments by the page their setting element laid out on (or its
+        // nearest rendered ancestor's page), preserving document order within a page.
+        var byPage = new List<(string Name, string Value)>[pageCount];
+        foreach (var (element, name, value) in c.NamedOrdered)
+        {
+            var p = ResolvePage(element, elementToPage);
+            if (p < 0 || p >= pageCount) continue;
+            (byPage[p] ??= new()).Add((name, value));
+        }
+
+        // Walk pages in order carrying each name's value forward (its value as of the END of the prior
+        // page). Per page: NamedStrings (last) = carried + the last assignment on the page;
+        // NamedStringsFirst (first) = carried, overridden by the FIRST assignment on the page.
+        var carried = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var p = 0; p < pageCount; p++)
+        {
+            var last = new Dictionary<string, string>(carried, StringComparer.Ordinal);
+            var first = new Dictionary<string, string>(carried, StringComparer.Ordinal);
+            var firstSetThisPage = new HashSet<string>(StringComparer.Ordinal);
+            if (byPage[p] is { } assignments)
+            {
+                foreach (var (name, value) in assignments)
+                {
+                    last[name] = value;                                   // last-on-page wins
+                    if (firstSetThisPage.Add(name)) first[name] = value;  // FIRST on page overrides carried
+                }
+            }
+            carried = last;   // end-of-page value carries to the next page
+            contexts[p] = new CssContentList.MarginContentContext(
+                NamedStrings: last.Count > 0 ? last : null,
+                RunningElements: c.Running,
+                NamedStringsFirst: first.Count > 0 ? first : null,
+                RunningElementsFirst: c.RunningFirst,
+                RunningElementStyles: c.RunningStyles,
+                RunningElementStylesFirst: c.RunningStylesFirst,
+                RunningElementSegments: c.RunningSegments,
+                RunningElementSegmentsFirst: c.RunningSegmentsFirst,
+                RunningElementContainers: c.RunningContainers,
+                RunningElementContainersFirst: c.RunningContainersFirst);
+        }
+        return contexts;
+    }
+
+    /// <summary>The page a <c>string-set</c>'s setting element renders on: its own page if it produced a
+    /// fragment, else the nearest rendered ANCESTOR's page (an inline <c>&lt;span&gt;</c> with
+    /// <c>string-set</c> has no fragment of its own — its containing block does). −1 if neither it nor
+    /// any ancestor rendered. GCPM <c>string-set</c> applies to all elements, not just block ones, so an
+    /// inline assignment must still bucket to the page its text actually appears on.</summary>
+    private static int ResolvePage(IElement element, IReadOnlyDictionary<IElement, int> elementToPage)
+    {
+        for (IElement? el = element; el is not null; el = el.ParentElement)
+        {
+            if (elementToPage.TryGetValue(el, out var p)) return p;
+        }
+        return -1;
+    }
+
     /// <summary>Mutable accumulator threaded through the document <see cref="Walk"/> (a reference type, so
     /// the recursion shares one instance rather than passing many <c>ref</c> dictionaries).</summary>
     private sealed class Collected
     {
         public Dictionary<string, string>? Named;        // LAST string-set assignment — string(name, last)
         public Dictionary<string, string>? NamedFirst;   // FIRST — string(name) default + first
+        // Cross-page running content (cycle 5): every string-set assignment in DOCUMENT ORDER with the
+        // setting element, so the per-page collector can bucket them by the page the element laid out on.
+        public List<(IElement Element, string Name, string Value)>? NamedOrdered;
         public Dictionary<string, string>? Running;      // LAST running element text — element(name, last)
         public Dictionary<string, string>? RunningFirst; // FIRST — element(name) default + first
         public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStyles;      // LAST own style
@@ -96,6 +205,7 @@ internal static class MarginContentCollector
                     {
                         (c.Named ??= new(StringComparer.Ordinal))[name] = value;            // last-wins
                         (c.NamedFirst ??= new(StringComparer.Ordinal)).TryAdd(name, value); // first-wins (kept)
+                        (c.NamedOrdered ??= new()).Add((element, name, value));             // per-page (cycle 5)
                     }
                 }
             }

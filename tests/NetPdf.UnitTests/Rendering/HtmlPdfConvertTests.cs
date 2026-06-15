@@ -188,10 +188,12 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Content_taller_than_one_page_emits_the_overflow_diagnostic()
+    public void Content_taller_than_one_page_paginates_across_multiple_pages()
     {
-        // Ten 300px-tall blocks (3000px) far exceed an A4 content box (~931px),
-        // so layout returns a continuation the single-page cycle can't yet emit.
+        // Ten 300px-tall blocks (3000px) far exceed an A4 content box (~931px). With the
+        // multi-page driver (layout→PDF cycle 3) the block content now FLOWS across pages
+        // instead of overflowing a single page — and since it splits cleanly at block
+        // boundaries (3 blocks ≈ 900px fit per page), no overflow diagnostic fires.
         var sb = new StringBuilder("<!DOCTYPE html><html><body>");
         for (var i = 0; i < 10; i++)
             sb.Append("<div style=\"height:300px;background-color:#abcdef\"></div>");
@@ -199,8 +201,9 @@ public sealed class HtmlPdfConvertTests
 
         var result = HtmlPdf.ConvertDetailed(sb.ToString());
 
-        Assert.Equal(1, result.PageCount);
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.True(result.PageCount > 1, $"expected multi-page output, got {result.PageCount}");
+        Assert.True(result.PageCount < 20, $"sanity: expected a handful of pages, got {result.PageCount}");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
     }
 
     [Fact]
@@ -755,6 +758,89 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_footer_page_counter_increments_per_page()
+    {
+        // Cycle 4 — real per-page counter(page) (no longer the hard-coded (1, 1)). Two
+        // 600px blocks split across two A4 pages; the @bottom-center footer is
+        // counter(page, upper-alpha). Page 1's footer is "A", page 2's is "B" — DISTINCT
+        // glyphs. The old single-page renderer printed "A" on every page (one distinct
+        // glyph), so two distinct footer glyph runs prove the per-page counter.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @bottom-center { content: \"A\" counter(page, upper-alpha) } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div>" +
+            "<div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        // Each page subsets its own font, so a single-glyph footer would be glyph id 1 on
+        // BOTH pages regardless of the counter. The literal "A" prefix forces page 2's
+        // subset to carry BOTH 'A' and 'B' ("AB"), so page 2's glyph run differs from page
+        // 1's ("AA") IFF counter(page) actually incremented to 2.
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);               // one footer per page
+        Assert.NotEqual(runs[0], runs[1]);          // page 1 "AA" ≠ page 2 "AB"
+    }
+
+    [Fact]
+    public void Multi_page_footer_total_counter_is_the_real_page_count()
+    {
+        // Cycle 4 — counter(pages) resolves to the REAL document total (layout-all-then-
+        // paint knows it before painting). The footer "A" counter(pages, upper-alpha) is
+        // "AA" when the total is 1 and "AB" when it is 2. The literal "A" prefix makes the
+        // two-glyph footer comparable across the per-page font subsets (a single "A"/"B"
+        // would both subset to glyph 1). A one-page doc's footer ("AA") must therefore
+        // differ from a two-page doc's ("AB"); the old hard-coded total of 1 made both "AA".
+        const string footer =
+            "@page { @bottom-center { content: \"A\" counter(pages, upper-alpha) } }";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var onePage = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" + footer + "</style></head><body>" +
+            "<div style=\"height:100px\"></div></body></html>", opts);
+        var twoPage = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" + footer + "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>", opts);
+
+        Assert.Equal(1, onePage.PageCount);
+        Assert.Equal(2, twoPage.PageCount);
+        var oneRuns = GlyphRuns(Latin1(onePage.Pdf));   // counter(pages)=1 → "AA"
+        var twoRuns = GlyphRuns(Latin1(twoPage.Pdf));   // counter(pages)=2 → "AB"
+        Assert.NotEmpty(oneRuns);
+        Assert.NotEmpty(twoRuns);
+        Assert.DoesNotContain(twoRuns, r => oneRuns.Contains(r));  // "AB" ≠ "AA"
+    }
+
+    [Fact]
+    public void Multi_page_running_header_shows_the_current_section_string_per_page()
+    {
+        // Cycle 5 — cross-page running content. Two sections each fill a page and set the
+        // named string `title` (section 1 → "A", section 2 → "B"). The running header
+        // content: "A" string(title) is therefore "AA" on page 1 and "AB" on page 2 —
+        // DISTINCT. The whole-document collector returned the FIRST assignment ("A") on
+        // EVERY page, so both headers would have read "AA"; per-page carry-forward makes
+        // page 2 "AB". (The literal "A" prefix makes the value observable past the per-page
+        // font subset — a lone "A"/"B" would both subset to glyph 1.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"A\" string(title) } }" +
+            ".s1 { string-set: title \"A\"; height: 600px }" +
+            ".s2 { string-set: title \"B\"; height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"s1\"></div><div class=\"s2\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 "AA" (title=A) ≠ page 2 "AB" (title=B)
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic
@@ -815,6 +901,24 @@ public sealed class HtmlPdfConvertTests
             idx += 3;
         }
         return total;
+    }
+
+    /// <summary>The glyph-hex operand of every <c>&lt;hex&gt; Tj</c> show-glyph operator,
+    /// in order — one entry per painted text run. Used to compare per-page footer content
+    /// (e.g. page 1's "A" run vs page 2's "B" run) without depending on the subsetter's
+    /// renumbered glyph ids.</summary>
+    private static List<string> GlyphRuns(string pdf)
+    {
+        var runs = new List<string>();
+        var idx = 0;
+        while ((idx = pdf.IndexOf(" Tj", idx, StringComparison.Ordinal)) >= 0)
+        {
+            var close = pdf.LastIndexOf('>', idx);
+            var open = close > 0 ? pdf.LastIndexOf('<', close) : -1;
+            if (open >= 0 && close > open) runs.Add(pdf.Substring(open + 1, close - open - 1));
+            idx += 3;
+        }
+        return runs;
     }
 
     [Fact]

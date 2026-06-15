@@ -20,10 +20,12 @@ namespace NetPdf.Css.PagedMedia;
 /// <c>:first</c> override the bare page — the single-page / page-geometry view. The CONTEXT-aware
 /// <see cref="EnumeratePageRules(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>
 /// (multi-page driver cycle 6) yields the rules applicable to a GIVEN page — bare → matching
-/// <c>:left</c>/<c>:right</c> → matching <c>:first</c>/<c>:blank</c>, in specificity order — and
-/// <see cref="EnumerateAllPageRules"/> yields every <c>@page</c> regardless of selector (structural
-/// queries spanning all pages). Named-page selectors stay deferred (cycle 7). The <c>@page</c> margin +
-/// size + margin-box resolvers share this so applicability stays consistent between them.
+/// <c>:left</c>/<c>:right</c> → matching <c>:first</c>/<c>:blank</c>, in specificity order. For the
+/// structural "does any margin box render anywhere" + background-image prefetch UNION, the margin-box
+/// resolver resolves each of <see cref="RepresentativeContexts"/> (the distinct selector match-sets) and
+/// combines them, rather than cascading all selectors together (which would let a bare <c>content: none</c>
+/// suppress a selector-scoped box — post-PR-#178 review P1). Named-page selectors stay deferred (cycle 7).
+/// The <c>@page</c> margin + size + margin-box resolvers share this so applicability stays consistent.
 /// </summary>
 /// <remarks>
 /// <b>Scope vs. the cascade (Task 21).</b> Only the sheet-level media query and nested
@@ -127,13 +129,22 @@ internal static class AtPageRules
         }
     }
 
-    /// <summary>Yields EVERY <c>@page</c> rule applicable to <paramref name="media"/> regardless of its
-    /// selector (cycle 6) — for STRUCTURAL queries that span all pages: "does any <c>@page</c> declare a
-    /// margin box at all" and the background-image prefetch union. NOT in cascade order; per-page
-    /// painting uses the context-aware overload.</summary>
-    public static IEnumerable<CssAtRule> EnumerateAllPageRules(
-        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
-        => WalkPageRules(sheets, media, static _ => true);
+    /// <summary>The DISTINCT page contexts whose <c>@page</c> selector match-sets differ — every
+    /// combination of {first+right, left, right} × {blank, non-blank} (page 0 = first = recto/right;
+    /// parity from index). The structural "does any margin box render anywhere" + prefetch UNION
+    /// resolves each of these and combines the result, rather than cascading all selectors together
+    /// (post-PR-#178 review P1): a single combined cascade lets a later bare <c>content: none</c>
+    /// suppress an earlier <c>@page :left { … content }</c> from the union, which would wrongly drop the
+    /// page-specific box (and under-prefetch its background image). Resolving per representative context
+    /// keeps any box that renders on SOME page.</summary>
+    internal static readonly ImmutableArray<PageSelectorContext> RepresentativeContexts =
+        ImmutableArray.Create(
+            new PageSelectorContext(0, IsBlank: false),   // first, right
+            new PageSelectorContext(1, IsBlank: false),   // left
+            new PageSelectorContext(2, IsBlank: false),   // right, non-first
+            new PageSelectorContext(0, IsBlank: true),    // first, right, blank
+            new PageSelectorContext(1, IsBlank: true),    // left, blank
+            new PageSelectorContext(2, IsBlank: true));   // right, non-first, blank
 
     private static IEnumerable<PageRule> Walk(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorKind want)

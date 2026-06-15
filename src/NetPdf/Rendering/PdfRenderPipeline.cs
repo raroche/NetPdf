@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Threading;
 using System.Threading.Tasks;
 using AngleSharp.Dom;
@@ -295,6 +296,16 @@ internal static class PdfRenderPipeline
         var marginRootStyle = marginRootElBox?.Style;
         var totalPages = pageFragments.Count;
 
+        // Cache the per-page margin-box resolution by selector context (post-PR-#178 review P3): which
+        // @page rules apply to a page depends ONLY on (first, parity, blank), so at most a handful of
+        // distinct contexts exist across the whole document — resolve each once instead of re-walking the
+        // stylesheets (× specificity tiers, × 2 for boxes + declarations) for every page.
+        var marginBoxCache = hasMarginBoxes
+            ? new Dictionary<(bool First, bool Right, bool Blank),
+                (ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox> Boxes,
+                 ImmutableArray<NetPdf.Css.Parser.CssDeclaration> Decls)>()
+            : null;
+
         // CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 is a once-per-RENDER diagnostic (matching the body's
         // FragmentPainter flag), so this lives OUTSIDE the per-page loop — a margin box with an
         // unsupported background-image variant is diagnosed once for the document, not once per page
@@ -356,8 +367,16 @@ internal static class PdfRenderPipeline
                 // CONTENT/STYLE varies per page here.
                 var pageCtx = new AtPageRules.PageSelectorContext(
                     pageIndex, IsBlank: bodyFragments.Count == 0);
-                var pageBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media, pageCtx);
-                var pageDecls = AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media, pageCtx);
+                var ctxKey = (pageCtx.IsFirstPage, pageCtx.IsRightPage, pageCtx.IsBlank);
+                if (!marginBoxCache!.TryGetValue(ctxKey, out var resolvedForCtx))
+                {
+                    resolvedForCtx = (
+                        AtPageMarginBoxResolver.Resolve(phase2.Sheets, media, pageCtx),
+                        AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media, pageCtx));
+                    marginBoxCache[ctxKey] = resolvedForCtx;
+                }
+                var pageBoxes = resolvedForCtx.Boxes;
+                var pageDecls = resolvedForCtx.Decls;
 
                 // Real per-page counters (cycle 4): counter(page) = this page's 1-based number;
                 // counter(pages) = the now-known document total. Margin boxes paint through the

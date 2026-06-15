@@ -911,6 +911,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_selector_margin_box_is_not_suppressed_by_a_bare_content_none()
+    {
+        // Post-PR-#178 review P1: a bare `@page { @top-center { content: none } }` must NOT erase the
+        // selector-scoped `@page :left { @top-center { content: "AB" } }` from the structural union — the
+        // earlier ResolveAll cross-selector cascade let the bare `none` suppress top-center, so the
+        // pipeline saw "no margin boxes" and the LEFT header never painted. Now the left (page 2) header
+        // paints; the right (page 1) page is suppressed by the bare `none`.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page :left { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: none } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Single(runs);                    // only the LEFT page (page 2) paints a header; right is suppressed
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic

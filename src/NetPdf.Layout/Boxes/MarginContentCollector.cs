@@ -147,20 +147,30 @@ internal static class MarginContentCollector
             }
         }
 
-        // Bucket the running occurrences by page (cycle 5b) — same nearest-rendered-ancestor resolution as
-        // the named strings (the running element is removed from flow, so its page comes from its containing
-        // block). An occurrence whose element + ancestors never rendered falls back to page 0: a running
-        // element IS the box's content (unlike a named string it must still show) — the all-running-body
-        // edge with no in-flow fragment.
+        // Bucket the running occurrences by page (cycle 5b + post-PR-#178 review P1). A running element is
+        // removed from flow, so it has no fragment — bucket it by the page of the next rendered element
+        // FOLLOWING it in document order WITHIN its containing block (the content it heads). So direct
+        // sibling running headings under <body>, or several headings inside ONE multi-page container, each
+        // land on their own page instead of all collapsing to the container's first page (the limitation of
+        // the cycle-5b nearest-ancestor walk). A trailing heading with no following in-block content falls
+        // back to its nearest rendered ANCESTOR's page, then page 0 — a running element IS the box's content
+        // (unlike a named string it must still show), so it is never dropped.
         List<RunningOccurrence>[]? runByPage = null;
         if (c.RunningOrdered is not null)
         {
+            var runningElements = new HashSet<IElement>();
+            foreach (var occ in c.RunningOrdered) runningElements.Add(occ.Element);
+            var runningDocIndex = new Dictionary<IElement, int>();
+            var renderedInOrder = new List<(IElement El, int Index, int Page)>();
+            var counter = 0;
+            IndexDocumentOrder(root, runningElements, runningDocIndex, renderedInOrder, elementToPage, ref counter);
+
             runByPage = new List<RunningOccurrence>[pageCount];
             foreach (var occ in c.RunningOrdered)
             {
-                var p = ResolvePage(occ.Element, elementToPage);
-                if (p < 0) p = 0;                      // never drop a running element
-                if (p >= pageCount) continue;
+                var p = ResolveRunningPage(occ.Element, runningDocIndex, renderedInOrder, elementToPage);
+                if (p < 0) p = 0;                              // never drop a running element
+                if (p >= pageCount) p = pageCount - 1;         // clamp (defensive — page comes from the map)
                 (runByPage[p] ??= new()).Add(occ);
             }
         }
@@ -263,6 +273,66 @@ internal static class MarginContentCollector
             if (elementToPage.TryGetValue(el, out var p)) return p;
         }
         return -1;
+    }
+
+    /// <summary>Walk the document in DOCUMENT ORDER assigning each element a monotonic index, recording the
+    /// running elements' indices (so they can be ordered against rendered content) and the RENDERED elements
+    /// — those in <paramref name="elementToPage"/> — in order (the list stays ascending by index). The
+    /// per-page running-content resolution (post-PR-#178 review P1) uses these to find, for a removed-from-
+    /// flow running element, the next rendered element that follows it.</summary>
+    private static void IndexDocumentOrder(
+        IElement element, HashSet<IElement> runningElements,
+        Dictionary<IElement, int> runningDocIndex,
+        List<(IElement El, int Index, int Page)> renderedInOrder,
+        IReadOnlyDictionary<IElement, int> elementToPage, ref int counter)
+    {
+        var index = counter++;
+        if (runningElements.Contains(element)) runningDocIndex[element] = index;
+        if (elementToPage.TryGetValue(element, out var page)) renderedInOrder.Add((element, index, page));
+        foreach (var child in element.Children)   // IElement children, document order
+            IndexDocumentOrder(child, runningElements, runningDocIndex, renderedInOrder, elementToPage, ref counter);
+    }
+
+    /// <summary>The page a removed-from-flow <c>position: running()</c> element belongs to (post-PR-#178
+    /// review P1): the page of the FIRST rendered element after it in document order that is still within
+    /// its containing block (a descendant of its parent — the content the header precedes). If that next
+    /// rendered element is OUTSIDE the containing block (the running element is the last in-block content),
+    /// or there is none, falls back to the nearest rendered ANCESTOR's page (the containing block).
+    /// Returns −1 only when nothing rendered (an all-running document) — the caller maps that to page 0.</summary>
+    private static int ResolveRunningPage(
+        IElement runningElement, IReadOnlyDictionary<IElement, int> runningDocIndex,
+        List<(IElement El, int Index, int Page)> renderedInOrder,
+        IReadOnlyDictionary<IElement, int> elementToPage)
+    {
+        if (runningDocIndex.TryGetValue(runningElement, out var idx))
+        {
+            // renderedInOrder is ascending by Index — binary-search for the first rendered element AFTER
+            // the running element. (Once document order leaves the containing block, no later element is
+            // inside it, so checking just this first-following element is sufficient.)
+            int lo = 0, hi = renderedInOrder.Count;
+            while (lo < hi)
+            {
+                var mid = (lo + hi) >> 1;
+                if (renderedInOrder[mid].Index <= idx) lo = mid + 1; else hi = mid;
+            }
+            if (lo < renderedInOrder.Count)
+            {
+                var (el, _, page) = renderedInOrder[lo];
+                var parent = runningElement.ParentElement;
+                if (parent is not null && IsDescendantOf(el, parent)) return page;   // heads in-block content
+            }
+        }
+        return ResolvePage(runningElement, elementToPage);   // containing block's page (nearest rendered ancestor)
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="element"/> is a descendant of
+    /// <paramref name="ancestor"/> (walks parent links). Used to test whether the next rendered element is
+    /// still within a running element's containing block.</summary>
+    private static bool IsDescendantOf(IElement element, IElement ancestor)
+    {
+        for (IElement? e = element.ParentElement; e is not null; e = e.ParentElement)
+            if (ReferenceEquals(e, ancestor)) return true;
+        return false;
     }
 
     /// <summary>One occurrence of a <c>position: running(name)</c> element in document order (cross-page

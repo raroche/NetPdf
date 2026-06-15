@@ -257,6 +257,72 @@ public sealed class MarginContentCollectorTests
     }
 
     [Fact]
+    public async Task CollectPerPage_buckets_direct_sibling_running_headings_per_page()
+    {
+        // Post-PR-#178 review P1 — the core GCPM pattern. Two `position: running(rh)` headings are DIRECT
+        // siblings under <body> (no per-section wrapper), each followed by its own page's content. They
+        // must bucket to the page of the content they head — heading A → page 0 (p1), heading B → page 1
+        // (p2) — NOT both to body's page 0 (the cycle-5b nearest-ancestor walk's failure).
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><h1 class='rh'>A</h1><p id='p1'>x</p>" +
+            "<h1 class='rh'>B</h1><p id='p2'>y</p></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#p1")!] = 0,   // heading A's following content (page 0)
+            [doc.QuerySelector("#p2")!] = 1,   // heading B's following content (page 1)
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);   // heading A heads page 0
+        Assert.Equal("B", pages[1].RunningElementsFirst?["rh"]);   // heading B heads page 1 — not carried A
+    }
+
+    [Fact]
+    public async Task CollectPerPage_buckets_running_headings_inside_one_multi_page_container_per_page()
+    {
+        // Post-PR-#178 review P1 — two headings inside ONE container that spans pages. Each heads its own
+        // page's content (still within the container), so they bucket to pages 0 and 1 respectively — not
+        // both to the container's first page (the nearest-ancestor walk would have collapsed them).
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><div id='ch'><h1 class='rh'>A</h1><p id='p1'>x</p>" +
+            "<h1 class='rh'>B</h1><p id='p2'>y</p></div></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#ch")!] = 0,   // the container starts on page 0
+            [doc.QuerySelector("#p1")!] = 0,
+            [doc.QuerySelector("#p2")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);
+        Assert.Equal("B", pages[1].RunningElementsFirst?["rh"]);
+    }
+
+    [Fact]
+    public async Task CollectPerPage_trailing_running_heading_falls_back_to_its_container_page()
+    {
+        // A running heading with NO following in-block content (it's the last thing in its container) falls
+        // back to its nearest rendered ANCESTOR's page — here the container on page 1.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><div id='a'><p id='pa'>x</p></div>" +
+            "<div id='b'><p id='pb'>y</p><h1 class='rh'>H</h1></div></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#a")!] = 0,
+            [doc.QuerySelector("#pa")!] = 0,
+            [doc.QuerySelector("#b")!] = 1,
+            [doc.QuerySelector("#pb")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Null(pages[0].RunningElementsFirst);                 // nothing on page 0
+        Assert.Equal("H", pages[1].RunningElementsFirst?["rh"]);    // the trailing heading → its container's page 1
+    }
+
+    [Fact]
     public async Task CollectPerPage_single_page_running_element_is_the_whole_document_value()
     {
         // Cycle 5b — single-page short-circuit. With one page, the whole-document first/last IS the page-0

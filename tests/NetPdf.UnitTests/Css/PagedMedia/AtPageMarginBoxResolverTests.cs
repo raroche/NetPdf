@@ -207,12 +207,33 @@ public sealed class AtPageMarginBoxResolverTests
     public async Task ResolveAll_unions_boxes_across_selectors()
     {
         // The structural/prefetch union sees boxes from every selector regardless of page context — so a
-        // document with ONLY a :left margin box still reports "has margin boxes".
+        // document with ONLY a :left margin box still reports "has margin boxes". (:left renders in the
+        // left contexts — blank + non-blank — so it appears more than once in the union; every entry is
+        // the same box.)
         var sheet = await BuildSheet("@page :left { @top-center { content: \"L\" } }");
         var union = AtPageMarginBoxResolver.ResolveAll(new[] { sheet }, PrintContext);
-        Assert.Equal("\"L\"", Assert.Single(union).ContentRawValue);
+        Assert.NotEmpty(union);
+        Assert.All(union, b => { Assert.Equal("top-center", b.Name); Assert.Equal("\"L\"", b.ContentRawValue); });
         // The bare-page (single-page) view does NOT see it — it's selector-scoped.
         Assert.Empty(AtPageMarginBoxResolver.Resolve(new[] { sheet }, PrintContext));
+    }
+
+    [Fact]
+    public async Task ResolveAll_keeps_a_selector_box_a_bare_none_would_suppress()
+    {
+        // Post-PR-#178 review P1: a bare `@page { @top-center { content: none } }` must NOT erase the
+        // selector-scoped `@page :left { @top-center { content: "L" } }` from the structural union (a
+        // single cross-selector cascade would suppress it, making the pipeline think there are no margin
+        // boxes and never paint the left header). Resolving per representative context keeps it.
+        var sheet = await BuildSheet(
+            "@page :left { @top-center { content: \"L\" } } @page { @top-center { content: none } }");
+        var union = AtPageMarginBoxResolver.ResolveAll(new[] { sheet }, PrintContext);
+        Assert.NotEmpty(union);
+        Assert.Contains(union, b => b.Name == "top-center" && b.ContentRawValue == "\"L\"");
+        // Per page: the left page paints "L"; a right page is suppressed (bare none).
+        Assert.Equal("\"L\"", Assert.Single(
+            AtPageMarginBoxResolver.Resolve(new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(1))).ContentRawValue);
+        Assert.Empty(AtPageMarginBoxResolver.Resolve(new[] { sheet }, PrintContext, new AtPageRules.PageSelectorContext(0)));
     }
 
     private static readonly CssMediaContext PrintContext = new(

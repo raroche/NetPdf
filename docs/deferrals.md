@@ -3082,11 +3082,16 @@ flags the categories):
          CURRENT on that page. A running occurrence carries its WHOLE payload (text + own style + per-line
          segments + container bands) as one `RunningOccurrence`, so the per-page first/last selection stays in
          PR-#151 lockstep (the text can't pair with another occurrence's style). A SINGLE-page document short-
-         circuits to the whole-document context (byte-identical to the pre-cross-page path). APPROXIMATION:
-         sibling running elements sharing one multi-page containing block bucket to that block's first page
-         (nearest-ancestor resolution can't localize them further — they degrade to the whole-document
-         first/last, no worse than before); nesting each in its own per-page container resolves them per page.
-         Still deferred: `string(name, start)` / `first-except`; (b) **`string-set: … content()`
+         circuits to the whole-document context (byte-identical to the pre-cross-page path). A running
+         occurrence's PAGE is derived from DOCUMENT ORDER (post-PR-#178 review P1): a removed-from-flow running
+         element buckets to the page of the next rendered element FOLLOWING it within its containing block (the
+         content it heads), falling back to its nearest rendered ancestor's page (a trailing heading) then page
+         0 — so direct sibling running headings under `<body>` AND multiple headings inside one multi-page
+         container each resolve to their own page (the cycle-5b nearest-ancestor walk collapsed them to the
+         container's first page). APPROXIMATION: the page comes from the first FOLLOWING in-block rendered
+         element, not the running element's own laid-out position (it has none) — exact for the header-precedes-
+         content GCPM shape, an approximation when a running element sits among intra-page splits. Still
+         deferred: `string(name, start)` / `first-except`; (b) **`string-set: … content()`
          — DONE (Task 22 follow-up):** AngleSharp.Css DROPS the `content()` function from `string-set` (an
          unknown function in the unknown `string-set` property); `CssPreprocessor`'s recovery (gated to
          `string-set` + a `content()` value) re-injects the dropped declaration into the cascade, where

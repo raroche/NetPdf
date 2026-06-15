@@ -92,17 +92,28 @@ internal static class AtPageMarginBoxResolver
         return ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx));
     }
 
-    /// <summary>Multi-page driver cycle 6 — the UNION of margin boxes declared across EVERY <c>@page</c>
-    /// rule regardless of selector, for STRUCTURAL queries spanning all pages: detecting whether the
-    /// document has any margin boxes at all, and prefetching their background-image urls (a page-specific
-    /// box's image must be cached before any page that selector applies to paints). Per-page PAINTING uses
-    /// the context-aware overload; this is a superset.</summary>
+    /// <summary>Multi-page driver cycle 6 — the UNION of the margin boxes that render on SOME page, for
+    /// STRUCTURAL queries spanning all pages: detecting whether the document has any margin boxes at all,
+    /// and prefetching their background-image urls (a page-specific box's image must be cached before any
+    /// page that selector applies to paints). Resolves each of <see cref="AtPageRules.RepresentativeContexts"/>
+    /// — the distinct first/parity/blank selector match-sets — and concatenates the results, so the cascade
+    /// is applied PER CONTEXT (post-PR-#178 review P1): a single combined cascade across all selectors would
+    /// let a bare <c>content: none</c> suppress a <c>@page :left</c> box from the union and wrongly drop it.
+    /// A box that renders in more than one context appears more than once (one per context) — fine for the
+    /// two consumers (emptiness check + reading every context's background-image url); per-page PAINTING
+    /// uses the context-aware <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext, AtPageRules.PageSelectorContext)"/>.</summary>
     public static ImmutableArray<ResolvedMarginBox> ResolveAll(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media)
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
-        return ResolveFrom(AtPageRules.EnumerateAllPageRules(sheets, media));
+        ImmutableArray<ResolvedMarginBox>.Builder? all = null;
+        foreach (var ctx in AtPageRules.RepresentativeContexts)
+        {
+            foreach (var box in ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx)))
+                (all ??= ImmutableArray.CreateBuilder<ResolvedMarginBox>()).Add(box);
+        }
+        return all is null ? ImmutableArray<ResolvedMarginBox>.Empty : all.ToImmutable();
     }
 
     /// <summary>The shared margin-box cascade over a sequence of applicable <c>@page</c> rules (the

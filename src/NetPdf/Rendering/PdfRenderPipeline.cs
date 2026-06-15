@@ -372,11 +372,12 @@ internal static class PdfRenderPipeline
                 // the LTR mapping (page 0 = right). Per-page GEOMETRY (margins / size differing by
                 // `:left`/`:right`) needs an iterative layout and stays deferred — only the margin-box
                 // CONTENT/STYLE varies per page here.
-                // Named page (cycle 7): the page's name is the USED `page` value of its break-triggering
-                // box — the first body box on the page (its source element, walking ancestors for a
-                // non-auto `page`). A `@page <name>` selector then applies to pages with that name.
-                var pageName = AtPageRules.ResolveUsedPageName(
-                    FirstSourceElement(bodyFragments), phase2.Cascade);
+                // Named page (cycle 7 + PR #179 review P1): the page's name is the used `page` value of
+                // its break-triggering box — the first CONTENT box on the page. The layouter now forces a
+                // page break before a box whose `page` differs (CSS Page 3 §3.4), so the box that STARTS a
+                // named page carries the name (computed at build time onto `Box.PageName`). A `@page <name>`
+                // selector then applies to pages with that name.
+                var pageName = FirstContentPageName(bodyFragments);
                 var pageCtx = new AtPageRules.PageSelectorContext(
                     pageIndex, IsBlank: bodyFragments.Count == 0,
                     AssignedPageName: pageName.Length == 0 ? null : pageName);
@@ -439,7 +440,9 @@ internal static class PdfRenderPipeline
         }
 
         // Build each font ONCE (cross-page union) + replay every page's text — font-dedup-across-pages.
-        textSession.Finish(document);
+        // Honors the caller's cancellation/timeout (this pass subsets/embeds fonts + replays all pages'
+        // text after the per-page loop — review P2).
+        textSession.Finish(document, cancellationToken);
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
@@ -459,20 +462,21 @@ internal static class PdfRenderPipeline
         return null;
     }
 
-    /// <summary>The source element of the FIRST CONTENT fragment on a page — the page's break-triggering
-    /// box, whose used <c>page</c> property names the page (cycle 7). The <c>&lt;html&gt;</c> / <c>&lt;body&gt;</c>
-    /// structural wrappers SPAN every page, so they don't name any particular page (their fragment leads the
-    /// list but their <c>page</c> is auto); they're skipped to reach the first real content box, whose
-    /// <see cref="AtPageRules.ResolveUsedPageName"/> still walks back up through them for an inherited name.
-    /// Anonymous fragments (no source element) are skipped too; <see langword="null"/> for an empty page.</summary>
-    private static IElement? FirstSourceElement(IReadOnlyList<BoxFragment> fragments)
+    /// <summary>The used <c>page</c> name (CSS Page 3 §3.4) of the FIRST CONTENT box on a page — the page's
+    /// break-triggering box (cycle 7 + PR #179 review P1; <see cref="Box.PageName"/> computed at build
+    /// time). The <c>&lt;html&gt;</c> / <c>&lt;body&gt;</c> structural wrappers SPAN every page with
+    /// <c>page: auto</c>, so their fragment leads the list but doesn't name the page; they're skipped to
+    /// reach the first real content box (which, since the layouter forces a break on a <c>page</c> change,
+    /// is the named element on a named page). Anonymous fragments (no source element) are skipped too; the
+    /// empty string for an empty / unnamed page.</summary>
+    private static string FirstContentPageName(IReadOnlyList<BoxFragment> fragments)
     {
         foreach (var fragment in fragments)
             if (fragment.Box.SourceElement is { } el
                 && !el.LocalName.Equals("html", StringComparison.OrdinalIgnoreCase)
                 && !el.LocalName.Equals("body", StringComparison.OrdinalIgnoreCase))
-                return el;
-        return null;
+                return fragment.Box.PageName;
+        return string.Empty;
     }
 
     private static void EmitTextFontUnresolved(IDiagnosticsSink diagnostics, string detail) =>

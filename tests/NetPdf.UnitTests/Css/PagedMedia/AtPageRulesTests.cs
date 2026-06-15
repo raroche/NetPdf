@@ -118,13 +118,56 @@ public sealed class AtPageRulesTests
     [Theory]
     [InlineData("auto")]           // the initial page value, not a name
     [InlineData("inherit")]        // a CSS-wide keyword, not a name
+    [InlineData("initial")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    [InlineData("default")]        // reserved (CSS Page 3)
     [InlineData("chapter:first")]  // a compound — deferred
     [InlineData("123")]            // leading digit — not an ident
+    [InlineData("-1")]             // a leading '-' before a digit is not a valid ident (review P1)
+    [InlineData("--name")]         // custom-property syntax — not a page name
     [InlineData(":nth(2)")]        // an unknown pseudo
     public void MatchTier_rejects_non_name_or_compound_selectors(string prelude)
     {
         Assert.Equal(-1, AtPageRules.MatchTier(prelude,
-            new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter")));
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: prelude)));   // even self-named, invalid → no match
+    }
+
+    [Theory]
+    [InlineData("inherit")]
+    [InlineData("initial")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    public async Task ResolveUsedPageName_treats_css_wide_keywords_as_no_name(string keyword)
+    {
+        // Review P1: a CSS-wide `page` value must NOT become a literal page name — it resolves to the
+        // parent's used value (the walk continues). With no ancestor naming a page, the result is "".
+        var (doc, cascade) = await ResolveAsync(
+            "<html><body><div id='d'>x</div></body></html>", $"#d {{ page: {keyword} }}");
+        Assert.Equal("", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#d"), cascade));
+    }
+
+    [Theory]
+    [InlineData("-1")]      // a leading '-' before a digit
+    [InlineData("123")]     // leading digit
+    [InlineData("a b")]     // whitespace — not a single ident
+    public async Task ResolveUsedPageName_rejects_invalid_raw_values(string raw)
+    {
+        // Review P1: an INVALID raw `page` value is treated as `auto` (error recovery), not a literal name.
+        var (doc, cascade) = await ResolveAsync(
+            "<html><body><div id='d'>x</div></body></html>", $"#d {{ page: {raw} }}");
+        Assert.Equal("", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#d"), cascade));
+    }
+
+    [Fact]
+    public async Task ResolveUsedPageName_css_wide_inherit_resolves_to_a_named_ancestor()
+    {
+        // `page: inherit` on a child under a named ancestor resolves to the ancestor's name (the walk
+        // continues past `inherit` to the parent that names a page) — not the literal "inherit".
+        var (doc, cascade) = await ResolveAsync(
+            "<html><body><div class='ch'><div id='d'>x</div></div></body></html>",
+            ".ch { page: chapter } #d { page: inherit }");
+        Assert.Equal("chapter", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#d"), cascade));
     }
 
     [Fact]

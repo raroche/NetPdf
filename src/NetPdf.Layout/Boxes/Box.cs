@@ -69,6 +69,14 @@ internal sealed class Box
     /// table grid boxes, the root box).</summary>
     public IElement? SourceElement { get; }
 
+    /// <summary>The USED value of the CSS Page 3 §3.4 <c>page</c> property for this box (the named page
+    /// it belongs to), computed at box-build time via <c>AtPageRules.ResolveUsedPageName</c> — the empty
+    /// string when unnamed. The fragmentainer-aware layouter forces a page break before a block-flow child
+    /// whose <see cref="PageName"/> differs from the preceding box's (multi-page driver / PR #179 review
+    /// P1), and the driver reads the starting box's name to select <c>@page &lt;name&gt;</c>. Empty for
+    /// anonymous boxes.</summary>
+    public string PageName { get; init; } = string.Empty;
+
     /// <summary>The pseudo-element designation when this box represents
     /// <c>::before</c> / <c>::after</c> / <c>::marker</c> content.
     /// <see cref="BoxPseudo.None"/> for ordinary element boxes and anonymous
@@ -211,12 +219,13 @@ internal sealed class Box
     // ============================================================
 
     /// <summary>Construct a principal box for an element. Pseudo defaults to
-    /// <see cref="BoxPseudo.None"/>; <see cref="Text"/> is empty. Throws if
+    /// <see cref="BoxPseudo.None"/>; <see cref="Text"/> is empty. <paramref name="pageName"/> is the box's
+    /// used <c>page</c> value (CSS Page 3 §3.4; empty = unnamed). Throws if
     /// <paramref name="kind"/> is an always-anonymous kind.</summary>
-    public static Box ForElement(BoxKind kind, ComputedStyle style, IElement sourceElement)
+    public static Box ForElement(BoxKind kind, ComputedStyle style, IElement sourceElement, string pageName = "")
     {
         ArgumentNullException.ThrowIfNull(sourceElement);
-        return new Box(kind, style, sourceElement, BoxPseudo.None, string.Empty);
+        return new Box(kind, style, sourceElement, BoxPseudo.None, string.Empty) { PageName = pageName };
     }
 
     /// <summary>Construct a pseudo-element box. <paramref name="pseudo"/> must

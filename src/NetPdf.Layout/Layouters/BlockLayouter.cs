@@ -4384,6 +4384,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // a symmetric skip via `startChildIdx`; this brings the
         // recursion in line.
         var startIdx = incomingBlockChain?.ResumeAtChild ?? 0;
+        // Named-page forced break (PR #179 review P1): the used `page` value (CSS Page 3 §3.4) of the
+        // previous block-flow child emitted at this level on this page. A change forces a page break before
+        // the next child even if it would fit. Initialized to the container's own page name (so the first
+        // child only breaks once there's prior content — guarded by the forward-progress check below).
+        var prevPageName = parent.PageName;
         for (var childIdx = startIdx; childIdx < parent.Children.Count; childIdx++)
         {
             var child = parent.Children[childIdx];
@@ -4672,6 +4677,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 && IsBlockFlowContainerOwnedByBlockLayouter(child)
                 && _sink.Cursor > sinkCursorAtRecursionEntry)
             {
+                // Named-page FORCED break (PR #179 review P1): CSS Page 3 §3.4 — a change in the used
+                // `page` value from the preceding box forces a page break, even if the child would fit.
+                // Check this BEFORE the greedy fit check; the forward-progress guard above ensures the
+                // page already has content (a named child that STARTS the page just names the page).
+                if (!string.Equals(child.PageName, prevPageName, StringComparison.Ordinal))
+                {
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0);
+                }
                 var childStart = Math.Max(0, childBlockOffset);
                 var savedUsedBlockSize = pf.UsedBlockSize;
                 pf.UsedBlockSize = childStart;
@@ -4688,6 +4703,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         ConsumedBlockSize: 0);
                 }
             }
+            // Track this block-flow child's used page name as the "previous" for the next child's
+            // named-page break check (PR #179 review P1). Updated whether or not the child later breaks
+            // for another reason — it is on (or starts) this page either way.
+            if (IsBlockFlowContainerOwnedByBlockLayouter(child))
+                prevPageName = child.PageName;
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) — for nested Table / InlineTable wrappers, pre-

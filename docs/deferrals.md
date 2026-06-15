@@ -3603,18 +3603,24 @@ flags the categories):
          recto/right, alternating; a body-fragment-less page is `:blank`), and `AtPageRules.MatchTier` (the
          page-context generalization of `ClassifyPageSelector`) picks the applicable `@page` rules in CSS
          Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank` < `@page <name>`), which
-         the per-page `AtPageMarginBoxResolver.Resolve(ctx)` paints. NAMED pages (cycle 7) also select MARGIN
-         BOXES per page: the `page` property (`auto | <custom-ident>`, dropped by AngleSharp → recovered by
-         `CssPreprocessor`, read raw) names a page via `AtPageRules.ResolveUsedPageName` (§3.4 used value —
-         the nearest non-`auto` ancestor; the driver reads the page's first CONTENT box, skipping the
-         `<html>`/`<body>` wrappers), and `MatchTier` matches a bare `<custom-ident>` `@page` selector at tier
-         3. STILL DEFERRED: (a) per-page GEOMETRY — a `@page :left`/`:right`/`<name>` that changes
-         `margin`/`size` would reflow LAYOUT per page (the content box differs), which needs an iterative
-         layout pass (the margin/size resolvers stay single-page, bare + `:first`); (b) COMPOUND selectors
-         (`:first:left`, `chapter:first`) → `MatchTier` returns no-match (`DeclaredPageNames` still collects a
-         compound's leading name for the union); (c) `:blank` is implemented but latent — the driver doesn't
-         yet emit mid-document blank pages (no forced parity breaks); (d) `page` is not a registered first-class
-         property (no `@supports`/validation — recovery + raw read). RTL parity flip out of scope. `calc()` /
+         the per-page `AtPageMarginBoxResolver.Resolve(ctx)` paints. NAMED pages (cycle 7 + PR #179 review)
+         also select MARGIN BOXES per page AND FORCE a page break: the `page` property (`auto | <custom-ident>`,
+         dropped by AngleSharp → recovered by `CssPreprocessor`, read raw) is resolved by
+         `AtPageRules.ResolveUsedPageName` (§3.4 used value — nearest VALID-`<custom-ident>` ancestor; CSS-wide
+         keywords + invalid raws like `-1` resolve to the parent, NOT literal names — PR #179 P1) and stored on
+         `Box.PageName` at build time. `BlockLayouter` FORCES a page break before a block-flow child whose
+         `Box.PageName` differs from the preceding one (CSS Page 3 §3.4 — so a named section that FITS the
+         current page still starts a new one); the driver reads each page's name from its first content box's
+         `Box.PageName` (skipping the `<html>`/`<body>` wrappers) and `MatchTier` matches a bare
+         `<custom-ident>` `@page` selector at tier 3. STILL DEFERRED: (a) per-page GEOMETRY — a
+         `@page :left`/`:right`/`<name>` that changes `margin`/`size` would reflow LAYOUT per page (the content
+         box differs), which needs an iterative layout pass (the margin/size resolvers stay single-page, bare +
+         `:first`); (b) COMPOUND selectors (`:first:left`, `chapter:first`) → `MatchTier` returns no-match
+         (`DeclaredPageNames` still collects a compound's leading name for the union); (c) `:blank` is
+         implemented but latent — the driver doesn't yet emit mid-document blank pages (no forced parity
+         breaks); (d) `page` is not a registered first-class property (no `@supports` — recovery + raw read,
+         but CSS-wide/`<custom-ident>` validation IS applied at use). The forced break compares ADJACENT
+         block-flow SIBLINGS (a first cut of §3.4's "preceding box"). RTL parity flip out of scope. `calc()` /
          font-relative margin units also deferred (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for

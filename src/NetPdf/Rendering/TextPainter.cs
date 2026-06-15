@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Diagnostics;
@@ -150,13 +151,19 @@ internal static class TextPainter
                     contentOriginLeftPx, contentOriginTopPx, pageHeightPt,
                     shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics);
             }
-            _pages.Add((page, draws));
+            // Skip a page with no draws (a background/image-only, transparent-text, or font-size:0 page) —
+            // it has no text to replay, so storing it would just no-op in Finish (Copilot — avoid retaining
+            // the page reference + the empty list). The page itself is unaffected (its non-text content was
+            // already painted), so the page count + output are unchanged.
+            if (draws.Count > 0) _pages.Add((page, draws));
         }
 
         /// <summary>Pass 2: build (subset + embed + register) each font ONCE from the union of glyphs
         /// collected across all pages, then replay each page's draw commands mapping original → subset
-        /// glyph ids.</summary>
-        public void Finish(PdfDocument document)
+        /// glyph ids. Honors <paramref name="cancellationToken"/> before each font build + each page replay
+        /// (post-PR-#179 review P2 — this pass parses/subsets/embeds fonts + replays all pages' text after
+        /// layout, so a caller timeout / cancellation must still abort it).</summary>
+        public void Finish(PdfDocument document, CancellationToken cancellationToken = default)
         {
             ArgumentNullException.ThrowIfNull(document);
 
@@ -164,6 +171,7 @@ internal static class TextPainter
             var built = new Dictionary<string, BuiltFont>(StringComparer.Ordinal);
             foreach (var key in _fontOrder)
             {
+                cancellationToken.ThrowIfCancellationRequested();   // before each (potentially large) font build
                 var fc = _collects[key];
                 try
                 {
@@ -186,7 +194,10 @@ internal static class TextPainter
 
             // ---- Pass 2b: replay each page's draws ----
             foreach (var (page, draws) in _pages)
-                EmitPage(page, draws, built);
+            {
+                cancellationToken.ThrowIfCancellationRequested();   // before each page's text replay
+                EmitPage(page, draws, built, cancellationToken);
+            }
         }
 
         /// <summary>Replay one page's draw commands. Each font is added to THIS page's resource dictionary
@@ -198,13 +209,16 @@ internal static class TextPainter
         /// a clip. <see cref="PdfPage.ShowGlyphs"/> wraps each run in its own <c>q/Q</c>, so nesting inside
         /// the clip's <c>q/Q</c> is balanced.</summary>
         private static void EmitPage(
-            PdfPage page, List<DrawCommand> draws, Dictionary<string, BuiltFont> built)
+            PdfPage page, List<DrawCommand> draws, Dictionary<string, BuiltFont> built,
+            CancellationToken cancellationToken)
         {
             if (draws.Count == 0) return;
             var pageNames = new Dictionary<string, PdfName>(StringComparer.Ordinal);   // AddFont once per font per page.
             (double X, double Y, double W, double H)? openClipPt = null;
+            var drawn = 0;
             foreach (var cmd in draws)
             {
+                if ((drawn++ & 0xFF) == 0) cancellationToken.ThrowIfCancellationRequested();   // every 256 runs
                 if (!built.TryGetValue(cmd.FontKey, out var bf)) continue; // build failed → already diagnosed.
                 if (!pageNames.TryGetValue(cmd.FontKey, out var name))
                     pageNames[cmd.FontKey] = name = page.AddFont(bf.FontRef);

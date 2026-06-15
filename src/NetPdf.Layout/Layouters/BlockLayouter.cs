@@ -8553,8 +8553,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// derivation grows.</para></summary>
     private static double PreMeasureGridRowExtent(Box gridBox)
     {
-        var rows = gridBox.Style.ReadGridTemplateRows();
-        if (rows.Items.IsDefaultOrEmpty) return 0;
+        // Non-block-pagination completion — DON'T early-return on an empty
+        // `grid-template-rows`. GridSizing.Resolve generates IMPLICIT rows from
+        // grid-auto-rows + auto-placement (CSS Grid §7.4), so a grid whose rows
+        // come only from implicit tracks (the common `grid-template-columns: …`
+        // + auto-flowed rows case) has a real row extent too. The prior
+        // early-return left such a grid at chrome-only height, so the wrapper
+        // never overflowed + the (already-wired) grid pagination never engaged.
+        // Now the full natural row extent is measured for explicit AND implicit
+        // rows, so an auto-row grid taller than the page paginates.
+        //
         // Per PR-#94 review F1 + F6 — delegate to the shared
         // GridSizing.Resolve service so wrapper measurement + emission
         // agree on the row extent. Pre-F1 this method summed only

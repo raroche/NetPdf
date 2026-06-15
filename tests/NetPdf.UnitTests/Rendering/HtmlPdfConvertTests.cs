@@ -337,6 +337,71 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Grid_with_implicit_auto_rows_paginates_across_pages_without_loss()
+    {
+        // Non-block-pagination completion — a grid whose rows come from IMPLICIT
+        // tracks (grid-auto-rows + auto-placement, NOT grid-template-rows) now
+        // paginates too. The wrapper pre-measure (PreMeasureGridRowExtent) used
+        // to sum only template rows, so an auto-row grid stayed chrome-height +
+        // never overflowed; now GridSizing.Resolve's implicit-track extent makes
+        // the wrapper overflow + the (already-wired) grid pagination engages.
+        // 12 implicit 200px rows (2400px) exceed an A4 content box (~931px).
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:100px;grid-auto-rows:200px\">");
+        for (var i = 0; i < 12; i++) sb.Append("<div style=\"background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the auto-row grid to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every implicit-row cell, once
+    }
+
+    [Fact]
+    public void Grid_with_fr_column_and_implicit_rows_paginates()
+    {
+        // Non-block-pagination completion — an implicit-row grid whose COLUMN is
+        // `1fr` paginates too. The fr column resolves against the (definite) page
+        // width; the implicit-row extent (independent of the column track) drives
+        // the wrapper overflow + pagination. 12 implicit 200px rows ⇒ ≥ 2 pages.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:1fr;grid-auto-rows:200px\">");
+        for (var i = 0; i < 12; i++) sb.Append("<div style=\"background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the fr-column auto-row grid to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every cell, once
+    }
+
+    [Fact]
+    public void Grid_as_root_child_with_implicit_rows_paginates_via_outer_dispatch()
+    {
+        // Non-block-pagination completion — an implicit-row grid that is the
+        // ROOT's direct child (here `body` itself is the grid) routes through
+        // BlockLayouter's OUTER grid dispatch + pre-measure, not the recursive
+        // one (mirrors the flex P1 outer-vs-recursion distinction). The Task-1
+        // pre-measure fix covers both sites, so a body-level auto-row grid
+        // taller than the page paginates too. 12 implicit 200px rows ⇒ ≥ 2 pages.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"display:grid;grid-template-columns:100px;grid-auto-rows:200px\">");
+        for (var i = 0; i < 12; i++) sb.Append("<div style=\"background-color:#3366cc\"></div>");
+        sb.Append("</body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the root-child auto-row grid to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every cell, once
+    }
+
+    [Fact]
     public void Flex_column_on_the_root_child_paginates_via_the_outer_dispatch()
     {
         // PR-#180 review P1 — the ROOT's direct child being flex (here `body`

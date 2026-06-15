@@ -3073,8 +3073,20 @@ flags the categories):
          pulls the named string and `content: element(name)` pulls the running element's text (an undefined
          name → the empty string). `BoxBuilder` SKIPS a `position: running()` element from the body box
          tree (detected from the raw `position` value before the keyword resolver, so no spurious
-         invalid-value diagnostic). STATUS: (a) **cross-page "running" persistence** DEFERRED — the value
-         carried to later pages until re-set (needs the multi-page driver); (b) **`string-set: … content()`
+         invalid-value diagnostic). STATUS: (a) **cross-page "running" persistence** DONE (multi-page driver
+         cycles 5 [named strings] + 5b [`element()`]) — `MarginContentCollector.CollectPerPage` buckets each
+         `string-set` assignment AND each `position: running()` occurrence by the page its (setting / removed-
+         from-flow) element laid out on — nearest rendered ANCESTOR for an inline setter or a running element,
+         with a page-0 fallback for an all-running body that produced no in-flow fragment — then carries each
+         value forward until re-set, so per page `string(name)` / `element(name)` (first / last) read the value
+         CURRENT on that page. A running occurrence carries its WHOLE payload (text + own style + per-line
+         segments + container bands) as one `RunningOccurrence`, so the per-page first/last selection stays in
+         PR-#151 lockstep (the text can't pair with another occurrence's style). A SINGLE-page document short-
+         circuits to the whole-document context (byte-identical to the pre-cross-page path). APPROXIMATION:
+         sibling running elements sharing one multi-page containing block bucket to that block's first page
+         (nearest-ancestor resolution can't localize them further — they degrade to the whole-document
+         first/last, no worse than before); nesting each in its own per-page container resolves them per page.
+         Still deferred: `string(name, start)` / `first-except`; (b) **`string-set: … content()`
          — DONE (Task 22 follow-up):** AngleSharp.Css DROPS the `content()` function from `string-set` (an
          unknown function in the unknown `string-set` property); `CssPreprocessor`'s recovery (gated to
          `string-set` + a `content()` value) re-injects the dropped declaration into the cascade, where

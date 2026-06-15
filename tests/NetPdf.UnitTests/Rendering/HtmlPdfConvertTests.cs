@@ -1088,6 +1088,29 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_shares_one_embedded_font_across_pages()
+    {
+        // Font-dedup-across-pages: a font used on EVERY page is subset + embedded ONCE (from the cross-page
+        // glyph UNION), not once per page. Two empty 600px sections split across two A4 pages, each with a
+        // counter(page) footer: page 1's footer is "A", page 2's is "B" — DISTINCT glyphs on distinct pages.
+        // Pre-dedup each page embedded its OWN subset ({A} then {B}) → two /FontFile2 programs; now the
+        // union {A, B} is embedded once.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @bottom-center { content: counter(page, upper-alpha) } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Equal(2, result.PageCount);
+        Assert.Equal(1, pdf.Split("/FontFile2").Length - 1);   // ONE embedded program shared across both pages
+        // Both footers still paint (the union maps each page's glyph), one show per page.
+        Assert.Equal(2, GlyphRuns(pdf).Count);
+    }
+
+    [Fact]
     public void Page_margin_box_inside_at_media_print_is_painted()
     {
         var result = HtmlPdf.ConvertDetailed(

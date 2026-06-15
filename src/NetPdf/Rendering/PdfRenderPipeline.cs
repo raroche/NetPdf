@@ -337,6 +337,13 @@ internal static class PdfRenderPipeline
         // PHASE B — paint each laid-out page (cycle 3/4). Pages are page-local (a fresh
         // fragmentainer per page), so every page shares the same content origin; the only
         // per-page variation is the page-number counters.
+        // Font-dedup-across-pages: ONE text-paint session spans every page — it collects all pages'
+        // glyphs (one HarfBuzz shaping pass) and, in Finish() after the loop, subsets + embeds each font
+        // ONCE from the cross-page union (so a shared font is embedded once, not once per page). The
+        // background/border/image painting stays per page inside the loop; the per-page text replay in
+        // Finish() appends AFTER it, preserving the "text over backgrounds" layering.
+        var textSession = new TextPainter.TextPaintSession(
+            shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics);
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -425,12 +432,14 @@ internal static class PdfRenderPipeline
             }
 
             // Text paints OVER backgrounds + borders, ONE pass over body + margin-box fragments.
-            // The kept-alive shaper lets the painter subset + embed the exact font program layout
-            // shaped, then emit glyph runs at their baselines.
-            TextPainter.PaintText(
-                textFragments, page, document, shaper, mediaBox.HeightPts,
-                margins.LeftPx, margins.TopPx, diagnostics);
+            // Collect this page's glyphs + draw commands now (the kept-alive shaper shapes once); the
+            // actual glyph runs are replayed in Finish() below, after every font is subset + embedded
+            // once from the cross-page union.
+            textSession.CollectPage(page, textFragments);
         }
+
+        // Build each font ONCE (cross-page union) + replay every page's text — font-dedup-across-pages.
+        textSession.Finish(document);
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);

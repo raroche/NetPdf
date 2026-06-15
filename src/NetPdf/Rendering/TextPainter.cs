@@ -92,87 +92,140 @@ internal static class TextPainter
         double contentOriginTopPx,
         IDiagnosticsSink? diagnostics)
     {
-        ArgumentNullException.ThrowIfNull(fragments);
+        // Single-page convenience over the multi-page session (byte-identical to the pre-dedup path: a
+        // session with one page subsets that page's glyphs exactly as before). The multi-page driver uses
+        // the session directly to dedup a shared font across pages.
         ArgumentNullException.ThrowIfNull(page);
-        ArgumentNullException.ThrowIfNull(document);
-        ArgumentNullException.ThrowIfNull(shaper);
+        var session = new TextPaintSession(shaper, pageHeightPt, contentOriginLeftPx, contentOriginTopPx, diagnostics);
+        session.CollectPage(page, fragments);
+        session.Finish(document);
+    }
 
-        var collects = new Dictionary<string, FontCollect>(StringComparer.Ordinal);
-        var fontOrder = new List<string>();          // first-seen order → deterministic build order.
-        var failed = new HashSet<string>(StringComparer.Ordinal);   // font keys that couldn't resolve/parse/build.
-        var diagnosed = new HashSet<string>(StringComparer.Ordinal); // dedup of emitted skip messages.
-        var draws = new List<DrawCommand>();
+    /// <summary>The font built ONCE for the whole document (font-dedup-across-pages cycle): the registered
+    /// indirect ref (shared by every page that uses the font — <see cref="PdfDocument.RegisterFont"/> already
+    /// dedups identical embedded subsets, so subsetting the UNION of glyphs once yields ONE font object) plus
+    /// the original→subset glyph map.</summary>
+    private readonly record struct BuiltFont(PdfIndirectRef FontRef, IReadOnlyDictionary<int, int> OldToNew);
 
-        // ---- Pass 1: collect used glyphs per font + record draw commands ----
-        for (var i = 0; i < fragments.Count; i++)
+    /// <summary>
+    /// A document-scoped text-paint pass (font-dedup-across-pages cycle). Collecting EVERY page's glyphs
+    /// before building lets each font be subset + embedded ONCE from the UNION of glyphs used across all
+    /// pages — so a font shared by N pages is embedded once (via <see cref="PdfDocument.RegisterFont"/>'s
+    /// content dedup) instead of N times, and HarfBuzz shapes each run once (not once per page). Per page:
+    /// <see cref="CollectPage"/> records its draw commands + accumulates its glyphs; then
+    /// <see cref="Finish"/> builds the fonts and replays every page's draws.
+    /// </summary>
+    internal sealed class TextPaintSession(
+        HarfBuzzShaperResolver shaper,
+        double pageHeightPt,
+        double contentOriginLeftPx,
+        double contentOriginTopPx,
+        IDiagnosticsSink? diagnostics)
+    {
+        private readonly Dictionary<string, FontCollect> _collects = new(StringComparer.Ordinal);
+        private readonly List<string> _fontOrder = [];               // first-seen (across pages) → deterministic build order.
+        private readonly HashSet<string> _failed = new(StringComparer.Ordinal);    // font keys that couldn't resolve/parse/build.
+        private readonly HashSet<string> _diagnosed = new(StringComparer.Ordinal); // dedup of emitted skip messages.
+        private readonly List<(PdfPage Page, List<DrawCommand> Draws)> _pages = [];
+
+        /// <summary>Pass 1 for one page: collect its used glyphs into the SHARED per-font sets (so the
+        /// subset is built from the cross-page union) and record its draw commands for replay in
+        /// <see cref="Finish"/>. The page is stored so its text can be emitted after all fonts are built.</summary>
+        public void CollectPage(PdfPage page, IReadOnlyList<BoxFragment> fragments)
         {
-            var fragment = fragments[i];
-            if (fragment.InlineLayout is not { } inline) continue;
-            if (inline.Lines.Length == 0) continue;
-            var blockStyle = fragment.Box.Style;
-            if (blockStyle is null) continue;
+            ArgumentNullException.ThrowIfNull(page);
+            ArgumentNullException.ThrowIfNull(fragments);
+            ArgumentNullException.ThrowIfNull(shaper);
+            var draws = new List<DrawCommand>();
+            for (var i = 0; i < fragments.Count; i++)
+            {
+                var fragment = fragments[i];
+                if (fragment.InlineLayout is not { } inline) continue;
+                if (inline.Lines.Length == 0) continue;
+                var blockStyle = fragment.Box.Style;
+                if (blockStyle is null) continue;
 
-            CollectFragment(
-                fragment, inline, blockStyle,
-                contentOriginLeftPx, contentOriginTopPx, pageHeightPt,
-                shaper, collects, fontOrder, failed, diagnosed, draws, diagnostics);
+                CollectFragment(
+                    fragment, inline, blockStyle,
+                    contentOriginLeftPx, contentOriginTopPx, pageHeightPt,
+                    shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics);
+            }
+            _pages.Add((page, draws));
         }
 
-        if (draws.Count == 0) return; // nothing painted (text-free, or all runs skipped).
-
-        // ---- Pass 2a: build (subset + embed + register) each font, in deterministic order ----
-        var emits = new Dictionary<string, FontEmit>(StringComparer.Ordinal);
-        foreach (var key in fontOrder)
+        /// <summary>Pass 2: build (subset + embed + register) each font ONCE from the union of glyphs
+        /// collected across all pages, then replay each page's draw commands mapping original → subset
+        /// glyph ids.</summary>
+        public void Finish(PdfDocument document)
         {
-            var fc = collects[key];
-            try
+            ArgumentNullException.ThrowIfNull(document);
+
+            // ---- Pass 2a: build each font ONCE, in deterministic (first-seen-across-pages) order ----
+            var built = new Dictionary<string, BuiltFont>(StringComparer.Ordinal);
+            foreach (var key in _fontOrder)
             {
-                var plan = GlyphSubsetPlan.Build(fc.Font, fc.SortedUsedGlyphIds());
-                var subset = TtfSubsetter.Subset(fc.Font, plan);
-                var toUnicode = ToUnicodeCMap.FromSubset(fc.Font, plan);
-                var embedded = EmbeddedTtfFont.Build(fc.Font, subset, toUnicode);
-                var name = page.AddFont(document.RegisterFont(embedded));
-                emits[key] = new FontEmit(name, plan.OldToNew);
+                var fc = _collects[key];
+                try
+                {
+                    var plan = GlyphSubsetPlan.Build(fc.Font, fc.SortedUsedGlyphIds());
+                    var subset = TtfSubsetter.Subset(fc.Font, plan);
+                    var toUnicode = ToUnicodeCMap.FromSubset(fc.Font, plan);
+                    var embedded = EmbeddedTtfFont.Build(fc.Font, subset, toUnicode);
+                    built[key] = new BuiltFont(document.RegisterFont(embedded), plan.OldToNew);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
+                                              or ArgumentException or FormatException)
+                {
+                    // A resolved+validated font we still can't subset/embed (e.g. a CFF/OTF
+                    // outline font TtfSubsetter doesn't handle yet). Skip its text, don't fail
+                    // the whole render (CLAUDE.md #7 — surface, don't drop silently).
+                    Diagnose(diagnostics, _diagnosed,
+                        $"font program '{key}' could not be subset/embedded: {ex.Message}");
+                }
             }
-            catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException
-                                          or ArgumentException or FormatException)
-            {
-                // A resolved+validated font we still can't subset/embed (e.g. a CFF/OTF
-                // outline font TtfSubsetter doesn't handle yet). Skip its text, don't fail
-                // the whole render (CLAUDE.md #7 — surface, don't drop silently).
-                Diagnose(diagnostics, diagnosed,
-                    $"font program '{key}' could not be subset/embedded: {ex.Message}");
-            }
+
+            // ---- Pass 2b: replay each page's draws ----
+            foreach (var (page, draws) in _pages)
+                EmitPage(page, draws, built);
         }
 
-        // ---- Pass 2b: replay the draw commands, mapping original → subset glyph ids ----
-        // A fragment's clip rect (margin-box overflow clip-path cycle) wraps its glyph runs in ONE
-        // q <rect> re W n … Q pair: draws are replayed in collect order, so a fragment's commands are
-        // contiguous and the clip opens on the first drawn command carrying it and closes when the clip
-        // changes (or at the end). The state is transitioned only for commands that actually draw —
-        // a skipped (failed-font) command must not open a clip. ShowGlyphs wraps each run in its own
-        // q/Q, so nesting inside the clip's q/Q is balanced.
-        (double X, double Y, double W, double H)? openClipPt = null;
-        foreach (var cmd in draws)
+        /// <summary>Replay one page's draw commands. Each font is added to THIS page's resource dictionary
+        /// on first use (cached), referencing the one shared embedded-font object. A fragment's clip rect
+        /// (margin-box overflow clip-path cycle) wraps its glyph runs in ONE <c>q … re W n … Q</c> pair:
+        /// draws are in collect order, so a fragment's commands are contiguous and the clip opens on the
+        /// first drawn command carrying it and closes when the clip changes (or at the end). The state is
+        /// transitioned only for commands that actually draw — a skipped (failed-font) command must not open
+        /// a clip. <see cref="PdfPage.ShowGlyphs"/> wraps each run in its own <c>q/Q</c>, so nesting inside
+        /// the clip's <c>q/Q</c> is balanced.</summary>
+        private static void EmitPage(
+            PdfPage page, List<DrawCommand> draws, Dictionary<string, BuiltFont> built)
         {
-            if (!emits.TryGetValue(cmd.FontKey, out var emit)) continue; // build failed → already diagnosed.
-            if (cmd.ClipPt != openClipPt)
+            if (draws.Count == 0) return;
+            var pageNames = new Dictionary<string, PdfName>(StringComparer.Ordinal);   // AddFont once per font per page.
+            (double X, double Y, double W, double H)? openClipPt = null;
+            foreach (var cmd in draws)
             {
-                if (openClipPt is not null) page.RestoreGraphicsState();
-                openClipPt = cmd.ClipPt;
-                if (openClipPt is { } clip) page.BeginRectangleClip(clip.X, clip.Y, clip.W, clip.H);
-            }
-            var subsetIds = new ushort[cmd.OriginalGlyphIds.Length];
-            for (var g = 0; g < subsetIds.Length; g++)
-                subsetIds[g] = (ushort)emit.OldToNew[cmd.OriginalGlyphIds[g]];
+                if (!built.TryGetValue(cmd.FontKey, out var bf)) continue; // build failed → already diagnosed.
+                if (!pageNames.TryGetValue(cmd.FontKey, out var name))
+                    pageNames[cmd.FontKey] = name = page.AddFont(bf.FontRef);
+                if (cmd.ClipPt != openClipPt)
+                {
+                    if (openClipPt is not null) page.RestoreGraphicsState();
+                    openClipPt = cmd.ClipPt;
+                    if (openClipPt is { } clip) page.BeginRectangleClip(clip.X, clip.Y, clip.W, clip.H);
+                }
+                var subsetIds = new ushort[cmd.OriginalGlyphIds.Length];
+                for (var g = 0; g < subsetIds.Length; g++)
+                    subsetIds[g] = (ushort)bf.OldToNew[cmd.OriginalGlyphIds[g]];
 
-            FragmentPainter.ColorChannels(cmd.ColorArgb, out var r, out var g2, out var b);
-            // Partial text alpha composites via ExtGState /ca, like fills (review P2) — fully
-            // transparent runs were already dropped at collect time.
-            var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0;
-            page.ShowGlyphs(emit.Name, cmd.SizePt, cmd.XPt, cmd.YPt, subsetIds, r, g2, b, alpha);
+                FragmentPainter.ColorChannels(cmd.ColorArgb, out var r, out var g2, out var b);
+                // Partial text alpha composites via ExtGState /ca, like fills (review P2) — fully
+                // transparent runs were already dropped at collect time.
+                var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0;
+                page.ShowGlyphs(name, cmd.SizePt, cmd.XPt, cmd.YPt, subsetIds, r, g2, b, alpha);
+            }
+            if (openClipPt is not null) page.RestoreGraphicsState();
         }
-        if (openClipPt is not null) page.RestoreGraphicsState();
     }
 
     /// <summary>Collect one fragment's inline text: walk its lines → slices → shaped runs,
@@ -389,9 +442,6 @@ internal static class TextPainter
             return ids;
         }
     }
-
-    /// <summary>Per-font emit state: the page resource name + the original→subset glyph map.</summary>
-    private readonly record struct FontEmit(PdfName Name, IReadOnlyDictionary<int, int> OldToNew);
 
     /// <summary>One queued glyph-show: the font, the original glyph ids (mapped to subset ids
     /// at replay), the baseline origin + size in PDF points, the fill color, and the fragment's

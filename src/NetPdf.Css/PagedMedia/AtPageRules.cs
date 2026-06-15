@@ -15,11 +15,15 @@ namespace NetPdf.Css.PagedMedia;
 /// <see cref="CssStylesheet.IsDisabled"/> sheets, honors <see cref="CssStylesheet.MediaQuery"/>,
 /// and recurses into <c>@media</c> blocks only when their condition matches — in source order
 /// (sheet order → rule order). The <c>EnumerateBarePageRules*</c> view yields ONLY the bare
-/// <c>@page</c> rule; <c>EnumeratePageRules*</c> additionally yields the <c>@page :first</c> rules
-/// in cascade-specificity order (bare, then <c>:first</c>) so the resolvers' last-wins cascade lets
-/// <c>:first</c> override the bare page. <c>:left</c> / <c>:right</c> / <c>:blank</c> / named-page
-/// selectors stay deferred (multi-page-gated). The <c>@page</c> margin + size + margin-box resolvers
-/// share this so applicability stays consistent between them.
+/// <c>@page</c> rule; <c>EnumeratePageRules*</c> (no context) additionally yields the <c>@page :first</c>
+/// rules in cascade-specificity order (bare, then <c>:first</c>) so the resolvers' last-wins cascade lets
+/// <c>:first</c> override the bare page — the single-page / page-geometry view. The CONTEXT-aware
+/// <see cref="EnumeratePageRules(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>
+/// (multi-page driver cycle 6) yields the rules applicable to a GIVEN page — bare → matching
+/// <c>:left</c>/<c>:right</c> → matching <c>:first</c>/<c>:blank</c>, in specificity order — and
+/// <see cref="EnumerateAllPageRules"/> yields every <c>@page</c> regardless of selector (structural
+/// queries spanning all pages). Named-page selectors stay deferred (cycle 7). The <c>@page</c> margin +
+/// size + margin-box resolvers share this so applicability stays consistent between them.
 /// </summary>
 /// <remarks>
 /// <b>Scope vs. the cascade (Task 21).</b> Only the sheet-level media query and nested
@@ -85,6 +89,52 @@ internal static class AtPageRules
         foreach (var r in EnumeratePageRulesWithMediaInfo(sheets, media)) yield return r.Rule;
     }
 
+    /// <summary>Multi-page driver cycle 6 — the per-page selector context the resolvers match an
+    /// <c>@page</c> selector against (CSS Page 3 §3.1): the 0-based <paramref name="PageIndex"/> (→
+    /// first-page + LTR parity) and whether the page is intentionally <paramref name="IsBlank"/>. RTL
+    /// parity flip + named-page assignment are out of scope here (the basic LTR parity mapping; cycle 7).</summary>
+    public readonly record struct PageSelectorContext(int PageIndex, bool IsBlank = false)
+    {
+        /// <summary>The first page (index 0) matches <c>:first</c>.</summary>
+        public bool IsFirstPage => PageIndex == 0;
+
+        /// <summary>LTR page progression: the first page (index 0) is a RIGHT (recto) page and sides
+        /// alternate, so a <see langword="true"/> page matches <c>:right</c> and a <see langword="false"/>
+        /// one <c>:left</c> (CSS Page 3 §3.1). RTL flips this — out of scope (the basic parity mapping).</summary>
+        public bool IsRightPage => (PageIndex & 1) == 0;
+    }
+
+    /// <summary>The highest page-selector specificity tier (CSS Page 3 §3.1) the context-aware
+    /// enumeration walks: bare (0) → <c>:left</c>/<c>:right</c> (1) → <c>:first</c>/<c>:blank</c> (2).
+    /// A named page (cycle 7) would add tier 3.</summary>
+    private const int MaxSelectorTier = 2;
+
+    /// <summary>Yields the <c>@page</c> rules applicable TO A GIVEN PAGE (cycle 6) in CASCADE
+    /// SPECIFICITY ORDER — bare first, then the matching <c>:left</c>/<c>:right</c> parity rules, then
+    /// the matching <c>:first</c>/<c>:blank</c> rules — so a resolver applying them in iteration order
+    /// with a last-wins cascade lets the higher-specificity selector win (and a bare <c>!important</c>
+    /// still beats a selector-scoped normal: importance outranks specificity). A rule whose selector
+    /// list doesn't match the context (<see cref="MatchTier"/> &lt; 0 — a <c>:left</c> rule on a right
+    /// page, or a named/compound selector this first cut doesn't model) is skipped.</summary>
+    public static IEnumerable<CssAtRule> EnumeratePageRules(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorContext ctx)
+    {
+        for (var tier = 0; tier <= MaxSelectorTier; tier++)
+        {
+            var t = tier;   // capture per-iteration (the predicate is consumed within this tier)
+            foreach (var at in WalkPageRules(sheets, media, p => MatchTier(p, ctx) == t))
+                yield return at;
+        }
+    }
+
+    /// <summary>Yields EVERY <c>@page</c> rule applicable to <paramref name="media"/> regardless of its
+    /// selector (cycle 6) — for STRUCTURAL queries that span all pages: "does any <c>@page</c> declare a
+    /// margin box at all" and the background-image prefetch union. NOT in cascade order; per-page
+    /// painting uses the context-aware overload.</summary>
+    public static IEnumerable<CssAtRule> EnumerateAllPageRules(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+        => WalkPageRules(sheets, media, static _ => true);
+
     private static IEnumerable<PageRule> Walk(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorKind want)
     {
@@ -145,6 +195,77 @@ internal static class AtPageRules
     /// <summary>The <c>@page</c> selector kinds the resolvers handle: the bare page, the
     /// <c>:first</c> page, and everything else (deferred — multi-page-gated).</summary>
     internal enum PageSelectorKind { Bare, First, Deferred }
+
+    /// <summary>The matching SPECIFICITY TIER of an <c>@page</c> selector list against
+    /// <paramref name="ctx"/> (cycle 6 — generalizes <see cref="ClassifyPageSelector"/> to a page
+    /// context), or <c>-1</c> when NO selector in the list matches (the rule doesn't apply). Per CSS
+    /// Page 3 the prelude is a comma-separated list and the rule applies if ANY selector matches; the
+    /// tier returned is the HIGHEST among the MATCHING selectors (so <c>:first, :left</c> contributes
+    /// at <c>:first</c>'s tier on the first page and <c>:left</c>'s tier on a left page). Tiers ascend
+    /// bare (0) &lt; <c>:left</c>/<c>:right</c> (1) &lt; <c>:first</c>/<c>:blank</c> (2). A named page or
+    /// a compound (<c>chapter</c>, <c>:first:left</c>) is not modeled in this first cut → it never
+    /// matches (cycle 7 / deferred), exactly as <see cref="ClassifyPageSelector"/> deferred everything
+    /// but <c>:first</c>.</summary>
+    internal static int MatchTier(string? prelude, PageSelectorContext ctx)
+    {
+        if (string.IsNullOrWhiteSpace(prelude)) return 0;   // bare — always applies
+        var best = -1;
+        foreach (var raw in prelude.Split(','))
+        {
+            var (tier, matches) = MatchSelector(raw.Trim(), ctx);
+            if (matches && tier > best) best = tier;
+        }
+        return best;
+    }
+
+    /// <summary>Match ONE page selector against the context, returning its specificity tier + whether
+    /// it matches. Only the single pseudo-class selectors are modeled (first cut): <c>:first</c> /
+    /// <c>:blank</c> (tier 2), <c>:left</c> / <c>:right</c> (tier 1). A bare token can't appear inside a
+    /// list (a bare page has an empty prelude, handled by <see cref="MatchTier"/>). Anything else — a
+    /// named page, a compound, an unknown pseudo — returns (no tier, no match): deferred (cycle 7).</summary>
+    private static (int Tier, bool Matches) MatchSelector(string selector, PageSelectorContext ctx)
+    {
+        if (selector.Equals(":first", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsFirstPage);
+        if (selector.Equals(":blank", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsBlank);
+        if (selector.Equals(":left", StringComparison.OrdinalIgnoreCase)) return (1, !ctx.IsRightPage);
+        if (selector.Equals(":right", StringComparison.OrdinalIgnoreCase)) return (1, ctx.IsRightPage);
+        return (-1, false);   // named / compound / unknown → deferred (cycle 7)
+    }
+
+    /// <summary>Rule-only recursive walk (cycle 6) yielding each applicable <c>@page</c> rule whose
+    /// selector satisfies <paramref name="match"/>, with the SAME sheet-media / disabled filtering +
+    /// <c>@media</c> recursion + source order as <see cref="Walk"/>. Paper-size conditioning is not
+    /// tracked (margin boxes — the only consumer — ignore it).</summary>
+    private static IEnumerable<CssAtRule> WalkPageRules(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, Func<string?, bool> match)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        foreach (var sheet in sheets)
+        {
+            if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
+            if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
+            foreach (var at in FromRulesMatching(sheet.Rules, media, match)) yield return at;
+        }
+    }
+
+    private static IEnumerable<CssAtRule> FromRulesMatching(
+        ImmutableArray<CssRule> rules, CssMediaContext media, Func<string?, bool> match)
+    {
+        foreach (var rule in rules)
+        {
+            if (rule is not CssAtRule at) continue;
+            if (string.Equals(at.Name, "media", StringComparison.OrdinalIgnoreCase))
+            {
+                if (media.Matches(at.Prelude)) // recurse only when the @media condition matches
+                    foreach (var r in FromRulesMatching(at.ChildRules, media, match)) yield return r;
+            }
+            else if (string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase) && match(at.Prelude))
+            {
+                yield return at;
+            }
+        }
+    }
 
     /// <summary>Returns <see langword="true"/> when <paramref name="mediaQuery"/> references a
     /// paper-size media feature (CSS Page 3 §3.3) in feature position — i.e. as the identifier

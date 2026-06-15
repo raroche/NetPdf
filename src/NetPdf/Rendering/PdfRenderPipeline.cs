@@ -116,16 +116,19 @@ internal static class PdfRenderPipeline
 
         // Page margin boxes resolve EARLY (margin-box-bg-image cycle) — they're sheet-based
         // (no layout dependency), and the image prefetch below needs their background-image
-        // urls. Layout/paint still happen at assembly time below.
-        var marginBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media);
+        // urls. The UNION across every @page selector (cycle 6) — so a `@page :left { … background-image }`
+        // box's image is prefetched too — feeds the prefetch + the "does the document have margin boxes
+        // at all" check; the actual per-page boxes (honoring `:first`/`:left`/`:right`/`:blank`) are
+        // re-resolved per page in the paint loop below. Layout/paint still happen at assembly time below.
+        var marginBoxesUnion = AtPageMarginBoxResolver.ResolveAll(phase2.Sheets, media);
         // Margin-box background-image urls (PrintBackgrounds-gated like the body's — PR #166
         // review P1: no fetch for backgrounds that will not paint). The unsupported-form
         // diagnostic stays with the painter's Layout (the rect pass); silent null here.
         List<string>? marginBoxImageUrls = null;
-        if (options.PrintBackgrounds && !marginBoxes.IsDefaultOrEmpty)
+        if (options.PrintBackgrounds && !marginBoxesUnion.IsDefaultOrEmpty)
         {
             var noopReported = true;   // suppress the duplicate here — Layout surfaces it.
-            foreach (var mb in marginBoxes)
+            foreach (var mb in marginBoxesUnion)
             {
                 if (PageMarginBoxPainter.TryReadBackgroundImageUrl(mb.Declarations, diagnostics, ref noopReported)
                     is { } mbUrl)
@@ -279,17 +282,16 @@ internal static class PdfRenderPipeline
             PdfUnits.PxToPt(pageSize.HeightPx));
 
         // Page margin boxes (running headers/footers, Task 21): resolved from the @page rules +
-        // the generated-content context (string()/element()), computed ONCE for the document —
-        // only the per-page counter(page)/counter(pages) values vary in the paint loop (cycle
-        // 4). The root element box is the attr() host + the top of the inheritance chain (root
-        // → page context → margin box); element-free documents skip margin boxes. `var` keeps
-        // the resolver/collector return types from leaking into this method's locals.
-        var marginRootElBox = marginBoxes.IsDefaultOrEmpty ? null : FindRootElementBox(phase2.BoxRoot);
+        // the generated-content context (string()/element()). The boxes + page-context declarations
+        // are re-resolved PER PAGE in the paint loop (cycle 6) so each page honors its
+        // `:first`/`:left`/`:right`/`:blank` selectors; only the document-wide pieces (does the doc
+        // have margin boxes at all, the inheritance-root element + its style) are computed here. The
+        // root element box is the attr() host + the top of the inheritance chain (root → page context
+        // → margin box); element-free documents skip margin boxes. `var` keeps the resolver/collector
+        // return types from leaking into this method's locals.
+        var marginRootElBox = marginBoxesUnion.IsDefaultOrEmpty ? null : FindRootElementBox(phase2.BoxRoot);
         var marginHost = marginRootElBox?.SourceElement;
         var hasMarginBoxes = marginHost is not null;
-        var marginPageDecls = hasMarginBoxes
-            ? AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media)
-            : default;
         var marginRootStyle = marginRootElBox?.Style;
         var totalPages = pageFragments.Count;
 
@@ -344,16 +346,29 @@ internal static class PdfRenderPipeline
             var textFragments = bodyFragments;
             if (hasMarginBoxes)
             {
+                // Per-page selector context (cycle 6): the page's `:first`/`:left`/`:right`/`:blank`
+                // selectors pick which @page rules' margin boxes + page-context style apply, so a left
+                // page paints `@page :left`'s header, the first page `@page :first`'s, etc., over the
+                // bare @page. A page with NO body fragments is `:blank` (CSS Page 3 — an intentionally
+                // blank page; the terminal empty resume page was already dropped in PHASE A). Parity is
+                // the LTR mapping (page 0 = right). Per-page GEOMETRY (margins / size differing by
+                // `:left`/`:right`) needs an iterative layout and stays deferred — only the margin-box
+                // CONTENT/STYLE varies per page here.
+                var pageCtx = new AtPageRules.PageSelectorContext(
+                    pageIndex, IsBlank: bodyFragments.Count == 0);
+                var pageBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media, pageCtx);
+                var pageDecls = AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media, pageCtx);
+
                 // Real per-page counters (cycle 4): counter(page) = this page's 1-based number;
                 // counter(pages) = the now-known document total. Margin boxes paint through the
                 // SAME TextPainter pass as the body so a shared font is subset + embedded once.
                 var pageCounters = new CssContentList.PageCounters(
                     page: pageIndex + 1, pages: totalPages);
                 var marginResult = PageMarginBoxPainter.Layout(
-                    marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
+                    pageBoxes, pageSize.WidthPx, pageSize.HeightPx,
                     margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
                     margins.LeftPx, margins.TopPx, marginHost!, marginRootStyle!,
-                    marginPageDecls, pageCounters, marginContexts[pageIndex], shaper, diagnostics);
+                    pageDecls, pageCounters, marginContexts[pageIndex], shaper, diagnostics);
                 // Background bands paint BEHIND the header/footer text; PrintBackgrounds-gated.
                 if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
                     PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);

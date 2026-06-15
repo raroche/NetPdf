@@ -3579,11 +3579,20 @@ flags the categories):
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare
-         `!important` still beats a `:first` normal). STILL DEFERRED: `@page :left`/`:right`/`:blank`
-         + named-page selectors — recognized by `ClassifyPageSelector` (→ `Deferred`) but NOT applied,
-         because they need the multi-page driver's page context (which page is left/right/blank, or
-         what `page:` name a page was assigned). `calc()` / font-relative margin units also deferred
-         (absolute lengths + percentages are done).
+         `!important` still beats a `:first` normal).
+       - **`@page :left`/`:right`/`:blank` selectors (multi-page driver cycle 6) — MARGIN BOXES DONE,
+         GEOMETRY DEFERRED:** for MARGIN BOXES (running headers/footers) these now apply per page — the
+         driver builds an `AtPageRules.PageSelectorContext(pageIndex, IsBlank)` (the LTR parity: page 0 =
+         recto/right, alternating; a body-fragment-less page is `:blank`), and `AtPageRules.MatchTier` (the
+         page-context generalization of `ClassifyPageSelector`) picks the applicable `@page` rules in CSS
+         Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank`), which the per-page
+         `AtPageMarginBoxResolver.Resolve(ctx)` paints. STILL DEFERRED: (a) per-page GEOMETRY — a
+         `@page :left`/`:right` that changes `margin`/`size` would reflow LAYOUT per page (the content box
+         differs left vs right), which needs an iterative layout pass (the margin/size resolvers stay
+         single-page, bare + `:first`); (b) named-page selectors (cycle 7); (c) compound selectors
+         (`:first:left`) → `MatchTier` returns no-match; (d) `:blank` is implemented but latent — the driver
+         doesn't yet emit mid-document blank pages (no forced parity breaks). RTL parity flip out of scope.
+         `calc()` / font-relative margin units also deferred (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

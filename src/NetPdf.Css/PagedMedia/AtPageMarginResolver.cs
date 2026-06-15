@@ -25,8 +25,9 @@ namespace NetPdf.Css.PagedMedia;
 /// </para>
 /// <para>
 /// The bare <c>@page</c> rule + the <c>@page :first</c> rule (which overrides it on the first page
-/// by cascade specificity, via <see cref="AtPageRules.EnumeratePageRules"/>) are honored;
-/// <c>:left</c> / <c>:right</c> / <c>:blank</c> / named selectors stay deferred (multi-page-gated).
+/// by cascade specificity, via <see cref="AtPageRules.EnumeratePageRules(System.Collections.Generic.IEnumerable{CssStylesheet}, CssMediaContext)"/>)
+/// are honored; <c>:left</c> / <c>:right</c> / <c>:blank</c> / named selectors stay deferred for page
+/// GEOMETRY (the margin resolver is single-page; per-page margin BOXES honor them — cycle 6).
 /// Reads the <c>margin-top</c> / <c>-right</c> / <c>-bottom</c> / <c>-left</c> longhands AngleSharp.Css
 /// expands the <c>margin</c> shorthand into. Each side resolves an ABSOLUTE length (CSS Values
 /// L4 §6.1, via <see cref="LengthResolver.TryAbsoluteUnitToPx"/>) or a PERCENTAGE — per CSS Page

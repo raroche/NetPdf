@@ -868,6 +868,49 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_first_selector_margin_box_paints_only_on_the_first_page()
+    {
+        // Cycle 6 — @page :first margin boxes are now PER PAGE. The first page paints the :first header
+        // ("AA"), later pages the bare @page header ("AB"). The pre-cycle driver resolved margin boxes
+        // ONCE (:first won for the whole document), so every page read "AA" — both runs equal. (The "A"
+        // prefix makes "AA" [one distinct glyph] vs "AB" [two] observable past the per-page font subset.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page :first { @top-center { content: \"AA\" } }" +
+            "@page { @top-center { content: \"AB\" } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 ":first AA" ≠ page 2 "bare AB"
+    }
+
+    [Fact]
+    public void Multi_page_left_and_right_selector_margin_boxes_alternate_by_parity()
+    {
+        // Cycle 6 — @page :left / :right margin boxes (deferred pre-cycle) now paint by LTR parity:
+        // page 1 is a RIGHT page → ":right AA", page 2 a LEFT page → ":left AB". Pre-cycle :left/:right
+        // were classified Deferred and never applied (no bare box here → no header painted at all).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page :right { @top-center { content: \"AA\" } }" +
+            "@page :left { @top-center { content: \"AB\" } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // a header on each page (proves :left/:right now apply)
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 ":right AA" ≠ page 2 ":left AB"
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic

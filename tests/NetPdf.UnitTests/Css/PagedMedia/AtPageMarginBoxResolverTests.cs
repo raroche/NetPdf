@@ -148,19 +148,92 @@ public sealed class AtPageMarginBoxResolverTests
         Assert.Equal("\"none\"", Assert.Single(boxes).ContentRawValue);
     }
 
+    // ---- Cycle 6: per-page selector context (:first / :left / :right / :blank) ----
+
+    [Fact]
+    public async Task Resolve_left_selector_box_applies_only_on_a_left_page()
+    {
+        // Page 1 is a LEFT page (LTR: page 0 right, page 1 left), so @page :left's box applies there;
+        // on page 0 (right) it does not.
+        const string css = "@page :left { @top-center { content: \"L\" } }";
+        Assert.Equal("\"L\"", Assert.Single(await Resolve(css, new AtPageRules.PageSelectorContext(1))).ContentRawValue);
+        Assert.Empty(await Resolve(css, new AtPageRules.PageSelectorContext(0)));
+    }
+
+    [Fact]
+    public async Task Resolve_right_selector_box_applies_only_on_a_right_page()
+    {
+        const string css = "@page :right { @top-center { content: \"R\" } }";
+        Assert.Equal("\"R\"", Assert.Single(await Resolve(css, new AtPageRules.PageSelectorContext(0))).ContentRawValue);
+        Assert.Empty(await Resolve(css, new AtPageRules.PageSelectorContext(1)));
+    }
+
+    [Fact]
+    public async Task Resolve_blank_selector_box_applies_only_on_a_blank_page()
+    {
+        const string css = "@page :blank { @top-center { content: \"X\" } }";
+        Assert.Equal("\"X\"", Assert.Single(
+            await Resolve(css, new AtPageRules.PageSelectorContext(2, IsBlank: true))).ContentRawValue);
+        Assert.Empty(await Resolve(css, new AtPageRules.PageSelectorContext(2, IsBlank: false)));
+    }
+
+    [Fact]
+    public async Task Resolve_first_overrides_left_right_and_bare_on_the_first_page()
+    {
+        // Page 0 is first AND right. Specificity: :first (tier 2) > :right (tier 1) > bare (tier 0).
+        const string css =
+            "@page { @top-center { content: \"B\" } }" +
+            "@page :right { @top-center { content: \"R\" } }" +
+            "@page :first { @top-center { content: \"F\" } }";
+        Assert.Equal("\"F\"", Assert.Single(await Resolve(css, new AtPageRules.PageSelectorContext(0))).ContentRawValue);
+        // Page 2 (right, not first) → :right wins over bare.
+        Assert.Equal("\"R\"", Assert.Single(await Resolve(css, new AtPageRules.PageSelectorContext(2))).ContentRawValue);
+        // Page 1 (left, not first) → only the bare page applies.
+        Assert.Equal("\"B\"", Assert.Single(await Resolve(css, new AtPageRules.PageSelectorContext(1))).ContentRawValue);
+    }
+
+    [Fact]
+    public async Task Resolve_bare_important_beats_a_first_normal_on_the_first_page()
+    {
+        // Importance outranks selector specificity (CSS Cascade): a bare `!important` content wins over
+        // a :first normal even on the first page.
+        const string css =
+            "@page :first { @top-center { content: \"F\" } }" +
+            "@page { @top-center { content: \"B\" !important } }";
+        Assert.Equal("\"B\"", Assert.Single(await Resolve(css, new AtPageRules.PageSelectorContext(0))).ContentRawValue);
+    }
+
+    [Fact]
+    public async Task ResolveAll_unions_boxes_across_selectors()
+    {
+        // The structural/prefetch union sees boxes from every selector regardless of page context — so a
+        // document with ONLY a :left margin box still reports "has margin boxes".
+        var sheet = await BuildSheet("@page :left { @top-center { content: \"L\" } }");
+        var union = AtPageMarginBoxResolver.ResolveAll(new[] { sheet }, PrintContext);
+        Assert.Equal("\"L\"", Assert.Single(union).ContentRawValue);
+        // The bare-page (single-page) view does NOT see it — it's selector-scoped.
+        Assert.Empty(AtPageMarginBoxResolver.Resolve(new[] { sheet }, PrintContext));
+    }
+
     private static readonly CssMediaContext PrintContext = new(
         MediaType: "print", ViewportWidthPx: 800, ViewportHeightPx: 1000,
         DevicePixelRatio: 1.0, PreferredColorScheme: "light");
 
     private static async Task<System.Collections.Immutable.ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox>>
         Resolve(string css, string? sheetMedia = null)
+        => AtPageMarginBoxResolver.Resolve(new[] { await BuildSheet(css, sheetMedia) }, PrintContext);
+
+    private static async Task<System.Collections.Immutable.ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox>>
+        Resolve(string css, AtPageRules.PageSelectorContext ctx, string? sheetMedia = null)
+        => AtPageMarginBoxResolver.Resolve(new[] { await BuildSheet(css, sheetMedia) }, PrintContext, ctx);
+
+    private static async Task<CssStylesheet> BuildSheet(string css, string? sheetMedia = null)
     {
         var sheet = await ParseSheet(css);
         var preprocess = CssPreprocessor.Process(css);   // recovers the dropped margin boxes
-        var stylesheet = CssParserAdapter.Adapt(
+        return CssParserAdapter.Adapt(
             sheet, preprocess, href: null, origin: CssStylesheetOrigin.Author,
             ownerKind: CssStylesheetOwnerKind.Unknown, mediaQuery: sheetMedia, isDisabled: false, order: 0);
-        return AtPageMarginBoxResolver.Resolve(new[] { stylesheet }, PrintContext);
     }
 
     private static async Task<ICssStyleSheet> ParseSheet(string css)

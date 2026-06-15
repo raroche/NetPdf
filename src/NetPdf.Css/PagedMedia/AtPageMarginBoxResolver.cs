@@ -22,10 +22,11 @@ namespace NetPdf.Css.PagedMedia;
 /// adapter re-parents them under the owning <c>@page</c> rule's <see cref="CssAtRule.ChildRules"/>
 /// (each a <see cref="CssAtRule"/> whose <see cref="CssAtRule.Name"/> is the box name and whose
 /// <see cref="CssAtRule.Declarations"/> are parsed). This resolver reads them. Applicability +
-/// ordering reuse the shared <see cref="AtPageRules.EnumeratePageRules"/> (cascade-style
-/// media / disabled filtering; bare <c>@page</c> then <c>@page :first</c> in specificity order, so
-/// a <c>:first</c> margin box overrides the bare one on the single/first page) — the paper-size
-/// conditioning that gates <c>size</c> does NOT apply to margin boxes. The cascade winner per box name is chosen by
+/// ordering reuse the shared <see cref="AtPageRules"/> enumerations (cascade-style
+/// media / disabled filtering; bare <c>@page</c> then the matching selector rules in specificity order,
+/// so a <c>:first</c> / <c>:left</c> / <c>:right</c> / <c>:blank</c> margin box overrides the bare one on
+/// the page it applies to — cycle 6) — the paper-size conditioning that gates <c>size</c> does NOT apply
+/// to margin boxes. The cascade winner per box name is chosen by
 /// importance then source order (an <c>!important</c> <c>content</c> beats a normal one; among
 /// equal importance the last wins), within a box body AND across <c>@page</c> rules. A box whose
 /// winning <c>content</c> is the bare keyword <c>none</c> / <c>normal</c> (= "no generated
@@ -66,22 +67,54 @@ internal static class AtPageMarginBoxResolver
     private static readonly FrozenSet<string> KnownNames =
         CanonicalNames.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Walk the applicable <c>@page</c> rules (bare + <c>:first</c>) and resolve each declared
-    /// margin box's cascade-winning <c>content</c> (importance then source order). Returns the renderable boxes
-    /// in canonical order — omitting boxes with no <c>content</c> and boxes whose winner is
-    /// <c>none</c> / <c>normal</c> (suppression); empty when none render.</summary>
+    /// <summary>Walk the applicable <c>@page</c> rules (bare + <c>:first</c>, the single-page view) and
+    /// resolve each declared margin box's cascade-winning <c>content</c> (importance then source order).
+    /// Returns the renderable boxes in canonical order — omitting boxes with no <c>content</c> and boxes
+    /// whose winner is <c>none</c> / <c>normal</c> (suppression); empty when none render.</summary>
     public static ImmutableArray<ResolvedMarginBox> Resolve(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media)
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media));
+    }
 
-        // Per box name accumulate: the cascade-winning `content` (importance then source order —
-        // a later normal can't override an earlier `!important`, within a box body AND across
-        // @page rules, post-PR-#132 review P1) + ALL declarations in source order (the orchestrator
-        // builds the box's ComputedStyle from these — Task 21 cycle 4).
+    /// <summary>Multi-page driver cycle 6 — resolve the margin boxes applicable to a SPECIFIC page,
+    /// honoring the page's <c>:first</c> / <c>:left</c> / <c>:right</c> / <c>:blank</c> selectors in
+    /// cascade-specificity order (so a left page paints <c>@page :left</c>'s boxes, the first page
+    /// <c>@page :first</c>'s, etc., over the bare <c>@page</c>'s). Otherwise identical to
+    /// <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext)"/>.</summary>
+    public static ImmutableArray<ResolvedMarginBox> Resolve(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, AtPageRules.PageSelectorContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx));
+    }
+
+    /// <summary>Multi-page driver cycle 6 — the UNION of margin boxes declared across EVERY <c>@page</c>
+    /// rule regardless of selector, for STRUCTURAL queries spanning all pages: detecting whether the
+    /// document has any margin boxes at all, and prefetching their background-image urls (a page-specific
+    /// box's image must be cached before any page that selector applies to paints). Per-page PAINTING uses
+    /// the context-aware overload; this is a superset.</summary>
+    public static ImmutableArray<ResolvedMarginBox> ResolveAll(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumerateAllPageRules(sheets, media));
+    }
+
+    /// <summary>The shared margin-box cascade over a sequence of applicable <c>@page</c> rules (the
+    /// single-page, per-page, and all-rules views differ only in which rules they feed here). Per box
+    /// name accumulate: the cascade-winning <c>content</c> (importance then source order — a later normal
+    /// can't override an earlier <c>!important</c>, within a box body AND across <c>@page</c> rules,
+    /// post-PR-#132 review P1) + ALL declarations in source order (the orchestrator builds the box's
+    /// ComputedStyle from these — Task 21 cycle 4).</summary>
+    private static ImmutableArray<ResolvedMarginBox> ResolveFrom(IEnumerable<CssAtRule> pageRules)
+    {
         Dictionary<string, Acc>? accs = null;
-        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
+        foreach (var at in pageRules)
         {
             foreach (var child in at.ChildRules)
             {
@@ -124,9 +157,24 @@ internal static class AtPageMarginBoxResolver
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
+        return PageContextDeclarationsFrom(AtPageRules.EnumeratePageRules(sheets, media));
+    }
 
+    /// <summary>Multi-page driver cycle 6 — the page-context declarations applicable to a SPECIFIC page
+    /// (its <c>:first</c>/<c>:left</c>/<c>:right</c>/<c>:blank</c> rules' own <c>color</c>/<c>font-*</c>/…
+    /// in specificity-then-source order), so a page's margin boxes inherit that page's context style.</summary>
+    public static ImmutableArray<CssDeclaration> PageContextDeclarations(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, AtPageRules.PageSelectorContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return PageContextDeclarationsFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx));
+    }
+
+    private static ImmutableArray<CssDeclaration> PageContextDeclarationsFrom(IEnumerable<CssAtRule> pageRules)
+    {
         ImmutableArray<CssDeclaration>.Builder? decls = null;
-        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
+        foreach (var at in pageRules)
         {
             if (at.Declarations.IsDefaultOrEmpty) continue;
             decls ??= ImmutableArray.CreateBuilder<CssDeclaration>();

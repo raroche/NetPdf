@@ -955,6 +955,41 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_composition_paginates_with_running_header_footer_counter_and_named_page()
+    {
+        // Cycle 8 — end-to-end composition (golden): a three-section report paginates at block boundaries
+        // (cycles 1–3); every page gets a running header from string-set carry-forward (cycle 5), a
+        // "Page N of T" footer from counter(page)/counter(pages) (cycle 4), and the second section is a
+        // named page (page: ref) that swaps in its own @page ref header (cycles 6/7). Verifies the whole
+        // arc composes on one document, with deterministic bytes and no overflow truncation.
+        const string html =
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"H\" string(sect) } " +
+            "@bottom-center { content: counter(page) \"/\" counter(pages) } }" +
+            "@page ref { @top-center { content: \"R\" string(sect) } " +
+            "@bottom-center { content: counter(page) \"/\" counter(pages) } }" +
+            ".s1 { string-set: sect \"A\"; height: 600px }" +
+            ".s2 { string-set: sect \"B\"; height: 600px; page: ref }" +
+            ".s3 { string-set: sect \"C\"; height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"s1\"></div><div class=\"s2\"></div><div class=\"s3\"></div>" +
+            "</body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var result = HtmlPdf.ConvertDetailed(html, opts);
+
+        // Three 600px sections far exceed an A4 content box (~931px) and split at section boundaries.
+        Assert.True(result.PageCount >= 2, $"expected multi-page, got {result.PageCount}");
+        // Block content FLOWS across pages — no inline-overflow truncation.
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // Every page paints exactly one header + one footer (the named page swaps the header text, not its
+        // presence), so the painted text-run count is 2 per page.
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(result.PageCount * 2, runs.Count);
+        // Determinism (CLAUDE.md §4): same input → identical bytes.
+        Assert.Equal(Latin1(result.Pdf), Latin1(HtmlPdf.Convert(html, opts)));
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic

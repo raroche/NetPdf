@@ -2914,6 +2914,18 @@ flags the categories):
        paginate until **nested-container fragmentation** lands in `BlockLayouter` (a
        substantial Phase 3 layout task — NOT a pipeline change). Until then, content past
        the first fragmentainer is clipped + surfaced via `PDF-CONTENT-OVERFLOW-TRUNCATED-001`.
+       **UPDATE (multi-page driver cycles 1–2 — DONE):** nested-container fragmentation landed —
+       `EmitBlockSubtreeRecursive` consults the resolver before each plain BLOCK-FLOW child + returns a
+       `BlockContinuation` on block-axis overflow, so nested block content paginates at child boundaries at
+       arbitrary depth. **REMAINING (cycle 8 finding, NON-block layout modes still don't paginate across
+       pages):** the fragmentation is gated to BLOCK-FLOW children (`IsBlockFlowContainerOwnedByBlockLayouter`),
+       so a tall `display: flex`/`grid`/`table`/multicol container lays all its children on the current page
+       — flex/multicol overflow-truncate (`PDF-CONTENT-OVERFLOW-TRUNCATED-001`), a table doesn't split rows,
+       and `<thead>`/`<tfoot>` don't repeat per page. These layout modes HAVE continuation types
+       (`TableContinuation` / `FlexContinuation` / `GridContinuation` / `MulticolContinuation`) + unit tests
+       but are NOT yet wired into the driver loop (the layouters don't propagate a continuation through the
+       fragmentainer the way `BlockLayouter` now does). Wiring each is its own substantial layout task; the
+       multi-page composition golden (`Multi_page_composition_…`) exercises the working BLOCK path end-to-end.
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`

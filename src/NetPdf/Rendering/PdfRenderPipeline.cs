@@ -299,12 +299,13 @@ internal static class PdfRenderPipeline
         // (PR #176 Copilot review).
         var marginVariantReported = false;
 
-        // Cross-page running content (cycle 5): one MarginContentContext PER PAGE so string(name)
-        // resolves to the value CURRENT on each page (CSS GCPM L3 carry-forward — a named string set
-        // on an earlier page persists until re-set). Map each laid-out element to its first page from
-        // the per-page fragment lists; CollectPerPage buckets the string-set assignments by that page
-        // and carries each named string forward. (element() running content stays whole-document this
-        // cycle — see the collector.)
+        // Cross-page running content (cycle 5): one MarginContentContext PER PAGE for the named strings
+        // (CSS GCPM L3) — per page, string(name)/first reads the FIRST string-set on that page (or the
+        // value carried forward from earlier pages if the page sets nothing), and string(name, last)
+        // reads the LAST on the page (or carried). Map each laid-out element to its first page from the
+        // per-page fragment lists; CollectPerPage buckets the string-set assignments by that page (an
+        // inline setter falls back to its nearest rendered ancestor's page) and carries each named
+        // string forward. (element() running content stays whole-document this cycle — cycle 5b.)
         var marginContexts = System.Array.Empty<CssContentList.MarginContentContext>();
         if (hasMarginBoxes)
         {

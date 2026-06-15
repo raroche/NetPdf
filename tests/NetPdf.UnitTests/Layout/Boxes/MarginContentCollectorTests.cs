@@ -74,6 +74,108 @@ public sealed class MarginContentCollectorTests
     }
 
     [Fact]
+    public async Task CollectPerPage_carries_a_named_string_forward_until_re_set()
+    {
+        // Cycle 5 — cross-page carry-forward. #a sets title="A" (laid out on page 0), #c sets
+        // title="C" (page 2); page 1 sets nothing. Per page the named string is the value CURRENT
+        // on that page: page 0 = "A", page 1 = the carried "A", page 2 = "C" (re-set).
+        var ctx = BrowsingContext.New(Configuration.Default.WithCss());
+        const string css = "#a { string-set: title \"A\" } #c { string-set: title \"C\" }";
+        const string html =
+            "<html><body><div id='a'></div><div id='b'></div><div id='c'></div></body></html>";
+        var doc = await ctx.OpenAsync(req => req.Content(html));
+        var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
+        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css),
+            NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
+            mediaQuery: null, isDisabled: false, order: 0);
+        var cascade = CascadeResolver.Resolve(
+            doc, ImmutableArray.Create(sheet), CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, doc);
+
+        var elementToPage = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#a")!] = 0,
+            [doc.QuerySelector("#c")!] = 2,
+        };
+        var pages = MarginContentCollector.CollectPerPage(
+            doc.DocumentElement!, resolved, elementToPage, pageCount: 3);
+
+        Assert.Equal(3, pages.Length);
+        // string(title) default reads the FIRST-on-page value, carried when the page sets nothing.
+        Assert.Equal("A", pages[0].NamedStringsFirst?["title"]);   // set on page 0
+        Assert.Equal("A", pages[1].NamedStringsFirst?["title"]);   // carried forward (page 1 sets nothing)
+        Assert.Equal("C", pages[2].NamedStringsFirst?["title"]);   // re-set on page 2
+        Assert.Equal("C", pages[2].NamedStrings?["title"]);        // the exit (last) value too
+    }
+
+    /// <summary>Parse <paramref name="html"/> + <paramref name="css"/> through the real cascade + var
+    /// resolver (mirroring the render pipeline), returning the document + resolved cascade so a test can
+    /// build its own element→page map for <see cref="MarginContentCollector.CollectPerPage"/>.</summary>
+    private static async Task<(IDocument Doc, ResolvedCascadeResult Cascade)> ResolveAsync(
+        string html, string css)
+    {
+        var ctx = BrowsingContext.New(Configuration.Default.WithCss());
+        var doc = await ctx.OpenAsync(req => req.Content(html));
+        var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
+        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css),
+            NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
+            mediaQuery: null, isDisabled: false, order: 0);
+        var cascade = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet), CssMediaContext.DefaultPrint);
+        return (doc, VarResolver.Resolve(cascade, doc));
+    }
+
+    [Fact]
+    public async Task CollectPerPage_distinguishes_first_and_last_assignment_on_one_page()
+    {
+        // PR #177 review P3 — exact GCPM first/last semantics WITHIN one page. #a sets title="A" then
+        // #b sets title="B", BOTH on page 0: string(title)/first reads the FIRST ("A"), string(title,
+        // last) reads the LAST ("B").
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><div id='a'></div><div id='b'></div></body></html>",
+            "#a { string-set: title \"A\" } #b { string-set: title \"B\" }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#a")!] = 0,
+            [doc.QuerySelector("#b")!] = 0,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 1);
+
+        Assert.Equal("A", pages[0].NamedStringsFirst?["title"]);   // string(title) / string(title, first)
+        Assert.Equal("B", pages[0].NamedStrings?["title"]);        // string(title, last)
+    }
+
+    [Fact]
+    public async Task CollectPerPage_buckets_an_inline_string_set_to_its_rendered_ancestors_page()
+    {
+        // PR #177 review P2 — GCPM string-set applies to INLINE elements too. A <span> setter produces
+        // no fragment of its own, so the pipeline's element→page map carries only the block <p> (here
+        // on page 1). ResolvePage walks span → <p>, so the span's title lands on page 1 — not dropped,
+        // not mis-bucketed to page 0.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><p id='p'><span id='s'>x</span></p></body></html>",
+            "#s { string-set: title \"B\" }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#p")!] = 1,   // only the block <p> rendered (the span has no fragment)
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Null(pages[0].NamedStringsFirst);                   // nothing set on page 0
+        Assert.Equal("B", pages[1].NamedStringsFirst?["title"]);   // the inline setter, via its <p> ancestor's page
+    }
+
+    [Fact(Skip = "cycle 5b — per-page element() running content. element() text / own styles / segments "
+        + "/ containers stay WHOLE-DOCUMENT this cycle (only the named strings are per-page); applying the "
+        + "same per-page bucketing + carry-forward to the running-occurrence record is the documented "
+        + "follow-up (docs/design/multi-page-driver.md, deferrals.md). Pin: two position: running(rh) "
+        + "headings on two pages should resolve element(rh)/first/last per page.")]
+    public void CollectPerPage_buckets_running_elements_per_page_cycle5b()
+    {
+    }
+
+    [Fact]
     public async Task ReadBoundedDescendantText_truncates_mid_text_node_at_the_cap()
     {
         // The cap can fall in the middle of a single text node — only `maxChars` are taken.

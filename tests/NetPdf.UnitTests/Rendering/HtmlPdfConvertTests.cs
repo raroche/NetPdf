@@ -815,6 +815,32 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_running_header_shows_the_current_section_string_per_page()
+    {
+        // Cycle 5 — cross-page running content. Two sections each fill a page and set the
+        // named string `title` (section 1 → "A", section 2 → "B"). The running header
+        // content: "A" string(title) is therefore "AA" on page 1 and "AB" on page 2 —
+        // DISTINCT. The whole-document collector returned the FIRST assignment ("A") on
+        // EVERY page, so both headers would have read "AA"; per-page carry-forward makes
+        // page 2 "AB". (The literal "A" prefix makes the value observable past the per-page
+        // font subset — a lone "A"/"B" would both subset to glyph 1.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"A\" string(title) } }" +
+            ".s1 { string-set: title \"A\"; height: 600px }" +
+            ".s2 { string-set: title \"B\"; height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"s1\"></div><div class=\"s2\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 "AA" (title=A) ≠ page 2 "AB" (title=B)
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic

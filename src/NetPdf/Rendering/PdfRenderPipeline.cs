@@ -291,10 +291,6 @@ internal static class PdfRenderPipeline
             ? AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media)
             : default;
         var marginRootStyle = marginRootElBox?.Style;
-        var marginContext = hasMarginBoxes
-            ? MarginContentCollector.Collect(marginHost!, phase2.Cascade)
-            : default;
-
         var totalPages = pageFragments.Count;
 
         // CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 is a once-per-RENDER diagnostic (matching the body's
@@ -302,6 +298,28 @@ internal static class PdfRenderPipeline
         // unsupported background-image variant is diagnosed once for the document, not once per page
         // (PR #176 Copilot review).
         var marginVariantReported = false;
+
+        // Cross-page running content (cycle 5): one MarginContentContext PER PAGE for the named strings
+        // (CSS GCPM L3) — per page, string(name)/first reads the FIRST string-set on that page (or the
+        // value carried forward from earlier pages if the page sets nothing), and string(name, last)
+        // reads the LAST on the page (or carried). Map each laid-out element to its first page from the
+        // per-page fragment lists; CollectPerPage buckets the string-set assignments by that page (an
+        // inline setter falls back to its nearest rendered ancestor's page) and carries each named
+        // string forward. (element() running content stays whole-document this cycle — cycle 5b.)
+        var marginContexts = System.Array.Empty<CssContentList.MarginContentContext>();
+        if (hasMarginBoxes)
+        {
+            var elementToPage = new Dictionary<IElement, int>();
+            for (var p = 0; p < pageFragments.Count; p++)
+            {
+                foreach (var frag in pageFragments[p])
+                {
+                    if (frag.Box.SourceElement is { } el) elementToPage.TryAdd(el, p);
+                }
+            }
+            marginContexts = MarginContentCollector.CollectPerPage(
+                marginHost!, phase2.Cascade, elementToPage, totalPages);
+        }
 
         // PHASE B — paint each laid-out page (cycle 3/4). Pages are page-local (a fresh
         // fragmentainer per page), so every page shares the same content origin; the only
@@ -335,7 +353,7 @@ internal static class PdfRenderPipeline
                     marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
                     margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
                     margins.LeftPx, margins.TopPx, marginHost!, marginRootStyle!,
-                    marginPageDecls, pageCounters, marginContext, shaper, diagnostics);
+                    marginPageDecls, pageCounters, marginContexts[pageIndex], shaper, diagnostics);
                 // Background bands paint BEHIND the header/footer text; PrintBackgrounds-gated.
                 if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
                     PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);

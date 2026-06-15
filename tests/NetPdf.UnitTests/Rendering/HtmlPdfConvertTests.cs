@@ -761,7 +761,7 @@ public sealed class HtmlPdfConvertTests
     public void Multi_page_footer_page_counter_increments_per_page()
     {
         // Cycle 4 — real per-page counter(page) (no longer the hard-coded (1, 1)). Two
-        // 500px blocks split across two A4 pages; the @bottom-center footer is
+        // 600px blocks split across two A4 pages; the @bottom-center footer is
         // counter(page, upper-alpha). Page 1's footer is "A", page 2's is "B" — DISTINCT
         // glyphs. The old single-page renderer printed "A" on every page (one distinct
         // glyph), so two distinct footer glyph runs prove the per-page counter.

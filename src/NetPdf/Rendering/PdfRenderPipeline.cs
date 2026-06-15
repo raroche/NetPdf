@@ -194,12 +194,19 @@ internal static class PdfRenderPipeline
                     result = coordinator.Run(layouter, fragmentainer, ref layout, breaks, cancellationToken);
                 }
 
-                // Skip a trailing EMPTY resume page: the forced-overflow continuation protocol
-                // can return one PageComplete whose resume emits nothing (the resume-page
-                // subtree measure isn't yet resume-aware — docs/design/multi-page-driver.md).
-                // Never add an empty page after the first (an empty document still gets one
-                // page below).
-                if (pageIndex > 0 && sink.Fragments.Count == 0)
+                // Skip the trailing EMPTY resume page ONLY when it's TERMINAL — the forced-overflow
+                // continuation protocol's sentinel: an empty page that ALSO reports it's done
+                // (AllDone, or PageComplete with no further continuation; the resume-page subtree
+                // measure isn't yet resume-aware — docs/design/multi-page-driver.md). An empty page
+                // that STILL carries a real continuation is NOT this sentinel (it would be a future
+                // `@page :blank` / forced-parity / margin-box-only page) — keep it: fall through to
+                // add it + advance below, so the driver never silently drops a legitimate blank
+                // page. The MaxPages cap guards forward progress against a non-advancing loop.
+                // (An empty document still gets one page emitted below.)
+                var isTerminalEmptyResume = sink.Fragments.Count == 0
+                    && (result.Outcome != LayoutAttemptOutcome.PageComplete
+                        || result.Continuation is null);
+                if (pageIndex > 0 && isTerminalEmptyResume)
                 {
                     break;
                 }

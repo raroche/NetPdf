@@ -1614,6 +1614,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // <c>if (IsFlexContainer(child))</c> sibling at the same
             // loop-iteration scope.
             bool paginateFlexForOuterChild = false;
+            // Flex-column pagination dual-input at the OUTER site (mirrors the
+            // recursive site's nestedFlex* locals): a paginating COLUMN flex must
+            // size items against the NATURAL main extent (else flex-shrink fights
+            // the page) while the wrapper paints + cuts at the clamped page budget.
+            // Capture the pre-clamp authored border-box block size + a flag.
+            double outerFlexAuthoredBorderBoxBlockSize = 0;
+            bool outerFlexColumnPaginating = false;
             // Per Phase 3 Task 17 cycle 5b — outer-site paginatable-grid
             // gate. Flipped ON by the IsPaginatableGrid clamp below
             // (mirrors paginateFlexForOuterChild). When true, the
@@ -1822,6 +1829,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         && pageRemainingForOuterFlex < borderBoxBlockSize
                         && pageRemainingForOuterFlex > flexBorderPaddingBlock)
                     {
+                        // Column: remember the natural (pre-clamp) border-box block
+                        // size so the dispatch sizes items against it + splits
+                        // against the clamped page budget. Row-wrap keeps the
+                        // single-input clamp (content size == budget).
+                        if (childFlexDirection.IsFlexColumnDirection())
+                        {
+                            outerFlexAuthoredBorderBoxBlockSize = borderBoxBlockSize;
+                            outerFlexColumnPaginating = true;
+                        }
                         borderBoxBlockSize = pageRemainingForOuterFlex;
                         paginateFlexForOuterChild = true;
                     }
@@ -2459,7 +2475,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                             allowPagination: false,
                             fragmentainer: fragmentainer,
                             layout: ref layout,
-                            cancellationToken: cancellationToken);
+                            cancellationToken: cancellationToken,
+                            lastEmittedBlockExtent: out _); // atomic — no wrapper resize
 
                         // Advance + propagate. Cursor uses
                         // marginBoxBlockSizeForCursor (= subtree-aware
@@ -3136,6 +3153,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var flexContentBlockSize = flexGeom.ContentBlockSize;
                 var flexContentInlineOffset = flexGeom.ContentInlineOffset;
                 var flexContentBlockOffset = flexGeom.ContentBlockOffset;
+                // Column dual-input (P1 fix — mirrors the recursive site): the
+                // wrapper geometry above used the CLAMPED borderBoxBlockSize (so
+                // the wrapper paints clamped). For a paginating COLUMN flex,
+                // recompute the AUTHORED content-block-size as the flex sizing
+                // input + use the clamped content-block-size as the page budget,
+                // so items are sized naturally + the cut honors the page. Without
+                // this a root/body-level column flex would shrink items to the
+                // budget + return AllDone instead of splitting. Row-wrap → null.
+                double? outerFlexPageBudget = null;
+                if (outerFlexColumnPaginating)
+                {
+                    var authoredFlexGeom = FlexGeometryHelper.ComputeContentGeometry(
+                        flexBox: child,
+                        borderBoxInlineSize: borderBoxInlineSize,
+                        borderBoxBlockSize: outerFlexAuthoredBorderBoxBlockSize,
+                        borderBoxInlineOffset: inFlowInlineOffset,
+                        borderBoxBlockOffset: blockOffset);
+                    outerFlexPageBudget = flexContentBlockSize;          // clamped = cut-off
+                    flexContentBlockSize = authoredFlexGeom.ContentBlockSize; // natural = sizing
+                }
 
                 // Per Phase 3 Task 16 cycle 2 — multi-page flex
                 // resume. Mirrors the multicol dispatch above: when
@@ -3187,12 +3224,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     allowPagination: paginateFlexForOuterChild,
                     fragmentainer: fragmentainer,
                     layout: ref layout,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    lastEmittedBlockExtent: out var outerFlexLastEmittedExtent,
+                    pageBlockBudget: outerFlexPageBudget);
+
+                // PR-#180 review P2 — resize a paginating COLUMN flex wrapper to
+                // the ACTUAL emitted item extent instead of the clamped page
+                // budget (mirrors the grid F2 resize). Without this the wrapper
+                // paints blank trailing space + the cursor over-advances when the
+                // committed items occupy less than the budget (e.g. the final
+                // resume page). Gated to column pagination — row-wrap wrapper
+                // resize stays the cycle-4f deferral. Uses `wrapperCursor` (the
+                // sink index of this child's wrapper fragment, captured before
+                // the wrapper emit) + UpdateFragmentBlockSize, preserving z-order.
+                var cursorAdvanceForFlex = marginBoxBlockSizeForCursor;
+                if (outerFlexColumnPaginating)
+                {
+                    var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
+                    var resizedFlexWrapperBlockSize = flexChromeBlock + outerFlexLastEmittedExtent;
+                    _sink.UpdateFragmentBlockSize(wrapperCursor, resizedFlexWrapperBlockSize);
+                    cursorAdvanceForFlex = topShift + resizedFlexWrapperBlockSize + marginEnd;
+                }
 
                 // Cursor advance + bookkeeping mirror the multicol
                 // dispatch above.
                 fragmentainer.UsedBlockSize = Math.Max(0,
-                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                    fragmentainer.UsedBlockSize + cursorAdvanceForFlex);
                 prevBlockMarginEnd = marginEnd;
                 hasPriorAdjoiningBlock = true;
                 emittedThisAttempt++;
@@ -5032,26 +5089,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // clamp at the recursive site. When the wrapper's grown
                 // natural extent overflows the remaining fragmentainer
                 // space AND the container is eligible per
-                // <see cref="IsPaginatableFlex"/> (row + wrap + not
-                // wrap-reverse), clamp the wrapper to the page-remaining
-                // block + flip the dispatch's <c>allowPagination</c> flag
-                // ON below. The FlexLayouter packs lines up to the
-                // clamped budget + returns a FlexContinuation for the
-                // overflow lines (CSS Flexbox L1 §10 fragmentation + CSS
-                // Fragmentation L3 §4.4 progress rule). The wrapper
-                // fragment emitted below paints at the clamped size (=
-                // the visual extent actually consumed on this page); the
-                // resume page's BlockLayouter dispatches the
-                // FlexContinuation back via the cycle-3 propagation
-                // chain.
+                // <see cref="IsPaginatableFlex"/>, clamp the wrapper to the
+                // page-remaining block + flip the dispatch's
+                // <c>allowPagination</c> flag ON below. For ROW + wrap the
+                // FlexLayouter packs lines up to the clamped budget +
+                // returns a FlexContinuation for the overflow LINES; for
+                // COLUMN + nowrap (the non-block-pagination arc) it splits
+                // between ITEMS via <c>FlexContinuation.ItemIndex</c> (CSS
+                // Flexbox L1 §10 fragmentation + CSS Fragmentation L3 §4.4
+                // progress rule). The wrapper fragment emitted below paints
+                // at the clamped size; the resume page's BlockLayouter
+                // dispatches the FlexContinuation back via the cycle-3
+                // propagation chain.
                 //
-                // <para><b>Why not extend to the column / wrap-reverse
-                // cases.</b> Column direction places line breaks on the
-                // inline axis (not a fragment boundary); wrap-reverse
-                // derives the cross-axis SWAP origin from the
-                // unfragmented container size + needs per-fragment
-                // re-derivation. Both are documented under the cycle-4b
-                // deferral block in <c>docs/deferrals.md</c>.</para>
+                // <para><b>Column dual-input.</b> A paginating COLUMN flex
+                // sets <c>nestedFlexColumnPaginating</c> here (capturing the
+                // pre-clamp authored block size) so the dispatch below sizes
+                // items against the NATURAL main extent + cuts against the
+                // clamped page budget — without that split, flex-shrink would
+                // collapse items to the clamped main-size instead of
+                // paginating. STILL EXCLUDED (atomic, documented in
+                // <c>docs/deferrals.md</c>): column + wrap (lines stack on
+                // the inline axis — not a fragment boundary) + column-reverse
+                // / row wrap-reverse (cross-axis SWAP origin derives from the
+                // unfragmented size + needs per-fragment re-derivation).</para>
                 //
                 // <para><b>Why this site, not pre-break-check.</b> The
                 // recursive walk doesn't consult the resolver — there's
@@ -5510,6 +5571,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // here); built from `_capturedFragmentainer` per
                 // the pre-extraction logic.
                 LayoutAttemptResult? nestedFlexResult = null;
+                var nestedFlexLastEmittedExtent = 0.0;
                 if (_capturedFragmentainer is not null)
                 {
                     var nestedFlexLayoutCtx = new LayoutContext(_capturedFragmentainer)
@@ -5537,7 +5599,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         fragmentainer: _capturedFragmentainer,
                         layout: ref nestedFlexLayoutCtx,
                         cancellationToken: cancellationToken,
+                        lastEmittedBlockExtent: out nestedFlexLastEmittedExtent,
                         pageBlockBudget: nestedFlexPageBudget);
+                }
+
+                // PR-#180 review P2 — resize a paginating COLUMN flex wrapper to
+                // its ACTUAL emitted item extent (mirrors the outer site + the
+                // grid recursion F2 resize). Recompute childEffectiveBlockSize so
+                // the cursor advance below (which DOES run on a final AllDone
+                // resume page where siblings follow) uses the emitted content,
+                // not the clamped budget — otherwise siblings sit too low + the
+                // wrapper paints blank trailing space.
+                if (nestedFlexColumnPaginating)
+                {
+                    var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
+                    var resizedFlexWrapperBlockSize = flexChromeBlock + nestedFlexLastEmittedExtent;
+                    _sink.UpdateFragmentBlockSize(recursiveWrapperCursor, resizedFlexWrapperBlockSize);
+                    childEffectiveBlockSize = resizedFlexWrapperBlockSize;
                 }
 
                 // Per Task 16 cycle 3 P1 #2 — propagate
@@ -8421,6 +8499,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         CancellationToken cancellationToken,
+        out double lastEmittedBlockExtent,
         double? pageBlockBudget = null)
     {
         using var flexLayouter = new FlexLayouter(
@@ -8443,12 +8522,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             allowPagination: allowPagination,
             pageBlockBudget: pageBlockBudget);
         using var flexResolver = new BreakResolver();
-        return flexLayouter.AttemptLayout(
+        var flexResult = flexLayouter.AttemptLayout(
             fragmentainer,
             ref layout,
             flexResolver,
             LayoutAttemptStrategy.LastResort,
             cancellationToken);
+        // PR-#180 review P2 — surface the emitted content extent for the
+        // caller's wrapper resize (mirrors DispatchGridInner's out param).
+        lastEmittedBlockExtent = flexLayouter.LastEmittedBlockExtent;
+        return flexResult;
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —

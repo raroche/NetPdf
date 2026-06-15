@@ -8828,6 +8828,167 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void Column_flex_as_root_direct_child_paginates_without_shrinking_items()
+    {
+        // PR-#180 review P1 — the OUTER BlockLayouter flex dispatch (root's
+        // DIRECT child is flex, e.g. body{display:flex;flex-direction:column})
+        // must use the natural-size / page-budget dual-input like the recursive
+        // path. Without it, the outer clamp sets contentBlockSize = the page
+        // budget; FlexLayouter resolves flex-shrink against that, SHRINKS items
+        // to fit, and returns AllDone (no split). With the dual-input, items
+        // keep their natural size + the container splits via FlexContinuation.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(BuildColumnFlexWithItems(4, 200)); // 4×200 ⇒ natural 800
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        // Page budget 500 ⇒ room for 2 items (bottoms 200, 400); item 3
+        // (bottom 600) defers. Default flex-shrink:1 would shrink each item to
+        // ~125 against a 500 main-size — the regression this test guards.
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var blockCont = Assert.IsType<BlockContinuation>(result.Continuation);
+        var flexCont = Assert.IsType<FlexContinuation>(blockCont.LayouterState);
+        Assert.Equal(2, flexCont.ItemIndex);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) items.Add(f);
+        Assert.Equal(2, items.Count);
+        Assert.All(items, f => Assert.Equal(200, f.BlockSize, 3)); // NOT shrunk to ~125
+    }
+
+    [Fact]
+    public void Column_flex_split_wrapper_resizes_to_emitted_item_extent()
+    {
+        // PR-#180 review P2 — a paginating column flex wrapper paints the ACTUAL
+        // emitted item extent, not the clamped page budget. 4×200 (natural 800),
+        // page budget 500 ⇒ 2 items (400) commit on page 1. The wrapper
+        // (FlexContainer fragment) must be 400, not the clamped 500 — else 100px
+        // of blank trailing space below the last item.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(BuildColumnFlexWithItems(4, 200));
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        BoxFragment? wrapper = null;
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.FlexContainer) wrapper = f;
+        Assert.NotNull(wrapper);
+        Assert.Equal(400, wrapper!.Value.BlockSize, 3);   // emitted extent, NOT the 500 budget
+    }
+
+    [Fact]
+    public void Column_flex_final_resume_page_resizes_wrapper_and_places_sibling_tightly()
+    {
+        // PR-#180 review P2 — on a final resume page where the remaining items
+        // occupy LESS than the page budget, the wrapper resizes to the emitted
+        // extent (AllDone carries no continuation to read it from — the fix uses
+        // FlexLayouter.LastEmittedBlockExtent) and the following sibling sits
+        // directly below the wrapper, not pushed down to the budget.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(BuildColumnFlexWithItems(4, 200));        // child 0: the flex
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 77);          // distinctive height
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement())); // child 1
+
+        // Resume at item 2 (items 0,1 committed on a prior page). 2 items (400)
+        // remain + fit the 500 budget ⇒ AllDone on this page; the sibling follows.
+        var incoming = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0,
+            LayouterState: new FlexContinuation(LineIndex: 0, ItemIndex: 2));
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: incoming,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        BoxFragment? wrapper = null, sibling = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.FlexContainer) wrapper = f;
+            if (f.Box.Kind == BoxKind.BlockContainer && f.BlockSize is > 76 and < 78) sibling = f;
+        }
+        Assert.NotNull(wrapper);
+        Assert.NotNull(sibling);
+        Assert.Equal(400, wrapper!.Value.BlockSize, 3);     // 2 remaining items, no blank space
+        Assert.Equal(400, sibling!.Value.BlockOffset, 3);    // sibling tight under the wrapper, not at 500
+    }
+
+    [Fact]
+    public void Column_flex_pagination_splits_by_sorted_order_not_dom_index()
+    {
+        // PR-#180 review (optional) — pin FlexContinuation.ItemIndex as a SORTED
+        // position (CSS `order`), NOT a DOM index. 3 column items 200px each with
+        // order reversing DOM {2,0,-1} ⇒ sorted item2, item1, item0. A 200px page
+        // fits one item, so page 1 must emit the SORTED-FIRST item (DOM #2, order
+        // -1) + defer at sorted position 1.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        var orders = new[] { 2, 0, -1 };
+        var items = new Box[3];
+        for (var i = 0; i < 3; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 200);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(
+            Assert.IsType<BlockContinuation>(result.Continuation).LayouterState);
+        Assert.Equal(1, flexCont.ItemIndex);   // sorted position, not DOM index
+
+        BoxFragment? emitted = null;
+        var count = 0;
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) { emitted = f; count++; }
+        Assert.Equal(1, count);                 // exactly one item on page 1
+        Assert.True(emitted!.Value.Box == items[2],
+            "page 1 must emit the SORTED-first item (DOM #2, order -1), not the DOM-first item");
+    }
+
+    [Fact]
     public void Column_flex_without_pagination_emits_all_items_atomically()
     {
         // Baseline: allowPagination false (the default) keeps the atomic

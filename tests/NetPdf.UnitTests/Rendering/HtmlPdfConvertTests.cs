@@ -336,6 +336,28 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(12, fills);   // every grid cell, once
     }
 
+    [Fact]
+    public void Flex_column_on_the_root_child_paginates_via_the_outer_dispatch()
+    {
+        // PR-#180 review P1 — the ROOT's direct child being flex (here `body`
+        // itself is the column flex container) routes through BlockLayouter's
+        // OUTER flex dispatch, not the recursive one. Before the fix that path
+        // clamped the column main-size to the page budget → flex-shrink shrank
+        // the items → AllDone (one page). The dual-input fix makes it split.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 12; i++)
+            sb.Append("<div style=\"height:200px;background-color:#3366cc\"></div>");
+        sb.Append("</body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the root-child column flex to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every item, once
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var n = 0;

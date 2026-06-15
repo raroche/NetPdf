@@ -445,6 +445,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// <see cref="ConfigureEmission"/>'s <c>pageBlockBudget</c> param.</summary>
     private double? _pageBlockBudget;
 
+    /// <summary>PR-#180 review P2 — the block-axis content extent ACTUALLY
+    /// emitted on this fragment (0-based, content-box relative). For a
+    /// COLUMN item-split this is the deepest re-anchored item bottom; for a
+    /// ROW-wrap line-split it is the deepest line bottom. The dispatching
+    /// <see cref="BlockLayouter"/> reads it (mirroring
+    /// <c>GridLayouter.LastEmittedBlockExtent</c>) to RESIZE the wrapper
+    /// fragment to the emitted content instead of the clamped page budget —
+    /// works on BOTH PageComplete and AllDone (a final resume page whose
+    /// remaining items occupy less than the budget carries no continuation
+    /// to read <see cref="FlexContinuation.EmittedBlockExtent"/> from).</summary>
+    public double LastEmittedBlockExtent { get; private set; }
+
     /// <summary>Per Phase 3 Task 16 cycle 4b post-PR-#83 review P3 #6
     /// — SHARED predicate identifying flex containers eligible for
     /// multi-page line splitting per their box / style. Both
@@ -457,20 +469,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// <c>false</c> = silently dropped continuation = lost content.
     ///
     /// <para><b>Eligibility</b> per CSS Flexbox L1 §10 (Fragmenting
-    /// Flex Layout) + Task-16 cycle-1 sub-cycle 2+ deferrals:</para>
+    /// Flex Layout). TWO axis-specific paths qualify:</para>
     /// <list type="bullet">
-    ///   <item><b>Row direction (= cross-axis is the block axis):</b>
-    ///   line breaks happen along the block axis where fragment
-    ///   boundaries live. Column direction puts line breaks on the
-    ///   inline axis which isn't a fragment boundary.</item>
-    ///   <item><b>Wrap (NOT nowrap):</b> single-line containers have
-    ///   no line boundary to split on; per-item mid-line splitting is
-    ///   a later sub-cycle.</item>
-    ///   <item><b>NOT wrap-reverse:</b> the cross-axis SWAP origin
-    ///   derives from the UNFRAGMENTED container size; emitting
-    ///   partial content on a resumed page would place lines at the
-    ///   wrong physical offset. Multi-fragment cross-flow
-    ///   re-derivation is sub-cycle 2+ scope.</item>
+    ///   <item><b>ROW + wrap + NOT wrap-reverse → LINE split.</b> The
+    ///   cross axis is the block axis, so wrapped lines stack along a
+    ///   fragment boundary + split between LINES. nowrap (single line)
+    ///   has no line boundary; wrap-reverse derives its cross-axis SWAP
+    ///   origin from the UNFRAGMENTED size, so partial content would land
+    ///   at the wrong offset (sub-cycle 2+).</item>
+    ///   <item><b>COLUMN + nowrap (non-reverse) → ITEM split</b>
+    ///   (non-block-pagination arc). The MAIN axis IS the block axis, so
+    ///   the single line's items stack along a fragment boundary + split
+    ///   between ITEMS (see the column item-split in
+    ///   <see cref="AttemptLayout"/> + <see cref="FlexContinuation.ItemIndex"/>).
+    ///   column + wrap stacks lines on the inline (cross) axis (not a
+    ///   fragment boundary; an auto-height column can't wrap anyway);
+    ///   column-reverse packs from the unfragmented main-END (per-fragment
+    ///   re-anchoring deferred, mirroring row wrap-reverse).</item>
     /// </list>
     /// </summary>
     public static bool IsPaginatablePerStyle(Box box)
@@ -1356,6 +1371,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // the resume page's BlockLayouter forwards the leaf back to
         // this layouter via the cycle-4b inbound chain-walk in
         // EmitBlockSubtreeRecursive's nested flex branch.
+        // PR-#180 review P2 — record the emitted content extent for the
+        // dispatching BlockLayouter's wrapper resize. Column → deepest emitted
+        // item bottom; row-wrap → deepest emitted line bottom.
+        LastEmittedBlockExtent = isColumnItemPagination
+            ? maxEmittedColumnBottom
+            : maxEmittedCrossBottom;
+
         // Flex-column item split — the emission loop set outgoingItemIndex to
         // the first sorted-position that didn't fit this page's block budget.
         // Resume there on the next page (LineIndex stays 0 — the single column

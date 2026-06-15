@@ -3073,8 +3073,25 @@ flags the categories):
          pulls the named string and `content: element(name)` pulls the running element's text (an undefined
          name → the empty string). `BoxBuilder` SKIPS a `position: running()` element from the body box
          tree (detected from the raw `position` value before the keyword resolver, so no spurious
-         invalid-value diagnostic). STATUS: (a) **cross-page "running" persistence** DEFERRED — the value
-         carried to later pages until re-set (needs the multi-page driver); (b) **`string-set: … content()`
+         invalid-value diagnostic). STATUS: (a) **cross-page "running" persistence** DONE (multi-page driver
+         cycles 5 [named strings] + 5b [`element()`]) — `MarginContentCollector.CollectPerPage` buckets each
+         `string-set` assignment AND each `position: running()` occurrence by the page its (setting / removed-
+         from-flow) element laid out on — nearest rendered ANCESTOR for an inline setter or a running element,
+         with a page-0 fallback for an all-running body that produced no in-flow fragment — then carries each
+         value forward until re-set, so per page `string(name)` / `element(name)` (first / last) read the value
+         CURRENT on that page. A running occurrence carries its WHOLE payload (text + own style + per-line
+         segments + container bands) as one `RunningOccurrence`, so the per-page first/last selection stays in
+         PR-#151 lockstep (the text can't pair with another occurrence's style). A SINGLE-page document short-
+         circuits to the whole-document context (byte-identical to the pre-cross-page path). A running
+         occurrence's PAGE is derived from DOCUMENT ORDER (post-PR-#178 review P1): a removed-from-flow running
+         element buckets to the page of the next rendered element FOLLOWING it within its containing block (the
+         content it heads), falling back to its nearest rendered ancestor's page (a trailing heading) then page
+         0 — so direct sibling running headings under `<body>` AND multiple headings inside one multi-page
+         container each resolve to their own page (the cycle-5b nearest-ancestor walk collapsed them to the
+         container's first page). APPROXIMATION: the page comes from the first FOLLOWING in-block rendered
+         element, not the running element's own laid-out position (it has none) — exact for the header-precedes-
+         content GCPM shape, an approximation when a running element sits among intra-page splits. Still
+         deferred: `string(name, start)` / `first-except`; (b) **`string-set: … content()`
          — DONE (Task 22 follow-up):** AngleSharp.Css DROPS the `content()` function from `string-set` (an
          unknown function in the unknown `string-set` property); `CssPreprocessor`'s recovery (gated to
          `string-set` + a `content()` value) re-injects the dropped declaration into the cascade, where
@@ -3567,11 +3584,20 @@ flags the categories):
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare
-         `!important` still beats a `:first` normal). STILL DEFERRED: `@page :left`/`:right`/`:blank`
-         + named-page selectors — recognized by `ClassifyPageSelector` (→ `Deferred`) but NOT applied,
-         because they need the multi-page driver's page context (which page is left/right/blank, or
-         what `page:` name a page was assigned). `calc()` / font-relative margin units also deferred
-         (absolute lengths + percentages are done).
+         `!important` still beats a `:first` normal).
+       - **`@page :left`/`:right`/`:blank` selectors (multi-page driver cycle 6) — MARGIN BOXES DONE,
+         GEOMETRY DEFERRED:** for MARGIN BOXES (running headers/footers) these now apply per page — the
+         driver builds an `AtPageRules.PageSelectorContext(pageIndex, IsBlank)` (the LTR parity: page 0 =
+         recto/right, alternating; a body-fragment-less page is `:blank`), and `AtPageRules.MatchTier` (the
+         page-context generalization of `ClassifyPageSelector`) picks the applicable `@page` rules in CSS
+         Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank`), which the per-page
+         `AtPageMarginBoxResolver.Resolve(ctx)` paints. STILL DEFERRED: (a) per-page GEOMETRY — a
+         `@page :left`/`:right` that changes `margin`/`size` would reflow LAYOUT per page (the content box
+         differs left vs right), which needs an iterative layout pass (the margin/size resolvers stay
+         single-page, bare + `:first`); (b) named-page selectors (cycle 7); (c) compound selectors
+         (`:first:left`) → `MatchTier` returns no-match; (d) `:blank` is implemented but latent — the driver
+         doesn't yet emit mid-document blank pages (no forced parity breaks). RTL parity flip out of scope.
+         `calc()` / font-relative margin units also deferred (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

@@ -80,10 +80,20 @@ internal static class MarginContentCollector
     /// (e.g. an inline <c>&lt;span style="string-set:…"&gt;</c>) is resolved to its nearest rendered
     /// ANCESTOR's page, because GCPM <c>string-set</c> applies to ALL elements, not just block ones. An
     /// assignment whose element + ancestors never rendered is dropped.
-    /// <para><b>Deferred (cycle 5b):</b> <c>element()</c> running content (text + own styles / segments /
-    /// containers) stays WHOLE-DOCUMENT — applying the same per-page bucketing to the richer running-
-    /// occurrence record is a follow-up (deferrals.md). For a SINGLE running element this is already
-    /// correct on every page; multiple same-named running elements across pages is the deferred case.</para></summary>
+    /// <para><b>Cross-page <c>element()</c> (cycle 5b):</b> running content is bucketed per page the SAME
+    /// way — each <c>position: running(name)</c> occurrence (its text + own style + per-line segments +
+    /// container bands, carried TOGETHER as one <see cref="RunningOccurrence"/> so the PR #151 lockstep
+    /// holds: the selected occurrence's text can never pair with another occurrence's style) is assigned to
+    /// the page its (removed-from-flow) element's nearest rendered ANCESTOR laid out on, then carried
+    /// forward until re-set. So multiple same-named running elements across pages resolve
+    /// <c>element(name)</c> / <c>first</c> / <c>last</c> per page (was whole-document). A running element
+    /// whose ancestors never rendered (an all-running body with no in-flow fragment) falls back to page 0 —
+    /// unlike a dropped named string, a running element IS the box's whole content and must still show.
+    /// <b>Single page:</b> short-circuits to the whole-document context (every occurrence is on page 0).
+    /// <b>Approximation:</b> sibling running elements sharing one multi-page containing block bucket to that
+    /// block's first page (nearest-ancestor resolution can't localize them further — they degrade to the
+    /// whole-document first/last, no worse than the pre-cycle behaviour); nesting each in its own per-page
+    /// container resolves them per page.</para></summary>
     public static CssContentList.MarginContentContext[] CollectPerPage(
         IElement root, ResolvedCascadeResult cascade,
         IReadOnlyDictionary<IElement, int> elementToPage, int pageCount)
@@ -96,17 +106,28 @@ internal static class MarginContentCollector
         var c = new Collected();
         Walk(root, cascade, c);
 
-        // The element() running content (whole-document this cycle) is shared by every page.
+        // The whole-document context: the last/first assignment + running occurrence over the ENTIRE
+        // document. It IS the single-page context (every occurrence is on page 0), and the fallback for a
+        // document with no per-page-varying content.
         var wholeDoc = new CssContentList.MarginContentContext(
             c.Named, c.Running, c.NamedFirst, c.RunningFirst, c.RunningStyles, c.RunningStylesFirst,
             c.RunningSegments, c.RunningSegmentsFirst, c.RunningContainers, c.RunningContainersFirst);
 
         var contexts = new CssContentList.MarginContentContext[pageCount];
 
-        // No string-set anywhere → no per-page named-string variation; every page is the whole-doc
-        // context. Skip the per-page dictionary churn (Copilot review — avoid the per-page Dictionary/
-        // HashSet allocations for margin boxes that use only counters / element()).
-        if (c.NamedOrdered is null)
+        // Single page → every string-set assignment + running element is on page 0, so the whole-document
+        // first/last IS the page-0 first/last. Return the whole-doc context directly — byte-identical to the
+        // pre-cross-page path and free of any per-page bucketing (and any element→page resolution).
+        if (pageCount == 1)
+        {
+            contexts[0] = wholeDoc;
+            return contexts;
+        }
+
+        // No per-page-varying content (no string-set AND no running element) → every page is the whole-doc
+        // context. Skip the per-page dictionary churn (Copilot review — avoid the per-page allocations for
+        // margin boxes that use only counters).
+        if (c.NamedOrdered is null && c.RunningOrdered is null)
         {
             for (var i = 0; i < pageCount; i++) contexts[i] = wholeDoc;
             return contexts;
@@ -114,45 +135,143 @@ internal static class MarginContentCollector
 
         // Bucket the string-set assignments by the page their setting element laid out on (or its
         // nearest rendered ancestor's page), preserving document order within a page.
-        var byPage = new List<(string Name, string Value)>[pageCount];
-        foreach (var (element, name, value) in c.NamedOrdered)
+        List<(string Name, string Value)>[]? namedByPage = null;
+        if (c.NamedOrdered is not null)
         {
-            var p = ResolvePage(element, elementToPage);
-            if (p < 0 || p >= pageCount) continue;
-            (byPage[p] ??= new()).Add((name, value));
+            namedByPage = new List<(string Name, string Value)>[pageCount];
+            foreach (var (element, name, value) in c.NamedOrdered)
+            {
+                var p = ResolvePage(element, elementToPage);
+                if (p < 0 || p >= pageCount) continue;
+                (namedByPage[p] ??= new()).Add((name, value));
+            }
+        }
+
+        // Bucket the running occurrences by page (cycle 5b + post-PR-#178 review P1). A running element is
+        // removed from flow, so it has no fragment — bucket it by the page of the next rendered element
+        // FOLLOWING it in document order WITHIN its containing block (the content it heads). So direct
+        // sibling running headings under <body>, or several headings inside ONE multi-page container, each
+        // land on their own page instead of all collapsing to the container's first page (the limitation of
+        // the cycle-5b nearest-ancestor walk). A trailing heading with no following in-block content falls
+        // back to its nearest rendered ANCESTOR's page, then page 0 — a running element IS the box's content
+        // (unlike a named string it must still show), so it is never dropped.
+        List<RunningOccurrence>[]? runByPage = null;
+        if (c.RunningOrdered is not null)
+        {
+            var runningElements = new HashSet<IElement>();
+            foreach (var occ in c.RunningOrdered) runningElements.Add(occ.Element);
+            var runningDocIndex = new Dictionary<IElement, int>();
+            var renderedInOrder = new List<(IElement El, int Index, int Page)>();
+            var counter = 0;
+            IndexDocumentOrder(root, runningElements, runningDocIndex, renderedInOrder, elementToPage, ref counter);
+
+            runByPage = new List<RunningOccurrence>[pageCount];
+            foreach (var occ in c.RunningOrdered)
+            {
+                var p = ResolveRunningPage(occ.Element, runningDocIndex, renderedInOrder, elementToPage);
+                if (p < 0) p = 0;                              // never drop a running element
+                if (p >= pageCount) p = pageCount - 1;         // clamp (defensive — page comes from the map)
+                (runByPage[p] ??= new()).Add(occ);
+            }
         }
 
         // Walk pages in order carrying each name's value forward (its value as of the END of the prior
-        // page). Per page: NamedStrings (last) = carried + the last assignment on the page;
-        // NamedStringsFirst (first) = carried, overridden by the FIRST assignment on the page.
-        var carried = new Dictionary<string, string>(StringComparer.Ordinal);
+        // page). Per page: the LAST entry (string(name, last) / element(name, last)) = carried + the last
+        // on the page; the FIRST (string(name) default / element(name) default + first) = carried,
+        // overridden by the FIRST on the page. Running occurrences carry the WHOLE record (text + style +
+        // segments + containers) together, so the selected occurrence's pieces stay in lockstep (PR #151).
+        var carriedNamed = new Dictionary<string, string>(StringComparer.Ordinal);
+        var carriedRunning = new Dictionary<string, RunningOccurrence>(StringComparer.Ordinal);
         for (var p = 0; p < pageCount; p++)
         {
-            var last = new Dictionary<string, string>(carried, StringComparer.Ordinal);
-            var first = new Dictionary<string, string>(carried, StringComparer.Ordinal);
-            var firstSetThisPage = new HashSet<string>(StringComparer.Ordinal);
-            if (byPage[p] is { } assignments)
+            // Named strings (cycle 5). Reuse the carried map when the page sets nothing (Copilot — avoid
+            // the per-page Dictionary/HashSet allocations on pages with no assignments); copy-on-write only
+            // when there are assignments to apply. The carried map is never mutated in place (a page that
+            // assigns copies it first), so the reference stored for a no-assignment page stays immutable.
+            Dictionary<string, string> lastNamed, firstNamed;
+            if (namedByPage?[p] is { } assignments)
             {
+                lastNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
+                firstNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
+                var firstSet = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (name, value) in assignments)
                 {
-                    last[name] = value;                                   // last-on-page wins
-                    if (firstSetThisPage.Add(name)) first[name] = value;  // FIRST on page overrides carried
+                    lastNamed[name] = value;                            // last-on-page wins
+                    if (firstSet.Add(name)) firstNamed[name] = value;  // FIRST on page overrides carried
                 }
+                carriedNamed = lastNamed;   // end-of-page value carries to the next page
             }
-            carried = last;   // end-of-page value carries to the next page
+            else
+            {
+                lastNamed = firstNamed = carriedNamed;   // unchanged — no copy
+            }
+
+            // Running elements (cycle 5b) — whole-occurrence carry-forward (same copy-on-write).
+            Dictionary<string, RunningOccurrence> lastRun, firstRun;
+            if (runByPage?[p] is { } occurrences)
+            {
+                lastRun = new Dictionary<string, RunningOccurrence>(carriedRunning, StringComparer.Ordinal);
+                firstRun = new Dictionary<string, RunningOccurrence>(carriedRunning, StringComparer.Ordinal);
+                var firstSetRun = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var occ in occurrences)
+                {
+                    lastRun[occ.Name] = occ;                               // last-on-page wins
+                    if (firstSetRun.Add(occ.Name)) firstRun[occ.Name] = occ;  // FIRST on page overrides carried
+                }
+                carriedRunning = lastRun;
+            }
+            else
+            {
+                lastRun = firstRun = carriedRunning;   // unchanged — no copy
+            }
+
+            var (firstText, firstStyles, firstSegs, firstConts) = ProjectRunningOccurrences(firstRun);
+            var (lastText, lastStyles, lastSegs, lastConts) = ProjectRunningOccurrences(lastRun);
+
             contexts[p] = new CssContentList.MarginContentContext(
-                NamedStrings: last.Count > 0 ? last : null,
-                RunningElements: c.Running,
-                NamedStringsFirst: first.Count > 0 ? first : null,
-                RunningElementsFirst: c.RunningFirst,
-                RunningElementStyles: c.RunningStyles,
-                RunningElementStylesFirst: c.RunningStylesFirst,
-                RunningElementSegments: c.RunningSegments,
-                RunningElementSegmentsFirst: c.RunningSegmentsFirst,
-                RunningElementContainers: c.RunningContainers,
-                RunningElementContainersFirst: c.RunningContainersFirst);
+                NamedStrings: lastNamed.Count > 0 ? lastNamed : null,
+                RunningElements: lastText,
+                NamedStringsFirst: firstNamed.Count > 0 ? firstNamed : null,
+                RunningElementsFirst: firstText,
+                RunningElementStyles: lastStyles,
+                RunningElementStylesFirst: firstStyles,
+                RunningElementSegments: lastSegs,
+                RunningElementSegmentsFirst: firstSegs,
+                RunningElementContainers: lastConts,
+                RunningElementContainersFirst: firstConts);
         }
         return contexts;
+    }
+
+    /// <summary>Project a per-page <c>name → </c><see cref="RunningOccurrence"/> map into the four parallel
+    /// dictionaries a <see cref="CssContentList.MarginContentContext"/> holds (text / own style / segments /
+    /// container bands), keyed by name. Returns all-<see langword="null"/> for an empty map (a page with no
+    /// running element carried or set), so the context's running fields stay null — <c>element(name)</c>
+    /// resolves to empty there. Because every dictionary is filled from the SAME occurrence per name, the
+    /// PR #151 lockstep is preserved (text and style can never come from different occurrences).</summary>
+    private static (
+        Dictionary<string, string>? Text,
+        Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? Styles,
+        Dictionary<string, IReadOnlyList<CssContentList.RunningSegment>>? Segments,
+        Dictionary<string, IReadOnlyList<CssContentList.RunningContainer>>? Containers)
+        ProjectRunningOccurrences(Dictionary<string, RunningOccurrence> occurrences)
+    {
+        if (occurrences.Count == 0) return (null, null, null, null);
+        var text = new Dictionary<string, string>(occurrences.Count, StringComparer.Ordinal);
+        var styles = new Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>(
+            occurrences.Count, StringComparer.Ordinal);
+        var segments = new Dictionary<string, IReadOnlyList<CssContentList.RunningSegment>>(
+            occurrences.Count, StringComparer.Ordinal);
+        var containers = new Dictionary<string, IReadOnlyList<CssContentList.RunningContainer>>(
+            occurrences.Count, StringComparer.Ordinal);
+        foreach (var (name, occ) in occurrences)
+        {
+            text[name] = occ.Text;
+            styles[name] = occ.OwnStyle;
+            segments[name] = occ.Segments;
+            containers[name] = occ.Containers;
+        }
+        return (text, styles, segments, containers);
     }
 
     /// <summary>The page a <c>string-set</c>'s setting element renders on: its own page if it produced a
@@ -169,6 +288,78 @@ internal static class MarginContentCollector
         return -1;
     }
 
+    /// <summary>Walk the document in DOCUMENT ORDER assigning each element a monotonic index, recording the
+    /// running elements' indices (so they can be ordered against rendered content) and the RENDERED elements
+    /// — those in <paramref name="elementToPage"/> — in order (the list stays ascending by index). The
+    /// per-page running-content resolution (post-PR-#178 review P1) uses these to find, for a removed-from-
+    /// flow running element, the next rendered element that follows it.</summary>
+    private static void IndexDocumentOrder(
+        IElement element, HashSet<IElement> runningElements,
+        Dictionary<IElement, int> runningDocIndex,
+        List<(IElement El, int Index, int Page)> renderedInOrder,
+        IReadOnlyDictionary<IElement, int> elementToPage, ref int counter)
+    {
+        var index = counter++;
+        if (runningElements.Contains(element)) runningDocIndex[element] = index;
+        if (elementToPage.TryGetValue(element, out var page)) renderedInOrder.Add((element, index, page));
+        foreach (var child in element.Children)   // IElement children, document order
+            IndexDocumentOrder(child, runningElements, runningDocIndex, renderedInOrder, elementToPage, ref counter);
+    }
+
+    /// <summary>The page a removed-from-flow <c>position: running()</c> element belongs to (post-PR-#178
+    /// review P1): the page of the FIRST rendered element after it in document order that is still within
+    /// its containing block (a descendant of its parent — the content the header precedes). If that next
+    /// rendered element is OUTSIDE the containing block (the running element is the last in-block content),
+    /// or there is none, falls back to the nearest rendered ANCESTOR's page (the containing block).
+    /// Returns −1 only when nothing rendered (an all-running document) — the caller maps that to page 0.</summary>
+    private static int ResolveRunningPage(
+        IElement runningElement, IReadOnlyDictionary<IElement, int> runningDocIndex,
+        List<(IElement El, int Index, int Page)> renderedInOrder,
+        IReadOnlyDictionary<IElement, int> elementToPage)
+    {
+        if (runningDocIndex.TryGetValue(runningElement, out var idx))
+        {
+            // renderedInOrder is ascending by Index — binary-search for the first rendered element AFTER
+            // the running element. (Once document order leaves the containing block, no later element is
+            // inside it, so checking just this first-following element is sufficient.)
+            int lo = 0, hi = renderedInOrder.Count;
+            while (lo < hi)
+            {
+                var mid = (lo + hi) >> 1;
+                if (renderedInOrder[mid].Index <= idx) lo = mid + 1; else hi = mid;
+            }
+            if (lo < renderedInOrder.Count)
+            {
+                var (el, _, page) = renderedInOrder[lo];
+                var parent = runningElement.ParentElement;
+                if (parent is not null && IsDescendantOf(el, parent)) return page;   // heads in-block content
+            }
+        }
+        return ResolvePage(runningElement, elementToPage);   // containing block's page (nearest rendered ancestor)
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="element"/> is a descendant of
+    /// <paramref name="ancestor"/> (walks parent links). Used to test whether the next rendered element is
+    /// still within a running element's containing block.</summary>
+    private static bool IsDescendantOf(IElement element, IElement ancestor)
+    {
+        for (IElement? e = element.ParentElement; e is not null; e = e.ParentElement)
+            if (ReferenceEquals(e, ancestor)) return true;
+        return false;
+    }
+
+    /// <summary>One occurrence of a <c>position: running(name)</c> element in document order (cross-page
+    /// cycle 5b): the running name + the setting element (for nearest-rendered-ancestor page bucketing) plus
+    /// the full running-occurrence payload — text, own style, per-line segments, container bands — carried
+    /// TOGETHER so per-page carry-forward keeps the selected occurrence's pieces in lockstep (PR #151: the
+    /// text can never pair with another occurrence's style/segments). A struct so the document-order list +
+    /// the per-page maps don't allocate a node per occurrence.</summary>
+    private readonly record struct RunningOccurrence(
+        IElement Element, string Name, string Text,
+        IReadOnlyList<KeyValuePair<string, string>> OwnStyle,
+        IReadOnlyList<CssContentList.RunningSegment> Segments,
+        IReadOnlyList<CssContentList.RunningContainer> Containers);
+
     /// <summary>Mutable accumulator threaded through the document <see cref="Walk"/> (a reference type, so
     /// the recursion shares one instance rather than passing many <c>ref</c> dictionaries).</summary>
     private sealed class Collected
@@ -178,6 +369,9 @@ internal static class MarginContentCollector
         // Cross-page running content (cycle 5): every string-set assignment in DOCUMENT ORDER with the
         // setting element, so the per-page collector can bucket them by the page the element laid out on.
         public List<(IElement Element, string Name, string Value)>? NamedOrdered;
+        // Cross-page running content (cycle 5b): every running occurrence in DOCUMENT ORDER, bucketed by
+        // page like NamedOrdered.
+        public List<RunningOccurrence>? RunningOrdered;
         public Dictionary<string, string>? Running;      // LAST running element text — element(name, last)
         public Dictionary<string, string>? RunningFirst; // FIRST — element(name) default + first
         public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStyles;      // LAST own style
@@ -248,6 +442,12 @@ internal static class MarginContentCollector
                 var ownStyle = CaptureOwnStyle(element, rules, cascade);
                 (c.RunningStyles ??= new(StringComparer.Ordinal))[runName] = ownStyle;            // last occurrence
                 (c.RunningStylesFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, ownStyle); // first occurrence
+
+                // Record this occurrence in document order for per-page bucketing (cycle 5b): the whole
+                // payload (text + style + segments + containers) stays together so the per-page first/last
+                // selection can't split it across occurrences.
+                (c.RunningOrdered ??= new()).Add(new RunningOccurrence(
+                    element, runName, text, ownStyle, segmentArray, containerArray));
             }
         }
 

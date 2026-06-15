@@ -162,9 +162,9 @@ internal static class PageMarginBoxPainter
     /// <param name="rootElementStyle">The document root element's resolved style — the top of the
     /// CSS Page 3 inheritance chain (root → page context → margin box). <see langword="null"/> for
     /// an element-free document.</param>
-    /// <param name="pageDeclarations">The bare <c>@page</c> rules' own declarations
-    /// (<see cref="AtPageMarginBoxResolver.PageContextDeclarations"/>) — the page-context style the
-    /// margin boxes inherit from.</param>
+    /// <param name="pageDeclarations">The applicable <c>@page</c> rules' own declarations
+    /// (<see cref="AtPageMarginBoxResolver.PageContextDeclarations(System.Collections.Generic.IEnumerable{NetPdf.Css.Parser.CssStylesheet}, NetPdf.Css.Cascade.CssMediaContext)"/>
+    /// or its per-page overload) — the page-context style the margin boxes inherit from.</param>
     /// <param name="pageCounters">Page counters for <c>counter(page)</c> / <c>counter(pages)</c>
     /// content — the page being painted's number + the total (cycle 9; single page → (1, 1)).</param>
     /// <param name="marginContext">Named strings (<c>string-set</c> → <c>string(name)</c>, Task 22) +

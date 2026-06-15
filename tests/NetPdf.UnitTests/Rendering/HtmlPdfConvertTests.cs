@@ -841,6 +841,98 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_running_header_shows_the_current_section_element_per_page()
+    {
+        // Cycle 5b — cross-page element() running content (the element() analogue of the named-string
+        // test above). Two sections, each fills a page and carries a `position: running(rh)` heading:
+        // section 1 → "A", section 2 → "B". The @top-center running header content: "A" element(rh) is
+        // therefore "AA" on page 1 and "AB" on page 2 — DISTINCT. The whole-document collector returned the
+        // FIRST running element ("A") on EVERY page (both headers "AA"); per-page bucketing + carry-forward
+        // makes page 2 "AB". (The literal "A" prefix makes the value observable past the per-page font
+        // subset — a lone "A"/"B" would both subset to glyph 1.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"A\" element(rh) } }" +
+            ".rh { position: running(rh) }" +
+            ".s1 { height: 600px } .s2 { height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"s1\"><div class=\"rh\">A</div></div>" +
+            "<div class=\"s2\"><div class=\"rh\">B</div></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 "AA" (rh=A) ≠ page 2 "AB" (rh=B)
+    }
+
+    [Fact]
+    public void Multi_page_first_selector_margin_box_paints_only_on_the_first_page()
+    {
+        // Cycle 6 — @page :first margin boxes are now PER PAGE. The first page paints the :first header
+        // ("AA"), later pages the bare @page header ("AB"). The pre-cycle driver resolved margin boxes
+        // ONCE (:first won for the whole document), so every page read "AA" — both runs equal. (The "A"
+        // prefix makes "AA" [one distinct glyph] vs "AB" [two] observable past the per-page font subset.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page :first { @top-center { content: \"AA\" } }" +
+            "@page { @top-center { content: \"AB\" } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 ":first AA" ≠ page 2 "bare AB"
+    }
+
+    [Fact]
+    public void Multi_page_left_and_right_selector_margin_boxes_alternate_by_parity()
+    {
+        // Cycle 6 — @page :left / :right margin boxes (deferred pre-cycle) now paint by LTR parity:
+        // page 1 is a RIGHT page → ":right AA", page 2 a LEFT page → ":left AB". Pre-cycle :left/:right
+        // were classified Deferred and never applied (no bare box here → no header painted at all).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page :right { @top-center { content: \"AA\" } }" +
+            "@page :left { @top-center { content: \"AB\" } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // a header on each page (proves :left/:right now apply)
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 ":right AA" ≠ page 2 ":left AB"
+    }
+
+    [Fact]
+    public void Multi_page_selector_margin_box_is_not_suppressed_by_a_bare_content_none()
+    {
+        // Post-PR-#178 review P1: a bare `@page { @top-center { content: none } }` must NOT erase the
+        // selector-scoped `@page :left { @top-center { content: "AB" } }` from the structural union — the
+        // earlier ResolveAll cross-selector cascade let the bare `none` suppress top-center, so the
+        // pipeline saw "no margin boxes" and the LEFT header never painted. Now the left (page 2) header
+        // paints; the right (page 1) page is suppressed by the bare `none`.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page :left { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: none } }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Single(runs);                    // only the LEFT page (page 2) paints a header; right is suppressed
+    }
+
+    [Fact]
     public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
         // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic

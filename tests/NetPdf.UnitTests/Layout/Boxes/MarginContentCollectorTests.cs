@@ -166,13 +166,176 @@ public sealed class MarginContentCollectorTests
         Assert.Equal("B", pages[1].NamedStringsFirst?["title"]);   // the inline setter, via its <p> ancestor's page
     }
 
-    [Fact(Skip = "cycle 5b — per-page element() running content. element() text / own styles / segments "
-        + "/ containers stay WHOLE-DOCUMENT this cycle (only the named strings are per-page); applying the "
-        + "same per-page bucketing + carry-forward to the running-occurrence record is the documented "
-        + "follow-up (docs/design/multi-page-driver.md, deferrals.md). Pin: two position: running(rh) "
-        + "headings on two pages should resolve element(rh)/first/last per page.")]
-    public void CollectPerPage_buckets_running_elements_per_page_cycle5b()
+    [Fact]
+    public async Task CollectPerPage_buckets_running_elements_per_page_cycle5b()
     {
+        // Cycle 5b — cross-page element() running content. Two `position: running(rh)` headings, each in
+        // its own section: section 1 (laid out on page 0) holds rh "A", section 2 (page 1) holds rh "B".
+        // A running element is removed from flow (no fragment of its own), so its page comes from its
+        // nearest rendered ANCESTOR (the section). element(rh)/first must read the FIRST running element ON
+        // that page — "A" on page 0, "B" on page 1 — not the whole-document first ("A") on every page.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><section id='s1'><div class='rh'>A</div></section>" +
+            "<section id='s2'><div class='rh'>B</div></section></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#s1")!] = 0,   // section 1 rendered on page 0
+            [doc.QuerySelector("#s2")!] = 1,   // section 2 on page 1
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal(2, pages.Length);
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);   // element(rh) / first on page 0
+        Assert.Equal("A", pages[0].RunningElements?["rh"]);        // element(rh, last) on page 0
+        Assert.Equal("B", pages[1].RunningElementsFirst?["rh"]);   // re-set on page 1
+        Assert.Equal("B", pages[1].RunningElements?["rh"]);
+    }
+
+    [Fact]
+    public async Task CollectPerPage_carries_a_running_element_forward_until_re_set()
+    {
+        // Cycle 5b — carry-forward (GCPM L3), mirroring the named-string carry-forward. The rh header set
+        // on page 0 persists onto page 1 (which has no running element) and is re-set on page 2.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><section id='s1'><div class='rh'>A</div></section>" +
+            "<section id='s2'></section>" +
+            "<section id='s3'><div class='rh'>C</div></section></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#s1")!] = 0,
+            [doc.QuerySelector("#s3")!] = 2,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 3);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);   // set on page 0
+        Assert.Equal("A", pages[1].RunningElementsFirst?["rh"]);   // carried (page 1 has no running element)
+        Assert.Equal("C", pages[2].RunningElementsFirst?["rh"]);   // re-set on page 2
+    }
+
+    [Fact]
+    public async Task CollectPerPage_distinguishes_first_and_last_running_element_on_one_page()
+    {
+        // Cycle 5b — first/last WITHIN one page. Two running elements sharing `rh` on page 0:
+        // element(rh)/first reads the FIRST ("A"), element(rh, last) reads the LAST ("B").
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><section id='s1'><div class='rh'>A</div><div class='rh'>B</div></section></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#s1")!] = 0,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);   // element(rh) / first
+        Assert.Equal("B", pages[0].RunningElements?["rh"]);        // element(rh, last)
+    }
+
+    [Fact]
+    public async Task CollectPerPage_keeps_running_element_style_in_lockstep_with_text_per_page()
+    {
+        // Cycle 5b — the whole occurrence (text + own style + segments + containers) buckets TOGETHER, so
+        // per page the style tracks the text. Page 0's rh is the red "A", page 1's is the unstyled "B": the
+        // style dictionaries must carry A's colour on page 0 and B's EMPTY style on page 1 (not A's stale
+        // red) — the PR #151 lockstep, now per page.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><section id='s1'><div class='r1'>A</div></section>" +
+            "<section id='s2'><div class='r2'>B</div></section></body></html>",
+            ".r1 { position: running(rh); color: #ff0000 } .r2 { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#s1")!] = 0,
+            [doc.QuerySelector("#s2")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);
+        Assert.Contains(pages[0].RunningElementStylesFirst!["rh"], kv => kv.Key == "color");  // A's red
+        Assert.Equal("B", pages[1].RunningElementsFirst?["rh"]);
+        Assert.Empty(pages[1].RunningElementStylesFirst!["rh"]);                               // B unstyled, not A's red
+    }
+
+    [Fact]
+    public async Task CollectPerPage_buckets_direct_sibling_running_headings_per_page()
+    {
+        // Post-PR-#178 review P1 — the core GCPM pattern. Two `position: running(rh)` headings are DIRECT
+        // siblings under <body> (no per-section wrapper), each followed by its own page's content. They
+        // must bucket to the page of the content they head — heading A → page 0 (p1), heading B → page 1
+        // (p2) — NOT both to body's page 0 (the cycle-5b nearest-ancestor walk's failure).
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><h1 class='rh'>A</h1><p id='p1'>x</p>" +
+            "<h1 class='rh'>B</h1><p id='p2'>y</p></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#p1")!] = 0,   // heading A's following content (page 0)
+            [doc.QuerySelector("#p2")!] = 1,   // heading B's following content (page 1)
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);   // heading A heads page 0
+        Assert.Equal("B", pages[1].RunningElementsFirst?["rh"]);   // heading B heads page 1 — not carried A
+    }
+
+    [Fact]
+    public async Task CollectPerPage_buckets_running_headings_inside_one_multi_page_container_per_page()
+    {
+        // Post-PR-#178 review P1 — two headings inside ONE container that spans pages. Each heads its own
+        // page's content (still within the container), so they bucket to pages 0 and 1 respectively — not
+        // both to the container's first page (the nearest-ancestor walk would have collapsed them).
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><div id='ch'><h1 class='rh'>A</h1><p id='p1'>x</p>" +
+            "<h1 class='rh'>B</h1><p id='p2'>y</p></div></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#ch")!] = 0,   // the container starts on page 0
+            [doc.QuerySelector("#p1")!] = 0,
+            [doc.QuerySelector("#p2")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);
+        Assert.Equal("B", pages[1].RunningElementsFirst?["rh"]);
+    }
+
+    [Fact]
+    public async Task CollectPerPage_trailing_running_heading_falls_back_to_its_container_page()
+    {
+        // A running heading with NO following in-block content (it's the last thing in its container) falls
+        // back to its nearest rendered ANCESTOR's page — here the container on page 1.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><div id='a'><p id='pa'>x</p></div>" +
+            "<div id='b'><p id='pb'>y</p><h1 class='rh'>H</h1></div></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#a")!] = 0,
+            [doc.QuerySelector("#pa")!] = 0,
+            [doc.QuerySelector("#b")!] = 1,
+            [doc.QuerySelector("#pb")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Null(pages[0].RunningElementsFirst);                 // nothing on page 0
+        Assert.Equal("H", pages[1].RunningElementsFirst?["rh"]);    // the trailing heading → its container's page 1
+    }
+
+    [Fact]
+    public async Task CollectPerPage_single_page_running_element_is_the_whole_document_value()
+    {
+        // Cycle 5b — single-page short-circuit. With one page, the whole-document first/last IS the page-0
+        // value, so element() resolves to it directly (byte-identical to the pre-cross-page path). Pins that
+        // the common single-page running header keeps working through the new per-page path.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><div class='rh'>A</div></body></html>",
+            ".rh { position: running(rh) }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>();   // body-only running content
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 1);
+
+        Assert.Single(pages);
+        Assert.Equal("A", pages[0].RunningElementsFirst?["rh"]);   // resolved even with an empty element→page map
     }
 
     [Fact]

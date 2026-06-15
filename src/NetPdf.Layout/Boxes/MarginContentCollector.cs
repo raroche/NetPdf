@@ -63,12 +63,83 @@ internal static class MarginContentCollector
             c.RunningContainers, c.RunningContainersFirst);
     }
 
+    /// <summary>Cross-page running content (Task 22, multi-page driver cycle 5): one
+    /// <see cref="CssContentList.MarginContentContext"/> PER PAGE, so <c>string(name)</c> /
+    /// <c>string(name, last)</c> resolve to the value CURRENT on each page (CSS GCPM L3 carry-forward).
+    /// A named string set by an element laid out on page <c>p</c> is visible on page <c>p</c> and every
+    /// later page until re-set; a page with no assignment shows the value carried from the prior page.
+    /// <paramref name="elementToPage"/> maps each laid-out element to its (first) page — built by the
+    /// render pipeline from the per-page fragment lists. An assignment whose element never rendered (no
+    /// page) is dropped. <c>element()</c> running content (text + own styles / segments / containers)
+    /// stays WHOLE-DOCUMENT this cycle (its cross-page carry-forward is a follow-up); only the named
+    /// strings are per-page.</summary>
+    public static CssContentList.MarginContentContext[] CollectPerPage(
+        IElement root, ResolvedCascadeResult cascade,
+        IReadOnlyDictionary<IElement, int> elementToPage, int pageCount)
+    {
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(cascade);
+        ArgumentNullException.ThrowIfNull(elementToPage);
+        if (pageCount < 1) pageCount = 1;
+
+        var c = new Collected();
+        Walk(root, cascade, c);
+
+        // Bucket the string-set assignments by the page their setting element laid out on, preserving
+        // document order within a page.
+        var byPage = new List<(string Name, string Value)>[pageCount];
+        if (c.NamedOrdered is not null)
+        {
+            foreach (var (element, name, value) in c.NamedOrdered)
+            {
+                if (!elementToPage.TryGetValue(element, out var p) || p < 0 || p >= pageCount) continue;
+                (byPage[p] ??= new()).Add((name, value));
+            }
+        }
+
+        // Walk pages in order carrying each name's value forward (its value as of the END of the prior
+        // page). Per page: NamedStrings (last) = carried + the last assignment on the page;
+        // NamedStringsFirst (first) = carried, overridden by the FIRST assignment on the page.
+        var contexts = new CssContentList.MarginContentContext[pageCount];
+        var carried = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (var p = 0; p < pageCount; p++)
+        {
+            var last = new Dictionary<string, string>(carried, StringComparer.Ordinal);
+            var first = new Dictionary<string, string>(carried, StringComparer.Ordinal);
+            var firstSetThisPage = new HashSet<string>(StringComparer.Ordinal);
+            if (byPage[p] is { } assignments)
+            {
+                foreach (var (name, value) in assignments)
+                {
+                    last[name] = value;                                   // last-on-page wins
+                    if (firstSetThisPage.Add(name)) first[name] = value;  // FIRST on page overrides carried
+                }
+            }
+            carried = last;   // end-of-page value carries to the next page
+            contexts[p] = new CssContentList.MarginContentContext(
+                NamedStrings: last.Count > 0 ? last : null,
+                RunningElements: c.Running,
+                NamedStringsFirst: first.Count > 0 ? first : null,
+                RunningElementsFirst: c.RunningFirst,
+                RunningElementStyles: c.RunningStyles,
+                RunningElementStylesFirst: c.RunningStylesFirst,
+                RunningElementSegments: c.RunningSegments,
+                RunningElementSegmentsFirst: c.RunningSegmentsFirst,
+                RunningElementContainers: c.RunningContainers,
+                RunningElementContainersFirst: c.RunningContainersFirst);
+        }
+        return contexts;
+    }
+
     /// <summary>Mutable accumulator threaded through the document <see cref="Walk"/> (a reference type, so
     /// the recursion shares one instance rather than passing many <c>ref</c> dictionaries).</summary>
     private sealed class Collected
     {
         public Dictionary<string, string>? Named;        // LAST string-set assignment — string(name, last)
         public Dictionary<string, string>? NamedFirst;   // FIRST — string(name) default + first
+        // Cross-page running content (cycle 5): every string-set assignment in DOCUMENT ORDER with the
+        // setting element, so the per-page collector can bucket them by the page the element laid out on.
+        public List<(IElement Element, string Name, string Value)>? NamedOrdered;
         public Dictionary<string, string>? Running;      // LAST running element text — element(name, last)
         public Dictionary<string, string>? RunningFirst; // FIRST — element(name) default + first
         public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStyles;      // LAST own style
@@ -96,6 +167,7 @@ internal static class MarginContentCollector
                     {
                         (c.Named ??= new(StringComparer.Ordinal))[name] = value;            // last-wins
                         (c.NamedFirst ??= new(StringComparer.Ordinal)).TryAdd(name, value); // first-wins (kept)
+                        (c.NamedOrdered ??= new()).Add((element, name, value));             // per-page (cycle 5)
                     }
                 }
             }

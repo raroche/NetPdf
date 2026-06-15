@@ -74,6 +74,42 @@ public sealed class MarginContentCollectorTests
     }
 
     [Fact]
+    public async Task CollectPerPage_carries_a_named_string_forward_until_re_set()
+    {
+        // Cycle 5 — cross-page carry-forward. #a sets title="A" (laid out on page 0), #c sets
+        // title="C" (page 2); page 1 sets nothing. Per page the named string is the value CURRENT
+        // on that page: page 0 = "A", page 1 = the carried "A", page 2 = "C" (re-set).
+        var ctx = BrowsingContext.New(Configuration.Default.WithCss());
+        const string css = "#a { string-set: title \"A\" } #c { string-set: title \"C\" }";
+        const string html =
+            "<html><body><div id='a'></div><div id='b'></div><div id='c'></div></body></html>";
+        var doc = await ctx.OpenAsync(req => req.Content(html));
+        var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
+        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css),
+            NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
+            mediaQuery: null, isDisabled: false, order: 0);
+        var cascade = CascadeResolver.Resolve(
+            doc, ImmutableArray.Create(sheet), CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, doc);
+
+        var elementToPage = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#a")!] = 0,
+            [doc.QuerySelector("#c")!] = 2,
+        };
+        var pages = MarginContentCollector.CollectPerPage(
+            doc.DocumentElement!, resolved, elementToPage, pageCount: 3);
+
+        Assert.Equal(3, pages.Length);
+        // string(title) default reads the FIRST-on-page value, carried when the page sets nothing.
+        Assert.Equal("A", pages[0].NamedStringsFirst?["title"]);   // set on page 0
+        Assert.Equal("A", pages[1].NamedStringsFirst?["title"]);   // carried forward (page 1 sets nothing)
+        Assert.Equal("C", pages[2].NamedStringsFirst?["title"]);   // re-set on page 2
+        Assert.Equal("C", pages[2].NamedStrings?["title"]);        // the exit (last) value too
+    }
+
+    [Fact]
     public async Task ReadBoundedDescendantText_truncates_mid_text_node_at_the_cap()
     {
         // The cap can fall in the middle of a single text node — only `maxChars` are taken.

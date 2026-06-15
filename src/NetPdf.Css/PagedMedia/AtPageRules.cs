@@ -121,12 +121,22 @@ internal static class AtPageRules
     public static IEnumerable<CssAtRule> EnumeratePageRules(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorContext ctx)
     {
-        for (var tier = 0; tier <= MaxSelectorTier; tier++)
+        // ONE walk over the stylesheets, binning each applicable rule by its matching specificity tier,
+        // then yielding the bins in ascending-tier order (post-PR-#178 Copilot — previously one full walk
+        // per tier). Source order within a tier is preserved (the walk visits in source order), so the
+        // cascade result is unchanged.
+        List<CssAtRule>?[]? bins = null;
+        foreach (var at in WalkAllPageRules(sheets, media))
         {
-            var t = tier;   // capture per-iteration (the predicate is consumed within this tier)
-            foreach (var at in WalkPageRules(sheets, media, p => MatchTier(p, ctx) == t))
-                yield return at;
+            var tier = MatchTier(at.Prelude, ctx);
+            if (tier < 0) continue;                                   // no selector matched — skip
+            (bins ??= new List<CssAtRule>?[MaxSelectorTier + 1])[tier] ??= new();
+            bins[tier]!.Add(at);
         }
+        if (bins is null) yield break;
+        for (var t = 0; t <= MaxSelectorTier; t++)
+            if (bins[t] is { } list)
+                foreach (var at in list) yield return at;
     }
 
     /// <summary>The DISTINCT page contexts whose <c>@page</c> selector match-sets differ — every
@@ -243,12 +253,13 @@ internal static class AtPageRules
         return (-1, false);   // named / compound / unknown → deferred (cycle 7)
     }
 
-    /// <summary>Rule-only recursive walk (cycle 6) yielding each applicable <c>@page</c> rule whose
-    /// selector satisfies <paramref name="match"/>, with the SAME sheet-media / disabled filtering +
-    /// <c>@media</c> recursion + source order as <see cref="Walk"/>. Paper-size conditioning is not
-    /// tracked (margin boxes — the only consumer — ignore it).</summary>
-    private static IEnumerable<CssAtRule> WalkPageRules(
-        IEnumerable<CssStylesheet> sheets, CssMediaContext media, Func<string?, bool> match)
+    /// <summary>Rule-only recursive walk (cycle 6) yielding EVERY applicable <c>@page</c> rule in source
+    /// order, with the SAME sheet-media / disabled filtering + <c>@media</c> recursion as <see cref="Walk"/>.
+    /// The caller (<see cref="EnumeratePageRules(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>)
+    /// bins by <see cref="MatchTier"/>. Paper-size conditioning is not tracked (margin boxes — the only
+    /// consumer — ignore it).</summary>
+    private static IEnumerable<CssAtRule> WalkAllPageRules(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
@@ -256,12 +267,12 @@ internal static class AtPageRules
         {
             if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
             if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
-            foreach (var at in FromRulesMatching(sheet.Rules, media, match)) yield return at;
+            foreach (var at in FromAllPageRules(sheet.Rules, media)) yield return at;
         }
     }
 
-    private static IEnumerable<CssAtRule> FromRulesMatching(
-        ImmutableArray<CssRule> rules, CssMediaContext media, Func<string?, bool> match)
+    private static IEnumerable<CssAtRule> FromAllPageRules(
+        ImmutableArray<CssRule> rules, CssMediaContext media)
     {
         foreach (var rule in rules)
         {
@@ -269,9 +280,9 @@ internal static class AtPageRules
             if (string.Equals(at.Name, "media", StringComparison.OrdinalIgnoreCase))
             {
                 if (media.Matches(at.Prelude)) // recurse only when the @media condition matches
-                    foreach (var r in FromRulesMatching(at.ChildRules, media, match)) yield return r;
+                    foreach (var r in FromAllPageRules(at.ChildRules, media)) yield return r;
             }
-            else if (string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase) && match(at.Prelude))
+            else if (string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase))
             {
                 yield return at;
             }

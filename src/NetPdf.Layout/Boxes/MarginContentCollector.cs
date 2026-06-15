@@ -184,33 +184,46 @@ internal static class MarginContentCollector
         var carriedRunning = new Dictionary<string, RunningOccurrence>(StringComparer.Ordinal);
         for (var p = 0; p < pageCount; p++)
         {
-            // Named strings (cycle 5).
-            var lastNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
-            var firstNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
+            // Named strings (cycle 5). Reuse the carried map when the page sets nothing (Copilot — avoid
+            // the per-page Dictionary/HashSet allocations on pages with no assignments); copy-on-write only
+            // when there are assignments to apply. The carried map is never mutated in place (a page that
+            // assigns copies it first), so the reference stored for a no-assignment page stays immutable.
+            Dictionary<string, string> lastNamed, firstNamed;
             if (namedByPage?[p] is { } assignments)
             {
+                lastNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
+                firstNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
                 var firstSet = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (name, value) in assignments)
                 {
                     lastNamed[name] = value;                            // last-on-page wins
                     if (firstSet.Add(name)) firstNamed[name] = value;  // FIRST on page overrides carried
                 }
+                carriedNamed = lastNamed;   // end-of-page value carries to the next page
             }
-            carriedNamed = lastNamed;   // end-of-page value carries to the next page
+            else
+            {
+                lastNamed = firstNamed = carriedNamed;   // unchanged — no copy
+            }
 
-            // Running elements (cycle 5b) — whole-occurrence carry-forward.
-            var lastRun = new Dictionary<string, RunningOccurrence>(carriedRunning, StringComparer.Ordinal);
-            var firstRun = new Dictionary<string, RunningOccurrence>(carriedRunning, StringComparer.Ordinal);
+            // Running elements (cycle 5b) — whole-occurrence carry-forward (same copy-on-write).
+            Dictionary<string, RunningOccurrence> lastRun, firstRun;
             if (runByPage?[p] is { } occurrences)
             {
+                lastRun = new Dictionary<string, RunningOccurrence>(carriedRunning, StringComparer.Ordinal);
+                firstRun = new Dictionary<string, RunningOccurrence>(carriedRunning, StringComparer.Ordinal);
                 var firstSetRun = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var occ in occurrences)
                 {
                     lastRun[occ.Name] = occ;                               // last-on-page wins
                     if (firstSetRun.Add(occ.Name)) firstRun[occ.Name] = occ;  // FIRST on page overrides carried
                 }
+                carriedRunning = lastRun;
             }
-            carriedRunning = lastRun;
+            else
+            {
+                lastRun = firstRun = carriedRunning;   // unchanged — no copy
+            }
 
             var (firstText, firstStyles, firstSegs, firstConts) = ProjectRunningOccurrences(firstRun);
             var (lastText, lastStyles, lastSegs, lastConts) = ProjectRunningOccurrences(lastRun);

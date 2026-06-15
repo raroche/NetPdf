@@ -4357,6 +4357,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double prevMarginEnd = 0;
         var hasPrior = false;
 
+        // Phase 3 multi-page driver, cycle 1 (PR #175 review P1) — forward-
+        // progress baseline for the nested fragmentation break check below.
+        // The sink's fragment count when THIS recursion level starts: the
+        // break only fires once `_sink.Cursor` has advanced past it — i.e. at
+        // least one child's fragment was actually emitted at this level on
+        // this page. This is robust where the signed `childCursor` is NOT a
+        // reliable "emitted something" signal: a prior nested FLOAT emits a
+        // fragment without advancing childCursor, and a prior block with
+        // NEGATIVE margins can leave childCursor <= 0 after real emission.
+        var sinkCursorAtRecursionEntry = _sink.Cursor;
+
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — indexed
         // iteration so we can match the recursion-chain's
         // ResumeAtChild index against the current child position.
@@ -4613,6 +4624,70 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
             var childBlockOffset = contentTop + childCursor + topShift;
             var childInlineOffset = contentLeft + marginInlineStart;
+
+            // Phase 3 multi-page driver, cycle 1 — nested-container
+            // fragmentation (docs/design/multi-page-driver.md §4.1). Before
+            // committing a nested child, break the page when its border-box
+            // (visual extent, incl. its own descendants) would overflow the
+            // fragmentainer's block axis, AS LONG AS at least one child has
+            // already committed at this level (childCursor advanced past 0 =
+            // forward progress; an oversized FIRST child force-emits instead,
+            // mirroring the top-level loop's forced-overflow path — so
+            // pagination always makes progress + never spins). The break is
+            // returned as a BlockContinuation pointing at THIS child; the
+            // recursion's callers (the normal walk's `recursiveReturn`
+            // handler + the forced-overflow path's `forcedNestedRet` handler)
+            // wrap it into the chain + propagate PageComplete, and the resume
+            // page skips the committed children via `startIdx`. Gated on a
+            // propagating resolver + fragmentainer: the float recursion sites
+            // omit both, so float subtrees stay atomic (float continuation is
+            // a separate deferral). Suppressed when the fragmentainer
+            // disables pagination (position: fixed content, Task 20). Child-
+            // boundary granularity only — a single child taller than the page
+            // still force-overflows (no intra-child line split this cycle).
+            //
+            // ONLY break before a plain block-flow container (the kinds this
+            // layouter owns). A flex / grid / table / multicol child
+            // paginates INTERNALLY via its own dispatch below (returning a
+            // chained continuation when it splits); breaking before it would
+            // wrongly push the whole box to the next page + waste the
+            // current page's remaining space (a flex container that can fit
+            // its first lines must not be deferred wholesale).
+            //
+            // PR #175 review P2 — consult the IBreakResolver (do NOT hard-code
+            // the overflow test) so the nested boundary honors the resolver's
+            // policy + is forward-compatible with the optimizing resolver. The
+            // greedy resolver's fit check reads ctx.RemainingBlockSize (= page
+            // minus UsedBlockSize), but the recursion tracks position in its
+            // own childCursor and does NOT advance the fragmentainer's
+            // UsedBlockSize per child — so set it transiently to this child's
+            // block-start before asking, then restore it (the top-level loop
+            // owns that accounting; we're single-threaded, so the mutation is
+            // fully contained). DEFERRED at nested boundaries this cycle:
+            // checkpoint registration + BreakAction.Rewind (the greedy resolver
+            // never rewinds; the recursion holds no checkpoint to roll back to)
+            // and break-before/-after/-inside metadata on the opportunity.
+            if (propagatingResolver is not null
+                && propagatingFragmentainer is { SuppressBlockPagination: false } pf
+                && IsBlockFlowContainerOwnedByBlockLayouter(child)
+                && _sink.Cursor > sinkCursorAtRecursionEntry)
+            {
+                var childStart = Math.Max(0, childBlockOffset);
+                var savedUsedBlockSize = pf.UsedBlockSize;
+                pf.UsedBlockSize = childStart;
+                var nestedDecision = propagatingResolver.ConsiderBreakAt(
+                    BreakOpportunity.Block(
+                        usedBlockSize: childStart,
+                        chunkBlockSize: childEffectiveBlockSize),
+                    pf);
+                pf.UsedBlockSize = savedUsedBlockSize;
+                if (nestedDecision.Action == BreakAction.BreakHere)
+                {
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0);
+                }
+            }
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) — for nested Table / InlineTable wrappers, pre-

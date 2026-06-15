@@ -2917,15 +2917,30 @@ flags the categories):
        **UPDATE (multi-page driver cycles 1–2 — DONE):** nested-container fragmentation landed —
        `EmitBlockSubtreeRecursive` consults the resolver before each plain BLOCK-FLOW child + returns a
        `BlockContinuation` on block-axis overflow, so nested block content paginates at child boundaries at
-       arbitrary depth. **REMAINING (cycle 8 finding, NON-block layout modes still don't paginate across
-       pages):** the fragmentation is gated to BLOCK-FLOW children (`IsBlockFlowContainerOwnedByBlockLayouter`),
-       so a tall `display: flex`/`grid`/`table`/multicol container lays all its children on the current page
-       — flex/multicol overflow-truncate (`PDF-CONTENT-OVERFLOW-TRUNCATED-001`), a table doesn't split rows,
-       and `<thead>`/`<tfoot>` don't repeat per page. These layout modes HAVE continuation types
-       (`TableContinuation` / `FlexContinuation` / `GridContinuation` / `MulticolContinuation`) + unit tests
-       but are NOT yet wired into the driver loop (the layouters don't propagate a continuation through the
-       fragmentainer the way `BlockLayouter` now does). Wiring each is its own substantial layout task; the
-       multi-page composition golden (`Multi_page_composition_…`) exercises the working BLOCK path end-to-end.
+       arbitrary depth. **CORRECTION (non-block-pagination audit — the cycle-8 "non-block modes don't
+       paginate" finding was a FALSE NEGATIVE):** the cycle-8 probe used explicit cell/item heights, which
+       collapse to ~one text-line tall (a `<td><div style="height:200px">` renders short), so its test
+       containers never exceeded one page — it concluded "no pagination" when the wiring was actually present.
+       An empirical re-audit (facade tests in `HtmlPdfConvertTests`, genuinely page-exceeding content) found:
+       **TABLE row split, `<thead>`/`<tfoot>` REPEAT, and MULTICOL all ALREADY paginate** through the driver
+       (their layouters propagate `TableContinuation` / `MulticolContinuation` through `BlockLayouter`'s
+       dispatch exactly like block content); **GRID paginates with explicit `grid-template-rows`**
+       (`GridContinuation` propagates via `IsPaginatableGrid`). These are now pinned at the facade level.
+       **The genuine gaps were FLEX-COLUMN and GRID-with-implicit-rows.**
+       **FLEX-COLUMN — DONE (non-block-pagination arc):** a tall `flex-direction: column` + nowrap container
+       now splits at flex-ITEM boundaries (`FlexLayouter` main-axis item split → `FlexContinuation.ItemIndex`,
+       propagated by `BlockLayouter` with a natural-size / page-budget DUAL-INPUT mirroring the grid page-budget
+       so flex resolution sizes items naturally instead of shrinking them to fit the page). `IsPaginatablePerStyle`
+       now accepts column-nowrap; column-reverse + column-wrap stay atomic (documented below). **REMAINING:**
+       (a) **grid with IMPLICIT rows** (`grid-auto-rows` / auto-placed rows) doesn't paginate — the wrapper
+       pre-measure `PreMeasureGridRowExtent` only sums `grid-template-rows`, so an auto-row grid stays
+       chrome-height + never overflows + never triggers the (already-wired) grid pagination. Fixing it means
+       teaching the pre-measure to account for implicit rows under an indefinite block size (interacts with the
+       fr-under-indefinite approximation). (b) **flex item CONTENT layout** — `FlexLayouter` emits each item's
+       BOX geometry but does NOT lay out the item's inner content (text / block children), so flex item text
+       doesn't render (orthogonal to pagination; the column-flex facade test asserts via per-item background
+       fills, not glyphs). (c) **row-flex** main-axis nowrap per-item split + **column-reverse / column-wrap**
+       (atomic). (d) intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals.
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`

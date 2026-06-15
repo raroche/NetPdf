@@ -4880,6 +4880,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // separate <c>if (IsFlexContainer(child))</c> sibling at
             // the same loop-iteration scope.
             bool paginateFlexForChild = false;
+            // Flex-column pagination dual-input (mirrors the grid page-budget):
+            // for a paginating COLUMN flex the wrapper paints at the clamped
+            // page-remaining size, but the FlexLayouter must SIZE items against
+            // the NATURAL main extent (else flex-shrink fights the page). Capture
+            // the pre-clamp authored border-box block size + a flag so the
+            // dispatch passes natural-as-contentBlockSize + clamped-as-budget.
+            double nestedFlexAuthoredBorderBoxBlockSize = 0;
+            bool nestedFlexColumnPaginating = false;
 
             // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — nested
             // flex container wrapper pre-measure. Mirrors the outer
@@ -5071,6 +5079,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         && pageRemainingForFlex < childBorderBoxBlockSize
                         && pageRemainingForFlex > nFlexBorderPaddingBlock)
                     {
+                        // Column: remember the natural (pre-clamp) border-box
+                        // block size so the dispatch sizes items against it +
+                        // splits against the clamped page budget. Row-wrap keeps
+                        // the single-input clamp (content size == budget).
+                        if (childFlexDirection.IsFlexColumnDirection())
+                        {
+                            nestedFlexAuthoredBorderBoxBlockSize = childBorderBoxBlockSize;
+                            nestedFlexColumnPaginating = true;
+                        }
                         childBorderBoxBlockSize = pageRemainingForFlex;
                         childEffectiveBlockSize = pageRemainingForFlex;
                         paginateFlexForChild = true;
@@ -5439,6 +5456,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nestedFlexContentBlockSize = nestedFlexGeom.ContentBlockSize;
                 var nestedFlexContentInlineOffset = nestedFlexGeom.ContentInlineOffset;
                 var nestedFlexContentBlockOffset = nestedFlexGeom.ContentBlockOffset;
+                // Column dual-input: size against the natural (authored) content
+                // block extent, split against the clamped page budget. The
+                // wrapper geometry above used the CLAMPED childBorderBoxBlockSize
+                // (so the wrapper paints clamped) — recompute the AUTHORED content
+                // block size for the flex sizing input + use the clamped content
+                // block size as the page budget. Row-wrap leaves budget null.
+                double? nestedFlexPageBudget = null;
+                if (nestedFlexColumnPaginating)
+                {
+                    var authoredFlexGeom = FlexGeometryHelper.ComputeContentGeometry(
+                        flexBox: child,
+                        borderBoxInlineSize: childBorderBoxInlineSize,
+                        borderBoxBlockSize: nestedFlexAuthoredBorderBoxBlockSize,
+                        borderBoxInlineOffset: childInlineOffset,
+                        borderBoxBlockOffset: childBlockOffset);
+                    nestedFlexPageBudget = nestedFlexContentBlockSize;       // clamped = cut-off
+                    nestedFlexContentBlockSize = authoredFlexGeom.ContentBlockSize; // natural = sizing
+                }
 
                 // Per Phase 3 Task 16 cycle 4b post-PR-#83 review
                 // P1 #1 — inbound recursive FlexContinuation
@@ -5501,7 +5536,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         allowPagination: paginateFlexForChild,
                         fragmentainer: _capturedFragmentainer,
                         layout: ref nestedFlexLayoutCtx,
-                        cancellationToken: cancellationToken);
+                        cancellationToken: cancellationToken,
+                        pageBlockBudget: nestedFlexPageBudget);
                 }
 
                 // Per Task 16 cycle 3 P1 #2 — propagate
@@ -8384,7 +8420,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         bool allowPagination,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        double? pageBlockBudget = null)
     {
         using var flexLayouter = new FlexLayouter(
             rootBox: flexBox,
@@ -8392,12 +8429,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             incomingContinuation: incomingContinuation,
             diagnostics: _diagnostics,
             shaperResolver: _shaperResolver);
+        // Per the flex-column pagination dual-input (mirrors DispatchGridInner's
+        // grid page-budget): for a paginating column the contentBlockSize stays
+        // the NATURAL main extent (so flex-grow/shrink resolve correctly) while
+        // pageBlockBudget carries the page-remaining cut-off. Row-wrap +
+        // non-paginating callers pass null ⇒ contentBlockSize doubles as the
+        // budget (the pre-existing single-input behavior, byte-identical).
         flexLayouter.ConfigureEmission(
             contentInlineOffset: contentInlineOffset,
             contentBlockOffset: contentBlockOffset,
             contentInlineSize: contentInlineSize,
             contentBlockSize: contentBlockSize,
-            allowPagination: allowPagination);
+            allowPagination: allowPagination,
+            pageBlockBudget: pageBlockBudget);
         using var flexResolver = new BreakResolver();
         return flexLayouter.AttemptLayout(
             fragmentainer,

@@ -8692,6 +8692,171 @@ public sealed class FlexLayouterTests
         Assert.Equal(2, pageOneItems);
     }
 
+    // ====================================================================
+    //  Flex-column pagination (non-block-pagination arc) — a
+    //  `flex-direction: column` + nowrap container splits at ITEM
+    //  boundaries along the MAIN = block axis. The page CUT-OFF is the
+    //  pageBlockBudget (kept distinct from the natural column main-size so
+    //  flex resolution doesn't SHRINK items to fit instead of paginating).
+    // ====================================================================
+
+    private static Box BuildColumnFlexWithItems(int count, double itemHeightPx)
+    {
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        for (var i = 0; i < count; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, itemHeightPx);
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+        return flex;
+    }
+
+    [Fact]
+    public void Column_flex_splits_at_item_boundary_against_page_budget()
+    {
+        // 4 items × 50 (block-axis) ⇒ natural column main-size 200. A page
+        // budget of 100 fits exactly 2 items (bottoms 50, 100); the 3rd
+        // (bottom 150 > 100) defers. The split is between items 1 and 2.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var flex = BuildColumnFlexWithItems(4, 50);
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 200, // natural main-size
+            allowPagination: true, pageBlockBudget: 100);   // page room for 2 items
+
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 1000);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<FlexContinuation>(result.Continuation);
+        Assert.Equal(2, cont.ItemIndex);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) items.Add(f);
+        Assert.Equal(2, items.Count);                  // 2 items on page 1
+        Assert.Equal(0, items[0].BlockOffset, 3);       // first item at content origin
+        Assert.Equal(50, items[1].BlockOffset, 3);      // second stacked below
+        Assert.Equal(50, items[0].BlockSize, 3);        // NOT shrunk to fit the budget
+    }
+
+    [Fact]
+    public void Column_flex_resume_emits_remaining_items_reanchored_to_page_top()
+    {
+        // Resume at item 2 (the cut from the test above). The remaining items
+        // 2 + 3 re-anchor to the page's content-block-start (offsets 0, 50),
+        // NOT their natural offsets (100, 150). Everything fits ⇒ AllDone.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var flex = BuildColumnFlexWithItems(4, 50);
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink,
+            incomingContinuation: new FlexContinuation(LineIndex: 0, ItemIndex: 2),
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 200,
+            allowPagination: true, pageBlockBudget: 100);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 1000);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) items.Add(f);
+        Assert.Equal(2, items.Count);              // only items 2 + 3
+        Assert.Equal(0, items[0].BlockOffset, 3);   // item 2 re-anchored to page top
+        Assert.Equal(50, items[1].BlockOffset, 3);  // item 3 below it
+    }
+
+    [Fact]
+    public void Column_flex_first_item_taller_than_page_force_overflows_forward()
+    {
+        // The first item on a page always commits even if it alone exceeds the
+        // budget (CSS Fragmentation L3 §4.4 progress rule) — otherwise the
+        // continuation would loop forever. A 200-tall first item + a 50-tall
+        // second, budget 100: item 0 force-overflows + commits, item 1 defers.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        foreach (var h in new[] { 200.0, 50.0 })
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, h);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 250,
+            allowPagination: true, pageBlockBudget: 100);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 1000);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Equal(1, Assert.IsType<FlexContinuation>(result.Continuation).ItemIndex);
+        var items = 0;
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) items++;
+        Assert.Equal(1, items);   // the oversized first item committed alone
+    }
+
+    [Fact]
+    public void Column_flex_without_pagination_emits_all_items_atomically()
+    {
+        // Baseline: allowPagination false (the default) keeps the atomic
+        // contract — every item emits on one page even when they overflow.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var flex = BuildColumnFlexWithItems(4, 50);
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 200,
+            allowPagination: false);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 1000);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        var items = 0;
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) items++;
+        Assert.Equal(4, items);   // all items on one page (atomic)
+    }
+
     [Fact]
     public void Task16_cycle4e_PageComplete_reports_emitted_block_extent()
     {

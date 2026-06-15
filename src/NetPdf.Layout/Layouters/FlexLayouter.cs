@@ -379,12 +379,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// lines overflow freely (= the L1-L17 atomic behavior). The
     /// BlockLayouter dispatch will pass <see langword="true"/> in
     /// sub-cycle 2 when wiring the multi-page integration.</param>
+    /// <param name="pageBlockBudget">Flex-column pagination — the
+    /// page-remaining block extent at which to CUT a
+    /// <c>flex-direction: column</c> + <c>nowrap</c> container between
+    /// items. SEPARATE from <paramref name="contentBlockSize"/> because
+    /// the column main-size (= <paramref name="contentBlockSize"/>) drives
+    /// flex-grow/shrink resolution + must stay the NATURAL content extent
+    /// (clamping it to the page would make items SHRINK to fit rather than
+    /// paginate). Mirrors <c>DispatchGridInner</c>'s grid page-budget
+    /// dual-input. <see langword="null"/> (the default + every row-wrap /
+    /// non-paginating caller) falls back to <paramref name="contentBlockSize"/>
+    /// as the budget — preserving the line-split path byte-for-byte.</param>
     public void ConfigureEmission(
         double contentInlineOffset,
         double contentBlockOffset,
         double contentInlineSize,
         double contentBlockSize,
-        bool allowPagination = false)
+        bool allowPagination = false,
+        double? pageBlockBudget = null)
     {
         if (!double.IsFinite(contentInlineSize) || contentInlineSize <= 0)
         {
@@ -396,11 +408,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             throw new ArgumentOutOfRangeException(nameof(contentBlockSize),
                 $"contentBlockSize must be finite + positive; got {contentBlockSize}");
         }
+        if (pageBlockBudget is { } budget && (!double.IsFinite(budget) || budget <= 0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageBlockBudget),
+                $"pageBlockBudget, when supplied, must be finite + positive; got {budget}");
+        }
         _contentInlineOffset = contentInlineOffset;
         _contentBlockOffset = contentBlockOffset;
         _contentInlineSize = contentInlineSize;
         _contentBlockSize = contentBlockSize;
         _allowPagination = allowPagination;
+        _pageBlockBudget = pageBlockBudget;
         _emissionConfigured = true;
     }
 
@@ -418,6 +436,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// per <see cref="IsPaginatablePerStyle"/> AND its grown natural
     /// extent overflows the remaining fragmentainer space.</summary>
     private bool _allowPagination;
+
+    /// <summary>Flex-column pagination — the page-remaining block extent at
+    /// which to cut a column container between items, kept SEPARATE from
+    /// <see cref="_contentBlockSize"/> (= the column main-size that drives
+    /// flex resolution). <see langword="null"/> ⇒ use
+    /// <see cref="_contentBlockSize"/> as the budget. See
+    /// <see cref="ConfigureEmission"/>'s <c>pageBlockBudget</c> param.</summary>
+    private double? _pageBlockBudget;
 
     /// <summary>Per Phase 3 Task 16 cycle 4b post-PR-#83 review P3 #6
     /// — SHARED predicate identifying flex containers eligible for
@@ -454,11 +480,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             return false;
         }
         var direction = box.Style.ReadFlexDirection();
+        var wrap = box.Style.ReadFlexWrap();
         if (direction.IsFlexColumnDirection())
         {
-            return false;
+            // Non-block-pagination arc — flex-column main-axis item split.
+            // For `flex-direction: column` the MAIN axis IS the block axis (=
+            // a fragment boundary), so a single (nowrap) line of items stacked
+            // down the block axis splits cleanly BETWEEN items across pages
+            // (CSS Flexbox L1 §10). Excluded:
+            //   * column + wrap — items wrap into multiple columns stacked on
+            //     the INLINE (cross) axis, which is not a fragment boundary
+            //     (an auto-height column can't wrap anyway: no main constraint).
+            //   * column-reverse — items pack against the block-END from the
+            //     UNFRAGMENTED main size; per-fragment re-anchoring is a later
+            //     sub-cycle (mirrors the row wrap-reverse exclusion).
+            return !wrap.IsFlexWrapping() && !direction.IsFlexReverseDirection();
         }
-        var wrap = box.Style.ReadFlexWrap();
+        // Row direction (= cross axis is the block axis): line-split path.
         if (!wrap.IsFlexWrapping())
         {
             return false;
@@ -626,8 +664,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // page space; eligible containers that fit get
         // <c>_allowPagination: false</c> (= atomic emission, same as
         // cycle-pre-4b behavior).
-        var isRowNormalWrapPaginationSupported =
-            _allowPagination && IsPaginatablePerStyle(_rootBox);
+        // Pagination eligibility (style-gated) splits by AXIS:
+        //   * ROW + wrap → line-split (cumulative cross-extent overflow),
+        //     handled here via fragmentEndIndex slicing.
+        //   * COLUMN + nowrap → item-split (main = block axis), handled in
+        //     the emission loop below (per-item cut + resume-shift). The two
+        //     are mutually exclusive (IsPaginatablePerStyle accepts one form
+        //     per direction), so a single _allowPagination flag drives both.
+        var paginationEligible = _allowPagination && IsPaginatablePerStyle(_rootBox);
+        var isRowNormalWrapPaginationSupported = paginationEligible && !isColumn;
+        var isColumnItemPagination = paginationEligible && isColumn;
 
         // Per Phase 3 Task 16 post-PR-#78 P1 #3 — validate the
         // resume index against the packed line count. Out-of-range
@@ -646,6 +692,28 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 + $"got {resumeLineIndex}. A misrouted continuation has "
                 + "corrupted the resume index — surface immediately rather "
                 + "than silently dropping the remaining flex content.");
+        }
+
+        // Flex-column item-split resume index + page budget (see the emission
+        // loop). resumeItemIndex is the sorted-position to resume at; the
+        // budget is the page-remaining block extent (kept distinct from the
+        // column main-size so flex resolution stays natural). Symmetric
+        // validation with the line index — the boundary `ItemIndex ==
+        // itemCount` is allowed (= every item committed on a prior page → this
+        // resume emits nothing → AllDone).
+        var resumeItemIndex = isColumnItemPagination
+            ? (_incomingFlexContinuation?.ItemIndex ?? 0)
+            : 0;
+        var columnBudget = _pageBlockBudget ?? _contentBlockSize;
+        if (isColumnItemPagination
+            && (resumeItemIndex < 0 || resumeItemIndex > _sortedFlexChildIndices.Count))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(_incomingFlexContinuation),
+                $"FlexContinuation.ItemIndex must be in [0, {_sortedFlexChildIndices.Count}]; "
+                + $"got {resumeItemIndex}. A misrouted continuation has "
+                + "corrupted the column resume index — surface immediately "
+                + "rather than silently dropping the remaining flex items.");
         }
 
         // Determine the fragment's end-of-range (exclusive). Default:
@@ -921,6 +989,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // = <c>swappedAxisCursor + LineCrossSize</c>.
         var maxEmittedCrossBottom = 0.0;
 
+        // Flex-column pagination state. For `flex-direction: column` + nowrap
+        // the single line's items stack down the MAIN = block axis, so the
+        // split is BETWEEN items: emit items at sorted-position
+        // [resumeItemIndex, splitItemIndex), defer the rest via
+        // FlexContinuation.ItemIndex. The page CUT-OFF is _pageBlockBudget
+        // (falling back to _contentBlockSize) — kept distinct from
+        // containerMainSize so flex resolution sized items naturally. Items
+        // are re-anchored on the resume page by columnResumeShift (= the
+        // natural main-offset of the first item emitted on this page minus
+        // the content-main origin), so the resumed item starts at the page's
+        // content-block-start. -1 = no split (all remaining items fit).
+        // resumeItemIndex + columnBudget were computed + validated alongside
+        // the line index above.
+        var outgoingItemIndex = -1;
+        var columnResumeShift = 0.0;
+        var firstColumnItemSeen = false;
+        var maxEmittedColumnBottom = 0.0;
+
         // Per Phase 3 Task 15 L14 — encapsulate the cross-axis swap
         // state into one record so the line-emission formula has a
         // single named expression. Pre-L14 the swap math
@@ -1118,6 +1204,53 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     ? (contentMainOffset + containerMainSize) - (mainCursor - contentMainOffset) - itemMainSize
                     : mainCursor;
 
+                // Flex-column item pagination: decide whether THIS item commits
+                // to the current page (and, if so, re-anchor it). The natural
+                // mainCursor walk above gives each item its UNFRAGMENTED main
+                // offset; here we (a) skip items already committed on a prior
+                // page or deferred after this page's cut, (b) re-anchor the
+                // first item emitted on this page to the content-block-start,
+                // and (c) cut before the first item whose re-anchored bottom
+                // exceeds the page budget — the first item on a page always
+                // commits (CSS Fragmentation L3 §4.4 forward-progress, so an
+                // item taller than the page force-overflows rather than looping).
+                var emitThisItem = true;
+                if (isColumnItemPagination)
+                {
+                    if (sortedPos < resumeItemIndex || outgoingItemIndex >= 0)
+                    {
+                        emitThisItem = false;
+                    }
+                    else if (!firstColumnItemSeen)
+                    {
+                        columnResumeShift = mainOffsetForEmission - contentMainOffset;
+                        firstColumnItemSeen = true;
+                        mainOffsetForEmission = contentMainOffset;
+                    }
+                    else
+                    {
+                        var shifted = mainOffsetForEmission - columnResumeShift;
+                        var itemPageBottom = (shifted - contentMainOffset) + itemMainSize;
+                        if (itemPageBottom > columnBudget)
+                        {
+                            outgoingItemIndex = sortedPos;
+                            emitThisItem = false;
+                        }
+                        else
+                        {
+                            mainOffsetForEmission = shifted;
+                        }
+                    }
+                    if (emitThisItem)
+                    {
+                        var emittedBottom = (mainOffsetForEmission - contentMainOffset) + itemMainSize;
+                        if (emittedBottom > maxEmittedColumnBottom)
+                        {
+                            maxEmittedColumnBottom = emittedBottom;
+                        }
+                    }
+                }
+
                 // Map the abstract (main, cross) tuple to the physical
                 // (inline, block) axes per direction.
                 double inlineOffset, blockOffset, inlineSize, blockSize;
@@ -1138,12 +1271,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     blockSize = itemEffectiveCrossSize;
                 }
 
-                _sink.Emit(new BoxFragment(
-                    Box: item,
-                    InlineOffset: inlineOffset,
-                    BlockOffset: blockOffset,
-                    InlineSize: inlineSize,
-                    BlockSize: blockSize));
+                if (emitThisItem)
+                {
+                    _sink.Emit(new BoxFragment(
+                        Box: item,
+                        InlineOffset: inlineOffset,
+                        BlockOffset: blockOffset,
+                        InlineSize: inlineSize,
+                        BlockSize: blockSize));
+                }
 
                 // Advance the main-axis cursor past this item + the
                 // L2 between-spacing. With flex-wrap: nowrap the
@@ -1220,6 +1356,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // the resume page's BlockLayouter forwards the leaf back to
         // this layouter via the cycle-4b inbound chain-walk in
         // EmitBlockSubtreeRecursive's nested flex branch.
+        // Flex-column item split — the emission loop set outgoingItemIndex to
+        // the first sorted-position that didn't fit this page's block budget.
+        // Resume there on the next page (LineIndex stays 0 — the single column
+        // line is re-packed identically; only the item window differs).
+        // maxEmittedColumnBottom is the deepest re-anchored item bottom (page
+        // 0-based) for the wrapper-resize / ConsumedBlockSize accounting.
+        if (outgoingItemIndex >= 0)
+        {
+            return LayoutAttemptResult.PageComplete(
+                new FlexContinuation(
+                    LineIndex: 0,
+                    BaselineState: null,
+                    EmittedBlockExtent: maxEmittedColumnBottom,
+                    ItemIndex: outgoingItemIndex),
+                cost: 0);
+        }
+
         if (outgoingContinuationLineIndex >= 0)
         {
             // Per Phase 3 Task 16 cycle 4e (P2 #5 from PR-#79)

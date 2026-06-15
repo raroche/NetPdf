@@ -110,12 +110,24 @@ internal sealed record TableContinuation(
 /// precede its children in the sink's fragment list (= painter's
 /// draw order), so the wrapper emit can't simply move to
 /// post-dispatch; a sink-mutation or pre-emit-with-backfill API is
-/// required.</summary>
+/// required.
+/// <para><c>ItemIndex</c> per the non-block-pagination arc (flex-column
+/// pagination) — the resume sorted-position WITHIN a single flex line
+/// for <c>flex-direction: column</c> + <c>nowrap</c>, where items stack
+/// along the MAIN = block axis (a fragment boundary) so the split is
+/// between ITEMS, not between lines. The row-wrap line-split path leaves
+/// this at 0 (it resumes via <c>LineIndex</c>); the column main-axis
+/// split path leaves <c>LineIndex</c> at 0 and resumes at
+/// <c>ItemIndex</c>. The index is into the FlexLayouter's order-sorted
+/// item sequence so the resume page re-lays-out the items + emits only
+/// those at sorted-position &gt;= <c>ItemIndex</c>. Mirrors
+/// <see cref="TableContinuation.NextRowIndex"/>.</para></summary>
 internal sealed record FlexContinuation : LayoutContinuation
 {
     public int LineIndex { get; }
     public object? BaselineState { get; }
     public double EmittedBlockExtent { get; }
+    public int ItemIndex { get; }
 
     /// <summary>Per Phase 3 Task 16 cycle 4e post-PR-#86 review P2 #2
     /// — defensive validation. <c>LineIndex</c> validation lives on
@@ -125,11 +137,14 @@ internal sealed record FlexContinuation : LayoutContinuation
     /// can trust the value as finite + non-negative. NaN, ±Infinity,
     /// or negative values would poison page accounting + fragment
     /// geometry; surface a contract violation at the source instead
-    /// of silently corrupting downstream layout.</summary>
+    /// of silently corrupting downstream layout.
+    /// <c>ItemIndex</c> (flex-column pagination) must be non-negative —
+    /// a negative resume position would skip into invalid item space.</summary>
     public FlexContinuation(
         int LineIndex,
         object? BaselineState = null,
-        double EmittedBlockExtent = 0.0)
+        double EmittedBlockExtent = 0.0,
+        int ItemIndex = 0)
     {
         if (!double.IsFinite(EmittedBlockExtent) || EmittedBlockExtent < 0)
         {
@@ -140,9 +155,16 @@ internal sealed record FlexContinuation : LayoutContinuation
                 + "negative values would corrupt cycle 4f's wrapper-resize "
                 + "+ ConsumedBlockSize accounting.");
         }
+        if (ItemIndex < 0)
+        {
+            throw new System.ArgumentOutOfRangeException(
+                nameof(ItemIndex),
+                $"FlexContinuation.ItemIndex must be non-negative; got {ItemIndex}.");
+        }
         this.LineIndex = LineIndex;
         this.BaselineState = BaselineState;
         this.EmittedBlockExtent = EmittedBlockExtent;
+        this.ItemIndex = ItemIndex;
     }
 }
 

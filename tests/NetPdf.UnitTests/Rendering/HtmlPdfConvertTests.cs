@@ -206,6 +206,170 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
     }
 
+    // Non-block pagination — regression lock-in (multi-page-driver.md, post-cycle-8 audit).
+    // These three modes were ALREADY paginating through the driver loop (the table /
+    // multicol layouters propagate their continuations through BlockLayouter's dispatch,
+    // exactly like block content) but had no facade-level coverage — the cycle-8 probe's
+    // "they don't paginate" reading was a false negative from auto-height cell/item collapse
+    // (a tall-looking <td><div style="height:200px">…</div></td> renders ~one text line tall,
+    // so the test table never exceeded one page). These tests pin the real behavior with
+    // genuinely page-exceeding content so a regression can't slip through silently.
+
+    [Fact]
+    public void Table_with_many_rows_splits_across_pages_without_losing_rows()
+    {
+        // 80 natural-height rows (~19px each ⇒ ~1520px) exceed an A4 content box (~931px), so
+        // the table splits at ROW boundaries across pages (TableLayouter → TableContinuation,
+        // propagated by BlockLayouter). Each body cell is "BB" (2 glyphs) — counting the
+        // 2-glyph runs across the whole PDF proves every row emitted exactly once (no row
+        // dropped at the page boundary, none duplicated). A clean row split emits no overflow.
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><table>");
+        for (var i = 0; i < 80; i++) sb.Append("<tr><td>BB</td></tr>");
+        sb.Append("</table></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.True(result.PageCount >= 2, $"expected the table to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(80, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // 80 body cells, none lost
+    }
+
+    [Fact]
+    public void Table_thead_tfoot_repeat_on_every_page()
+    {
+        // A split table re-emits its <thead> + <tfoot> on each page (CSS Tables; TableLayouter
+        // EmitHeaderRows / EmitFooterRows gated by the continuation's RepeatHead / RepeatFoot).
+        // Distinct glyph-run lengths make the three row kinds countable: header "HHH" (3),
+        // footer "FFFF" (4), body "BB" (2). header-run-count == footer-run-count == PageCount
+        // proves the header + footer appear once per page; body-run-count == 80 proves no body
+        // row is lost to the repetition.
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><table>");
+        sb.Append("<thead><tr><td>HHH</td></tr></thead>");
+        sb.Append("<tfoot><tr><td>FFFF</td></tr></tfoot><tbody>");
+        for (var i = 0; i < 80; i++) sb.Append("<tr><td>BB</td></tr>");
+        sb.Append("</tbody></table></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"expected the table to paginate, got {result.PageCount} page(s)");
+        Assert.Equal(result.PageCount, GlyphRunCountOfLength(pdf, 3));   // <thead> once per page
+        Assert.Equal(result.PageCount, GlyphRunCountOfLength(pdf, 4));   // <tfoot> once per page
+        Assert.Equal(80, GlyphRunCountOfLength(pdf, 2));                 // every body row, once
+    }
+
+    [Fact]
+    public void Multicol_content_paginates_across_pages_without_loss()
+    {
+        // A tall multicol container (column-count:2) flows its overflow onto the next page
+        // (MulticolLayouter → MulticolContinuation, propagated by BlockLayouter). 120 "MM"
+        // (2-glyph) paragraphs far exceed two A4 columns' worth of one page; counting the
+        // 2-glyph runs proves every paragraph emitted exactly once across the pages.
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><div style=\"column-count:2\">");
+        for (var i = 0; i < 120; i++) sb.Append("<div>MM</div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.True(result.PageCount >= 2, $"expected multicol to paginate, got {result.PageCount} page(s)");
+        Assert.Equal(120, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every paragraph, once
+    }
+
+    [Fact]
+    public void Flex_column_paginates_at_item_boundaries_without_loss()
+    {
+        // Non-block-pagination arc — a tall `flex-direction: column` container
+        // splits at flex-ITEM boundaries across pages (FlexLayouter main-axis
+        // item split → FlexContinuation.ItemIndex, propagated by BlockLayouter
+        // with the natural-size / page-budget dual-input). 12 items × 200px
+        // (2400px) far exceed an A4 content box (~931px). Each item paints a
+        // background fill (one " re f" rect); counting the fills proves every
+        // item emitted exactly once across the pages (FlexLayouter renders item
+        // BOX geometry — laying out item inner CONTENT is a separate flex gap —
+        // so the background-rect count is the robust per-item signal here). A
+        // clean item split emits no overflow.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 12; i++)
+            sb.Append("<div style=\"height:200px;background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the column flex to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every item's background, once (no item lost / duplicated)
+    }
+
+    [Fact]
+    public void Grid_with_explicit_template_rows_paginates_at_row_boundaries_without_loss()
+    {
+        // Non-block-pagination arc — a tall grid splits at GRID-ROW boundaries
+        // across pages (GridLayouter → GridContinuation, already propagated by
+        // BlockLayouter's dispatch + IsPaginatableGrid). Like tables / multicol,
+        // grid pagination was ALREADY wired but untested at the facade. 12 rows
+        // × 200px (2400px) exceed an A4 content box (~931px). Each cell paints a
+        // background fill; counting the fills proves every row's cell emitted
+        // exactly once across the pages.
+        //
+        // NOTE: this uses EXPLICIT grid-template-rows. A grid sized by IMPLICIT
+        // (auto-placed / grid-auto-rows) rows does NOT yet paginate — the
+        // wrapper pre-measure (PreMeasureGridRowExtent) only sums template rows,
+        // so an auto-row grid stays chrome-height + never overflows. That auto-
+        // row gap is the documented follow-up (deferrals.md#non-block-pagination).
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:100px;grid-template-rows:");
+        for (var i = 0; i < 12; i++) sb.Append("200px ");
+        sb.Append("\">");
+        for (var i = 0; i < 12; i++) sb.Append("<div style=\"background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the grid to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every grid cell, once
+    }
+
+    [Fact]
+    public void Flex_column_on_the_root_child_paginates_via_the_outer_dispatch()
+    {
+        // PR-#180 review P1 — the ROOT's direct child being flex (here `body`
+        // itself is the column flex container) routes through BlockLayouter's
+        // OUTER flex dispatch, not the recursive one. Before the fix that path
+        // clamped the column main-size to the page budget → flex-shrink shrank
+        // the items → AllDone (one page). The dual-input fix makes it split.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 12; i++)
+            sb.Append("<div style=\"height:200px;background-color:#3366cc\"></div>");
+        sb.Append("</body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the root-child column flex to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every item, once
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var n = 0;
+        var idx = 0;
+        while ((idx = haystack.IndexOf(needle, idx, StringComparison.Ordinal)) >= 0)
+        {
+            n++;
+            idx += needle.Length;
+        }
+        return n;
+    }
+
     [Fact]
     public void PrintBackgrounds_false_paints_no_background()
     {
@@ -1091,6 +1255,20 @@ public sealed class HtmlPdfConvertTests
             idx += 3;
         }
         return runs;
+    }
+
+    /// <summary>How many <c>&lt;hex&gt; Tj</c> show-glyph runs paint exactly
+    /// <paramref name="glyphCount"/> glyphs (Identity-H 2-byte ids → 4 hex digits each).
+    /// Lets a test count occurrences of a fixed-width text run (e.g. a 2-glyph "BB" body
+    /// cell) across every page without depending on the subsetter's renumbered glyph ids —
+    /// used to verify per-row / per-paragraph pagination is non-lossy + that repeated
+    /// header / footer runs appear once per page.</summary>
+    private static int GlyphRunCountOfLength(string pdf, int glyphCount)
+    {
+        var n = 0;
+        foreach (var run in GlyphRuns(pdf))
+            if (run.Length == glyphCount * 4) n++;
+        return n;
     }
 
     [Fact]

@@ -267,26 +267,28 @@ internal static class AtPageRules
     }
 
     /// <summary><see langword="true"/> when <paramref name="selector"/> is a valid bare CSS
-    /// <c>&lt;custom-ident&gt;</c> usable as a named page (cycle 7; post-PR-#179 review P1): a non-empty
-    /// identifier whose FIRST char is a letter / <c>_</c>, OR a leading <c>-</c> FOLLOWED BY a letter / <c>_</c>
-    /// / <c>-</c> (a <c>-</c> before a DIGIT — e.g. <c>-1</c> — is NOT a valid ident, CSS Syntax 3 §4.3.11),
-    /// then letters / digits / <c>-</c> / <c>_</c>; and NOT a CSS-wide keyword, <c>auto</c>, or the reserved
-    /// <c>default</c>. Rejects anything with a <c>:</c> (a pseudo / compound) or other punctuation.</summary>
+    /// <c>&lt;custom-ident&gt;</c> usable as a named page (cycle 7; post-PR-#179 review P1 + Copilot): a
+    /// non-empty identifier per CSS Syntax 3 §4.3.11 — its FIRST code point is an ident-START (a letter /
+    /// <c>_</c> / a NON-ASCII code point ≥ U+0080), OR a leading <c>-</c> FOLLOWED BY an ident-start (a
+    /// <c>-</c> before a DIGIT — e.g. <c>-1</c> — tokenizes as a number, not an ident), then ident chars
+    /// (ident-start / digit / <c>-</c>); and NOT a CSS-wide keyword, <c>auto</c>, or the reserved
+    /// <c>default</c>. Rejects anything with a <c>:</c> (a pseudo / compound) or other punctuation. (Escape
+    /// sequences are not modelled — page names are read raw from the recovered declaration.)</summary>
     private static bool IsBarePageName(string selector)
     {
         if (selector.Length == 0) return false;
         var first = selector[0];
         bool startOk;
-        if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_')
+        if (IsIdentStart(first))
         {
             startOk = true;
         }
         else if (first == '-' && selector.Length > 1)
         {
-            // A leading '-' must be followed by a letter / '_' / '-' (NOT a digit — `-1` is not an ident,
-            // and a single '-' isn't either). `--name` (custom-property syntax) is also not a page name.
-            var second = selector[1];
-            startOk = (second >= 'a' && second <= 'z') || (second >= 'A' && second <= 'Z') || second == '_';
+            // A leading '-' must be followed by an ident-start (a letter / '_' / non-ASCII), NOT a digit
+            // (`-1` tokenizes as a number) — and a single '-' isn't an ident. `--name` (custom-property
+            // syntax) is also not a page name.
+            startOk = IsIdentStart(selector[1]);
         }
         else
         {
@@ -295,9 +297,8 @@ internal static class AtPageRules
         if (!startOk) return false;
         foreach (var ch in selector)
         {
-            var ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
-                     || ch == '-' || ch == '_';
-            if (!ok) return false;
+            // An ident char is an ident-start, a digit, or '-'.
+            if (!IsIdentStart(ch) && !(ch >= '0' && ch <= '9') && ch != '-') return false;
         }
         return !selector.Equals("auto", StringComparison.OrdinalIgnoreCase)
             && !selector.Equals("inherit", StringComparison.OrdinalIgnoreCase)
@@ -307,6 +308,12 @@ internal static class AtPageRules
             && !selector.Equals("revert-layer", StringComparison.OrdinalIgnoreCase)
             && !selector.Equals("default", StringComparison.OrdinalIgnoreCase);   // reserved (CSS Page 3)
     }
+
+    /// <summary>A CSS Syntax 3 §4.3.11 ident-START code point: an ASCII letter, <c>_</c>, or a non-ASCII
+    /// code point (≥ U+0080 — a surrogate half passes too, an accepted approximation since a valid
+    /// astral ident code point is itself ≥ U+0080).</summary>
+    private static bool IsIdentStart(char c) =>
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= '\u0080';
 
     /// <summary>The DISTINCT named pages declared by <c>@page &lt;name&gt;</c> rules applicable to
     /// <paramref name="media"/> (cycle 7) — for the structural/prefetch union, which must include a context

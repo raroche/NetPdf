@@ -108,6 +108,17 @@ public sealed class AtPageRulesTests
     }
 
     [Fact]
+    public void MatchTier_accepts_a_non_ascii_named_page()
+    {
+        // Copilot: a CSS <custom-ident> admits non-ASCII code points (≥ U+0080), so a non-ASCII page name
+        // is valid (was rejected by the ASCII-only validator).
+        Assert.Equal(3, AtPageRules.MatchTier("café",
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "café")));
+        Assert.Equal(3, AtPageRules.MatchTier("章",
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "章")));
+    }
+
+    [Fact]
     public void MatchTier_named_page_is_case_sensitive()
     {
         // CSS custom-idents are case-sensitive.

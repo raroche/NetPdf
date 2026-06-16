@@ -316,11 +316,11 @@ public sealed class HtmlPdfConvertTests
         // background fill; counting the fills proves every row's cell emitted
         // exactly once across the pages.
         //
-        // NOTE: this uses EXPLICIT grid-template-rows. A grid sized by IMPLICIT
-        // (auto-placed / grid-auto-rows) rows does NOT yet paginate — the
-        // wrapper pre-measure (PreMeasureGridRowExtent) only sums template rows,
-        // so an auto-row grid stays chrome-height + never overflows. That auto-
-        // row gap is the documented follow-up (deferrals.md#non-block-pagination).
+        // NOTE: this uses EXPLICIT grid-template-rows. Grids sized by IMPLICIT
+        // (auto-placed / grid-auto-rows) rows ALSO paginate now — see
+        // Grid_with_implicit_auto_rows_paginates_across_pages_without_loss + the
+        // fr-column / root-child / auto-fill variants below (PreMeasureGridRowExtent
+        // measures implicit tracks via GridSizing.Resolve).
         var sb = new StringBuilder(
             "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:100px;grid-template-rows:");
         for (var i = 0; i < 12; i++) sb.Append("200px ");

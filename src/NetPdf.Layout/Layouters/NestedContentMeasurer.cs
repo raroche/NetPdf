@@ -6,6 +6,7 @@ using System.Threading;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Paginate;
+using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Layout.Layouters;
 
@@ -38,7 +39,8 @@ internal static class NestedContentMeasurer
         IShaperResolver? shaperResolver,
         WritingMode writingMode,
         bool isRtl,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IPaginateDiagnosticsSink? diagnostics = null)
     {
         // The box is its own content's decoration owner: a content fragment
         // whose box IS this box (the inline-only-root case) paints text only.
@@ -50,18 +52,25 @@ internal static class NestedContentMeasurer
         {
             WritingMode = writingMode,
             IsRtl = isRtl,
+            Diagnostics = diagnostics,
         };
         using var layouter = new BlockLayouter(
             rootBox: box,
             sink: buffer,
             incomingContinuation: null,
-            diagnostics: null,
+            // PR-#182 review P2 — an optional diagnostics sink (the caller passes
+            // a BUFFERING one for flex item content so a nested inline / font
+            // problem surfaces, flushed only when the item commits). Null = the
+            // grid sizing / pre-measure dry-runs (grid's real emission surfaces
+            // content diagnostics on its own DispatchGridItemContents pass).
+            diagnostics: diagnostics,
             shaperResolver: shaperResolver,
             // A nested paginatable grid / flex inside the box is a CSS
             // Fragmentation "parallel flow"; suppress its pagination here (the
             // content commits atomically) so a discarded continuation doesn't
-            // silently lose content.
+            // silently lose content (PR-#182 review P1 — flex too, not just grid).
             disableGridPagination: true,
+            disableFlexPagination: true,
             // The common item (`<div>text</div>`) has DIRECT inline children;
             // opt the nested layouter into emitting the inline-only ROOT's own
             // content (else the block-only child loop skips the box's text).

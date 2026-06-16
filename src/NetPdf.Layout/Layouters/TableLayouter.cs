@@ -5009,7 +5009,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // split. Cycle 5c.2d will wire cell-aware continuation
             // propagation (= the row's break point coordinates with
             // the nested grid's split); until then, suppress.
-            disableGridPagination: true);
+            disableGridPagination: true,
+            // PR-#182 review P1 — same reasoning for a paginatable
+            // column-FLEX inside a cell (its discarded PageComplete
+            // would drop the deferred items); suppress flex pagination.
+            disableFlexPagination: true);
 
         // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
         // propagate the intrinsic-sizing-mode flag into the nested

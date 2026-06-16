@@ -10121,6 +10121,113 @@ public sealed class FlexLayouterTests
             d => d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
     }
 
+    [Fact]
+    public void Flex_item_own_margin_and_padding_do_not_offset_inline_content()
+    {
+        // PR-#182 Copilot review (margins) + review P3 (border-box placement) —
+        // the nested-content root must NOT apply the item's OWN margins (the
+        // outer flex already positioned the item including its margin), and the
+        // content anchors at the item's BORDER-box origin (padding is NOT inset
+        // — a documented approximation shared with grid). An inline-text item
+        // with margin + padding has its content fragment at the SAME origin as
+        // its flex geometry fragment (no +margin, no +padding shift).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.MarginTop, 20);
+        SetLengthPx(itemStyle, PropertyId.MarginLeft, 20);
+        SetLengthPx(itemStyle, PropertyId.PaddingTop, 10);
+        SetLengthPx(itemStyle, PropertyId.PaddingLeft, 10);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        item.AppendChild(Box.TextRun("AB", MakeStyle()));
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // The two box==item fragments: the flex geometry (no InlineLayout) and
+        // the inline-only content (InlineLayout set).
+        BoxFragment? geometry = null, content = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != item) continue;
+            if (f.InlineLayout is not null) content = f; else geometry = f;
+        }
+        Assert.NotNull(geometry);
+        Assert.NotNull(content);
+        // Content anchored at the item's border-box origin — margin NOT
+        // re-applied (Copilot fix) and padding NOT inset (P3 approximation).
+        Assert.Equal(geometry!.Value.BlockOffset, content!.Value.BlockOffset, precision: 3);
+        Assert.Equal(geometry.Value.InlineOffset, content.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_item_out_of_flow_inline_descendant_not_in_inline_flow()
+    {
+        // PR-#182 Copilot review — an OUT-OF-FLOW (position: absolute) inline
+        // descendant inside an inline-only flex item must NOT contribute to the
+        // item's inline content (CollectInlineTextRuns skips it); the abspos
+        // pass anchors it separately. Here the item's inline-only content
+        // fragment shapes only "AB" (length 2), not the abspos "XY".
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        item.AppendChild(Box.TextRun("AB", MakeStyle()));
+        // An inline-level out-of-flow span "XY" — must be excluded from the line.
+        var absStyle = MakeStyle();
+        absStyle.Set(PropertyId.Position, ComputedSlot.FromKeyword(2)); // absolute
+        var absSpan = Box.ForElement(BoxKind.InlineBox, absStyle, MakeElement());
+        absSpan.AppendChild(Box.TextRun("XY", MakeStyle()));
+        item.AppendChild(absSpan);
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // The item's inline-only content fragment shapes only the in-flow "AB".
+        BoxFragment? content = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item && f.InlineLayout is not null) { content = f; break; }
+        }
+        Assert.NotNull(content);
+        var lines = content!.Value.InlineLayout!.Value.Lines;
+        Assert.Single(lines);
+        // 2 glyphs ("AB") — the abspos "XY" did NOT join the line.
+        var glyphCount = 0;
+        foreach (var slice in lines[0].Slices) glyphCount += slice.GlyphLength;
+        Assert.Equal(2, glyphCount);
+    }
+
     // ====================================================================
     //  Helpers
     // ====================================================================

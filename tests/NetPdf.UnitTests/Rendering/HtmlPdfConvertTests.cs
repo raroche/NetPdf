@@ -618,6 +618,64 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(1, GlyphRunCountOfLength(pdf, 2));            // text rendered ONCE
     }
 
+    [Fact]
+    public void Flex_item_with_tall_nested_column_flex_renders_all_content_atomically()
+    {
+        // PR-#182 review P1 — a flex ITEM whose content is a TALL nested
+        // column-flex must render ALL of it: the nested measurement DISCARDS
+        // the layout result, so an un-suppressed nested flex split would
+        // PageComplete(FlexContinuation) and silently drop the deferred items.
+        // disableFlexPagination makes the nested flex atomic. 5 × 400px items
+        // (2000px) exceed the page; all 5 backgrounds must render exactly once.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex\">"
+            + "<div style=\"width:200px\"><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 5; i++)
+            sb.Append("<div style=\"height:400px;background-color:#3366cc\"></div>");
+        sb.Append("</div></div></div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.Equal(5, CountOccurrences(Latin1(result.Pdf), " re f"));   // every nested item, once
+    }
+
+    [Fact]
+    public void Grid_cell_with_tall_nested_column_flex_renders_all_content_atomically()
+    {
+        // PR-#182 review P1 — same for a GRID CELL whose content is a tall
+        // nested column-flex (DispatchGridItemContents discards the result too).
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"display:grid;grid-template-columns:200px;grid-template-rows:500px\">"
+            + "<div><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 5; i++)
+            sb.Append("<div style=\"height:400px;background-color:#3366cc\"></div>");
+        sb.Append("</div></div></div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.Equal(5, CountOccurrences(Latin1(result.Pdf), " re f"));   // every nested item, once
+    }
+
+    [Fact]
+    public void Flex_item_content_diagnostics_surface_once()
+    {
+        // PR-#182 review P2 — flex item content diagnostics are no longer
+        // suppressed (they were measured with a null sink). A flex item with an
+        // atomic inline (inline-block) inside it surfaces
+        // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 once (buffered during item
+        // measurement, flushed when the item commits).
+        const string html =
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">"
+            + "<div>text <span style=\"display:inline-block\">X</span></div>"
+            + "</div></body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(
+            html, new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var n = 0;

@@ -1280,6 +1280,11 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // here until nested-continuation propagation is wired
             // (= 5c.2d scope).
             disableGridPagination: true,
+            // PR-#182 review P1 — a grid cell with a tall nested column-flex
+            // would otherwise PageComplete(FlexContinuation) into this discarded
+            // result + drop the deferred items. Suppress flex pagination too so
+            // the cell content is atomic.
+            disableFlexPagination: true,
             // Non-block-pagination arc (grid content-sized rows) — the common
             // grid item (`<div>text</div>`) has DIRECT inline children; opt the
             // nested layouter into emitting the inline-only ROOT's own content

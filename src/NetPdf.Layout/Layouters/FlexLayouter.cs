@@ -942,10 +942,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // free space + the column item-split page budget. The per-item buffers
         // are flushed at each COMMITTED item's final re-anchored content-box
         // origin in the emission loop. See <see cref="MeasureFlexItemContents"/>.
-        var itemContentBuffers = MeasureFlexItemContents(
+        // PR-#182 review P2 — the effective diagnostics sink for flex item
+        // content. Diagnostics are BUFFERED per item during measurement +
+        // flushed only when the item COMMITS on this page (a deferred item's
+        // buffer is discarded + re-generated on its page), so a paginating
+        // column doesn't duplicate per-item diagnostics across pages.
+        var effectiveDiagnostics = layout.Diagnostics ?? _diagnostics;
+        var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,
             mainSizeProperty, crossSizeProperty, containerCrossSize, isWrapping,
-            fragmentainer, layout.WritingMode, layout.IsRtl, cancellationToken);
+            fragmentainer, layout.WritingMode, layout.IsRtl,
+            effectiveDiagnostics, cancellationToken);
 
         // After flexibility resolution, each line's LineMainSize must
         // be updated to the sum of RESOLVED item main-sizes (NOT the
@@ -1320,6 +1327,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     // deferred items, so their buffers are simply discarded (a
                     // resumed page re-measures them). FlushTo clears the buffer.
                     itemContentBuffers[itemIdx]?.FlushTo(_sink, inlineOffset, blockOffset);
+                    // PR-#182 review P2 — surface this committed item's buffered
+                    // content diagnostics now (deferred items' diagnostics stay
+                    // buffered + are discarded, re-generated when they commit).
+                    itemDiagnosticBuffers[itemIdx]?.FlushTo(effectiveDiagnostics);
                 }
 
                 // Advance the main-axis cursor past this item + the
@@ -2466,13 +2477,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// content renders at that width (overflowing if narrow), matching grid's
     /// zero-area-cell contract.</para>
     ///
-    /// <para><b>Diagnostics.</b> Inner-content diagnostics are suppressed
-    /// (null sink) for the measure pass: a paginating column re-runs this pass
-    /// per page, so a live sink would duplicate per-item diagnostics across
-    /// pages. Surfacing flex-item-content diagnostics once is a follow-up.</para></summary>
-    /// <returns>A per-DOM-child-index array of buffers (null for a childless
-    /// item, or one whose used inline size was non-positive with no content).</returns>
-    private BufferingMeasureSink?[] MeasureFlexItemContents(
+    /// <para><b>Diagnostics (PR-#182 review P2).</b> Inner-content diagnostics
+    /// are BUFFERED per item (one <see cref="BufferingDiagnosticsSink"/> each)
+    /// and returned to the caller, which flushes ONLY a committed item's buffer
+    /// (a deferred item's buffer is discarded + re-generated when it commits on
+    /// its page) — so a paginating column doesn't duplicate per-item diagnostics
+    /// across pages. When there's no effective sink the buffers are null (no
+    /// buffering).</para></summary>
+    /// <returns>Per-DOM-child-index arrays: the content buffers (null for a
+    /// childless item) + the parallel diagnostic buffers (null when no item
+    /// content was measured or no effective sink was supplied).</returns>
+    private (BufferingMeasureSink?[] Content, BufferingDiagnosticsSink?[] Diagnostics)
+        MeasureFlexItemContents(
         List<FlexLine> lines,
         double[] resolvedItemMainSizes,
         FlexDirectionValue flexDirection,
@@ -2484,9 +2500,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         FragmentainerContext fragmentainer,
         WritingMode writingMode,
         bool isRtl,
+        IPaginateDiagnosticsSink? effectiveDiagnostics,
         CancellationToken cancellationToken)
     {
         var buffers = new BufferingMeasureSink?[_rootBox.Children.Count];
+        var diagBuffers = new BufferingDiagnosticsSink?[_rootBox.Children.Count];
         foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2521,8 +2539,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
                 if (!(usedInline > 0)) usedInline = _contentInlineSize;
 
+                // PR-#182 review P2 — buffer this item's content diagnostics
+                // (only when there's a sink to eventually flush to).
+                var itemDiag = effectiveDiagnostics is null ? null : new BufferingDiagnosticsSink();
+                diagBuffers[itemIdx] = itemDiag;
+
                 var buffer = LayoutItemContentIntoBuffer(
-                    item, usedInline, fragmentainer, writingMode, isRtl, cancellationToken);
+                    item, usedInline, fragmentainer, writingMode, isRtl, itemDiag, cancellationToken);
                 buffers[itemIdx] = buffer;
 
                 // Column content-sizing: grow an auto-height item to its
@@ -2537,14 +2560,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
             }
         }
-        return buffers;
+        return (buffers, diagBuffers);
     }
 
     /// <summary>Lay out one flex item's inner content into a fresh
     /// <see cref="BufferingMeasureSink"/> at <paramref name="availInlineContentSize"/>
     /// available inline size via the shared <see cref="NestedContentMeasurer"/>
-    /// (atomic <c>LastResort</c> pass; grid pagination suppressed; inline-only
-    /// root opted in). Mirrors <see cref="TableLayouter"/>'s
+    /// (atomic <c>LastResort</c> pass; grid + flex pagination suppressed;
+    /// inline-only root opted in; <paramref name="itemDiagnostics"/> buffers
+    /// the item's content diagnostics). Mirrors <see cref="TableLayouter"/>'s
     /// <c>MeasureCellContent</c> / <see cref="GridLayouter"/>'s
     /// <c>DispatchGridItemContents</c> nested-layout dispatch.</summary>
     private BufferingMeasureSink LayoutItemContentIntoBuffer(
@@ -2553,13 +2577,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         FragmentainerContext outerFragmentainer,
         WritingMode writingMode,
         bool isRtl,
+        IPaginateDiagnosticsSink? itemDiagnostics,
         CancellationToken cancellationToken)
         => NestedContentMeasurer.Measure(
             item, availInlineContentSize,
             blockBudget: outerFragmentainer.BlockSize,
             shaperResolver: _shaperResolver,
             writingMode: writingMode, isRtl: isRtl,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            diagnostics: itemDiagnostics);
 
     /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
     /// is content-determined (so content measurement should size it). True iff

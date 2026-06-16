@@ -2954,9 +2954,22 @@ flags the categories):
           `PreMeasureFlexMainExtent` still sums declared item heights → an auto-height column doesn't drive the
           wrapper overflow that engages pagination; explicit-height columns DO paginate + render); ROW main-axis
           content-WIDTH (max-content) sizing (row auto-width items keep their flex-resolved width, content
-          overflows a narrow box — grid's zero-cell contract); item border/padding NOT inset for content
-          (mirrors grid's cycle-1 approximation); a flex item whose content has a margin double-counts it
-          against the item origin (the common no-margin case is exact).
+          overflows a narrow box — grid's zero-cell contract). **`flex-grid-item-content-border-box-placement`
+          (named deferral, PR-#182 review P3):** the nested content is placed at the item's BORDER-box origin —
+          its own padding / border are NOT inset (content overflows into the padding strip), mirroring grid's
+          cycle-1 approximation; pinned by `Flex_item_own_margin_and_padding_do_not_offset_inline_content`.
+          **PR-#182 review HARDENING (landed in the same PR):** **(P1)** a new `BlockLayouter`
+          `disableFlexPagination` flag (mirrors `disableGridPagination`) — nested content callers
+          (`NestedContentMeasurer`, `DispatchGridItemContents`, the table cell) DISCARD the layout result, so an
+          un-suppressed nested column-flex split would `PageComplete(FlexContinuation)` + silently DROP the
+          deferred items; now the nested flex is atomic (content overflows). The flex subtree-extent projection
+          is gated by it too. **(P2)** flex item content diagnostics are BUFFERED per item + flushed only when
+          the item COMMITS (a deferred item's buffer is discarded + re-generated on its page) — no longer
+          suppressed (`diagnostics: null`) nor duplicated across pages. **(Copilot)** the nested-content root's
+          OWN margins are SUPPRESSED (`DispatchInlineOnlyBlock(suppressOwnMargins:true)`) so a margined item's
+          text isn't shifted + its measured extent isn't inflated (the margin double-count is FIXED, not
+          deferred); and `CollectInlineTextRuns` now SKIPS out-of-flow inline descendants so a `position:absolute`
+          span inside an inline-only item doesn't join the line (it's anchored by the abspos pass instead).
        2. **grid CONTENT-sized rows — DONE** (same PR). `GridSizing.Resolve` gained an optional
           `GridContentMeasurer` callback; `ItemOuterContribution` measures a cell's content block extent at its
           column width when the declared height is auto/0 (was 0 → `LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001`).

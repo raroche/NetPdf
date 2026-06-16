@@ -279,6 +279,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// contract.</summary>
     private readonly bool _disableGridPagination;
 
+    /// <summary>PR-#182 review P1 — when <see langword="true"/>, FLEX pagination
+    /// is suppressed (mirrors <see cref="_disableGridPagination"/> for grid):
+    /// the paginatable-flex clamps don't fire, so <c>FlexLayouter</c> dispatches
+    /// with <c>allowPagination: false</c> (emits all items atomically, content
+    /// overflows) instead of returning a <c>PageComplete(FlexContinuation)</c>.
+    /// Set by NESTED-content callers that DISCARD the layout result (flex / grid
+    /// item content, table cell) — they cannot resume a continuation, so an
+    /// unsuppressed nested flex split would silently DROP the deferred items.
+    /// The flex subtree-extent projection is gated by it too (so an atomic
+    /// nested flex is measured at its FULL extent, not projected to one page).</summary>
+    private readonly bool _disableFlexPagination;
+
     /// <summary>Non-block-pagination arc (flex item CONTENT layout) — when
     /// <see langword="true"/>, a NESTED BlockLayouter whose <c>_rootBox</c> is
     /// itself an inline-only block container (every direct child inline-level)
@@ -473,7 +485,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IPaginateDiagnosticsSink? diagnostics = null,
         IShaperResolver? shaperResolver = null,
         bool disableGridPagination = false,
-        bool layoutRootInlineContent = false)
+        bool layoutRootInlineContent = false,
+        bool disableFlexPagination = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -508,6 +521,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _shaperResolver = shaperResolver;
         _disableGridPagination = disableGridPagination;
         _layoutRootInlineContent = layoutRootInlineContent;
+        _disableFlexPagination = disableFlexPagination;
     }
 
     /// <inheritdoc />
@@ -990,7 +1004,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 _rootBox, childIdx: 0, fragmentainer, ref layout, resolver,
                 initialUsed, priorPagesConsumed, prevBlockMarginEnd,
                 hasPriorAdjoiningBlock, lastEmittedIdx, emittedThisAttempt,
-                out _, cancellationToken);
+                out _, cancellationToken,
+                // The outer layouter already positioned this item including its
+                // margins; don't let the root's own margins offset its text or
+                // inflate the measured extent (PR-#182 Copilot review).
+                suppressOwnMargins: true);
             // Null = fragment emitted (the outer loop would "continue") = done.
             return rootInlineResult ?? LayoutAttemptResult.AllDone(cost: 0);
         }
@@ -1860,7 +1878,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // Fragmentation L3 §4.4, so the clamped wrapper
                 // visually contains at least one line of content (=
                 // no zero-progress page).</para>
-                if (IsPaginatableFlex(child))
+                // PR-#182 review P1 — suppressed for nested content (a discarded
+                // PageComplete would drop the deferred flex items).
+                if (IsPaginatableFlex(child) && !_disableFlexPagination)
                 {
                     var pageRemainingForOuterFlex =
                         fragmentainer.BlockSize
@@ -5181,7 +5201,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // cycle): both intercept the moment where the wrapper
                 // would otherwise paint at its natural extent + overflow
                 // the page.</para>
+                // PR-#182 review P1 — suppressed for nested content (a discarded
+                // PageComplete would drop the deferred flex items).
                 if (IsPaginatableFlex(child)
+                    && !_disableFlexPagination
                     && _capturedFragmentainer is not null)
                 {
                     var pageRemainingForFlex =
@@ -7032,7 +7055,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         int lastEmittedIdx,
         int emittedThisAttempt,
         out bool emitted,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suppressOwnMargins = false)
     {
         // Per PR #48 review Copilot — the caller must NOT bump
         // `lastEmittedIdx` + `emittedThisAttempt` on skip paths
@@ -7044,6 +7068,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock, fragmentainer.ContentInlineSize);
+        // PR-#182 Copilot review — when this block is the NESTED-content ROOT
+        // (flex / grid item content via `_layoutRootInlineContent`), the OUTER
+        // layouter already positioned the item INCLUDING its margins, so the
+        // root's OWN margins must NOT shift the emitted inline fragment or
+        // inflate the measured ContentBlockExtent / ContentInlineExtent (else a
+        // `<div style="margin:…">text</div>` item double-counts the margin).
+        // Zero them — `topShift`, EmitInlineOnlyBlockFragment's inline anchor,
+        // and the margin-box cursor advance all read these fields.
+        if (suppressOwnMargins)
+        {
+            metrics = metrics with
+            {
+                MarginInlineStart = 0,
+                MarginInlineEnd = 0,
+                MarginBlockStart = 0,
+                MarginBlockEnd = 0,
+            };
+        }
         // Sub-cycle 1 — inline-only blocks reset the margin chain
         // (the line box breaks adjacency per CSS 2.1 §8.3.1), so
         // the block's own marginBlockStart applies in full without
@@ -7434,6 +7476,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var child = parent.Children[i];
+            // PR-#182 Copilot review — an out-of-flow (position: absolute /
+            // fixed) inline-level descendant does NOT participate in inline
+            // flow (CSS 2.2 §9.3 — it's removed from the normal flow). Skip it
+            // (and don't recurse into its subtree) so its text never contributes
+            // to the line layout / measurement here; the abspos / fixed passes
+            // emit + anchor it. Without this an inline-only block (incl. the
+            // nested-content root) would render the positioned text inline AND
+            // at its positioned offset (duplicate + wrong sizing).
+            if (child.Style.IsOutOfFlow()) continue;
             switch (child.Kind)
             {
                 case BoxKind.TextRun:
@@ -7735,13 +7786,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // flex returns 0 here (no explicit height) so it never tripped the path
         // — which is why only the explicit-height case showed the warning.
         // Projection min(authored, page): the flex contributes at most one
-        // page's worth to the ancestor measure. This path is only reached for a
-        // flex in a plain block-flow subtree (a flex inside a table cell / grid
-        // item / flex item is measured by that owner's nested layouter, never
-        // this child walk), so the flex genuinely paginates here. (No
-        // `_disableGridPagination`-style gate is needed: there is no flex-
-        // pagination-disable flag — `IsPaginatableFlex` gates purely by style.)
-        if (IsPaginatableFlex(parent) && _capturedFragmentainer is not null)
+        // page's worth to the ancestor measure. Gated by `!_disableFlexPagination`
+        // (mirrors the grid projection's `!_disableGridPagination` above) — a
+        // nested-content layouter that suppresses flex pagination renders the
+        // flex ATOMICALLY (full extent), so it must NOT project to one page here
+        // (that would under-measure + clip / overlap). For the normal document
+        // layouter (pagination enabled) the flex genuinely paginates, so the
+        // min-cap is correct.
+        if (IsPaginatableFlex(parent)
+            && !_disableFlexPagination
+            && _capturedFragmentainer is not null)
         {
             return Math.Min(parentBorderBoxBlockSize,
                 _capturedFragmentainer.BlockSize);

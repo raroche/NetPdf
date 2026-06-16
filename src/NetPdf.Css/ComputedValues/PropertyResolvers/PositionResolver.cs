@@ -26,11 +26,12 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// while the typed computed slot is intentionally not consumed (the painter reads the raw
 /// winner, which is independent of typed resolution, so this can't regress rendering).</para>
 ///
-/// <para><b>First-cut validation</b> (lenient by design — a stricter check that rejected a
-/// valid form would only mis-report <c>@supports</c>, never break rendering): every
-/// component must be a position keyword or a length-percentage; 1–4 components. The
-/// component-ORDER + axis-conflict rules (CSS B&amp;B §3.6 — e.g. <c>top bottom</c> naming
-/// the same axis twice) are not enforced.</para>
+/// <para><b>Validation.</b> Every component must be a position keyword or a length-percentage
+/// (1–4 components), AND the component list must satisfy the CSS B&amp;B §3.6 grammar
+/// (axis-conflict cycle): the 2-value form forbids naming the same axis twice (<c>top bottom</c>,
+/// <c>left right</c>) and — when a length-percentage is involved — fixes the X-then-Y order
+/// (<c>20px left</c> is invalid); the 3-/4-value edge-offset form must cover both axes with no
+/// same-axis pair or leftover token, and <c>center</c> takes no offset.</para>
 /// </summary>
 internal static class PositionResolver
 {
@@ -54,9 +55,13 @@ internal static class PositionResolver
                 tokens.Count == 0 ? "empty value" : "a <position> has 1 to 4 components", location);
             return ResolverResult.Invalid();
         }
-        foreach (var token in tokens)
+        // Classify each component (a position keyword, or a <length-percentage> / math function) AND
+        // validate it. The kinds drive the §3.6 component-ORDER + axis-conflict check below.
+        var kinds = new Comp[tokens.Count];
+        for (var i = 0; i < tokens.Count; i++)
         {
-            if (IsPositionKeyword(token)) continue;
+            var token = tokens[i];
+            if (TryClassifyKeyword(token, out var kw)) { kinds[i] = kw; continue; }
             // A math-function component (calc()/min()/max()/clamp()/…) is a valid <length-percentage>:
             // validate the EXPRESSION is well-formed + length-typed against a FINITE probe context (the
             // containing-block percentage base isn't known at cascade time, but a finite base proves the
@@ -64,7 +69,10 @@ internal static class PositionResolver
             if (CalcLengthEvaluator.IsMathFunction(token))
             {
                 if (CalcLengthEvaluator.TryEvaluate(token, MathProbeContext, clampNonNegative: false, out _))
+                {
+                    kinds[i] = Comp.LengthPct;
                     continue;
+                }
                 EmitInvalid(diagnostics, propertyName, value,
                     $"'{DiagnosticTextSanitizer.Sanitize(token)}' is not a valid math function for a <position>",
                     location);
@@ -75,14 +83,97 @@ internal static class PositionResolver
             var probe = LengthResolver.Resolve(
                 token, PropertyType.LengthPercentage, propertyId, propertyName,
                 diagnostics: null, location);
-            if (probe.State is ResolutionState.Resolved or ResolutionState.Deferred) continue;
+            if (probe.State is ResolutionState.Resolved or ResolutionState.Deferred)
+            {
+                kinds[i] = Comp.LengthPct;
+                continue;
+            }
             EmitInvalid(diagnostics, propertyName, value,
                 $"'{DiagnosticTextSanitizer.Sanitize(token)}' is not a position keyword or a <length-percentage>",
                 location);
             return ResolverResult.Invalid();
         }
+        // CSS B&B §3.6 component-ORDER + AXIS-CONFLICT rules (axis-conflict cycle): e.g. `top bottom`
+        // names the Y axis twice, `20px left` puts an X keyword in the Y slot, and the 3-/4-value
+        // edge-offset form must cover both axes with no same-axis pair / leftover. A per-token-valid but
+        // grammatically-invalid position is rejected here (was leniently accepted).
+        if (!IsValidPositionGrammar(kinds))
+        {
+            EmitInvalid(diagnostics, propertyName, value,
+                "the components name the same axis twice or are out of order (CSS B&B §3.6)", location);
+            return ResolverResult.Invalid();
+        }
         // A valid <position> — resolved from the raw winner at paint time.
         return ResolverResult.Deferred(value);
+    }
+
+    /// <summary>A classified <c>&lt;position&gt;</c> component: a specific edge keyword, <c>center</c>, or
+    /// a <c>&lt;length-percentage&gt;</c> (incl. a math function).</summary>
+    private enum Comp { Left, Right, Top, Bottom, Center, LengthPct }
+
+    /// <summary>The axis a classified component constrains: <c>'x'</c> (left/right), <c>'y'</c>
+    /// (top/bottom), or <c>'c'</c> (center / a length-percentage — either axis).</summary>
+    private static char Axis(Comp c) => c switch
+    {
+        Comp.Left or Comp.Right => 'x',
+        Comp.Top or Comp.Bottom => 'y',
+        _ => 'c',   // center or length-percentage — floats to the free axis
+    };
+
+    /// <summary>Validate the CSS B&amp;B §3.6 <c>&lt;position&gt;</c> component grammar (axis-conflict
+    /// cycle) for an already-per-token-validated component list. ONE component is always fine; TWO follow
+    /// the 2-value branch (both keywords → either order, but not the SAME axis twice; otherwise the strict
+    /// X-then-Y order — a length-percentage can't reorder a keyword); THREE/FOUR are the edge-offset
+    /// <c>&amp;&amp;</c> form (each component an edge keyword optionally followed by an offset, both axes
+    /// covered, in either order, no same-axis pair, no leftover, <c>center</c> takes no offset).</summary>
+    private static bool IsValidPositionGrammar(Comp[] k) => k.Length switch
+    {
+        1 => true,                          // any single keyword or length-percentage
+        2 => IsValidTwoValue(k[0], k[1]),
+        _ => IsValidEdgeOffset(k),          // 3 or 4 components
+    };
+
+    private static bool IsValidTwoValue(Comp a, Comp b)
+    {
+        var aKw = a != Comp.LengthPct;
+        var bKw = b != Comp.LengthPct;
+        if (aKw && bKw)
+        {
+            // Both keywords — accepted in EITHER order (the §3.6 `&&` keyword form), but they must not
+            // name the SAME axis twice (`left right`, `top bottom`). A `center` floats, so it never
+            // conflicts.
+            var ax = Axis(a);
+            var bx = Axis(b);
+            return !(ax == 'x' && bx == 'x') && !(ax == 'y' && bx == 'y');
+        }
+        // At least one length-percentage — the strict 2-value branch: component 1 is the X axis
+        // ({left|center|right|<lp>}), component 2 the Y axis ({top|center|bottom|<lp>}). So a Y keyword
+        // can't lead, and an X keyword can't trail (a length-percentage can't reorder it the way two
+        // keywords can).
+        return a is not (Comp.Top or Comp.Bottom) && b is not (Comp.Left or Comp.Right);
+    }
+
+    private static bool IsValidEdgeOffset(Comp[] k)
+    {
+        // Parse exactly TWO (edge, offset?) components consuming EVERY component. Each edge is an edge
+        // keyword (left/right/top/bottom) or center; an offset is a length-percentage following its edge.
+        var i = 0;
+        var e0 = k[i++];
+        if (e0 == Comp.LengthPct) return false;                       // must start with an edge / center
+        var o0 = i < k.Length && k[i] == Comp.LengthPct ? k[i++] : (Comp?)null;
+        if (i >= k.Length) return false;                             // need a second component
+        var e1 = k[i++];
+        if (e1 == Comp.LengthPct) return false;
+        var o1 = i < k.Length && k[i] == Comp.LengthPct ? k[i++] : (Comp?)null;
+        if (i != k.Length) return false;                            // a leftover token → invalid
+        // `center` takes no offset — on EITHER component (post-PR-#184 Copilot: `left 10px center 5px`
+        // and `center center 10px` must reject, not just an offset after a LEADING center).
+        if (e0 == Comp.Center && o0 is not null) return false;
+        if (e1 == Comp.Center && o1 is not null) return false;
+        // Resolve which component is X vs Y; two same-axis edges → invalid (a `center` floats).
+        var a0 = Axis(e0);
+        var a1 = Axis(e1);
+        return !(a0 == 'x' && a1 == 'x') && !(a0 == 'y' && a1 == 'y');
     }
 
     /// <summary>A finite probe context for VALIDATING a math-function component (post-PR-#183 review
@@ -92,12 +183,18 @@ internal static class PositionResolver
     private static readonly CalcLengthEvaluator.CalcContext MathProbeContext = new(
         PercentBasePx: 100.0, EmPx: 16.0, RootEmPx: 16.0, ViewportWidthPx: 800.0, ViewportHeightPx: 600.0);
 
-    private static bool IsPositionKeyword(string token) =>
-        token.Equals("left", StringComparison.OrdinalIgnoreCase)
-        || token.Equals("center", StringComparison.OrdinalIgnoreCase)
-        || token.Equals("right", StringComparison.OrdinalIgnoreCase)
-        || token.Equals("top", StringComparison.OrdinalIgnoreCase)
-        || token.Equals("bottom", StringComparison.OrdinalIgnoreCase);
+    /// <summary>Classify a position KEYWORD token (case-insensitive), or return <see langword="false"/>
+    /// when it isn't one (the caller then tries the <c>&lt;length-percentage&gt;</c> path).</summary>
+    private static bool TryClassifyKeyword(string token, out Comp kind)
+    {
+        if (token.Equals("left", StringComparison.OrdinalIgnoreCase)) { kind = Comp.Left; return true; }
+        if (token.Equals("right", StringComparison.OrdinalIgnoreCase)) { kind = Comp.Right; return true; }
+        if (token.Equals("top", StringComparison.OrdinalIgnoreCase)) { kind = Comp.Top; return true; }
+        if (token.Equals("bottom", StringComparison.OrdinalIgnoreCase)) { kind = Comp.Bottom; return true; }
+        if (token.Equals("center", StringComparison.OrdinalIgnoreCase)) { kind = Comp.Center; return true; }
+        kind = Comp.LengthPct;
+        return false;
+    }
 
     private static void EmitInvalid(
         ICssDiagnosticsSink? sink, string propertyName, string value, string reason,

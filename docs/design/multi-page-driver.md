@@ -24,6 +24,42 @@ This doc proposes the design for each, a phased PR breakdown that fits the proje
 
 ## Progress log
 
+- **2026-06-16 — Post-PR-#184 review (3 findings + 4 Copilot, same riders branch).** **(F1, P1)** Grid
+  content-width columns resolved AFTER row intrinsic sizing, so an auto/min/max-content ROW measured its
+  cell text at a stale 0/1px column width → inflated height. Fixed: `GridSizing.Resolve` resolves intrinsic
+  COLUMNS before ROW content measurement (CSS Grid §11 order), and the block-extent measure caches
+  (`GridLayouter` + `PreMeasureGridRowExtent`) are keyed by `(Box, availInline)`. **(F2, P2)** The multi-page
+  LAYOUT baseline used the context-free resolvers (bare + `:first`), so `:first` geometry fragmented every
+  page; fixed with `AtPageSizeResolver`/`AtPageMarginResolver.ResolveBare` (bare-only) for the baseline (page
+  0 still PAINTS its `:first` MediaBox). **(F3, P2)** The overflow check used the document-level content
+  rect; fixed with a per-page check in the paint loop against each page's `ppSize`/`ppMargins` (the single
+  overflow diagnostic moved after the paint loop). **(Copilot)** `IsValidEdgeOffset` rejects an offset after
+  `center` on EITHER edge; `MatchSelector` trims colon-split segments (`chapter :first` matches);
+  `IsWidthContentDetermined` doc clarified. Gates: **6919 unit / 5 skip · 30 LayoutSnapshots · 97
+  RealDocuments · W3cConformance · 0-warning Release · AOT/JIT parity verified**.
+
+- **2026-06-16 — RIDERS PR: per-page `@page` geometry + grid content-width columns + compound `@page` +
+  `<position>` axis-conflict** (branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`, off `main`
+  after #183). Four contained backlog riders, one PR (a fifth — inline `<img>` atomics — was scoped in but
+  pulled back to its OWN PR: it's a core glyph-centric-inline-engine extension, see `deferrals.md#inline-atomic-boxes`).
+  **(1) Per-page `@page` GEOMETRY (first cut):** `AtPageSizeResolver` / `AtPageMarginResolver` gained
+  context-aware `Resolve(…, ctx)` overloads (new context-aware `AtPageRules.EnumeratePageRulesWithMediaInfo(ctx)`,
+  tier-binned with paper-size conditioning); `PdfRenderPipeline` resolves each page's own size + margins
+  (cached per selector context) → its own MediaBox + margin boxes + body PAINT offsets +
+  `TextPaintSession.CollectPage` y-flip. So `@page :left`/`:right` DUPLEX margins + named-page `size` work
+  (§4.3). APPROXIMATION: the body still FRAGMENTS against the bare-`@page` content area; byte-identical when no
+  per-page-specific rule applies. **(2) Grid content-WIDTH columns:** `GridSizing.Resolve` gained a
+  `widthMeasurer` (a second `GridContentMeasurer` reporting `ContentInlineExtent`); an auto / min-content /
+  max-content COLUMN with a content-only cell sizes to its cell's MAX-content inline extent (measured
+  unconstrained — columns resolve before rows, non-circular per §11.5), completing the content-sizing family
+  (#182 did rows). **(3) Pure/multi-pseudo compound `@page`:** `MatchSelector` models the full §3.1 (A,B,C)
+  specificity tuple (encoded `A*100 + B*10 + C`), so `:first:left` + `chapter:first:left` match;
+  `EnumeratePageRulesWithMediaInfo(ctx)` sorts (the encoding ranges past the old 0..5 array). **(4)
+  `<position>` §3.6 axis-conflict:** `PositionResolver` enforces the component grammar — `top bottom` /
+  `left right` / `20px left` / `left 10px right 5px` / `center center center` now report `@supports` FALSE
+  (the painter already fell back, so rendering is unchanged). Gates: **6915 unit / 5 skip · 30 LayoutSnapshots
+  · 97 RealDocuments · W3cConformance · 0-warning Release · AOT/JIT parity verified**.
+
 - **2026-06-16 — PR #183 review cycle applied (3 findings)** (same branch). **(P2)** Valid DASHED page
   names (`--chapter`) are now accepted: `PageNameResolver.IsCustomIdent` and `AtPageRules.IsBarePageName`
   were duplicated and BOTH wrongly rejected `--name`, even though a dashed ident is a valid
@@ -233,6 +269,14 @@ Rebuild the prototype loop on `main` (§2.2), with three modernizations:
 - **Keep determinism + the perf gate.** Fonts dedup across pages via the shared `PdfDocument` + shaper (already in the prototype). Memory stays linear in page count (we accumulate per-page fragment lists; CLAUDE.md perf gate §8).
 
 ### 4.3 Paged-media page context (`:left`/`:right`/`:blank`/named)
+
+> **Per-page GEOMETRY — first cut DONE** (2026-06-16, riders PR). `AtPageSizeResolver` /
+> `AtPageMarginResolver` gained context-aware `Resolve(…, ctx)` overloads (via a context-aware
+> `AtPageRules.EnumeratePageRulesWithMediaInfo(ctx)`), and `PdfRenderPipeline` resolves each page's
+> own size + margins (cached per context) and uses them for that page's MediaBox + margin boxes + body
+> PAINT offsets — so `@page :left`/`:right` duplex margins and named-page `size` work. APPROXIMATION:
+> the body still FRAGMENTS against the document-level (bare-`@page`) content area (true per-page
+> fragmentation needs an iterative layout), so a page smaller than the bare size can overflow.
 
 Introduce a per-page selector context and thread it through the `@page` resolvers:
 

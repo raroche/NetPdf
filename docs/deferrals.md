@@ -255,6 +255,14 @@ grepping the ID).
     pass atomic primitives through to `LineBuilder.Wrap`.
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4
   (this branch).
+- **Still deferred (riders PR, branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`)** — inline
+  `<img>` was scoped into that PR but pulled back out by decision: the inline pipeline
+  (`TextRun → Itemize → Shape → Wrap → InlineLayoutResult`) is entirely GLYPH-centric, so giving an
+  atomic replaced box a line position + advance is a genuine core-engine extension (the "atomic glyph"
+  primitive below) that all text layout depends on — too large/risky to slot alongside the contained
+  paged-media / grid riders. It gets its own focused PR. (Painting is free once an inline `<img>` gets a
+  positioned `BoxFragment` — `ImagePainter` already paints any cached-image fragment by its geometry — so
+  the remaining work is purely the inline-layout side.)
 - **Removal condition** — `CollectInlineTextRuns` no longer emits
   `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`; atomic inline boxes
   participate in line layout as opaque advances; a test renders
@@ -1563,17 +1571,22 @@ flags the categories):
     Under an indefinite block axis fr collapses to zero +
     `LayoutGridFrUnderIndefiniteApproximated001` fires.
   - **Intrinsic (`auto` / `min-content` / `max-content`) tracks** —
-    approximated via the **L19 declared-dimension contribution**
-    (`GridSizing.ItemOuterContribution`): each item contributes
-    its explicit width/height + border + padding + margin if
-    declared, otherwise contributes 0. Same approximation surface
-    as flex `min-width: auto`.
-- **NOT in cycle 3** — explicitly deferred so the narrowed scope
-  doesn't drift:
-  - **True intrinsic content measurement (L19)** — running a
-    sub-BlockLayouter dry-run to obtain per-item
-    min-content/max-content from rendered descendants. The L19
-    approximation above is the placeholder until L19 ships.
+    a content-determined cell now CONTENT-measures both axes: ROW
+    tracks size to the cell's content block extent at its column
+    width (#182), and COLUMN tracks size to the cell's MAX-CONTENT
+    inline extent measured unconstrained (grid content-width cycle,
+    branch `phase-3-riders-perpage-geometry-inline-img-grid-cols` —
+    `GridSizing.ItemOuterContribution` + the `widthMeasurer` closure).
+    A cell with a DECLARED dimension still uses it (the L19
+    declared-dimension contribution + border + padding + margin).
+- **NOT in cycle 3 / still approximated** — explicitly deferred so the
+  narrowed scope doesn't drift:
+  - **Spec-strict §11.5 min-content vs max-content distinction** — the
+    content measurement above reports MAX-content for both axes;
+    `min-content` / `fit-content` / the available-width fit are
+    approximated by max-content (same L19 simplification). A spanning
+    item still uses the equal-share distribution, not the §11.5.1
+    remainder algorithm.
   - **§11.6 Maximize step** — the post-fr-resolution pass that
     grows base sizes up to growth limits when the grid has free
     space + no fr tracks consumed it. Cycle 4 picks this up.
@@ -3010,9 +3023,12 @@ flags the categories):
           bare named page per CSS Page 3 §3.1 (named + `:first`/`:blank` → tier 5; named + `:left`/`:right` →
           tier 4; both above the bare named tier 3). The existing single-selector tiers (0/1/2/3) are UNCHANGED
           (no churn). Reachable end-to-end via the wired per-page margin-box path (a page named `chapter` + first
-          paints `@page chapter:first`'s margin boxes). STILL DEFERRED: PURE-pseudo compounds (`:first:left`) +
-          multi-pseudo named compounds (`chapter:first:left`) — the full (A,B,C) tuple with multiple same-axis
-          pseudos; the single-page context-FREE view (size / first-page geometry) still defers compounds.
+          paints `@page chapter:first`'s margin boxes). **PURE-pseudo + multi-pseudo compounds — now DONE**
+          (pure/multi-pseudo cycle, branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`): `MatchSelector`
+          models the full §3.1 (A,B,C) specificity tuple (A = named page, B = `:first`/`:blank` count, C =
+          `:left`/`:right` count) encoded as `A*100 + B*10 + C`, so `:first:left` (11) + `chapter:first:left` (111)
+          match; `EnumeratePageRulesWithMediaInfo(ctx)` switched from a 0..5 tier array to a stable sort. The
+          single-page context-FREE view (size / first-page geometry) still classifies only bare / `:first`.
        6. **register `page` / `object-position` as first-class properties — DONE** (same PR). Both now have a
           properties.json entry + a value resolver (`PropertyType.Position` → `PositionResolver` validates a
           `<position>`; `PropertyType.PageName` → `PageNameResolver` validates `auto | <custom-ident>`), so
@@ -3020,16 +3036,22 @@ flags the categories):
           `CSS-PROPERTY-VALUE-INVALID-001`. SAFE because the cascade `GetWinner().ResolvedValue` is the
           var-substituted RAW value (independent of typed resolution): the image painter still reads
           object-position raw (the `ImgSpec` seam) and the named-page machinery still reads `page` raw onto
-          `Box.PageName` — the typed slot is a `Deferred` raw-text carrier, consumed downstream. DEFERRED: the
-          §3.6 component ORDER / axis-conflict rules (e.g. `top bottom`) aren't enforced (lenient validation —
-          over-acceptance only mis-reports `@supports`, never breaks rendering).
+          `Box.PageName` — the typed slot is a `Deferred` raw-text carrier, consumed downstream. **§3.6 component
+          ORDER / axis-conflict — now DONE** (axis-conflict cycle, branch
+          `phase-3-riders-perpage-geometry-inline-img-grid-cols`): `PositionResolver` classifies each component
+          and enforces the §3.6 grammar — `top bottom` / `left right` (same axis twice), `20px left` / `top 20px`
+          (a length-percentage fixing the X-then-Y order), `left 10px right 5px` (two same-axis edges), and
+          `center center center` (leftover) all report `@supports` FALSE; the painter already fell back +
+          diagnosed these, so rendering is unchanged.
        7. **content-SIZED auto-height column-flex PAGINATION — DONE** (same PR). `PreMeasureFlexMainExtent` is
           now CONTENT-AWARE (mirrors grid's `PreMeasureGridRowExtent`): a content-determined (auto-height) item
           contributes its measured content block extent (memoized per item box) instead of 0, so an auto-height
           column whose items are content-sized overflows the wrapper + the (paginatable-flex) split engages.
           Explicit-height items keep their declared height (byte-identical).
        (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals; column-wrap +
-       row-flex intra-item fragmentation + pure/multi-pseudo compound `@page` remain the open non-block items.)
+       row-flex intra-item fragmentation remain the open non-block items — pure/multi-pseudo compound `@page` +
+       `<position>` axis-conflict + grid content-WIDTH columns + per-page `@page` geometry all shipped in the
+       riders PR `phase-3-riders-perpage-geometry-inline-img-grid-cols`.)
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`

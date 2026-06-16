@@ -280,6 +280,55 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_object_position_rejects_axis_conflicts_and_bad_order()
+    {
+        // Position axis-conflict cycle — `@supports` now enforces the CSS B&B §3.6 component grammar:
+        // a same-axis pair (`top bottom`, `left right`), a length-percentage that puts a keyword in the
+        // wrong axis slot (`20px left` / `top 20px`), two same-axis edges in the edge-offset form
+        // (`left 10px right 5px`), and a leftover token (`center center center`) all evaluate FALSE
+        // (were leniently accepted before).
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (object-position: top bottom) { p { color: red } } " +
+            "@supports (object-position: left right) { p { font-weight: bold } } " +
+            "@supports (object-position: 20px left) { p { font-size: 20px } } " +
+            "@supports (object-position: left 10px right 5px) { p { line-height: 2 } } " +
+            "@supports (object-position: center center center) { p { text-indent: 5px } } " +
+            // Post-PR-#184 Copilot — `center` takes no offset on EITHER edge of the edge-offset form.
+            "@supports (object-position: left 10px center 5px) { p { letter-spacing: 1px } } " +
+            "@supports (object-position: center center 10px) { p { word-spacing: 1px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.Null(rules?.GetWinner("color"));          // top bottom — two Y
+        Assert.Null(rules?.GetWinner("font-weight"));    // left right — two X
+        Assert.Null(rules?.GetWinner("font-size"));      // 20px left — X keyword in Y slot
+        Assert.Null(rules?.GetWinner("line-height"));    // left 10px right 5px — two X edges
+        Assert.Null(rules?.GetWinner("text-indent"));    // center center center — leftover token
+        Assert.Null(rules?.GetWinner("letter-spacing")); // left 10px center 5px — center (2nd edge) + offset
+        Assert.Null(rules?.GetWinner("word-spacing"));   // center center 10px — center (2nd edge) + offset
+    }
+
+    [Fact]
+    public async Task AtSupports_object_position_accepts_valid_swapped_and_edge_offset_forms()
+    {
+        // Position axis-conflict cycle — the valid forms the §3.6 grammar accepts still evaluate TRUE:
+        // a swapped keyword pair (`top left` — the `&&` keyword form), a length-percentage in the right
+        // slot (`left 25%`), and the 3-/4-value edge-offset form (`left 10px top 20px`).
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (object-position: top left) { p { color: red } } " +
+            "@supports (object-position: left 25%) { p { font-weight: bold } } " +
+            "@supports (object-position: left 10px top 20px) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));        // top left — swapped keyword pair
+        Assert.NotNull(rules?.GetWinner("font-weight"));  // left 25% — X keyword + Y length-pct
+        Assert.NotNull(rules?.GetWinner("font-size"));    // left 10px top 20px — edge-offset
+    }
+
+    [Fact]
     public async Task AtSupports_page_property_evaluates_true_when_registered()
     {
         // Backlog #6 — the `page` property is now REGISTERED (type `PageName` + PageNameResolver:

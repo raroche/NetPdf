@@ -798,6 +798,104 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_max_content_columns_size_from_cell_content_width()
+    {
+        // Grid content-width cycle — a `max-content` COLUMN with a content-only cell (no declared
+        // width) sizes to its cell's MAX-CONTENT inline extent (its inner block's width), instead of
+        // collapsing to 0 (the pre-cycle declared-width-only behavior). The two columns size
+        // independently to 80px and 120px; column B starts after column A.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 30px;
+                    grid-template-columns: max-content max-content;
+                    width: 400px;
+                }
+                .inner-a { width: 80px; height: 20px; }
+                .inner-b { width: 120px; height: 20px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a" style="grid-column-start:1"><div class="inner-a"></div></div>
+              <div class="b" style="grid-column-start:2"><div class="inner-b"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(80.0, a!.Value.InlineSize, precision: 3);    // column A = inner-a max-content
+        Assert.Equal(120.0, b!.Value.InlineSize, precision: 3);   // column B = inner-b max-content
+        Assert.Equal(80.0, b.Value.InlineOffset, precision: 3);   // B starts after A's 80px column
+    }
+
+    [Fact]
+    public async Task Production_html_auto_column_sizes_from_cell_content_not_zero()
+    {
+        // Grid content-width cycle — an `auto` COLUMN with a content-only cell sizes to its cell's
+        // content width (intrinsic tracks have no Maximize headroom in this engine, so it stays at
+        // content size rather than collapsing to 0 or stretching). The single auto column sizes to the
+        // 90px inner block.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 30px;
+                    grid-template-columns: auto;
+                    width: 400px;
+                }
+                .inner { width: 90px; height: 20px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="cell"><div class="inner"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cell = FindByClass(sink, "cell");
+        Assert.NotNull(cell);
+        Assert.Equal(90.0, cell!.Value.InlineSize, precision: 3);   // content-sized (NOT 0, NOT 400)
+    }
+
+    [Fact]
+    public async Task Production_html_auto_row_measures_text_at_the_final_max_content_column_width()
+    {
+        // Post-PR-#184 review F1 — columns must resolve BEFORE rows so an `auto` row measures its cell's
+        // TEXT at the FINAL (content-sized) column width, not a stale 0/1px width. The cell's eight
+        // space-separated words fit on ONE line at the `max-content` column (which is their full unwrapped
+        // width), so the auto row is ONE line tall. With the prior row-before-column order the row measured
+        // at 1px → the words wrapped to eight lines → an ~8× inflated row height; the reference grid (a wide
+        // FIXED column, same text) is unambiguously one line, and the two row heights must agree.
+        const string textGrid = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: COLS; grid-template-rows: auto; width: 600px; }
+            </style></head><body>
+            <div class="grid"><div class="cell">aa bb cc dd ee ff gg hh</div></div>
+            </body></html>
+            """;
+        var (maxContentSink, _, _) = await RenderViaFullPipelineAsync(
+            textGrid.Replace("COLS", "max-content"));
+        var (fixedSink, _, _) = await RenderViaFullPipelineAsync(
+            textGrid.Replace("COLS", "1000px"));   // a column wide enough that the text is one line
+
+        var maxContentCell = FindByClass(maxContentSink, "cell");
+        var fixedCell = FindByClass(fixedSink, "cell");
+        Assert.NotNull(maxContentCell);
+        Assert.NotNull(fixedCell);
+        // The max-content column is one line tall — equal to the wide-fixed-column reference (NOT the
+        // ~8-line height a stale-1px measurement would produce).
+        Assert.Equal(fixedCell!.Value.BlockSize, maxContentCell!.Value.BlockSize, precision: 3);
+        Assert.True(maxContentCell.Value.InlineSize > 40,
+            $"the max-content column should size to the text width, got {maxContentCell.Value.InlineSize}");
+    }
+
+    [Fact]
     public async Task Production_html_auto_plus_fr_redistributes_after_intrinsic()
     {
         // grid-template-rows: auto 1fr with explicit height 400.

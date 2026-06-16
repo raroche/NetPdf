@@ -113,8 +113,8 @@ internal static class TextPainter
     /// before building lets each font be subset + embedded ONCE from the UNION of glyphs used across all
     /// pages — so a font shared by N pages is embedded once (via <see cref="PdfDocument.RegisterFont"/>'s
     /// content dedup) instead of N times, and HarfBuzz shapes each run once (not once per page). Per page:
-    /// <see cref="CollectPage"/> records its draw commands + accumulates its glyphs; then
-    /// <see cref="Finish"/> builds the fonts and replays every page's draws.
+    /// <see cref="CollectPage(PdfPage, IReadOnlyList{BoxFragment})"/> records its draw commands +
+    /// accumulates its glyphs; then <see cref="Finish"/> builds the fonts and replays every page's draws.
     /// </summary>
     internal sealed class TextPaintSession(
         HarfBuzzShaperResolver shaper,
@@ -133,6 +133,16 @@ internal static class TextPainter
         /// subset is built from the cross-page union) and record its draw commands for replay in
         /// <see cref="Finish"/>. The page is stored so its text can be emitted after all fonts are built.</summary>
         public void CollectPage(PdfPage page, IReadOnlyList<BoxFragment> fragments)
+            => CollectPage(page, fragments, pageHeightPt, contentOriginLeftPx, contentOriginTopPx);
+
+        /// <summary>As <see cref="CollectPage(PdfPage, IReadOnlyList{BoxFragment})"/> but with PER-PAGE
+        /// geometry (per-page-geometry cycle): a page whose <c>@page :left</c>/<c>:right</c>/named size or
+        /// margins differ from the document default uses its own page height (for the y-flip) + content
+        /// origin so its text lands correctly on its own MediaBox. Passing the session defaults reproduces
+        /// the base overload exactly (byte-identical when no per-page geometry varies).</summary>
+        public void CollectPage(
+            PdfPage page, IReadOnlyList<BoxFragment> fragments,
+            double pageHeightPtForPage, double originLeftPx, double originTopPx)
         {
             ArgumentNullException.ThrowIfNull(page);
             ArgumentNullException.ThrowIfNull(fragments);
@@ -148,7 +158,7 @@ internal static class TextPainter
 
                 CollectFragment(
                     fragment, inline, blockStyle,
-                    contentOriginLeftPx, contentOriginTopPx, pageHeightPt,
+                    originLeftPx, originTopPx, pageHeightPtForPage,
                     shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics);
             }
             // Skip a page with no draws (a background/image-only, transparent-text, or font-size:0 page) —

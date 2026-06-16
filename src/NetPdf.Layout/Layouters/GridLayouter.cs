@@ -519,16 +519,37 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // (ResolveIntrinsicTracks's per-track loop). An item's available
             // inline (column) width is deterministic within a Resolve, so the
             // box reference is a sufficient key.
-            var measureCache = new System.Collections.Generic.Dictionary<Box, double>(
-                System.Collections.Generic.ReferenceEqualityComparer.Instance);
+            // Keyed by (item, availInline) — post-PR-#184 review F1: the block-extent measurement depends
+            // on the AVAILABLE (column) width, so a cache keyed by box alone could return a height measured
+            // at a stale width if the same item were ever measured at two widths. (With the columns-first
+            // ordering in GridSizing.Resolve the row pass uses the FINAL column width, so this is also
+            // defensive.)
+            var measureCache = new System.Collections.Generic.Dictionary<(Box Item, double AvailInline), double>();
             GridSizing.GridContentMeasurer contentMeasurer = (item, availInline) =>
             {
-                if (measureCache.TryGetValue(item, out var cached)) return cached;
+                var key = (item, availInline);
+                if (measureCache.TryGetValue(key, out var cached)) return cached;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline, measureBlockBudget, _shaperResolver,
                     measureWritingMode, measureIsRtl, cancellationToken)
                     .ContentBlockExtent;
-                measureCache[item] = extent;
+                measureCache[key] = extent;
+                return extent;
+            };
+            // Grid content-width cycle — a SECOND measurer reporting the cell's MAX-CONTENT inline extent
+            // (ContentInlineExtent) at the caller's unconstrained probe width, so auto / min-content /
+            // max-content COLUMNS size to their content width. Separate cache (different measured value —
+            // width, not height).
+            var widthMeasureCache = new System.Collections.Generic.Dictionary<Box, double>(
+                System.Collections.Generic.ReferenceEqualityComparer.Instance);
+            GridSizing.GridContentMeasurer widthMeasurer = (item, availInline) =>
+            {
+                if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;
+                var extent = NestedContentMeasurer.Measure(
+                    item, availInline, measureBlockBudget, _shaperResolver,
+                    measureWritingMode, measureIsRtl, cancellationToken)
+                    .ContentInlineExtent;
+                widthMeasureCache[item] = extent;
                 return extent;
             };
             var sizing = GridSizing.Resolve(
@@ -539,7 +560,8 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 contentBlockSize: _contentBlockSize,
                 emit: SafeEmit,
                 cancellationToken: cancellationToken,
-                contentMeasurer: contentMeasurer);
+                contentMeasurer: contentMeasurer,
+                widthMeasurer: widthMeasurer);
 
             if (!sizing.HasExplicitTracks)
             {

@@ -51,22 +51,26 @@ public sealed class AtPageRulesTests
         Assert.Equal(0, AtPageRules.MatchTier(prelude, new AtPageRules.PageSelectorContext(5)));
     }
 
+    // Tiers are the §3.1 (A,B,C) specificity tuple encoded as A*100 + B*10 + C:
+    //   :left/:right = 1, :first/:blank = 10, :first:left = 11, <name> = 100,
+    //   <name>:left = 101, <name>:first = 110, <name>:first:left = 111.
+
     [Fact]
-    public void MatchTier_first_matches_only_the_first_page_at_tier_2()
+    public void MatchTier_first_matches_only_the_first_page()
     {
-        Assert.Equal(2, AtPageRules.MatchTier(":first", new AtPageRules.PageSelectorContext(0)));
+        Assert.Equal(10, AtPageRules.MatchTier(":first", new AtPageRules.PageSelectorContext(0)));
         Assert.Equal(-1, AtPageRules.MatchTier(":first", new AtPageRules.PageSelectorContext(1)));
     }
 
     [Fact]
-    public void MatchTier_blank_matches_only_a_blank_page_at_tier_2()
+    public void MatchTier_blank_matches_only_a_blank_page()
     {
-        Assert.Equal(2, AtPageRules.MatchTier(":blank", new AtPageRules.PageSelectorContext(3, IsBlank: true)));
+        Assert.Equal(10, AtPageRules.MatchTier(":blank", new AtPageRules.PageSelectorContext(3, IsBlank: true)));
         Assert.Equal(-1, AtPageRules.MatchTier(":blank", new AtPageRules.PageSelectorContext(3, IsBlank: false)));
     }
 
     [Fact]
-    public void MatchTier_left_and_right_match_by_parity_at_tier_1()
+    public void MatchTier_left_and_right_match_by_parity()
     {
         // Page 0 = right, page 1 = left.
         Assert.Equal(1, AtPageRules.MatchTier(":right", new AtPageRules.PageSelectorContext(0)));
@@ -78,9 +82,9 @@ public sealed class AtPageRulesTests
     [Fact]
     public void MatchTier_list_returns_the_highest_matching_selectors_tier()
     {
-        // `:first, :left` — page 0 (first AND right): only :first matches → tier 2; page 1 (left): only
+        // `:first, :left` — page 0 (first AND right): only :first matches → tier 10; page 1 (left): only
         // :left matches → tier 1; page 2 (right, non-first): neither matches → -1.
-        Assert.Equal(2, AtPageRules.MatchTier(":first, :left", new AtPageRules.PageSelectorContext(0)));
+        Assert.Equal(10, AtPageRules.MatchTier(":first, :left", new AtPageRules.PageSelectorContext(0)));
         Assert.Equal(1, AtPageRules.MatchTier(":first, :left", new AtPageRules.PageSelectorContext(1)));
         Assert.Equal(-1, AtPageRules.MatchTier(":first, :left", new AtPageRules.PageSelectorContext(2)));
     }
@@ -88,9 +92,9 @@ public sealed class AtPageRulesTests
     // ---- Named pages (cycle 7) ----
 
     [Fact]
-    public void MatchTier_named_page_matches_an_assigned_page_at_tier_3()
+    public void MatchTier_named_page_matches_an_assigned_page()
     {
-        Assert.Equal(3, AtPageRules.MatchTier("chapter",
+        Assert.Equal(100, AtPageRules.MatchTier("chapter",
             new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter")));
         Assert.Equal(-1, AtPageRules.MatchTier("chapter",
             new AtPageRules.PageSelectorContext(2, AssignedPageName: "index")));   // different name
@@ -101,32 +105,32 @@ public sealed class AtPageRulesTests
     [Fact]
     public void MatchTier_named_page_outranks_first_on_a_named_first_page()
     {
-        // CSS Page 3 §3.1 specificity: a named selector (tier 3) outranks :first (tier 2).
+        // CSS Page 3 §3.1 specificity: a named selector (100) outranks :first (10).
         var ctx = new AtPageRules.PageSelectorContext(0, AssignedPageName: "cover");
-        Assert.Equal(3, AtPageRules.MatchTier("cover", ctx));
-        Assert.Equal(2, AtPageRules.MatchTier(":first", ctx));
+        Assert.Equal(100, AtPageRules.MatchTier("cover", ctx));
+        Assert.Equal(10, AtPageRules.MatchTier(":first", ctx));
     }
 
     // ---- Compound <name>:<pseudo> selectors (backlog #5) ----
 
     [Fact]
-    public void MatchTier_compound_name_first_matches_a_named_first_page_at_tier_5()
+    public void MatchTier_compound_name_first_matches_a_named_first_page()
     {
-        // `chapter:first` matches a page that is BOTH named "chapter" AND first, at tier 5 —
-        // outranking the bare named page (3) and the bare :first (2) per CSS Page 3 §3.1.
+        // `chapter:first` matches a page that is BOTH named "chapter" AND first, at tier 110 —
+        // outranking the bare named page (100) and the bare :first (10) per CSS Page 3 §3.1.
         var firstNamed = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter");
-        Assert.Equal(5, AtPageRules.MatchTier("chapter:first", firstNamed));
+        Assert.Equal(110, AtPageRules.MatchTier("chapter:first", firstNamed));
         // Outranks both single components on the same page.
-        Assert.Equal(3, AtPageRules.MatchTier("chapter", firstNamed));
-        Assert.Equal(2, AtPageRules.MatchTier(":first", firstNamed));
+        Assert.Equal(100, AtPageRules.MatchTier("chapter", firstNamed));
+        Assert.Equal(10, AtPageRules.MatchTier(":first", firstNamed));
     }
 
     [Fact]
     public void MatchTier_compound_name_first_requires_BOTH_name_and_first()
     {
-        // Bare named DOES match a non-first named page (tier 3) — but `chapter:first` does NOT (no first).
+        // Bare named DOES match a non-first named page (100) — but `chapter:first` does NOT (no first).
         var nonFirstNamed = new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter");
-        Assert.Equal(3, AtPageRules.MatchTier("chapter", nonFirstNamed));
+        Assert.Equal(100, AtPageRules.MatchTier("chapter", nonFirstNamed));
         Assert.Equal(-1, AtPageRules.MatchTier("chapter:first", nonFirstNamed));
         // First page with a DIFFERENT name → no match (the name part fails).
         Assert.Equal(-1, AtPageRules.MatchTier("chapter:first",
@@ -137,23 +141,51 @@ public sealed class AtPageRulesTests
     }
 
     [Fact]
-    public void MatchTier_compound_name_left_matches_at_tier_4_below_name_first()
+    public void MatchTier_compound_name_left_matches_below_name_first()
     {
-        // `chapter:left` (named + left/right axis) → tier 4, below `chapter:first` (tier 5) but above the
-        // bare named page (tier 3): CSS Page 3 §3.1 orders :first/:blank above :left/:right.
+        // `chapter:left` (named + left/right axis) → tier 101, below `chapter:first` (110) but above the
+        // bare named page (100): CSS Page 3 §3.1 orders :first/:blank above :left/:right.
         var leftNamed = new AtPageRules.PageSelectorContext(1, AssignedPageName: "chapter"); // index 1 = left
-        Assert.Equal(4, AtPageRules.MatchTier("chapter:left", leftNamed));
+        Assert.Equal(101, AtPageRules.MatchTier("chapter:left", leftNamed));
         Assert.Equal(-1, AtPageRules.MatchTier("chapter:right", leftNamed));   // a left page isn't right
     }
 
     [Fact]
-    public void MatchTier_pure_pseudo_and_multi_pseudo_compounds_stay_deferred()
+    public void MatchTier_pure_pseudo_compound_matches_both_pseudos()
     {
-        // First-cut limitation: a PURE-pseudo compound (:first:left) and a multi-pseudo named compound
-        // (chapter:first:left) are deferred (no match) — only <name>:<single-pseudo> ships.
-        var ctx = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter");
-        Assert.Equal(-1, AtPageRules.MatchTier(":first:left", ctx));
-        Assert.Equal(-1, AtPageRules.MatchTier("chapter:first:left", ctx));
+        // Pure/multi-pseudo cycle — `:first:left` (no name) matches a page that is BOTH first AND left, at
+        // the (0,1,1) tier 11 (between :first=10 and a named page=100). A page failing EITHER pseudo
+        // doesn't match. (Page 0 is first+RIGHT, so :first:left fails there; a hypothetical first+left page
+        // — index 0 forced left isn't reachable via parity, so :first:right is the natural first-page
+        // compound.)
+        Assert.Equal(11, AtPageRules.MatchTier(":first:right", new AtPageRules.PageSelectorContext(0)));   // first + right
+        Assert.Equal(-1, AtPageRules.MatchTier(":first:left", new AtPageRules.PageSelectorContext(0)));    // first but right, not left
+        Assert.Equal(-1, AtPageRules.MatchTier(":first:right", new AtPageRules.PageSelectorContext(1)));   // left + not-first
+    }
+
+    [Fact]
+    public void MatchTier_multi_pseudo_named_compound_matches_all_three()
+    {
+        // Pure/multi-pseudo cycle — `chapter:first:right` matches a page that is named "chapter" AND first
+        // AND right, at the (1,1,1) tier 111 (the most specific). Failing the name OR either pseudo → no
+        // match.
+        var firstRightNamed = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter"); // first + right
+        Assert.Equal(111, AtPageRules.MatchTier("chapter:first:right", firstRightNamed));
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter:first:left", firstRightNamed));   // not left
+        Assert.Equal(-1, AtPageRules.MatchTier("index:first:right", firstRightNamed));    // wrong name
+    }
+
+    [Fact]
+    public void MatchTier_tolerates_whitespace_around_the_colon()
+    {
+        // Post-PR-#184 Copilot — incidental whitespace around the colon doesn't break matching: the
+        // segments are trimmed, so `chapter :first` matches the same page as `chapter:first` (tier 110),
+        // and `:first :right` (pure-pseudo with a space) matches a first + right page (tier 11). Internal
+        // whitespace in a NAME is still rejected (not trimmed away).
+        var firstNamed = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter"); // first + right
+        Assert.Equal(110, AtPageRules.MatchTier("chapter :first", firstNamed));
+        Assert.Equal(11, AtPageRules.MatchTier(":first :right", firstNamed));
+        Assert.Equal(-1, AtPageRules.MatchTier("chap ter:first", firstNamed));   // internal space in name → invalid
     }
 
     [Fact]
@@ -161,9 +193,9 @@ public sealed class AtPageRulesTests
     {
         // Copilot: a CSS <custom-ident> admits non-ASCII code points (≥ U+0080), so a non-ASCII page name
         // is valid (was rejected by the ASCII-only validator).
-        Assert.Equal(3, AtPageRules.MatchTier("café",
+        Assert.Equal(100, AtPageRules.MatchTier("café",
             new AtPageRules.PageSelectorContext(0, AssignedPageName: "café")));
-        Assert.Equal(3, AtPageRules.MatchTier("章",
+        Assert.Equal(100, AtPageRules.MatchTier("章",
             new AtPageRules.PageSelectorContext(0, AssignedPageName: "章")));
     }
 
@@ -183,13 +215,13 @@ public sealed class AtPageRulesTests
     {
         // Post-PR-#183 review P2 — a DASHED ident (`--name`) is a valid <custom-ident> and so a valid
         // named page; it was wrongly rejected before centralizing the validator. It matches its assigned
-        // page at tier 3, and (like any name) outranks `:first` on a named first page.
+        // page at tier 100, and (like any name) outranks `:first` on a named first page.
         var named = new AtPageRules.PageSelectorContext(0, AssignedPageName: name);
-        Assert.Equal(3, AtPageRules.MatchTier(name, named));
+        Assert.Equal(100, AtPageRules.MatchTier(name, named));
         Assert.Equal(-1, AtPageRules.MatchTier(name,
             new AtPageRules.PageSelectorContext(0, AssignedPageName: "other")));
-        // The compound `--chapter:first` form also matches a named first page (tier 5).
-        Assert.Equal(5, AtPageRules.MatchTier($"{name}:first", named));
+        // The compound `--chapter:first` form also matches a named first page (tier 110).
+        Assert.Equal(110, AtPageRules.MatchTier($"{name}:first", named));
     }
 
     [Theory]

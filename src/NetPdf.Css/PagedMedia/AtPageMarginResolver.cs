@@ -80,9 +80,43 @@ internal static class AtPageMarginResolver
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media), pageWidthPx, pageHeightPx);
+    }
 
+    /// <summary>The PER-PAGE margins for the page described by <paramref name="ctx"/> (per-page-geometry
+    /// cycle): like <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext, double, double)"/> but
+    /// the applicable rules + cascade order come from the context-aware enumeration, so a
+    /// <c>@page :left</c> / <c>:right</c> (duplex) / <c>:blank</c> / named-page margin wins on the matching
+    /// page (and <c>:first</c> applies to the first page ONLY). Percentages resolve against
+    /// <paramref name="pageWidthPx"/> × <paramref name="pageHeightPx"/> (the page's RESOLVED size).</summary>
+    public static ResolvedPageMargins Resolve(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media,
+        double pageWidthPx, double pageHeightPx, AtPageRules.PageSelectorContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx), pageWidthPx, pageHeightPx);
+    }
+
+    /// <summary>The BARE-<c>@page</c>-ONLY margins — bare rules only, with NO <c>:first</c> / selectors
+    /// (post-PR-#184 review F2). The multi-page LAYOUT baseline uses this so the body fragments against the
+    /// bare page margins; the per-page PAINT then applies the selector margins per page. (The
+    /// <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext, double, double)"/> overload includes
+    /// <c>:first</c>, correct only for a single-page document.)</summary>
+    public static ResolvedPageMargins ResolveBare(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media,
+        double pageWidthPx, double pageHeightPx)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumerateBarePageRules(sheets, media), pageWidthPx, pageHeightPx);
+    }
+
+    private static ResolvedPageMargins ResolveFrom(
+        IEnumerable<CssAtRule> rules, double pageWidthPx, double pageHeightPx)
+    {
         Candidate top = default, right = default, bottom = default, left = default;
-        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
+        foreach (var at in rules)
         {
             foreach (var decl in at.Declarations)
             {

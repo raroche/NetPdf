@@ -1874,7 +1874,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // paginatable-flex clamp above when grid pagination ships).
             if (IsGridContainer(child) && IsHeightAuto(child))
             {
-                var gridRowExtent = PreMeasureGridRowExtent(child);
+                // PR-#181 review P1 — pass the grid's REAL content inline size (so
+                // auto-repeat column templates resolve the same column count the
+                // dispatch will) + the cancellation token (P2). The content geometry
+                // is derived the same way as the dispatch (GridGeometryHelper) so
+                // pre-measure + emit agree.
+                // Offsets are 0 here — the in-flow offsets aren't computed until
+                // the emit phase below, and only ContentInlineSize is read (it
+                // depends on borderBoxInlineSize + the grid's inline chrome, not
+                // the offsets).
+                var preGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                    gridBox: child,
+                    borderBoxInlineSize: borderBoxInlineSize,
+                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxInlineOffset: 0,
+                    borderBoxBlockOffset: 0);
+                var gridRowExtent = PreMeasureGridRowExtent(
+                    child, preGridGeom.ContentInlineSize, cancellationToken);
                 if (gridRowExtent > 0)
                 {
                     var gridBorderPaddingBlock =
@@ -5176,7 +5192,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // siblings then visually overlap the grid rows.
             if (IsGridContainer(child) && IsHeightAuto(child))
             {
-                var nGridRowExtent = PreMeasureGridRowExtent(child);
+                // PR-#181 review P1/P2 — real content inline size (auto-repeat
+                // column count) + cancellation token, same as the outer site.
+                var nPreGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                    gridBox: child,
+                    borderBoxInlineSize: childBorderBoxInlineSize,
+                    borderBoxBlockSize: childBorderBoxBlockSize,
+                    borderBoxInlineOffset: childInlineOffset,
+                    borderBoxBlockOffset: childBlockOffset);
+                var nGridRowExtent = PreMeasureGridRowExtent(
+                    child, nPreGridGeom.ContentInlineSize, cancellationToken);
                 if (nGridRowExtent > 0)
                 {
                     var nGridBorderPaddingBlock =
@@ -8534,64 +8559,45 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return flexResult;
     }
 
-    /// <summary>Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —
-    /// pre-measure helper for auto-height grid containers. Sums the
-    /// explicit row track sizes (= Length entries only; cycle 1 scope)
-    /// to produce the natural block-axis extent the wrapper needs to
-    /// reserve so following block-flow siblings don't overlap the grid.
+    /// <summary>Pre-measure helper for auto-height grid containers — the natural
+    /// block-axis row extent the wrapper must reserve so following block-flow
+    /// siblings don't overlap the grid AND so the (paginatable-grid) clamp can
+    /// fire when the grid overflows the page.
     ///
-    /// <para>Non-Length tracks contribute 0 (matching GridLayouter's
-    /// cycle-1 sizing). Returns 0 when the grid has no
-    /// <c>grid-template-rows</c> declaration (= no tracks to sum); the
-    /// caller's pre-grow then doesn't fire + the wrapper stays at the
-    /// chrome-only natural extent.</para>
+    /// <para><b>Implicit rows (non-block-pagination completion).</b> Delegates to
+    /// <see cref="GridSizing.Resolve"/>, which generates IMPLICIT row tracks from
+    /// <c>grid-auto-rows</c> + auto-placement (CSS Grid §7.4) — so a grid whose
+    /// rows come ONLY from implicit tracks (the common <c>grid-template-columns: …</c>
+    /// + auto-flowed-rows case) reports its real row extent, not 0. The earlier
+    /// early-return on an empty <c>grid-template-rows</c> left such grids at
+    /// chrome-only height, so they never overflowed + never paginated.</para>
     ///
-    /// <para>Cycle 2+ will extend this helper as track sizing gains
-    /// fr / intrinsic / minmax / fit-content / repeat. The math will
-    /// remain at the BlockLayouter pre-measure layer (= the helper
-    /// signature stays stable); only the per-track-kind extent
-    /// derivation grows.</para></summary>
-    private static double PreMeasureGridRowExtent(Box gridBox)
+    /// <para><b>Real content INLINE size (PR-#181 review P1).</b> The caller
+    /// threads the grid's actual content-box inline size so an auto-repeat column
+    /// template (<c>repeat(auto-fill|auto-fit, …)</c>) resolves the SAME column
+    /// count the real dispatch will — <see cref="GridSizing.ComputeAutoRepeatIterations"/>
+    /// derives the repeat count from the inline extent, so a fake width of 1 would
+    /// resolve 1 column + inflate the row count (false pagination / wrapper growth).
+    /// The BLOCK axis stays the indefinite signal (1): these callers are
+    /// <c>IsHeightAuto</c> grids whose grown block extent is exactly what this
+    /// method computes (chicken-and-egg), and an indefinite block collapses fr
+    /// ROWS per the <c>LayoutGridFrUnderIndefiniteApproximated001</c> path.</para>
+    ///
+    /// <para>A null diagnostic emitter keeps this dry-run from double-emitting the
+    /// warnings the real emission pass surfaces; <paramref name="cancellationToken"/>
+    /// (PR-#181 review P2) is threaded so the full placement/sizing pass honors
+    /// caller cancellation on a large grid.</para></summary>
+    private static double PreMeasureGridRowExtent(
+        Box gridBox, double contentInlineSize, CancellationToken cancellationToken)
     {
-        // Non-block-pagination completion — DON'T early-return on an empty
-        // `grid-template-rows`. GridSizing.Resolve generates IMPLICIT rows from
-        // grid-auto-rows + auto-placement (CSS Grid §7.4), so a grid whose rows
-        // come only from implicit tracks (the common `grid-template-columns: …`
-        // + auto-flowed rows case) has a real row extent too. The prior
-        // early-return left such a grid at chrome-only height, so the wrapper
-        // never overflowed + the (already-wired) grid pagination never engaged.
-        // Now the full natural row extent is measured for explicit AND implicit
-        // rows, so an auto-row grid taller than the page paginates.
-        //
-        // Per PR-#94 review F1 + F6 — delegate to the shared
-        // GridSizing.Resolve service so wrapper measurement + emission
-        // agree on the row extent. Pre-F1 this method summed only
-        // Length tracks → auto-height grids with intrinsic rows
-        // (cycle 3) left the wrapper at chrome-only extent +
-        // following block-flow siblings overlapped grid content.
-        // Post-F1 GridSizing.Resolve runs the full placement +
-        // intrinsic resolution + fr distribution pipeline, returning
-        // the natural row extent.
-        //
-        // For pre-measure we use a generous indefinite-extent signal
-        // (= 0) on the block axis (= indefinite-height grid; fr collapses
-        // per the F3 LayoutGridFrUnderIndefiniteApproximated001 path).
-        // The inline extent is harder to know precisely without the
-        // BlockLayouter's full state; use a reasonable default (= 0
-        // means "any positive width"; intrinsic-column resolution
-        // doesn't need definite inline for row extent computation).
-        //
-        // Pre-measure passes a null diagnostic emitter so this dry-run
-        // doesn't double-emit warnings (= the actual emission pass
-        // emits them via GridLayouter.SafeEmit).
         var sizing = GridSizing.Resolve(
             gridBox: gridBox,
             contentInlineOffset: 0,
             contentBlockOffset: 0,
-            contentInlineSize: 1, // any positive value; positions are discarded
-            contentBlockSize: 1,  // pre-measure can't know definite block extent
+            contentInlineSize: contentInlineSize > 0 ? contentInlineSize : 1,
+            contentBlockSize: 1,  // indefinite block: auto-height grid's extent is what we compute
             emit: null,
-            cancellationToken: default);
+            cancellationToken: cancellationToken);
         return sizing.RowExtentSum;
     }
 

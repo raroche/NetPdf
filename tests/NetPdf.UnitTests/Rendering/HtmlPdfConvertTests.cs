@@ -380,6 +380,45 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Grid_auto_fill_columns_does_not_falsely_paginate()
+    {
+        // PR-#181 review P1 — the implicit-row pre-measure must resolve the SAME
+        // column count the real dispatch will. With `repeat(auto-fill, 100px)` in
+        // an ~602px A4 content box, 6 columns resolve, so 6 items occupy ONE 200px
+        // row (fits one page). If the pre-measure used a fake width of 1 it would
+        // resolve 1 column ⇒ 6 rows × 200 = 1200px ⇒ a FALSE page break. The fix
+        // threads the real content inline size, so this stays a single page.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:repeat(auto-fill,100px);grid-auto-rows:200px\">");
+        for (var i = 0; i < 6; i++) sb.Append("<div style=\"background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.Equal(1, result.PageCount);   // 6 cols × 1 row fits — NO false pagination
+        Assert.Equal(6, CountOccurrences(Latin1(result.Pdf), " re f"));   // all 6 cells
+    }
+
+    [Fact]
+    public void Grid_with_many_implicit_rows_paginates_at_scale_without_loss()
+    {
+        // PR-#181 review P2 — the implicit-row pre-measure now runs a full
+        // GridSizing.Resolve (threaded with the cancellation token). A large
+        // auto-row grid must still paginate correctly + non-lossily (scale sanity
+        // for the dry-run). 60 implicit 50px rows (3000px) ⇒ several pages.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:100px;grid-auto-rows:50px\">");
+        for (var i = 0; i < 60; i++) sb.Append("<div style=\"background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.True(result.PageCount >= 3, $"expected several pages, got {result.PageCount}");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(60, CountOccurrences(Latin1(result.Pdf), " re f"));   // every cell, once
+    }
+
+    [Fact]
     public void Grid_as_root_child_with_implicit_rows_paginates_via_outer_dispatch()
     {
         // Non-block-pagination completion — an implicit-row grid that is the

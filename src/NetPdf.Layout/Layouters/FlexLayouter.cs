@@ -506,10 +506,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             //   * column + wrap — items wrap into multiple columns stacked on
             //     the INLINE (cross) axis, which is not a fragment boundary
             //     (an auto-height column can't wrap anyway: no main constraint).
-            //   * column-reverse — items pack against the block-END from the
-            //     UNFRAGMENTED main size; per-fragment re-anchoring is a later
-            //     sub-cycle (mirrors the row wrap-reverse exclusion).
-            return !wrap.IsFlexWrapping() && !direction.IsFlexReverseDirection();
+            //   * column-reverse — NOW PAGINATES (backlog #4, first cut): the
+            //     emission REVERSES the item order + emits it FORWARD per page
+            //     (the per-fragment reverse-origin re-derivation), so a single
+            //     (nowrap) column-reverse line splits between items across pages
+            //     in VISUAL (reverse-DOM) order, like column-forward. The
+            //     NON-paginating column-reverse keeps its bottom-packed flip.
+            return !wrap.IsFlexWrapping();
         }
         // Row direction (= cross axis is the block axis): line-split path.
         if (!wrap.IsFlexWrapping())
@@ -689,6 +692,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var paginationEligible = _allowPagination && IsPaginatablePerStyle(_rootBox);
         var isRowNormalWrapPaginationSupported = paginationEligible && !isColumn;
         var isColumnItemPagination = paginationEligible && isColumn;
+
+        // Backlog #4 (column-reverse pagination, first cut) — a PAGINATING
+        // column-REVERSE container paginates in VISUAL (reverse-DOM) order: we
+        // REVERSE the item sequence here + emit it FORWARD (top-to-bottom)
+        // below, reusing the entire forward column item-split (re-anchor + cut
+        // by page budget) instead of the bottom-packed reverse FLIP. This is
+        // the paginating case ONLY — non-paginating column-reverse keeps the
+        // flip, byte-identical. Reversing the (fresh, per-attempt) order list is
+        // order-SAFE: the single column-nowrap line covers every item, and the
+        // flex / content-measure results are indexed by DOM index (not sorted
+        // position), so only the EMISSION order changes.
+        var columnReverseEmitForward = isColumnItemPagination && isReverse;
+        if (columnReverseEmitForward)
+        {
+            _sortedFlexChildIndices.Reverse();
+        }
 
         // Per Phase 3 Task 16 post-PR-#78 P1 #3 — validate the
         // resume index against the packed line count. Out-of-range
@@ -1237,7 +1256,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // swaps main-start / main-end PER LINE; wrap-reverse
                 // (the cross-axis reversal) is what would flip line
                 // ordering, and that's L7+ scope.
-                var mainOffsetForEmission = isReverse
+                // Backlog #4 — a PAGINATING column-reverse already reversed the
+                // item order above, so it emits FORWARD (no flip): the reverse
+                // is achieved by the order, and the per-page column item-split
+                // re-anchors each page from the top. Every other reverse case
+                // (non-paginating column-reverse, row-reverse) keeps the flip.
+                var mainOffsetForEmission = (isReverse && !columnReverseEmitForward)
                     ? (contentMainOffset + containerMainSize) - (mainCursor - contentMainOffset) - itemMainSize
                     : mainCursor;
 

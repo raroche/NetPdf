@@ -114,8 +114,10 @@ internal static class AtPageRules
 
     /// <summary>The highest page-selector specificity tier (CSS Page 3 §3.1) the context-aware
     /// enumeration walks: bare (0) → <c>:left</c>/<c>:right</c> (1) → <c>:first</c>/<c>:blank</c> (2) →
-    /// a NAMED page (3, cycle 7).</summary>
-    private const int MaxSelectorTier = 3;
+    /// a NAMED page (3, cycle 7) → a COMPOUND <c>&lt;name&gt;:&lt;left|right&gt;</c> (4) →
+    /// <c>&lt;name&gt;:&lt;first|blank&gt;</c> (5) — the named-compound selectors outrank the bare named
+    /// page.</summary>
+    private const int MaxSelectorTier = 5;
 
     /// <summary>Yields the <c>@page</c> rules applicable TO A GIVEN PAGE (cycle 6) in CASCADE
     /// SPECIFICITY ORDER — bare first, then the matching <c>:left</c>/<c>:right</c> parity rules, then
@@ -248,72 +250,67 @@ internal static class AtPageRules
 
     /// <summary>Match ONE page selector against the context, returning its specificity tier + whether
     /// it matches. The single pseudo-class selectors <c>:first</c> / <c>:blank</c> (tier 2) and
-    /// <c>:left</c> / <c>:right</c> (tier 1), plus a bare NAMED page <c>&lt;custom-ident&gt;</c> (tier 3 —
-    /// matches a page assigned that name; cycle 7). A bare-pseudo token can't be a bare page (the empty
-    /// prelude is handled by <see cref="MatchTier"/>). A COMPOUND (<c>chapter:first</c>, <c>:first:left</c>)
-    /// or unknown pseudo returns (no tier, no match): deferred.</summary>
+    /// <c>:left</c> / <c>:right</c> (tier 1); a bare NAMED page <c>&lt;custom-ident&gt;</c> (tier 3 —
+    /// matches a page assigned that name; cycle 7); and a COMPOUND <c>&lt;name&gt;:&lt;pseudo&gt;</c>
+    /// (e.g. <c>chapter:first</c>) — the named part PLUS the pseudo's axis, so it OUTRANKS the bare
+    /// named page per CSS Page 3 §3.1 specificity (named + <c>:first</c>/<c>:blank</c> → tier 5; named +
+    /// <c>:left</c>/<c>:right</c> → tier 4; both above the bare named tier 3). The compound matches iff
+    /// BOTH the name AND the pseudo match. A bare-pseudo token can't be a bare page (the empty prelude is
+    /// handled by <see cref="MatchTier"/>). A PURE-PSEUDO compound (<c>:first:left</c>) or a multi-pseudo
+    /// named compound (<c>chapter:first:left</c>) or an unknown pseudo returns (no tier, no match):
+    /// deferred (a first-cut limitation — the common <c>&lt;name&gt;:&lt;pseudo&gt;</c> form ships).</summary>
     private static (int Tier, bool Matches) MatchSelector(string selector, PageSelectorContext ctx)
     {
-        if (selector.Equals(":first", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsFirstPage);
-        if (selector.Equals(":blank", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsBlank);
-        if (selector.Equals(":left", StringComparison.OrdinalIgnoreCase)) return (1, !ctx.IsRightPage);
-        if (selector.Equals(":right", StringComparison.OrdinalIgnoreCase)) return (1, ctx.IsRightPage);
-        // A bare <custom-ident> is a NAMED page selector (cycle 7) — matches a page whose break-triggering
-        // box assigned it that name (case-SENSITIVE, CSS custom-idents). Compounds stay deferred.
+        // A lone pseudo-class — :first/:blank (tier 2) or :left/:right (tier 1).
+        var (pTier, pMatches, pKnown) = MatchPagePseudo(selector, ctx);
+        if (pKnown) return (pTier, pMatches);
+        // A bare <custom-ident> NAMED page selector (cycle 7) — tier 3. Case-SENSITIVE.
         if (IsBarePageName(selector))
-            return (3, !string.IsNullOrEmpty(ctx.AssignedPageName)
-                       && string.Equals(ctx.AssignedPageName, selector, StringComparison.Ordinal));
-        return (-1, false);   // compound / unknown → deferred
+            return (3, NamedMatches(selector, ctx));
+        // A COMPOUND <name>:<single-pseudo> (e.g. chapter:first). The named part (tier 3 axis) plus the
+        // pseudo's axis — first/blank → tier 5, left/right → tier 4 — so the compound outranks both the
+        // bare named page (3) and the bare pseudo (1/2). The pseudo substring must be exactly ONE known
+        // pseudo (a multi-pseudo compound has a second ':' inside it → MatchPagePseudo doesn't match it).
+        var colon = selector.IndexOf(':');
+        if (colon > 0)
+        {
+            var (cTier, cMatches, cKnown) = MatchPagePseudo(selector.Substring(colon), ctx);
+            if (cKnown && IsBarePageName(selector.Substring(0, colon)))
+            {
+                var tier = cTier == 2 ? 5 : 4;
+                return (tier, NamedMatches(selector.Substring(0, colon), ctx) && cMatches);
+            }
+        }
+        return (-1, false);   // pure-pseudo / multi-pseudo compound / unknown → deferred
+    }
+
+    /// <summary>Does <paramref name="name"/> (a bare custom-ident) match the page's assigned name?
+    /// Case-SENSITIVE per CSS custom-idents; a context with no assigned name never matches.</summary>
+    private static bool NamedMatches(string name, PageSelectorContext ctx)
+        => !string.IsNullOrEmpty(ctx.AssignedPageName)
+           && string.Equals(ctx.AssignedPageName, name, StringComparison.Ordinal);
+
+    /// <summary>Classify ONE page pseudo-class token (<c>:first</c>/<c>:blank</c> → axis tier 2,
+    /// <c>:left</c>/<c>:right</c> → axis tier 1), returning its tier, whether it matches the context, and
+    /// whether the token was a KNOWN single page pseudo (false → not a recognized lone pseudo, so the
+    /// caller falls through to named / compound / deferred).</summary>
+    private static (int Tier, bool Matches, bool Known) MatchPagePseudo(string pseudo, PageSelectorContext ctx)
+    {
+        if (pseudo.Equals(":first", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsFirstPage, true);
+        if (pseudo.Equals(":blank", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsBlank, true);
+        if (pseudo.Equals(":left", StringComparison.OrdinalIgnoreCase)) return (1, !ctx.IsRightPage, true);
+        if (pseudo.Equals(":right", StringComparison.OrdinalIgnoreCase)) return (1, ctx.IsRightPage, true);
+        return (0, false, false);
     }
 
     /// <summary><see langword="true"/> when <paramref name="selector"/> is a valid bare CSS
-    /// <c>&lt;custom-ident&gt;</c> usable as a named page (cycle 7; post-PR-#179 review P1 + Copilot): a
-    /// non-empty identifier per CSS Syntax 3 §4.3.11 — its FIRST code point is an ident-START (a letter /
-    /// <c>_</c> / a NON-ASCII code point ≥ U+0080), OR a leading <c>-</c> FOLLOWED BY an ident-start (a
-    /// <c>-</c> before a DIGIT — e.g. <c>-1</c> — tokenizes as a number, not an ident), then ident chars
-    /// (ident-start / digit / <c>-</c>); and NOT a CSS-wide keyword, <c>auto</c>, or the reserved
-    /// <c>default</c>. Rejects anything with a <c>:</c> (a pseudo / compound) or other punctuation. (Escape
-    /// sequences are not modelled — page names are read raw from the recovered declaration.)</summary>
-    private static bool IsBarePageName(string selector)
-    {
-        if (selector.Length == 0) return false;
-        var first = selector[0];
-        bool startOk;
-        if (IsIdentStart(first))
-        {
-            startOk = true;
-        }
-        else if (first == '-' && selector.Length > 1)
-        {
-            // A leading '-' must be followed by an ident-start (a letter / '_' / non-ASCII), NOT a digit
-            // (`-1` tokenizes as a number) — and a single '-' isn't an ident. `--name` (custom-property
-            // syntax) is also not a page name.
-            startOk = IsIdentStart(selector[1]);
-        }
-        else
-        {
-            startOk = false;
-        }
-        if (!startOk) return false;
-        foreach (var ch in selector)
-        {
-            // An ident char is an ident-start, a digit, or '-'.
-            if (!IsIdentStart(ch) && !(ch >= '0' && ch <= '9') && ch != '-') return false;
-        }
-        return !selector.Equals("auto", StringComparison.OrdinalIgnoreCase)
-            && !selector.Equals("inherit", StringComparison.OrdinalIgnoreCase)
-            && !selector.Equals("initial", StringComparison.OrdinalIgnoreCase)
-            && !selector.Equals("unset", StringComparison.OrdinalIgnoreCase)
-            && !selector.Equals("revert", StringComparison.OrdinalIgnoreCase)
-            && !selector.Equals("revert-layer", StringComparison.OrdinalIgnoreCase)
-            && !selector.Equals("default", StringComparison.OrdinalIgnoreCase);   // reserved (CSS Page 3)
-    }
-
-    /// <summary>A CSS Syntax 3 §4.3.11 ident-START code point: an ASCII letter, <c>_</c>, or a non-ASCII
-    /// code point (≥ U+0080 — a surrogate half passes too, an accepted approximation since a valid
-    /// astral ident code point is itself ≥ U+0080).</summary>
-    private static bool IsIdentStart(char c) =>
-        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= '\u0080';
+    /// <c>&lt;custom-ident&gt;</c> usable as a named page. Delegates to the shared
+    /// <see cref="CssCustomIdent.IsValidPageName"/> so the <c>@page &lt;name&gt;</c> selector + the
+    /// used-name walk stay in lock-step with <c>PageNameResolver</c> (the <c>page</c> property +
+    /// <c>@supports</c>) — post-PR-#183 review P2, which centralized them so a valid DASHED ident
+    /// (<c>--chapter</c>) is accepted by BOTH (was rejected by both). Anything with a <c>:</c> (a pseudo /
+    /// compound) is screened off by <see cref="MatchSelector"/> before this runs.</summary>
+    private static bool IsBarePageName(string selector) => CssCustomIdent.IsValidPageName(selector);
 
     /// <summary>The DISTINCT named pages declared by <c>@page &lt;name&gt;</c> rules applicable to
     /// <paramref name="media"/> (cycle 7) — for the structural/prefetch union, which must include a context

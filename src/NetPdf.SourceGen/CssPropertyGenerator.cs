@@ -80,6 +80,9 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         // parsed AST for the multi-string `grid-template-areas` value
         // (= 2-D map of named cell regions).
         "GridTemplateList", "GridLine", "GridTemplateAreas",
+        // Backlog #6 — validation-only registrations: Position (<position>, used by
+        // object-position) + PageName (auto | <custom-ident>, used by page).
+        "Position", "PageName",
         "Custom",
     };
 

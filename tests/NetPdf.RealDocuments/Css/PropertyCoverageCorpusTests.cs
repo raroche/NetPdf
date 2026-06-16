@@ -65,10 +65,10 @@ public sealed class PropertyCoverageCorpusTests
         "will-change", "backface-visibility",
         // object-fit + background-origin/-clip + outline-* are REGISTERED in properties.json (object-fit
         // cycle / PR #168 review P2 / PR #170 review P2 / outline cycle — they compute + @supports sees
-        // them; the `outline` shorthand above decomposes into the registered outline-width/-style/-color);
-        // object-position stays deferred (a 2-component <position> needs a new metadata type — the
-        // painter centres per its 50% 50% initial).
-        "object-position",
+        // them; the `outline` shorthand above decomposes into the registered outline-width/-style/-color).
+        // object-position is now REGISTERED too (backlog #6 — PropertyType.Position + PositionResolver;
+        // @supports sees it + invalid values are diagnosed; the painter still consumes the raw winner),
+        // so it's no longer on this allowlist.
         // Per Phase 3 Task 10 cycle 2 review (User #4) — list-style-type
         // + list-style-position were ALREADY registered in
         // properties.json but had been left in this allowlist as

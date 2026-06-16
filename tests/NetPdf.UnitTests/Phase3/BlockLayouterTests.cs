@@ -4794,6 +4794,130 @@ public sealed class BlockLayouterTests
         return pages;
     }
 
+    /// <summary>Drives the manual multi-page loop for a paginating flex container, capturing per page
+    /// the tracked items emitted (in EMISSION order) WITH their page-relative <c>BlockOffset</c> — so a
+    /// column-reverse test can assert visual reverse order, top re-anchoring, no loss/duplication, and
+    /// clean termination across pages (post-PR-#183 review P3).</summary>
+    private static List<(List<(Box Box, double BlockOffset)> Items, LayoutAttemptOutcome Outcome, bool ContinuationIsNull)>
+        DriveFlexColumnPages(Box root, IReadOnlyList<Box> tracked, int blockSize, int pageCap)
+    {
+        LayoutContinuation? continuation = null;
+        var pages = new List<(List<(Box, double)>, LayoutAttemptOutcome, bool)>();
+        for (var pageIndex = 0; pageIndex < pageCap; pageIndex++)
+        {
+            var sink = new RecordingFragmentSink();
+            using var layouter = new BlockLayouter(root, sink, continuation);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: blockSize);
+            ctx.PageIndex = pageIndex;
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+            var items = sink.Fragments
+                .Where(f => tracked.Contains(f.Box))
+                .Select(f => (f.Box, f.BlockOffset))
+                .ToList();
+            pages.Add((items, result.Outcome, result.Continuation is null));
+
+            if (result.Outcome != LayoutAttemptOutcome.PageComplete || result.Continuation is null)
+            {
+                break;
+            }
+            continuation = result.Continuation;
+        }
+
+        return pages;
+    }
+
+    [Fact]
+    public void Backlog4_column_reverse_flex_paginates_in_visual_reverse_order_without_loss()
+    {
+        // Post-PR-#183 review P3 — column-reverse flex pagination (backlog #4) emits items in VISUAL
+        // (reverse-DOM) order, RE-ANCHORED at each page's top, with no loss / duplication and correct
+        // continuation indexes across THREE pages. Six items with VARIED heights (all in [110, 140]) on
+        // a 300px page: ANY two fit (sum ≤ 280 ≤ 300), ANY three overflow (sum ≥ 330 > 300), so exactly
+        // two items emit per page — [item5,item4] / [item3,item2] / [item1,item0] (reverse DOM). The
+        // strict reverse-DOM concatenation is the proof the per-page continuation index re-anchors
+        // correctly (a wrong index would lose, duplicate, or reorder an item).
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = Box.ForElement(BoxKind.FlexContainer, MakeStyle(), MakeElement());
+        SetKeyword(flex.Style, PropertyId.FlexDirection, 3);   // column-reverse
+        root.AppendChild(flex);
+        var heights = new[] { 120.0, 140.0, 110.0, 130.0, 115.0, 135.0 };
+        var items = new List<Box>();
+        for (var i = 0; i < heights.Length; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, heights[i]);
+            var c = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+            items.Add(c);
+            flex.AppendChild(c);
+        }
+
+        var pages = DriveFlexColumnPages(root, items, blockSize: 300, pageCap: 10);
+        var contentPages = pages.Where(p => p.Items.Count > 0).ToList();
+
+        // Visual reverse-DOM order across ALL pages — no item lost, none duplicated, none reordered.
+        var emitted = contentPages.SelectMany(p => p.Items.Select(it => it.Box)).ToList();
+        Assert.Equal(
+            new[] { items[5], items[4], items[3], items[2], items[1], items[0] }, emitted);
+
+        // The heights force a clean 2 / 2 / 2 split over three content pages.
+        Assert.Equal(3, contentPages.Count);
+        Assert.All(contentPages, p => Assert.Equal(2, p.Items.Count));
+
+        // Top re-anchoring — each page's FIRST item sits at the page content origin (no margin/border/
+        // padding here) and items stack DOWNWARD, NOT bottom-packed (the non-paginating flip).
+        foreach (var p in contentPages)
+        {
+            Assert.InRange(p.Items[0].BlockOffset, 0.0, 1.0);
+            Assert.True(p.Items[1].BlockOffset > p.Items[0].BlockOffset,
+                "items must stack top-to-bottom on each page (re-anchored, not bottom-packed)");
+        }
+
+        // Clean termination — final AllDone, no dangling continuation.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, pages[^1].Outcome);
+        Assert.True(pages[^1].ContinuationIsNull);
+    }
+
+    [Fact]
+    public void Backlog4_column_reverse_flex_pagination_honors_order_then_reverses()
+    {
+        // Post-PR-#183 review P3 — the `order` variant. `order` reorders the flex items FIRST (CSS
+        // Flexbox L1 §5.4, stable by DOM for ties), THEN column-reverse reverses THAT sequence for
+        // VISUAL order. DOM [A,B,C,D] with orders [2,1,2,0] → flex order [D,B,A,C]; column-reverse
+        // visual order = [C,A,B,D]. Four 140px items on a 300px page split 2 / 2 across two pages
+        // ([C,A] then [B,D]) with no loss / duplication.
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = Box.ForElement(BoxKind.FlexContainer, MakeStyle(), MakeElement());
+        SetKeyword(flex.Style, PropertyId.FlexDirection, 3);   // column-reverse
+        root.AppendChild(flex);
+        var orders = new[] { 2, 1, 2, 0 };   // A, B, C, D
+        var items = new List<Box>();
+        for (var i = 0; i < orders.Length; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 140);
+            s.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            var c = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+            items.Add(c);
+            flex.AppendChild(c);
+        }
+        var (a, b, c2, d) = (items[0], items[1], items[2], items[3]);
+
+        var pages = DriveFlexColumnPages(root, items, blockSize: 300, pageCap: 10);
+        var contentPages = pages.Where(p => p.Items.Count > 0).ToList();
+
+        // flex order [D,B,A,C] reversed for column-reverse VISUAL order = [C,A,B,D].
+        var emitted = contentPages.SelectMany(p => p.Items.Select(it => it.Box)).ToList();
+        Assert.Equal(new[] { c2, a, b, d }, emitted);
+        Assert.Equal(2, contentPages.Count);                 // 2 / 2 across two pages
+        Assert.All(contentPages, p => Assert.Equal(2, p.Items.Count));
+        Assert.Equal(LayoutAttemptOutcome.AllDone, pages[^1].Outcome);
+        Assert.True(pages[^1].ContinuationIsNull);
+    }
+
     [Fact]
     public void MultiPageDriver_cycle1_nested_fragmentation_works_at_arbitrary_depth()
     {

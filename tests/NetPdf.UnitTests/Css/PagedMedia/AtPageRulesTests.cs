@@ -107,6 +107,55 @@ public sealed class AtPageRulesTests
         Assert.Equal(2, AtPageRules.MatchTier(":first", ctx));
     }
 
+    // ---- Compound <name>:<pseudo> selectors (backlog #5) ----
+
+    [Fact]
+    public void MatchTier_compound_name_first_matches_a_named_first_page_at_tier_5()
+    {
+        // `chapter:first` matches a page that is BOTH named "chapter" AND first, at tier 5 —
+        // outranking the bare named page (3) and the bare :first (2) per CSS Page 3 §3.1.
+        var firstNamed = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter");
+        Assert.Equal(5, AtPageRules.MatchTier("chapter:first", firstNamed));
+        // Outranks both single components on the same page.
+        Assert.Equal(3, AtPageRules.MatchTier("chapter", firstNamed));
+        Assert.Equal(2, AtPageRules.MatchTier(":first", firstNamed));
+    }
+
+    [Fact]
+    public void MatchTier_compound_name_first_requires_BOTH_name_and_first()
+    {
+        // Bare named DOES match a non-first named page (tier 3) — but `chapter:first` does NOT (no first).
+        var nonFirstNamed = new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter");
+        Assert.Equal(3, AtPageRules.MatchTier("chapter", nonFirstNamed));
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter:first", nonFirstNamed));
+        // First page with a DIFFERENT name → no match (the name part fails).
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter:first",
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "index")));
+        // First page with NO name → no match.
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter:first",
+            new AtPageRules.PageSelectorContext(0)));
+    }
+
+    [Fact]
+    public void MatchTier_compound_name_left_matches_at_tier_4_below_name_first()
+    {
+        // `chapter:left` (named + left/right axis) → tier 4, below `chapter:first` (tier 5) but above the
+        // bare named page (tier 3): CSS Page 3 §3.1 orders :first/:blank above :left/:right.
+        var leftNamed = new AtPageRules.PageSelectorContext(1, AssignedPageName: "chapter"); // index 1 = left
+        Assert.Equal(4, AtPageRules.MatchTier("chapter:left", leftNamed));
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter:right", leftNamed));   // a left page isn't right
+    }
+
+    [Fact]
+    public void MatchTier_pure_pseudo_and_multi_pseudo_compounds_stay_deferred()
+    {
+        // First-cut limitation: a PURE-pseudo compound (:first:left) and a multi-pseudo named compound
+        // (chapter:first:left) are deferred (no match) — only <name>:<single-pseudo> ships.
+        var ctx = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter");
+        Assert.Equal(-1, AtPageRules.MatchTier(":first:left", ctx));
+        Assert.Equal(-1, AtPageRules.MatchTier("chapter:first:left", ctx));
+    }
+
     [Fact]
     public void MatchTier_accepts_a_non_ascii_named_page()
     {
@@ -127,6 +176,23 @@ public sealed class AtPageRulesTests
     }
 
     [Theory]
+    [InlineData("--chapter")]   // a dashed ident — a valid <custom-ident> (CSS Syntax §4.3.9)
+    [InlineData("--c")]
+    [InlineData("--two-dashes")]
+    public void MatchTier_accepts_a_dashed_named_page(string name)
+    {
+        // Post-PR-#183 review P2 — a DASHED ident (`--name`) is a valid <custom-ident> and so a valid
+        // named page; it was wrongly rejected before centralizing the validator. It matches its assigned
+        // page at tier 3, and (like any name) outranks `:first` on a named first page.
+        var named = new AtPageRules.PageSelectorContext(0, AssignedPageName: name);
+        Assert.Equal(3, AtPageRules.MatchTier(name, named));
+        Assert.Equal(-1, AtPageRules.MatchTier(name,
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "other")));
+        // The compound `--chapter:first` form also matches a named first page (tier 5).
+        Assert.Equal(5, AtPageRules.MatchTier($"{name}:first", named));
+    }
+
+    [Theory]
     [InlineData("auto")]           // the initial page value, not a name
     [InlineData("inherit")]        // a CSS-wide keyword, not a name
     [InlineData("initial")]
@@ -136,7 +202,7 @@ public sealed class AtPageRulesTests
     [InlineData("chapter:first")]  // a compound — deferred
     [InlineData("123")]            // leading digit — not an ident
     [InlineData("-1")]             // a leading '-' before a digit is not a valid ident (review P1)
-    [InlineData("--name")]         // custom-property syntax — not a page name
+    [InlineData("-")]              // a lone '-' is the delim token, not an ident
     [InlineData(":nth(2)")]        // an unknown pseudo
     public void MatchTier_rejects_non_name_or_compound_selectors(string prelude)
     {
@@ -193,6 +259,18 @@ public sealed class AtPageRulesTests
         Assert.Equal("chapter", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#p"), cascade));
         Assert.Equal("", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#q"), cascade));  // no page in chain
         Assert.Equal("", AtPageRules.ResolveUsedPageName(null, cascade));                     // a blank page
+    }
+
+    [Fact]
+    public async Task ResolveUsedPageName_reads_a_dashed_custom_ident()
+    {
+        // Post-PR-#183 review P2 — a DASHED ident (`--chapter`) is a valid <custom-ident>, so the used
+        // `page` value walk returns it (it was wrongly treated as invalid → "" before centralizing the
+        // validator). Exercises the CssPreprocessor recovery (AngleSharp drops `page`) for the dashed form.
+        var (doc, cascade) = await ResolveAsync(
+            "<html><body><div class='ch'><p id='p'>x</p></div></body></html>",
+            ".ch { page: --chapter }");
+        Assert.Equal("--chapter", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#p"), cascade));
     }
 
     private static async Task<(IDocument Doc, ResolvedCascadeResult Cascade)> ResolveAsync(

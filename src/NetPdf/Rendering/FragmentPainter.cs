@@ -4,6 +4,7 @@
 using System.Collections.Generic;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
+using NetPdf.Css.Parser.Preprocessing;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
@@ -565,7 +566,10 @@ internal static class FragmentPainter
     /// x% point with the area's: offset = (area − tile) × x%). ONE value → the other axis
     /// centers. The THREE-/FOUR-value edge-offset form (<c>left 10px top 5px</c> — an offset FROM
     /// a named edge; edge-offset cycle) is supported; non-absolute units → <see langword="false"/>
-    /// (fall back to 0% 0% + surface once). Reused for <c>object-position</c> too.</summary>
+    /// (fall back to 0% 0% + surface once). A math-function component (<c>calc(50% - 10px)</c>, …) is
+    /// kept whole by the PAREN-AWARE tokenizer and evaluated against the §3.6 range (post-PR-#183 review
+    /// P3); a font-/viewport-relative math function has no context here and falls back. Reused for
+    /// <c>object-position</c> too.</summary>
     internal static bool TryParseBackgroundPosition(
         string? raw, double areaW, double areaH, double tileW, double tileH,
         out double posX, out double posY)
@@ -573,8 +577,14 @@ internal static class FragmentPainter
         posX = 0;
         posY = 0;
         if (string.IsNullOrWhiteSpace(raw)) return true;
-        var parts = raw.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length is < 1 or > 4) return false;
+        // Paren-aware tokenization (post-PR-#183 review P3): split on whitespace at paren depth 0 so a
+        // math function (`calc(50% - 10px)`) stays one component instead of fragmenting into broken
+        // tokens. Unbalanced parens → fall back. Lowercase PER token (a function body is case-handled
+        // downstream) to keep the keyword matching below intact.
+        if (!CssShorthandHelpers.SplitTopLevel(raw.Trim(), out var tokenList)) return false;
+        if (tokenList.Count is < 1 or > 4) return false;
+        var parts = new string[tokenList.Count];
+        for (var t = 0; t < tokenList.Count; t++) parts[t] = tokenList[t].ToLowerInvariant();
         // The 3-/4-value edge-offset form (edge-offset cycle, CSS B&B §3.6): an edge keyword each
         // optionally followed by a <length-percentage> offset FROM that edge.
         if (parts.Length >= 3)
@@ -634,6 +644,7 @@ internal static class FragmentPainter
             pos = (areaPx - tilePx) * pct / 100.0;   // the §3.6 percentage rule.
             return true;
         }
+        if (TryEvalPositionMath(token, areaPx - tilePx, out pos)) return true;
         if (LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit))
         {
             if (unit.Length == 0 && n == 0.0) return true;   // the unitless zero.
@@ -643,6 +654,32 @@ internal static class FragmentPainter
             {
                 return true;
             }
+        }
+        pos = 0;
+        return false;
+    }
+
+    /// <summary>Evaluate a math-function position component (post-PR-#183 review P3): a
+    /// <c>calc()</c>/<c>min()</c>/<c>max()</c>/<c>clamp()</c>/… offset whose PERCENTAGE base is the §3.6
+    /// range <paramref name="rangePx"/> (area − tile), so <c>calc(50% - 10px)</c> evaluates to the same
+    /// used offset a bare <c>50%</c> minus <c>10px</c> would. Returns <see langword="false"/> for a
+    /// non-math token (so the caller's length path runs) AND for a math function whose only resolvable
+    /// form needs FONT-/VIEWPORT-relative context — <c>em</c>/<c>vw</c>/… aren't threaded into this
+    /// static helper, so those poison to NaN and fall back to the 0% 0% default + the "unsupported"
+    /// diagnostic (a documented limitation; the common %/absolute calc renders exactly). Offsets may be
+    /// negative, so the §10.5 non-negative clamp is OFF.</summary>
+    private static bool TryEvalPositionMath(string token, double rangePx, out double pos)
+    {
+        pos = 0;
+        if (!CalcLengthEvaluator.IsMathFunction(token)) return false;
+        var ctx = new CalcLengthEvaluator.CalcContext(
+            PercentBasePx: rangePx, EmPx: double.NaN, RootEmPx: double.NaN,
+            ViewportWidthPx: double.NaN, ViewportHeightPx: double.NaN);
+        if (CalcLengthEvaluator.TryEvaluate(token, ctx, clampNonNegative: false, out var px)
+            && double.IsFinite(px))
+        {
+            pos = px;
+            return true;
         }
         pos = 0;
         return false;
@@ -699,7 +736,8 @@ internal static class FragmentPainter
     /// an edge keyword — so the parser knows whether the token after an edge belongs to it.</summary>
     private static bool IsOffsetToken(string token) =>
         EdgeAxis(token) == '\0'
-        && (token.EndsWith('%') || LengthResolver.TrySplitNumberAndUnit(token, out _, out _));
+        && (token.EndsWith('%') || CalcLengthEvaluator.IsMathFunction(token)
+            || LengthResolver.TrySplitNumberAndUnit(token, out _, out _));
 
     /// <summary>One edge-offset component's tile-origin offset: <c>left</c>/<c>top</c> measure FROM
     /// the start edge (0 + offset), <c>right</c>/<c>bottom</c> from the END edge (range − offset),
@@ -736,6 +774,7 @@ internal static class FragmentPainter
             px = rangePx * pct / 100.0;
             return true;
         }
+        if (TryEvalPositionMath(token, rangePx, out px)) return true;   // a calc() edge offset (review P3)
         if (LengthResolver.TrySplitNumberAndUnit(token, out var n, out var unit))
         {
             if (unit.Length == 0 && n == 0.0) return true;   // the unitless zero

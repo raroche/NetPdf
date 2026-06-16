@@ -164,6 +164,11 @@ public sealed class BackgroundVariantParserTests
     [InlineData("right 25% bottom 50%", 36, 8)] // (48−48×.25, 16−16×.5)
     [InlineData("left top 5px", 0, 5)]         // 3-value: left edge (0) + 5px from top
     [InlineData("center top 5px", 24, 5)]      // center X (48×.5) + 5px from top
+    // Post-PR-#183 review P3 — math-function components (paren-aware tokenizer + §3.6-range calc).
+    [InlineData("calc(50% - 10px) top", 14, 0)]            // X = 48×.5 − 10 = 14; Y = top
+    [InlineData("calc(25%)", 12, 8)]                       // single calc → X = 48×.25; Y centers (16×.5)
+    [InlineData("min(50%, 30px) max(0px, 25%)", 24, 4)]    // X = min(24,30); Y = max(0, 16×.25)
+    [InlineData("left calc(10px + 2px) top calc(5px)", 12, 5)] // calc() edge offsets
     public void Position_supported_forms_parse(string? raw, double expectX, double expectY)
     {
         Assert.True(FragmentPainter.TryParseBackgroundPosition(
@@ -179,6 +184,9 @@ public sealed class BackgroundVariantParserTests
     [InlineData("left 10px top 5px right 0")]  // 5 tokens
     [InlineData("5em 0")]                      // relative units unsupported
     [InlineData("bogus")]
+    [InlineData("calc(2em) top")]              // a font-relative calc has no context in the painter → fall back
+    [InlineData("calc(50% +)")]                // a malformed math function
+    [InlineData("calc(50% - 10px")]            // unbalanced parentheses
     public void Position_unsupported_forms_reject(string raw) =>
         Assert.False(FragmentPainter.TryParseBackgroundPosition(
             raw, 64, 32, 16, 16, out _, out _));

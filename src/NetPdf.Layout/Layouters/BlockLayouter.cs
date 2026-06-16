@@ -1797,7 +1797,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 else if (childFlexDirection.IsFlexColumnDirection())
                 {
                     flexAxisExtent = PreMeasureFlexMainExtent(
-                        child, cancellationToken);
+                        child, borderBoxInlineSize, cancellationToken);
                 }
                 else if (childIsWrapping)
                 {
@@ -5102,7 +5102,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 else if (childFlexDirection.IsFlexColumnDirection())
                 {
                     nFlexAxisExtent = PreMeasureFlexMainExtent(
-                        child, cancellationToken);
+                        child, childBorderBoxInlineSize, cancellationToken);
                 }
                 else if (childIsWrapping)
                 {
@@ -8386,27 +8386,92 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <param name="flexContainer">The flex container box (must satisfy
     /// <see cref="IsFlexContainer"/>; the caller is also responsible
     /// for gating on <c>flex-direction: column</c>).</param>
+    /// <param name="borderBoxInlineSize">The flex wrapper's border-box inline
+    /// size — its inline border + padding are subtracted to get the content
+    /// inline size that auto-width items stretch to (= the width a
+    /// content-determined item's content is measured at).</param>
     /// <param name="cancellationToken">Propagate cancellation into the
     /// per-item loop.</param>
     /// <returns>The sum of items' natural main-axis (= block-axis under
-    /// column direction) sizes. Returns 0 when the container has no
-    /// block-level children.</returns>
-    private static double PreMeasureFlexMainExtent(
+    /// column direction) sizes — a content-determined (auto-height) item
+    /// contributes its measured content block extent. Returns 0 when the
+    /// container has no block-level children.</returns>
+    private double PreMeasureFlexMainExtent(
         Box flexContainer,
+        double borderBoxInlineSize,
         CancellationToken cancellationToken)
     {
+        // Backlog #7 (content-aware flex pre-measure) — the flex container's
+        // CONTENT inline size (auto-width column items stretch to it).
+        var flexContentInlineSize = Math.Max(0,
+            borderBoxInlineSize
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingRight));
+        Dictionary<Box, double>? measureCache = null;
         var totalMain = 0.0;
         foreach (var item in flexContainer.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
             // For column direction (the only caller as of L4 hardening),
-            // main = block axis = Height. When L5+ adds direction-aware
-            // generalization, this helper can take a FlexDirectionValue
-            // parameter; for now the caller has already gated on column.
-            totalMain += item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // main = block axis = Height.
+            var mainExtent = item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // Backlog #7 — a CONTENT-determined (auto-height) item contributes
+            // its measured CONTENT block extent instead of 0, so an auto-height
+            // column whose items are content-sized reports its real natural
+            // extent + the wrapper overflows + (paginatable-flex) pagination
+            // engages. Mirrors grid's content-aware PreMeasureGridRowExtent.
+            // Explicit-height items keep their declared height (byte-identical
+            // to the pre-content-layout behavior). Skipped without a shaper.
+            if (_shaperResolver is not null
+                && item.Children.Count > 0
+                && IsColumnHeightContentDetermined(item))
+            {
+                // Measure at the item's cross (inline) width: a stretch (auto-
+                // width) item fills the container content inline size; an
+                // explicit-width item uses its width. Memoized per item box.
+                var crossAuto = item.Style.Get(PropertyId.Width).Tag
+                    is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+                var itemInline = crossAuto
+                    ? flexContentInlineSize
+                    : item.Style.ReadLengthPxOrZero(PropertyId.Width);
+                if (!(itemInline > 0)) itemInline = flexContentInlineSize;
+                measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
+                if (!measureCache.TryGetValue(item, out var measured))
+                {
+                    measured = NestedContentMeasurer.Measure(
+                        item, itemInline,
+                        blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                        shaperResolver: _shaperResolver,
+                        writingMode: WritingMode.HorizontalTb, isRtl: false,
+                        cancellationToken: cancellationToken).ContentBlockExtent;
+                    measureCache[item] = measured;
+                }
+                if (measured > mainExtent) mainExtent = measured;
+            }
+            totalMain += mainExtent;
         }
         return totalMain;
+    }
+
+    /// <summary>Backlog #7 — mirrors <c>FlexLayouter.IsMainSizeContentDetermined</c>
+    /// for the COLUMN (Height) axis: content-determined iff the used flex-basis
+    /// is <c>content</c>, OR <c>auto</c> with the declared <c>height</c> also
+    /// auto (Unset / Keyword slot). A definite flex-basis length / percentage or
+    /// a definite height gives a definite main size that content must not
+    /// override.</summary>
+    private static bool IsColumnHeightContentDetermined(Box item)
+    {
+        var basis = item.Style.ReadFlexBasis();
+        if (basis.Kind == FlexBasisKind.Content) return true;
+        if (basis.Kind == FlexBasisKind.Auto)
+        {
+            var slot = item.Style.Get(PropertyId.Height);
+            return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        }
+        return false;
     }
 
     /// <summary>Per Phase 3 Task 15 L6 — compute the flex wrapper's auto

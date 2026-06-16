@@ -2995,20 +2995,41 @@ flags the categories):
           (set on the content fragment by `BufferingMeasureSink` / grid's `TranslatingFragmentSink` when
           `fragment.Box == the item`) makes `FragmentPainter` skip that fragment's background / borders / outline
           (text still paints in its own pass). Default false = byte-identical for every other fragment.
-       4. **column-reverse / column-wrap** flex pagination + **row-flex** main-axis per-item split — atomic
-          today; column-reverse needs reverse iteration + per-fragment reverse-origin re-derivation.
-       5. **compound `@page` selectors** (`chapter:first`) — `AtPageRules.MatchSelector` defers them; supporting
-          them needs the §3.1 (A,B,C) specificity tuple (changes the single-int tier encoding → test churn).
-       6. register `page` / `object-position` as first-class properties (for `@supports` + validation) — both
-          are read RAW today (AngleSharp drops `page`; `object-position` via the `ImgSpec` raw winner), so
-          registration is entangled with the recovery→cascade flow, not a clean drop-in.
-       7. **content-SIZED auto-height column-flex + grid PAGINATION via a CONTENT-AWARE pre-measure** — the
-          shared follow-up to #1/#2's deferred-pagination notes: `PreMeasureFlexMainExtent` (flex) sums declared
-          item heights only, so an AUTO-height column whose items are content-sized doesn't overflow the wrapper
-          → doesn't paginate (grid's `PreMeasureGridRowExtent` already content-measures, so grid auto-rows DO
-          paginate; flex is the remaining gap). Needs `PreMeasureFlexMainExtent` to content-measure auto items
-          (mirroring the grid pre-measure), with a per-conversion measurement cache to bound the cost.
-       (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals.)
+       4. **column-reverse flex pagination — DONE** (backlog-completion PR, first cut). A
+          `flex-direction: column-reverse` now PAGINATES at item boundaries in VISUAL (reverse-DOM) order:
+          `FlexLayouter.IsPaginatablePerStyle` admits column-reverse, and the emission REVERSES the
+          (fresh, per-attempt) item sequence + emits it FORWARD (reusing the entire forward column item-split:
+          re-anchor + cut by page budget), instead of the bottom-packed reverse FLIP. Gated to the PAGINATING
+          case ONLY — non-paginating column-reverse keeps its flip, byte-identical; reversing the order is safe
+          because the single column-nowrap line covers every item and the flex / content-measure results are
+          indexed by DOM index. STILL DEFERRED: **column-wrap** flex pagination (lines stack on the inline axis —
+          not a fragment boundary) + **row-flex** intra-item content fragmentation (a row line taller than the
+          page); the spec-strict reverse-flow fragment ORDER (a reasonable visual-order interpretation shipped).
+       5. **compound `@page` selectors — DONE** (`chapter:first`; same PR). `AtPageRules.MatchSelector` now
+          matches a COMPOUND `<name>:<single-pseudo>` — the named part PLUS the pseudo's axis, so it outranks the
+          bare named page per CSS Page 3 §3.1 (named + `:first`/`:blank` → tier 5; named + `:left`/`:right` →
+          tier 4; both above the bare named tier 3). The existing single-selector tiers (0/1/2/3) are UNCHANGED
+          (no churn). Reachable end-to-end via the wired per-page margin-box path (a page named `chapter` + first
+          paints `@page chapter:first`'s margin boxes). STILL DEFERRED: PURE-pseudo compounds (`:first:left`) +
+          multi-pseudo named compounds (`chapter:first:left`) — the full (A,B,C) tuple with multiple same-axis
+          pseudos; the single-page context-FREE view (size / first-page geometry) still defers compounds.
+       6. **register `page` / `object-position` as first-class properties — DONE** (same PR). Both now have a
+          properties.json entry + a value resolver (`PropertyType.Position` → `PositionResolver` validates a
+          `<position>`; `PropertyType.PageName` → `PageNameResolver` validates `auto | <custom-ident>`), so
+          `@supports (object-position: …)` / `@supports (page: …)` answer correctly + invalid values surface
+          `CSS-PROPERTY-VALUE-INVALID-001`. SAFE because the cascade `GetWinner().ResolvedValue` is the
+          var-substituted RAW value (independent of typed resolution): the image painter still reads
+          object-position raw (the `ImgSpec` seam) and the named-page machinery still reads `page` raw onto
+          `Box.PageName` — the typed slot is a `Deferred` raw-text carrier, consumed downstream. DEFERRED: the
+          §3.6 component ORDER / axis-conflict rules (e.g. `top bottom`) aren't enforced (lenient validation —
+          over-acceptance only mis-reports `@supports`, never breaks rendering).
+       7. **content-SIZED auto-height column-flex PAGINATION — DONE** (same PR). `PreMeasureFlexMainExtent` is
+          now CONTENT-AWARE (mirrors grid's `PreMeasureGridRowExtent`): a content-determined (auto-height) item
+          contributes its measured content block extent (memoized per item box) instead of 0, so an auto-height
+          column whose items are content-sized overflows the wrapper + the (paginatable-flex) split engages.
+          Explicit-height items keep their declared height (byte-identical).
+       (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals; column-wrap +
+       row-flex intra-item fragmentation + pure/multi-pseudo compound `@page` remain the open non-block items.)
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`

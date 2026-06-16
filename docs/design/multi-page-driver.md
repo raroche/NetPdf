@@ -24,6 +24,43 @@ This doc proposes the design for each, a phased PR breakdown that fits the proje
 
 ## Progress log
 
+- **2026-06-16 — PR #183 review cycle applied (3 findings)** (same branch). **(P2)** Valid DASHED page
+  names (`--chapter`) are now accepted: `PageNameResolver.IsCustomIdent` and `AtPageRules.IsBarePageName`
+  were duplicated and BOTH wrongly rejected `--name`, even though a dashed ident is a valid
+  `<custom-ident>` (CSS Syntax 3 §4.3.9 accepts a leading `-` followed by another `-`). Centralized into
+  the new shared `CssCustomIdent.IsValidPageName` (`NetPdf.Css.Parser`), used by both; `page: --chapter`,
+  `@page --chapter`, `@page --chapter:first`, `@supports (page: --chapter)`, `DeclaredPageNames`, and
+  `ResolveUsedPageName` all work (resolver/MatchTier/DeclaredPageNames/ResolveUsedPageName/facade tests).
+  **(P3)** `<position>` parsing is PAREN-AWARE: `PositionResolver` and
+  `FragmentPainter.TryParseBackgroundPosition` now tokenize via `CssShorthandHelpers.SplitTopLevel`, so a
+  math function (`object-position: calc(50% - 10px) top`) stays one component instead of fragmenting into
+  broken tokens — `@supports` validates the expression, and the painter evaluates a %/absolute math
+  function against the §3.6 range (`TryEvalPositionMath`); a font-/viewport-relative math function has no
+  context in the static painter helper and falls back to the 0% 0% default + diagnostic (documented
+  limitation). **(P3)** Stronger column-reverse continuation tests (`DriveFlexColumnPages`): VARIED item
+  heights over THREE pages + an `order` variant, asserting VISUAL reverse-DOM order, top re-anchoring, no
+  loss/duplication, and clean termination (proving the per-page `FlexContinuation.ItemIndex` re-anchors
+  correctly). Gates: **6901 unit / 5 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance ·
+  0-warning Release**.
+
+- **2026-06-15 — BACKLOG #4–#7 (5 tasks) DONE** (branch `phase-3-backlog-flex-pagination-paged-media`). The
+  REMAINING prioritized backlog, one PR. **(#7) Content-aware flex pre-measure:** `PreMeasureFlexMainExtent`
+  now measures a content-determined (auto-height) item's content block extent (memoized; mirrors grid's
+  `PreMeasureGridRowExtent`), so an AUTO-height column-flex whose items are content-sized overflows the wrapper
+  + paginates (PR #182 left this deferred — the pre-measure summed declared heights only). **(#4) Column-reverse
+  pagination:** a tall `flex-direction: column-reverse` paginates at item boundaries in VISUAL (reverse-DOM)
+  order — the emission reverses the (per-attempt) item sequence + emits forward, reusing the forward column
+  item-split; gated to the paginating case so non-paginating column-reverse is byte-identical. **(#5) Compound
+  `@page` selectors:** `AtPageRules.MatchSelector` matches `<name>:<pseudo>` (e.g. `chapter:first`) at tiers
+  4/5 above the bare named page (3) per CSS Page 3 §3.1 — existing single-selector tiers unchanged (no churn);
+  reachable via the per-page margin-box path. **(#6) Register `page` + `object-position`:** both gained a
+  properties.json entry + a validating resolver (`PageNameResolver` / `PositionResolver`), so `@supports`
+  answers correctly + invalid values diagnose — SAFE because the cascade winner's `ResolvedValue` is the
+  var-substituted RAW value (the painter / named-page machinery still read raw). DEFERRED: column-wrap +
+  row-flex intra-item fragmentation; pure/multi-pseudo compound `@page`; `<position>` axis-conflict rules.
+  Gates: **6885 unit / 5 skip · 30 LayoutSnapshots · 97 RealDocuments · 0-warning Release · AOT/JIT parity
+  verified**.
+
 - **2026-06-15 — FLEX/GRID item CONTENT + spurious-overflow (prioritized backlog #1+#2+#3) DONE** (branch
   `phase-3-flex-grid-item-content`). The top three non-block-pagination backlog items, one PR. **(#1) Flex item
   CONTENT layout:** `FlexLayouter` lays out each item's inner content (text / block children) via a nested

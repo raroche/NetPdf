@@ -306,6 +306,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Flex_column_reverse_paginates_at_item_boundaries_without_loss()
+    {
+        // Backlog #4 — a tall `flex-direction: column-reverse` now PAGINATES at item
+        // boundaries (in VISUAL / reverse-DOM order): the emission reverses the item
+        // sequence + reuses the forward column item-split. 12 × 200px items (2400px)
+        // far exceed an A4 content box; each item's background fill renders exactly
+        // once across the pages (no item lost / duplicated), no overflow.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column-reverse\">");
+        for (var i = 0; i < 12; i++)
+            sb.Append("<div style=\"height:200px;background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2, $"expected the column-reverse flex to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(12, fills);   // every item's background, once
+    }
+
+    [Fact]
     public void Grid_with_explicit_template_rows_paginates_at_row_boundaries_without_loss()
     {
         // Non-block-pagination arc — a tall grid splits at GRID-ROW boundaries
@@ -510,12 +532,8 @@ public sealed class HtmlPdfConvertTests
         // each committed item's RE-ANCHORED offset, so resumed-page items paint
         // their text in the right place.
         //
-        // NOTE: explicit heights here so the EXISTING column pre-measure
-        // (PreMeasureFlexMainExtent, which sums declared item heights) sees the
-        // overflow and engages pagination. Content-SIZED (auto-height) column
-        // items render + content-size on a page but don't yet drive the
-        // pre-measure to paginate — that needs a content-aware pre-measure
-        // (the same deferral as grid content-sized auto rows; see deferrals.md).
+        // Explicit heights here (the auto-height content-sized variant is the
+        // separate Flex_column_auto_height_text_items_paginate test below).
         var sb = new StringBuilder(
             "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">");
         for (var i = 0; i < 25; i++) sb.Append("<div style=\"height:50px\">CC</div>");
@@ -527,6 +545,29 @@ public sealed class HtmlPdfConvertTests
         Assert.True(result.PageCount >= 2, $"expected the column flex to paginate, got {result.PageCount} page(s)");
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
         Assert.Equal(25, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every item's text, once
+    }
+
+    [Fact]
+    public void Flex_column_auto_height_text_items_paginate_via_content_aware_premeasure()
+    {
+        // Backlog #7 — an AUTO-height `flex-direction: column` whose items are
+        // content-sized (each ~one text line, NO explicit height) now PAGINATES:
+        // the content-aware PreMeasureFlexMainExtent measures the items' content
+        // so the wrapper overflows the page + the (paginatable-flex) split
+        // engages (PR #182 left this deferred — the pre-measure summed declared
+        // heights only). 80 items, each "DD" (2 glyphs); every item's text
+        // survives the split exactly once.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 80; i++) sb.Append("<div>DD</div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.True(result.PageCount >= 2, $"expected the auto-height column flex to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(80, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every item's text, once
     }
 
     [Fact]
@@ -947,6 +988,23 @@ public sealed class HtmlPdfConvertTests
             "@page :first { @bottom-center { content: \"AB\" } }</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Equal(2, TotalGlyphCount(pdf));   // "AB" (the :first box), not "A" (the bare box)
+    }
+
+    [Fact]
+    public void At_page_compound_name_first_selector_margin_box_paints_on_a_named_first_page()
+    {
+        // Backlog #5 — a COMPOUND `@page chapter:first` margin box paints on a page that is BOTH named
+        // "chapter" (its first content box assigns `page: chapter`) AND first. The bare `@page`
+        // @bottom-center "A" (1 glyph) is overridden by `chapter:first` "AB" (2 glyphs) — the compound
+        // selector matched + won the cascade (it outranks the bare @page per CSS Page 3 §3.1). Body "x"
+        // (1 glyph) + the compound box "AB" (2) = 3 total; a non-matching compound would leave the bare
+        // "A" → 2 total.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"A\" } } " +
+            "@page chapter:first { @bottom-center { content: \"AB\" } }</style></head>" +
+            "<body><div style=\"page:chapter\">x</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(3, TotalGlyphCount(pdf));   // body "x" (1) + compound box "AB" (2)
     }
 
     [Fact]
@@ -1434,6 +1492,30 @@ public sealed class HtmlPdfConvertTests
         var runs = GlyphRuns(Latin1(result.Pdf));
         Assert.Equal(2, runs.Count);            // one header per page
         Assert.NotEqual(runs[0], runs[1]);       // page 1 bare "AA" ≠ page 2 chapter "AB"
+    }
+
+    [Fact]
+    public void Multi_page_dashed_named_page_selects_its_margin_box()
+    {
+        // Post-PR-#183 review P2 — a DASHED page name (`--chapter`) is a valid <custom-ident>, so the
+        // whole named-page path works end-to-end: `@page --chapter` is matched, the section's
+        // `page: --chapter` (recovered by the preprocessor) starts a "--chapter" page, and its header
+        // ("AB") paints on page 2 while the bare page paints "AA" on page 1. Pre-fix the dashed name was
+        // rejected by both validators so both pages painted the bare header.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page --chapter { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: \"AA\" } }" +
+            ".ch { page: --chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div class=\"ch\" style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 bare "AA" ≠ page 2 --chapter "AB"
     }
 
     [Fact]

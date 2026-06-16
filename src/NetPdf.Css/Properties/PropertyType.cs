@@ -88,6 +88,17 @@ internal enum PropertyType : byte
     /// cells. Resolution at placement time turns <c>grid-row-start:
     /// head</c> into the named area's row-start line.</summary>
     GridTemplateAreas = 26,
+    /// <summary>A CSS <c>&lt;position&gt;</c> (CSS B&amp;B 3 §3.6) — 1–4 components, each a
+    /// position keyword (<c>left</c>/<c>center</c>/<c>right</c>/<c>top</c>/<c>bottom</c>) or a
+    /// <c>&lt;length-percentage&gt;</c>. Used by <c>object-position</c>. Validation-only registration
+    /// (<c>@supports</c> + invalid-value diagnostics) — the value is consumed RAW at paint time; see
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.PositionResolver"/>.</summary>
+    Position = 27,
+    /// <summary>A CSS page-name value (CSS Page 3 §3.4): <c>auto | &lt;custom-ident&gt;</c>. Used by
+    /// the <c>page</c> property. Validation-only registration — the named-page machinery reads the
+    /// name RAW (<c>Box.PageName</c>); see
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.PageNameResolver"/>.</summary>
+    PageName = 28,
     /// <summary>A custom property type — value is opaque to the parser dispatch table.</summary>
     Custom = 255,
 }

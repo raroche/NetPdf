@@ -1545,9 +1545,10 @@ internal static class GridSizing
                     declared = measured;
                 }
             }
-            // `min-width` floor (grid min-height cycle — symmetric with the row axis): the content-box
-            // inline size is at least the absolute `min-width` (CSS Box Sizing 3 §6.1). A percentage /
-            // keyword min-width reads 0 here (the documented chicken-and-egg gap).
+            // `min-width` floor (grid min-height/min-width floor cycle — the inline-axis analog of the
+            // row axis's `min-height` floor above): the content-box inline size is at least the absolute
+            // `min-width` (CSS Box Sizing 3 §6.1). A percentage / keyword min-width reads 0 here (the
+            // documented chicken-and-egg gap).
             var minWidth = itemBox.Style.ReadLengthPxOrZero(PropertyId.MinWidth);
             if (minWidth > declared) declared = minWidth;
             var borderLeft = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);

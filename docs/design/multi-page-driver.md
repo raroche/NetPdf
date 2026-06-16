@@ -24,6 +24,20 @@ This doc proposes the design for each, a phased PR breakdown that fits the proje
 
 ## Progress log
 
+- **2026-06-16 — Post-PR-#184 review (3 findings + 4 Copilot, same riders branch).** **(F1, P1)** Grid
+  content-width columns resolved AFTER row intrinsic sizing, so an auto/min/max-content ROW measured its
+  cell text at a stale 0/1px column width → inflated height. Fixed: `GridSizing.Resolve` resolves intrinsic
+  COLUMNS before ROW content measurement (CSS Grid §11 order), and the block-extent measure caches
+  (`GridLayouter` + `PreMeasureGridRowExtent`) are keyed by `(Box, availInline)`. **(F2, P2)** The multi-page
+  LAYOUT baseline used the context-free resolvers (bare + `:first`), so `:first` geometry fragmented every
+  page; fixed with `AtPageSizeResolver`/`AtPageMarginResolver.ResolveBare` (bare-only) for the baseline (page
+  0 still PAINTS its `:first` MediaBox). **(F3, P2)** The overflow check used the document-level content
+  rect; fixed with a per-page check in the paint loop against each page's `ppSize`/`ppMargins` (the single
+  overflow diagnostic moved after the paint loop). **(Copilot)** `IsValidEdgeOffset` rejects an offset after
+  `center` on EITHER edge; `MatchSelector` trims colon-split segments (`chapter :first` matches);
+  `IsWidthContentDetermined` doc clarified. Gates: **6919 unit / 5 skip · 30 LayoutSnapshots · 97
+  RealDocuments · W3cConformance · 0-warning Release · AOT/JIT parity verified**.
+
 - **2026-06-16 — RIDERS PR: per-page `@page` geometry + grid content-width columns + compound `@page` +
   `<position>` axis-conflict** (branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`, off `main`
   after #183). Four contained backlog riders, one PR (a fifth — inline `<img>` atomics — was scoped in but

@@ -112,6 +112,12 @@ internal static class FragmentPainter
             var style = fragment.Box.Style;
             if (style is null) continue;
 
+            // Non-block-pagination arc (flex item / grid cell content) — a content
+            // fragment whose box == the item paints TEXT ONLY (a separate pass): its box
+            // decoration (background / borders / outline) is already painted by the item's
+            // flex / grid GEOMETRY fragment, so skip it here to avoid a double paint.
+            if (fragment.SuppressBoxDecoration) continue;
+
             // Border-box rect in CSS px, page-top-relative (y-down).
             var leftPx = contentOriginLeftPx + fragment.InlineOffset;
             var topPx = contentOriginTopPx + fragment.BlockOffset;

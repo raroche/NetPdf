@@ -932,6 +932,21 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             lines, mainSizeProperty, minSizeProperty, maxSizeProperty,
             containerMainSize, cancellationToken);
 
+        // Non-block-pagination arc (flex item CONTENT layout) — lay out each
+        // flex item's INNER content (text / nested blocks) via a nested
+        // BlockLayouter into a per-item buffer, and for a COLUMN container
+        // CONTENT-SIZE auto-height items from the measured block extent (the
+        // common `<div>text</div>` case: an auto-height item has main-size 0
+        // until content sizes it). Runs BEFORE the LineMainSize recompute below
+        // so a content-sized item's grown main-size feeds justify-content's
+        // free space + the column item-split page budget. The per-item buffers
+        // are flushed at each COMMITTED item's final re-anchored content-box
+        // origin in the emission loop. See <see cref="MeasureFlexItemContents"/>.
+        var itemContentBuffers = MeasureFlexItemContents(
+            lines, resolvedItemMainSizes, flexDirection, isColumn,
+            mainSizeProperty, crossSizeProperty, containerCrossSize, isWrapping,
+            fragmentainer, layout.WritingMode, layout.IsRtl, cancellationToken);
+
         // After flexibility resolution, each line's LineMainSize must
         // be updated to the sum of RESOLVED item main-sizes (NOT the
         // pre-flex sum from PackLines) so justify-content's freeSpace
@@ -1294,6 +1309,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                         BlockOffset: blockOffset,
                         InlineSize: inlineSize,
                         BlockSize: blockSize));
+
+                    // Non-block-pagination arc (flex item CONTENT layout) —
+                    // re-emit the item's measured inner content at its FINAL
+                    // (re-anchored) content-box origin. Like grid's
+                    // DispatchGridItemContents, the content anchors at the
+                    // item's BORDER-box origin (item border / padding is not
+                    // inset — a documented box-model approximation shared with
+                    // grid). Only COMMITTED items flush; the column-split skips
+                    // deferred items, so their buffers are simply discarded (a
+                    // resumed page re-measures them). FlushTo clears the buffer.
+                    itemContentBuffers[itemIdx]?.FlushTo(_sink, inlineOffset, blockOffset);
                 }
 
                 // Advance the main-axis cursor past this item + the
@@ -2412,6 +2438,148 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return direction.IsFlexColumnDirection()
             ? (PropertyId.MinHeight, PropertyId.MaxHeight)
             : (PropertyId.MinWidth, PropertyId.MaxWidth);
+    }
+
+    /// <summary>Non-block-pagination arc (flex item CONTENT layout) — lay out
+    /// every flex item's INNER content (text / nested block children) via a
+    /// nested <see cref="BlockLayouter"/> rooted at the item, buffering the
+    /// produced fragments per item so the emission loop can re-emit them at the
+    /// item's FINAL (possibly re-anchored) origin.
+    ///
+    /// <para>Mirrors <see cref="GridLayouter"/>'s
+    /// <c>DispatchGridItemContents</c> / <see cref="TableLayouter"/>'s cell
+    /// measure pass: the item is its own block-flow root; the inner layouter
+    /// emits content-box-relative fragments which the buffer holds verbatim
+    /// (the box's border / padding is NOT inset — the same box-model
+    /// approximation grid ships) until <see cref="BufferingMeasureSink.FlushTo"/>
+    /// applies the item's border-box origin.</para>
+    ///
+    /// <para><b>Content sizing.</b> For a COLUMN container, an item whose
+    /// main-size (block-size) is content-determined
+    /// (<see cref="IsMainSizeContentDetermined"/>) grows to the measured
+    /// content block extent — closing the common `<c>&lt;div&gt;text&lt;/div&gt;</c>`
+    /// gap where an auto-height column item collapsed to 0 and items stacked on
+    /// top of each other. This runs BEFORE the LineMainSize recompute so the
+    /// grown size feeds justify-content + the column item-split page budget.
+    /// ROW main-axis content sizing (max-content width) stays deferred — a row
+    /// item with auto width keeps its current (flex-resolved) width and its
+    /// content renders at that width (overflowing if narrow), matching grid's
+    /// zero-area-cell contract.</para>
+    ///
+    /// <para><b>Diagnostics.</b> Inner-content diagnostics are suppressed
+    /// (null sink) for the measure pass: a paginating column re-runs this pass
+    /// per page, so a live sink would duplicate per-item diagnostics across
+    /// pages. Surfacing flex-item-content diagnostics once is a follow-up.</para></summary>
+    /// <returns>A per-DOM-child-index array of buffers (null for a childless
+    /// item, or one whose used inline size was non-positive with no content).</returns>
+    private BufferingMeasureSink?[] MeasureFlexItemContents(
+        List<FlexLine> lines,
+        double[] resolvedItemMainSizes,
+        FlexDirectionValue flexDirection,
+        bool isColumn,
+        PropertyId mainSizeProperty,
+        PropertyId crossSizeProperty,
+        double containerCrossSize,
+        bool isWrapping,
+        FragmentainerContext fragmentainer,
+        WritingMode writingMode,
+        bool isRtl,
+        CancellationToken cancellationToken)
+    {
+        var buffers = new BufferingMeasureSink?[_rootBox.Children.Count];
+        foreach (var line in lines)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // The line's cross extent: for wrap the line's own max-item-cross;
+            // for nowrap the container's full cross extent. Mirrors the
+            // emission loop's `lineCrossExtent`.
+            var lineCrossExtent = isWrapping ? line.LineCrossSize : containerCrossSize;
+            var endSortedPos = line.FirstItemIndex + line.ItemCount;
+            for (var sortedPos = line.FirstItemIndex; sortedPos < endSortedPos; sortedPos++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var itemIdx = _sortedFlexChildIndices[sortedPos];
+                var item = _rootBox.Children[itemIdx];
+                if (item.Children.Count == 0) continue; // no inner content
+
+                // The item's used INLINE (content) size. For column the inline
+                // axis is the cross axis (stretch → line cross extent, else the
+                // declared cross-size); for row the inline axis is the main axis
+                // (the flex-resolved width). A non-positive size falls back to
+                // the container's content inline size so text still renders +
+                // overflows, mirroring grid's zero-area-cell fallback.
+                double usedInline;
+                if (isColumn)
+                {
+                    usedInline = IsCrossSizeAuto(item, flexDirection)
+                        ? lineCrossExtent
+                        : item.Style.ReadLengthPxOrZero(crossSizeProperty);
+                }
+                else
+                {
+                    usedInline = resolvedItemMainSizes[itemIdx];
+                }
+                if (!(usedInline > 0)) usedInline = _contentInlineSize;
+
+                var buffer = LayoutItemContentIntoBuffer(
+                    item, usedInline, fragmentainer, writingMode, isRtl, cancellationToken);
+                buffers[itemIdx] = buffer;
+
+                // Column content-sizing: grow an auto-height item to its
+                // content. Math.Max keeps any flex-grown size; explicit-height
+                // items (not content-determined) are untouched (byte-identical
+                // to the pre-content-layout behavior).
+                if (isColumn
+                    && IsMainSizeContentDetermined(item, mainSizeProperty)
+                    && buffer.ContentBlockExtent > resolvedItemMainSizes[itemIdx])
+                {
+                    resolvedItemMainSizes[itemIdx] = buffer.ContentBlockExtent;
+                }
+            }
+        }
+        return buffers;
+    }
+
+    /// <summary>Lay out one flex item's inner content into a fresh
+    /// <see cref="BufferingMeasureSink"/> at <paramref name="availInlineContentSize"/>
+    /// available inline size via the shared <see cref="NestedContentMeasurer"/>
+    /// (atomic <c>LastResort</c> pass; grid pagination suppressed; inline-only
+    /// root opted in). Mirrors <see cref="TableLayouter"/>'s
+    /// <c>MeasureCellContent</c> / <see cref="GridLayouter"/>'s
+    /// <c>DispatchGridItemContents</c> nested-layout dispatch.</summary>
+    private BufferingMeasureSink LayoutItemContentIntoBuffer(
+        Box item,
+        double availInlineContentSize,
+        FragmentainerContext outerFragmentainer,
+        WritingMode writingMode,
+        bool isRtl,
+        CancellationToken cancellationToken)
+        => NestedContentMeasurer.Measure(
+            item, availInlineContentSize,
+            blockBudget: outerFragmentainer.BlockSize,
+            shaperResolver: _shaperResolver,
+            writingMode: writingMode, isRtl: isRtl,
+            cancellationToken: cancellationToken);
+
+    /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
+    /// is content-determined (so content measurement should size it). True iff
+    /// the used flex-basis is <c>content</c>, OR <c>auto</c> with the declared
+    /// main-size property also <c>auto</c> (Unset / Keyword slot). A definite
+    /// flex-basis length / percentage, or a definite declared main-size, gives
+    /// the item a definite base size that content must not override. Mirrors
+    /// <see cref="IsCrossSizeAuto"/>'s slot-tag test +
+    /// <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>'s
+    /// flex-basis resolution.</summary>
+    private static bool IsMainSizeContentDetermined(Box item, PropertyId mainSizeProperty)
+    {
+        var basis = item.Style.ReadFlexBasis();
+        if (basis.Kind == FlexBasisKind.Content) return true;
+        if (basis.Kind == FlexBasisKind.Auto)
+        {
+            var slot = item.Style.Get(mainSizeProperty);
+            return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        }
+        return false;
     }
 
     /// <summary>Per cycle 1 (Hello World) — no per-instance state to

@@ -64,6 +64,18 @@ internal static class GridSizing
     /// pattern).</summary>
     public delegate void EmitDiagnostic(PaginateDiagnostic diagnostic);
 
+    /// <summary>Non-block-pagination arc (grid CONTENT-sized rows) — optional
+    /// callback to measure a grid item's content BLOCK extent (CSS px) at a
+    /// given available inline (column) width. Used to size <c>auto</c> /
+    /// min-content / max-content ROW tracks from cell content (CSS Grid §11.5
+    /// min/max-content contribution) instead of collapsing them to the item's
+    /// declared height (0 for an auto-height item). Null (the default) = no
+    /// content measurement: an auto row is sized only by declared item heights
+    /// (the pre-content-layout behavior). The caller (GridLayouter /
+    /// BlockLayouter pre-measure) builds it over a nested
+    /// <see cref="NestedContentMeasurer"/> pass.</summary>
+    public delegate double GridContentMeasurer(Box item, double availableInlineSize);
+
     /// <summary>Full result of <see cref="Resolve"/>. Caller emits
     /// fragments using <see cref="PlacedItems"/> + <see cref="RowPositions"/>
     /// / <see cref="ColPositions"/> / <see cref="RowSizes"/> /
@@ -118,6 +130,10 @@ internal static class GridSizing
     /// <param name="emit">Optional diagnostic callback.</param>
     /// <param name="cancellationToken">Cancellation token for the
     /// item-walking loops.</param>
+    /// <param name="contentMeasurer">Optional callback to measure a grid item's
+    /// content block extent (CSS px) at a given column width — sizes auto /
+    /// intrinsic ROW tracks from cell content (non-block-pagination arc). Null
+    /// (the default) keeps the declared-height-only behavior.</param>
     public static Result Resolve(
         Box gridBox,
         double contentInlineOffset,
@@ -125,7 +141,8 @@ internal static class GridSizing
         double contentInlineSize,
         double contentBlockSize,
         EmitDiagnostic? emit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        GridContentMeasurer? contentMeasurer = null)
     {
         // Per PR-#93 review F3 — detect indefinite axes.
         var heightSlot = gridBox.Style.Get(PropertyId.Height);
@@ -269,11 +286,18 @@ internal static class GridSizing
         }
         _ = grownOccupancy;
 
-        // Intrinsic resolution from placed items.
+        // Intrinsic resolution from placed items. The ROW axis passes the
+        // content measurer + the (already-sized) column tracks so an auto /
+        // intrinsic row sizes to its cells' content block extent measured at
+        // their column width (non-block-pagination arc — grid content-sized
+        // rows). The COLUMN axis stays declared-width-only (content-width /
+        // max-content column sizing is a later cut).
         var rowIntrinsicChanged = ResolveIntrinsicTracks(
-            rowInfos, placedItems, isRowAxis: true);
+            rowInfos, placedItems, isRowAxis: true,
+            contentMeasurer, colInfos, cancellationToken);
         var colIntrinsicChanged = ResolveIntrinsicTracks(
-            colInfos, placedItems, isRowAxis: false);
+            colInfos, placedItems, isRowAxis: false,
+            contentMeasurer: null, otherAxisInfos: null, cancellationToken);
         if (rowIntrinsicChanged)
         {
             ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
@@ -1304,7 +1328,10 @@ internal static class GridSizing
     /// non-flex base sum has changed).</para></summary>
     private static bool ResolveIntrinsicTracks(
         List<TrackSizingInfo> infos,
-        List<PlacedItem> placedItems, bool isRowAxis)
+        List<PlacedItem> placedItems, bool isRowAxis,
+        GridContentMeasurer? contentMeasurer,
+        List<TrackSizingInfo>? otherAxisInfos,
+        CancellationToken cancellationToken)
     {
         var anyChanged = false;
         // Per PR-#95 review P1 — Span ref-access for mutation.
@@ -1342,7 +1369,17 @@ internal static class GridSizing
                 // distributes the remainder across intrinsic tracks
                 // proportionally; that's tracked as
                 // `grid-spanning-item-intrinsic-distribution-deferral`.
-                var rawContribution = ItemOuterContribution(item.Box, isRowAxis);
+                // The item's available inline (column) width for content
+                // measurement = sum of its spanned column track BASE sizes
+                // (columns are resolved before the row intrinsic pass for the
+                // definite-column case). Only computed when a measurer is wired
+                // (= the row axis); a non-positive width falls back inside
+                // ItemOuterContribution.
+                var itemInlineWidth = contentMeasurer is not null && otherAxisInfos is not null
+                    ? SumColumnBaseSizes(otherAxisInfos, item.Col, Math.Max(1, item.ColSpan))
+                    : 0.0;
+                var rawContribution = ItemOuterContribution(
+                    item.Box, isRowAxis, contentMeasurer, itemInlineWidth, cancellationToken);
                 var perTrackContribution = itemSpan > 1
                     ? rawContribution / itemSpan
                     : rawContribution;
@@ -1447,20 +1484,41 @@ internal static class GridSizing
     ///   which is what we're sizing (= chicken-and-egg). Future cycle
     ///   may implement two-pass resolution or document specifically.</item>
     /// </list></summary>
-    private static double ItemOuterContribution(Box itemBox, bool isRowAxis)
+    private static double ItemOuterContribution(
+        Box itemBox, bool isRowAxis,
+        GridContentMeasurer? contentMeasurer, double availableInlineSize,
+        CancellationToken cancellationToken)
     {
         if (isRowAxis)
         {
             var declared = itemBox.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // Non-block-pagination arc (grid CONTENT-sized rows) — when the item
+            // has no DEFINITE height, its row contribution comes from its
+            // CONTENT block extent measured at its column width, not the 0 a
+            // declared-only read returns (which collapsed `grid-auto-rows: auto`
+            // cells to nothing). `declared` is the `height` longhand only (0 in
+            // this content-determined branch); the max() is defensive against a
+            // future non-zero reaching here — a `min-height` floor is NOT honored
+            // here (a pre-existing approximation). Margins / borders / padding
+            // are added below as chrome.
+            if (contentMeasurer is not null && IsHeightContentDetermined(itemBox))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var measured = contentMeasurer(itemBox, availableInlineSize);
+                if (double.IsFinite(measured) && measured > declared)
+                {
+                    declared = measured;
+                }
+            }
             var borderTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var paddingTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
             var borderBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
             var paddingBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
             var marginTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
             var marginBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
-            // Per cycle-3 approximation: declared height + chrome on
-            // both sides. Margins included per CSS Sizing's "outer
-            // size" semantics for grid item contributions.
+            // Per cycle-3 approximation: declared (or content) height + chrome
+            // on both sides. Margins included per CSS Sizing's "outer size"
+            // semantics for grid item contributions.
             return declared + borderTop + paddingTop + borderBottom + paddingBottom
                 + marginTop + marginBottom;
         }
@@ -1476,6 +1534,39 @@ internal static class GridSizing
             return declared + borderLeft + paddingLeft + borderRight + paddingRight
                 + marginLeft + marginRight;
         }
+    }
+
+    /// <summary>Non-block-pagination arc (grid CONTENT-sized rows) — whether a
+    /// grid item's block-size (<c>height</c>) is content-determined (auto), so
+    /// its row contribution should come from content measurement. True iff the
+    /// <c>height</c> slot is Unset / Keyword (= <c>auto</c>); a definite length
+    /// or percentage gives a definite contribution that content must not
+    /// replace. Mirrors the indefinite-axis test in <see cref="Resolve"/>.</summary>
+    private static bool IsHeightContentDetermined(Box itemBox)
+    {
+        var slot = itemBox.Style.Get(PropertyId.Height);
+        return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+    }
+
+    /// <summary>Sum the resolved BASE sizes of the column tracks an item spans
+    /// (<paramref name="colInfos"/>[<paramref name="startCol"/> ..
+    /// +<paramref name="colSpan"/>)) — the item's available inline (content)
+    /// width for row content measurement. Out-of-range indices are skipped
+    /// defensively (placement keeps items in-range, but a degenerate grid could
+    /// produce a span past the track list). Returns 0 when no column resolved a
+    /// positive base size; the measurer's caller falls back accordingly.</summary>
+    private static double SumColumnBaseSizes(
+        List<TrackSizingInfo> colInfos, int startCol, int colSpan)
+    {
+        if (startCol < 0) return 0;
+        double sum = 0;
+        var end = Math.Min(colInfos.Count, startCol + colSpan);
+        for (var c = startCol; c < end; c++)
+        {
+            var b = colInfos[c].BaseSize;
+            if (b > 0) sum += b;
+        }
+        return sum;
     }
 
     // =====================================================================

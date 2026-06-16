@@ -9869,6 +9869,259 @@ public sealed class FlexLayouterTests
     }
 
     // ====================================================================
+    //  Non-block-pagination arc — flex item CONTENT layout
+    // ====================================================================
+
+    [Fact]
+    public void Flex_item_inner_block_content_is_laid_out_and_translated()
+    {
+        // Row flex, 2 items (width 100, height 80) each containing a nested
+        // block child (width 40, height 30). FlexLayouter now lays out each
+        // item's inner content via a nested BlockLayouter + flushes it at the
+        // item's content-box origin, so the child fragments appear translated
+        // to within their item (no border / padding ⇒ child origin = item
+        // origin). Before this feature, flex item content didn't render at all.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        var children = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var itemStyle = MakeStyle();
+            SetLengthPx(itemStyle, PropertyId.Width, 100);
+            SetLengthPx(itemStyle, PropertyId.Height, 80);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+
+            var childStyle = MakeStyle();
+            SetLengthPx(childStyle, PropertyId.Width, 40);
+            SetLengthPx(childStyle, PropertyId.Height, 30);
+            children[i] = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+            items[i].AppendChild(children[i]);
+
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Each item's child must be emitted at the item's origin (item 0 at
+        // inline 0, item 1 at inline 100; both at block 0).
+        for (var i = 0; i < children.Length; i++)
+        {
+            BoxFragment? childFrag = null;
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == children[i]) { childFrag = f; break; }
+            }
+            Assert.NotNull(childFrag);
+            Assert.Equal(i * 100.0, childFrag!.Value.InlineOffset, precision: 3);
+            Assert.Equal(0.0, childFrag.Value.BlockOffset, precision: 3);
+            Assert.Equal(40.0, childFrag.Value.InlineSize, precision: 3);
+            Assert.Equal(30.0, childFrag.Value.BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Flex_column_auto_height_items_content_size_and_stack()
+    {
+        // Column flex with AUTO-height items, each containing a 60px-tall block
+        // child. Previously each item collapsed to height 0 (auto main-size, no
+        // content sizing) so all items stacked at the same offset; now content
+        // sizes each item to 60 and they stack at 0, 60, 120 — and the child
+        // content renders within each item.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        var children = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            // Item: no explicit height ⇒ auto main-size ⇒ content-sized.
+            var itemStyle = MakeStyle();
+            items[i] = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+
+            var childStyle = MakeStyle();
+            SetLengthPx(childStyle, PropertyId.Height, 60);
+            children[i] = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+            items[i].AppendChild(children[i]);
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var itemFrags = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { itemFrags.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, itemFrags.Count);
+        // Content-sized to the child's 60px + stacked along the block axis.
+        for (var i = 0; i < itemFrags.Count; i++)
+        {
+            Assert.Equal(60.0, itemFrags[i].BlockSize, precision: 3);
+            Assert.Equal(i * 60.0, itemFrags[i].BlockOffset, precision: 3);
+        }
+        // Child content rendered within each item.
+        for (var i = 0; i < children.Length; i++)
+        {
+            Assert.Contains(sink.Fragments, f => f.Box == children[i]);
+        }
+    }
+
+    [Fact]
+    public void Flex_explicit_height_column_items_keep_declared_size_with_content()
+    {
+        // Guard: an explicit-height column item is NOT content-resized (the
+        // auto-sizing only fires for content-determined main-size). The item
+        // keeps its declared 90px height even though its child is only 20 tall,
+        // and the child still renders inside it.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Height, 90);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 20);
+        var child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        item.AppendChild(child);
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFrag = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFrag = f; break; }
+        }
+        Assert.NotNull(itemFrag);
+        Assert.Equal(90.0, itemFrag!.Value.BlockSize, precision: 3); // declared, not content-sized
+        Assert.Contains(sink.Fragments, f => f.Box == child);        // content still rendered
+    }
+
+    [Fact]
+    public void Flex_item_inline_text_content_is_laid_out()
+    {
+        // A column flex item whose content is INLINE (a TextRun, the common
+        // `<div>text</div>` shape). The nested BlockLayouter (opted into
+        // inline-only-root content) must emit an inline-only-block fragment
+        // (with InlineLayout) for the item's text — the block-only child loop
+        // would otherwise skip the item's direct inline child.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        item.AppendChild(Box.TextRun("AB", MakeStyle()));
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Some fragment must carry an InlineLayout (= the shaped "AB").
+        Assert.Contains(sink.Fragments, f => f.InlineLayout is not null
+            && f.InlineLayout.Value.Lines.Length > 0);
+    }
+
+    [Fact]
+    public void Flex_column_explicit_height_taller_than_fragmentainer_no_spurious_forced_overflow()
+    {
+        // An auto-height wrapper block contains an explicit-height column flex
+        // TALLER than the fragmentainer. The flex paginates at item boundaries;
+        // the wrapper must NOT emit a spurious PAGINATION-FORCED-OVERFLOW-001 —
+        // the subtree-extent measure now PROJECTS the paginatable flex to one
+        // page (like a paginatable grid), so the wrapper's break-check sees a
+        // fitting chunk instead of the rigid 1200px authored height. Mirrors the
+        // facade repro (an auto-height wrapper whose own border-box is 0 but
+        // whose subtree read the flex's full explicit height).
+        var sink = new RecordingFragmentSink();
+        var diags = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var wrapper = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 1200); // explicit, > fragmentainer
+        for (var i = 0; i < 6; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 200);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        wrapper.AppendChild(flex);
+        root.AppendChild(wrapper);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diags,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diags };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.DoesNotContain(diags.Diagnostics,
+            d => d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

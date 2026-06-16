@@ -279,6 +279,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// contract.</summary>
     private readonly bool _disableGridPagination;
 
+    /// <summary>Non-block-pagination arc (flex item CONTENT layout) — when
+    /// <see langword="true"/>, a NESTED BlockLayouter whose <c>_rootBox</c> is
+    /// itself an inline-only block container (every direct child inline-level)
+    /// emits the root's OWN inline content as one inline-only-block fragment,
+    /// instead of the block-only child loop silently skipping every (inline)
+    /// child. OFF by default so every existing nested-root caller (multicol
+    /// inner, table caption / cell, the recursion inner layouter, the pipeline's
+    /// <see cref="BoxKind.Root"/> layouter) is byte-identical; only
+    /// <see cref="FlexLayouter"/>'s item-content pass opts in (a flex item like
+    /// <c>&lt;div&gt;text&lt;/div&gt;</c> has DIRECT inline children, unlike a
+    /// table cell whose content the box builder wraps in an anonymous block).
+    /// The opt-in keeps the blast radius to exactly the flex item case.</summary>
+    private readonly bool _layoutRootInlineContent;
+
     /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
     /// when <see langword="true"/>, the inline-pass through
     /// <c>InlineLayouter.LayoutPerRun</c> downgrades
@@ -458,7 +472,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         LayoutContinuation? incomingContinuation = null,
         IPaginateDiagnosticsSink? diagnostics = null,
         IShaperResolver? shaperResolver = null,
-        bool disableGridPagination = false)
+        bool disableGridPagination = false,
+        bool layoutRootInlineContent = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -492,6 +507,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
         _disableGridPagination = disableGridPagination;
+        _layoutRootInlineContent = layoutRootInlineContent;
     }
 
     /// <inheritdoc />
@@ -951,6 +967,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var hasPriorAdjoiningBlock = _hasRewindCollapseState
             && _hasPriorAdjoiningBlockAfterRewind;
         _hasRewindCollapseState = false;
+
+        // Non-block-pagination arc (flex item CONTENT layout) — a NESTED
+        // layouter whose ROOT is itself inline-only would have ALL its
+        // (inline) children skipped by the block-only loop below (the
+        // `if (!child.IsBlockLevel) { … continue; }` guard), silently dropping
+        // the content. When opted in (FlexLayouter's item-content pass),
+        // dispatch the root's OWN inline content as one inline-only-block
+        // fragment (box == _rootBox). Gated by _layoutRootInlineContent +
+        // IsInlineOnlyBlockContainer(_rootBox) — the latter excludes
+        // BoxKind.Root — so it NEVER fires for the outer pipeline layouter or
+        // any non-opted-in nested caller (multicol / caption / cell /
+        // recursion). startChildIdx == 0 skips a resume (the atomic LastResort
+        // nested layout never resumes). An inline-only root has no block
+        // children, so the dispatch outcome IS the layout outcome.
+        if (_layoutRootInlineContent
+            && _shaperResolver is not null
+            && startChildIdx == 0
+            && IsInlineOnlyBlockContainer(_rootBox))
+        {
+            var rootInlineResult = DispatchInlineOnlyBlock(
+                _rootBox, childIdx: 0, fragmentainer, ref layout, resolver,
+                initialUsed, priorPagesConsumed, prevBlockMarginEnd,
+                hasPriorAdjoiningBlock, lastEmittedIdx, emittedThisAttempt,
+                out _, cancellationToken);
+            // Null = fragment emitted (the outer loop would "continue") = done.
+            return rootInlineResult ?? LayoutAttemptResult.AllDone(cost: 0);
+        }
 
         for (var childIdx = startChildIdx; childIdx < _rootBox.Children.Count; childIdx++)
         {
@@ -7679,6 +7722,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 _capturedFragmentainer.BlockSize);
         }
 
+        // Non-block-pagination arc (explicit-height column-flex spurious
+        // forced-overflow fix) — a paginatable FLEX descendant projects to the
+        // fragment budget for the ancestor's break-check measure, EXACTLY like
+        // the paginatable grid above. An EXPLICIT-height column flex (height
+        // taller than the page) returns its rigid authored border-box from
+        // style here; left un-projected, the ancestor's break-check sees an
+        // oversized chunk + fires a spurious PAGINATION-FORCED-OVERFLOW-001 per
+        // page even though the flex splits cleanly at ITEM boundaries (the
+        // recursive flex dispatch handles the per-page split separately, based
+        // on its own childBlockOffset-derived page-remaining). An AUTO-height
+        // flex returns 0 here (no explicit height) so it never tripped the path
+        // — which is why only the explicit-height case showed the warning.
+        // Projection min(authored, page): the flex contributes at most one
+        // page's worth to the ancestor measure. This path is only reached for a
+        // flex in a plain block-flow subtree (a flex inside a table cell / grid
+        // item / flex item is measured by that owner's nested layouter, never
+        // this child walk), so the flex genuinely paginates here. (No
+        // `_disableGridPagination`-style gate is needed: there is no flex-
+        // pagination-disable flag — `IsPaginatableFlex` gates purely by style.)
+        if (IsPaginatableFlex(parent) && _capturedFragmentainer is not null)
+        {
+            return Math.Min(parentBorderBoxBlockSize,
+                _capturedFragmentainer.BlockSize);
+        }
+
         // Non-flow block kinds (Flex/Grid/Replaced) are atomic to the
         // BlockLayouter — their inner geometry belongs to a dedicated
         // layouter. Return own size. (Tables were special-cased above
@@ -8587,9 +8655,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// warnings the real emission pass surfaces; <paramref name="cancellationToken"/>
     /// (PR-#181 review P2) is threaded so the full placement/sizing pass honors
     /// caller cancellation on a large grid.</para></summary>
-    private static double PreMeasureGridRowExtent(
+    private double PreMeasureGridRowExtent(
         Box gridBox, double contentInlineSize, CancellationToken cancellationToken)
     {
+        // Non-block-pagination arc (grid CONTENT-sized rows) — wire the SAME
+        // content measurer the real emission uses so an auto-row grid's
+        // pre-measured extent reflects its cells' content. Without it a
+        // content-sized grid stays chrome-height in the pre-measure + never
+        // overflows the page → never paginates (and a following block-flow
+        // sibling would overlap it). The dry-run defaults writing-mode /
+        // direction to horizontal-tb / LTR (the real emission at GridLayouter
+        // applies the cascaded values); the inner block budget is the captured
+        // fragmentainer's block size — a single cell's content fits it.
+        // Skipped when there's no shaper (text wouldn't shape anyway).
+        // Memoize per item box (a row-spanning intrinsic item is otherwise
+        // re-measured per intersected row track in ResolveIntrinsicTracks).
+        var measureCache = new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
+        GridSizing.GridContentMeasurer? measurer = _shaperResolver is null
+            ? null
+            : (item, availInline) =>
+            {
+                if (measureCache.TryGetValue(item, out var cached)) return cached;
+                var extent = NestedContentMeasurer.Measure(
+                    item, availInline,
+                    blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                    shaperResolver: _shaperResolver,
+                    writingMode: WritingMode.HorizontalTb, isRtl: false,
+                    cancellationToken: cancellationToken).ContentBlockExtent;
+                measureCache[item] = extent;
+                return extent;
+            };
         var sizing = GridSizing.Resolve(
             gridBox: gridBox,
             contentInlineOffset: 0,
@@ -8597,7 +8692,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentInlineSize: contentInlineSize > 0 ? contentInlineSize : 1,
             contentBlockSize: 1,  // indefinite block: auto-height grid's extent is what we compute
             emit: null,
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken,
+            contentMeasurer: measurer);
         return sizing.RowExtentSum;
     }
 

@@ -760,6 +760,63 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_spanning_item_distributes_after_subtracting_fixed_tracks()
+    {
+        // Riders-2 grid spanning-item distribution cycle (CSS Grid §11.5.1) — a content item spanning a
+        // FIXED + an AUTO column distributes its width to the AUTO track AFTER subtracting what the fixed
+        // track already covers, not equal-share across both. Spanner content 250px over `100px auto`:
+        // the auto column = max(0, 250 − 100) = 150 (was 250/2 = 125 under equal-share). A second item in
+        // column 2 reads the track width.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: 100px auto; grid-template-rows: 20px 20px; }
+                .spanner { grid-row-start: 1; grid-column-start: 1; grid-column-end: 3; }
+                .col2 { grid-row-start: 2; grid-column-start: 2; }
+                .inner { width: 250px; height: 10px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="spanner"><div class="inner"></div></div>
+              <div class="col2"></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var col2 = FindByClass(sink, "col2");
+        Assert.NotNull(col2);
+        // The auto column (track 2) = the spanner's 250px content minus the fixed 100px column = 150
+        // (NOT the 125 an equal-share contribution/span would give).
+        Assert.Equal(150.0, col2!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_grid_row_honors_item_min_height_floor()
+    {
+        // Riders-2 grid min-height cycle — an auto row's content-determined item now honors its
+        // `min-height` floor (CSS Box Sizing §6.1): a min-height TALLER than the content grows the row,
+        // while a min-height SHORTER than the content doesn't shrink it (content wins).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: 100px; grid-template-rows: auto auto; width: 100px; }
+                .tall-min { min-height: 80px; }
+                .short-min { min-height: 20px; }
+                .inner { height: 30px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="tall-min" style="grid-row-start:1"><div class="inner"></div></div>
+              <div class="short-min" style="grid-row-start:2"><div class="inner"></div></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var tall = FindByClass(sink, "tall-min");
+        var shortMin = FindByClass(sink, "short-min");
+        Assert.NotNull(tall);
+        Assert.NotNull(shortMin);
+        Assert.Equal(80.0, tall!.Value.BlockSize, precision: 3);     // min-height 80 floors the 30px content
+        Assert.Equal(30.0, shortMin!.Value.BlockSize, precision: 3); // content 30 > min-height 20 → content wins
+    }
+
+    [Fact]
     public async Task Production_html_auto_row_sizes_from_item_CONTENT_not_just_declared_height()
     {
         // Non-block-pagination arc (grid CONTENT-sized rows) — an auto row with

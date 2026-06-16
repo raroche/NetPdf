@@ -1349,15 +1349,7 @@ internal static class GridSizing
         for (var i = 0; i < span.Length; i++)
         {
             ref var info = ref span[i];
-            var needsContribution =
-                info.Kind is GridTrackKind.Auto
-                    or GridTrackKind.MinContent
-                    or GridTrackKind.MaxContent
-                    or GridTrackKind.FitContent
-                || (info.Kind == GridTrackKind.MinMax
-                    && (IsIntrinsicKind(info.MinSubKind)
-                        || IsIntrinsicKind(info.MaxSubKind)));
-            if (!needsContribution) continue;
+            if (!TrackNeedsIntrinsicContribution(info)) continue;
 
             double maxContribution = 0;
             foreach (var item in placedItems)
@@ -1372,22 +1364,10 @@ internal static class GridSizing
                 var start = isRowAxis ? item.Row : item.Col;
                 var matchesTrack = i >= start && i < start + itemSpan;
                 if (!matchesTrack) continue;
-                // Cycle 6a per-track contribution from a spanning item:
-                // equal-share distribution (= contribution / span).
-                // The spec-strict §11.5.1 step 3 algorithm subtracts
-                // already-resolved length-track contributions then
-                // distributes the remainder across intrinsic tracks
-                // proportionally; that's tracked as
-                // `grid-spanning-item-intrinsic-distribution-deferral`.
-                // The item's available inline (column) width for content
-                // measurement = sum of its spanned column track BASE sizes
-                // (columns are resolved before the row intrinsic pass for the
-                // definite-column case). Only computed when a measurer is wired
-                // (= the row axis); a non-positive width falls back inside
-                // ItemOuterContribution.
-                // Row axis: the item's available inline (content) width = sum of its spanned column
-                // base sizes (columns resolved first). Column axis (grid content-width cycle): an
-                // UNCONSTRAINED probe width, so the width measurer reports max-content (no wrapping).
+                // The item's available inline (column) width for content measurement.
+                // Row axis: the sum of its spanned column base sizes (columns resolved first). Column
+                // axis (grid content-width cycle): an UNCONSTRAINED probe width, so the width measurer
+                // reports max-content (no wrapping). Only computed when a measurer is wired.
                 var itemInlineWidth = contentMeasurer is null
                     ? 0.0
                     : isRowAxis && otherAxisInfos is not null
@@ -1395,9 +1375,26 @@ internal static class GridSizing
                         : MaxContentProbeWidthPx;
                 var rawContribution = ItemOuterContribution(
                     item.Box, isRowAxis, contentMeasurer, itemInlineWidth, cancellationToken);
-                var perTrackContribution = itemSpan > 1
-                    ? rawContribution / itemSpan
-                    : rawContribution;
+                // Per-track contribution from a spanning item (CSS Grid §11.5.1 — grid spanning-item
+                // distribution cycle). Instead of equal-share (contribution / span), SUBTRACT the
+                // already-resolved base sizes of the spanned NON-intrinsic (length / fr / fixed-minmax)
+                // tracks, then distribute the remainder across the spanned INTRINSIC tracks (this track is
+                // one of them). For an all-intrinsic span this equals the old contribution / span (no
+                // change); for a MIXED span the fixed tracks already cover their part, so the intrinsic
+                // tracks aren't over-grown. (Still an approximation of the full §11.5.1 min/max
+                // proportional distribution — the remainder is split EQUALLY, not by growth potential.)
+                double perTrackContribution;
+                if (itemSpan > 1)
+                {
+                    var (fixedSum, intrinsicCount) = SpanFixedSumAndIntrinsicCount(infos, start, itemSpan);
+                    perTrackContribution = intrinsicCount > 0
+                        ? Math.Max(0, rawContribution - fixedSum) / intrinsicCount
+                        : 0;
+                }
+                else
+                {
+                    perTrackContribution = rawContribution;
+                }
                 if (perTrackContribution > maxContribution)
                 {
                     maxContribution = perTrackContribution;
@@ -1512,9 +1509,7 @@ internal static class GridSizing
             // CONTENT block extent measured at its column width, not the 0 a
             // declared-only read returns (which collapsed `grid-auto-rows: auto`
             // cells to nothing). `declared` is the `height` longhand only (0 in
-            // this content-determined branch); the max() is defensive against a
-            // future non-zero reaching here — a `min-height` floor is NOT honored
-            // here (a pre-existing approximation). Margins / borders / padding
+            // this content-determined branch). Margins / borders / padding
             // are added below as chrome.
             if (contentMeasurer is not null && IsHeightContentDetermined(itemBox))
             {
@@ -1525,6 +1520,12 @@ internal static class GridSizing
                     declared = measured;
                 }
             }
+            // `min-height` floor (grid min-height cycle) — the content-box size is at least the absolute
+            // `min-height` (CSS Box Sizing 3 §6.1), so a min-height taller than the declared / content
+            // height grows the row. A percentage / keyword min-height reads 0 here (resolves against the
+            // cell — chicken-and-egg — the documented gap), matching how `height` is read.
+            var minHeight = itemBox.Style.ReadLengthPxOrZero(PropertyId.MinHeight);
+            if (minHeight > declared) declared = minHeight;
             var borderTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var paddingTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
             var borderBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
@@ -1556,6 +1557,11 @@ internal static class GridSizing
                     declared = measured;
                 }
             }
+            // `min-width` floor (grid min-height cycle — symmetric with the row axis): the content-box
+            // inline size is at least the absolute `min-width` (CSS Box Sizing 3 §6.1). A percentage /
+            // keyword min-width reads 0 here (the documented chicken-and-egg gap).
+            var minWidth = itemBox.Style.ReadLengthPxOrZero(PropertyId.MinWidth);
+            if (minWidth > declared) declared = minWidth;
             var borderLeft = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
             var paddingLeft = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
             var borderRight = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
@@ -1618,6 +1624,37 @@ internal static class GridSizing
             if (b > 0) sum += b;
         }
         return sum;
+    }
+
+    /// <summary>Whether a track needs an intrinsic contribution from its items (CSS Grid §11.5) — an
+    /// <c>auto</c> / <c>min-content</c> / <c>max-content</c> / <c>fit-content()</c> track, or a
+    /// <c>minmax()</c> with an intrinsic min- or max- sizing function. Extracted (grid spanning-item
+    /// distribution cycle) so the per-track loop AND the span distribution share one predicate.</summary>
+    private static bool TrackNeedsIntrinsicContribution(in TrackSizingInfo info) =>
+        info.Kind is GridTrackKind.Auto
+            or GridTrackKind.MinContent
+            or GridTrackKind.MaxContent
+            or GridTrackKind.FitContent
+        || (info.Kind == GridTrackKind.MinMax
+            && (IsIntrinsicKind(info.MinSubKind) || IsIntrinsicKind(info.MaxSubKind)));
+
+    /// <summary>For a spanning item over tracks <paramref name="start"/>..+<paramref name="span"/> in
+    /// <paramref name="infos"/>, the (sum of the already-resolved base sizes of the spanned NON-intrinsic
+    /// tracks, count of spanned INTRINSIC tracks) — CSS Grid §11.5.1: a spanning item's contribution is
+    /// distributed across only its intrinsic tracks, after subtracting what the fixed tracks already
+    /// cover (grid spanning-item distribution cycle). Out-of-range indices are skipped defensively.</summary>
+    private static (double FixedSum, int IntrinsicCount) SpanFixedSumAndIntrinsicCount(
+        List<TrackSizingInfo> infos, int start, int span)
+    {
+        double fixedSum = 0;
+        var intrinsicCount = 0;
+        var end = Math.Min(infos.Count, start + span);
+        for (var t = Math.Max(0, start); t < end; t++)
+        {
+            if (TrackNeedsIntrinsicContribution(infos[t])) intrinsicCount++;
+            else fixedSum += Math.Max(0, infos[t].BaseSize);
+        }
+        return (fixedSum, intrinsicCount);
     }
 
     // =====================================================================

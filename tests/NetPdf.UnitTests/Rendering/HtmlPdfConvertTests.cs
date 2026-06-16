@@ -3395,6 +3395,44 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_border_radius_slash_form_rounds_the_background_elliptically()
+    {
+        // border-radius-elliptical cycle — `border-radius: <h> / <v>` (dropped by AngleSharp) is
+        // recovered + rounds the body background band with DISTINCT horizontal/vertical radii. The
+        // elliptical band has Bézier corners (the slash was applied, not squared) AND differs from the
+        // circular `<h>` band (the vertical radius is honored, not collapsed to circular).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var ellipse = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;" +
+            "background-color:#3366cc;border-radius:40px / 8px}</style></head>" +
+            "<body><div class=\"box\"></div></body></html>", opts));
+        var circle = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;" +
+            "background-color:#3366cc;border-radius:40px}</style></head>" +
+            "<body><div class=\"box\"></div></body></html>", opts));
+        Assert.True(CountOccurrences(ellipse, " c ") >= 4);   // Bézier corners → rounded (slash applied)
+        Assert.NotEqual(circle, ellipse);                     // 8px vertical honored, not circular 40px
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_slash_form_rounds_the_band()
+    {
+        // border-radius-elliptical cycle — a margin box's `border-radius: <h> / <v>` rounds its band
+        // (BorderRadiusShorthandExpander → the corner + internal `-y` longhands → MarginBoxStyle cascade
+        // → ReadCornerRadii), with NO malformed diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 8px / 3px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // rounded band (slash applied)
+    }
+
+    [Fact]
     public void Page_margin_box_border_radius_em_is_deferred_to_a_square()
     {
         // margin-box-border-radius cycle — the radius now cascades through the corner longhands. A
@@ -3495,23 +3533,8 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square
     }
 
-    [Fact]
-    public void Page_margin_box_border_radius_elliptical_slash_defers_without_a_diagnostic()
-    {
-        // post-PR-#174 review P2 — the elliptical `Rx / Ry` form stays the DOCUMENTED silent deferral
-        // (square, NO diagnostic), distinct from the malformed cases above.
-        var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
-            "background-color: #3366cc; border-radius: 8px / 4px } }</style></head><body></body></html>",
-            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
-
-        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
-            && d.Message.Contains("border-radius"));
-        var pdf = Latin1(result.Pdf);
-        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
-        Assert.True(i >= 0);
-        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square (deferred)
-    }
+    // (The elliptical `Rx / Ry` slash form, formerly a documented square deferral here, now ROUNDS —
+    //  border-radius-elliptical cycle — covered by Page_margin_box_border_radius_slash_form_rounds_the_band.)
 
     [Fact]
     public void Page_margin_box_border_radius_with_uniform_border_paints_a_ring()

@@ -10,7 +10,7 @@ namespace NetPdf.UnitTests.Css.Parser.Preprocessing;
 /// <summary>
 /// Unit tests for <see cref="BorderRadiusShorthandExpander"/> — margin-box-border-radius cycle,
 /// expanding the <c>border-radius</c> 1–4-value shorthand for <c>@page</c> margin-box bodies into the
-/// four corner longhands. The slash (elliptical) form is deferred.
+/// four corner longhands. The elliptical Rx / Ry slash form also expands the vertical radii onto the internal -netpdf-border-{corner}-radius-y longhands.
 /// </summary>
 public sealed class BorderRadiusShorthandExpanderTests
 {
@@ -72,14 +72,15 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
-    public void IsDeferredElliptical_tells_a_top_level_slash_from_calc_or_malformed()
+    public void HasTopLevelSlash_tells_a_top_level_slash_from_calc_or_no_slash()
     {
-        // PR #174 review P2 — only a TOP-LEVEL `/` is the deferred elliptical form; a `/` inside calc()
-        // (a division) and a malformed value are NOT — so MarginBoxStyle diagnoses the latter two.
-        Assert.True(BorderRadiusShorthandExpander.IsDeferredElliptical("8px / 4px"));
-        Assert.False(BorderRadiusShorthandExpander.IsDeferredElliptical("calc(10px / 2)"));
-        Assert.False(BorderRadiusShorthandExpander.IsDeferredElliptical("8px bogus"));
-        Assert.False(BorderRadiusShorthandExpander.IsDeferredElliptical("8px"));
+        // border-radius-elliptical cycle — only a well-formed TOP-LEVEL `/` is the elliptical separator
+        // the body preprocessor recovers; a `/` inside calc() (a division) and a value with no slash
+        // are NOT.
+        Assert.True(BorderRadiusShorthandExpander.HasTopLevelSlash("8px / 4px"));
+        Assert.False(BorderRadiusShorthandExpander.HasTopLevelSlash("calc(10px / 2)"));
+        Assert.False(BorderRadiusShorthandExpander.HasTopLevelSlash("8px bogus"));
+        Assert.False(BorderRadiusShorthandExpander.HasTopLevelSlash("8px"));
     }
 
     [Fact]
@@ -98,24 +99,50 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
-    public void Slash_elliptical_form_is_deferred()
+    public void Slash_elliptical_form_expands_to_horizontal_and_vertical_longhands()
     {
-        // `Rx / Ry` needs per-corner (rx, ry) pairs the single-value longhands can't store → deferred.
-        Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "8px / 4px", out _));
+        // border-radius-elliptical cycle — `Rx / Ry` expands the horizontal radii onto the corner
+        // longhands + the vertical radii onto the internal `-netpdf-border-{corner}-radius-y` longhands.
+        Assert.True(BorderRadiusShorthandExpander.TryExpand("border-radius", "8px / 4px", out var longhands));
+        var map = new Dictionary<string, string>();
+        foreach (var (prop, val) in longhands) map[prop] = val;
+        Assert.Equal("8px", map["border-top-left-radius"]);
+        Assert.Equal("8px", map["border-bottom-right-radius"]);
+        Assert.Equal("4px", map["-netpdf-border-top-left-radius-y"]);
+        Assert.Equal("4px", map["-netpdf-border-bottom-right-radius-y"]);
+    }
+
+    [Fact]
+    public void Two_value_slash_form_distributes_each_side_per_the_box_rules()
+    {
+        // `border-radius: 10px 20px / 5px 15px` → TL/BR get h=10,v=5; TR/BL get h=20,v=15 (each side
+        // expands by the 1–4-value box distribution independently).
+        Assert.True(BorderRadiusShorthandExpander.TryExpand("border-radius", "10px 20px / 5px 15px", out var longhands));
+        var map = new Dictionary<string, string>();
+        foreach (var (prop, val) in longhands) map[prop] = val;
+        Assert.Equal("10px", map["border-top-left-radius"]);
+        Assert.Equal("20px", map["border-top-right-radius"]);
+        Assert.Equal("5px", map["-netpdf-border-top-left-radius-y"]);
+        Assert.Equal("15px", map["-netpdf-border-top-right-radius-y"]);
     }
 
     [Fact]
     public void Slash_inside_calc_is_a_division_not_the_elliptical_separator()
     {
         // A `/` INSIDE a function is a division the corner-longhand resolver evaluates — only a
-        // TOP-LEVEL `/` is the elliptical separator (post-PR-#174 review P3). `calc(10px / 2)` must
-        // EXPAND (to the calc value on all four corners), not defer to square.
+        // TOP-LEVEL `/` is the elliptical separator. `calc(10px / 2)` expands (the calc value on all
+        // four corners, horizontal only — no top-level slash, so no vertical longhands).
         Assert.True(BorderRadiusShorthandExpander.TryExpand("border-radius", "calc(10px / 2)", out var longhands));
         var map = new Dictionary<string, string>();
         foreach (var (prop, val) in longhands) map[prop] = val;
         Assert.Equal("calc(10px / 2)", map["border-top-left-radius"]);
-        // ... but a real top-level slash inside an otherwise calc-bearing value still defers.
-        Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "calc(10px) / 4px", out _));
+        Assert.DoesNotContain("-netpdf-border-top-left-radius-y", map.Keys);
+        // A real top-level slash with a calc on one side EXPANDS (h = calc(10px), v = 4px).
+        Assert.True(BorderRadiusShorthandExpander.TryExpand("border-radius", "calc(10px) / 4px", out var sl));
+        var slMap = new Dictionary<string, string>();
+        foreach (var (prop, val) in sl) slMap[prop] = val;
+        Assert.Equal("calc(10px)", slMap["border-top-left-radius"]);
+        Assert.Equal("4px", slMap["-netpdf-border-top-left-radius-y"]);
     }
 
     [Fact]

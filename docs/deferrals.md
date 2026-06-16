@@ -3439,12 +3439,29 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **`border-radius: Rx / Ry` elliptical slash (body + margin-box) — DONE (border-radius-elliptical
+         cycle):** the explicit two-radii-per-corner `border-radius: <h-list> / <v-list>` form now renders
+         ELLIPTICALLY (it previously dropped to square). AngleSharp drops the slash, so the body
+         `CssPreprocessor.ScanDeclarations` recovers it (gated to a well-formed TOP-LEVEL slash via
+         `BorderRadiusShorthandExpander.HasTopLevelSlash` — a circular form AngleSharp already expands; a `/`
+         inside `calc()` is a division) and the (now slash-aware) `BorderRadiusShorthandExpander.TryExpand`
+         expands BOTH sides by the 1–4-value box distribution: the horizontal radii onto the
+         `border-{corner}-radius` longhands + the vertical radii onto FOUR new INTERNAL
+         `-netpdf-border-{corner}-radius-y` properties (vendor-prefixed in `properties.json`, so real
+         `@supports` queries for the standard radius properties are unaffected). `FragmentPainter.ReadCornerRadii`
+         reads each corner's vertical radius from the `-y` slot (falling back to the horizontal slot resolved
+         against the box HEIGHT when unset — the circular / `%`-ellipse pre-cycle behavior). The margin box
+         shares it (the expander runs in `CssParserAdapter.ParseRawDeclarations`; the four `-y` ids JOINED
+         `MarginBoxStyle.CascadedStyleIds`; a malformed slash that fails to expand is diagnosed
+         `CSS-PROPERTY-VALUE-INVALID-001` as before). STILL DEFERRED: font-/viewport-relative margin-box radii
+         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders.
        - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
          image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
          shorthand is expanded by the NEW `BorderRadiusShorthandExpander` (1–4 values → the four corner
-         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; a TOP-LEVEL `Rx / Ry` slash defers, but a
-         `/` inside `calc()` is a division that evaluates — post-PR-#174 self-review) inside
+         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; a TOP-LEVEL `Rx / Ry` slash now also
+         expands the vertical radii onto the internal `-y` longhands — border-radius-elliptical cycle — and a
+         `/` inside `calc()` is a division that evaluates) inside
          `CssParserAdapter.ParseRawDeclarations`, and the four corner longhands JOINED
          `MarginBoxStyle.CascadedStyleIds` so they cascade onto the box's `ComputedStyle` (importance +
          CSS-wide + validation for free). **(Task 1)** the band fill reads PER-CORNER radii
@@ -3457,11 +3474,11 @@ flags the categories):
          = the box radii inset to the clip box via `FragmentPainter.InsetRadii`, threaded to the shared
          tiler). Post-PR-#174 review: an INVALID/malformed margin-box `border-radius` (`8px bogus`, an
          unbalanced function, or a NEGATIVE radius — `border-*-radius` joined `NonNegativeProperties`) is
-         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped
-         (`BorderRadiusShorthandExpander.IsDeferredElliptical` distinguishes the silent square deferral);
+         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped;
          a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). DEFERRED (still
-         render square, SILENTLY): the elliptical `Rx / Ry` slash form; font-/viewport-relative margin-box
-         radii (`em`/`vw` defer in the margin-box cascade, like the body). Rounded NON-uniform borders.
+         render square, SILENTLY): font-/viewport-relative margin-box radii (`em`/`vw` defer in the
+         margin-box cascade, like the body). Rounded NON-uniform borders. (The elliptical `Rx / Ry` slash
+         SHIPPED later — border-radius-elliptical cycle, see that entry above.)
        - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
@@ -3507,16 +3524,11 @@ flags the categories):
          a stroke's `/CA`). **(Task 3 — rounded background-image clip)** a border-radius rounds the
          background-image clip (`PdfPage.BeginRoundedRectangleClip`, the background-clip box's radii inset
          per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
-         rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
-         spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
-         segments transitioning between edge widths/colours). (The MARGIN-box border-radius reached parity
-         in the margin-box-border-radius cycle — see the entry above.) **Why `Rx / Ry` is a focused cycle,
-         not a batch rider** (assessed in the riders-2 round): the corner-radius STORAGE is one
-         `ComputedSlot` per corner (one value, used for both X and Y in `ReadCornerRadii`), so distinct
-         horizontal vs vertical radii need a 2-radii-per-corner model change (a paired slot, or 4 internal
-         vertical-radius properties — the latter would wrongly surface in `@supports`). The elliptical
-         RENDERING already exists (`CornerRadii` has per-corner X/Y); only the style storage + slash
-         recovery are missing.
+         rectangular clip (byte-identical). The explicit two-radii `Rx / Ry` slash spelling SHIPPED later
+         (border-radius-elliptical cycle — recovered into 4 internal `-netpdf-…-radius-y` longhands; see that
+         entry above). STILL DEFERRED: rounded NON-uniform borders (per-corner arc segments transitioning
+         between edge widths/colours). (The MARGIN-box border-radius reached parity in the
+         margin-box-border-radius cycle — see the entry above.)
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
@@ -3536,9 +3548,9 @@ flags the categories):
          + CSS-wide + invalid-value diagnostics — post-PR-#171 review P2, not RawDeclarationWinner;
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
          negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
-         border-radius-completion cycle — see the entry above): the explicit `Rx / Ry` elliptical slash
-         spelling + rounded NON-uniform border strokes (the margin-box per-corner radius + rounded border +
-         image clip reached parity in the margin-box-border-radius cycle);
+         border-radius-completion cycle — see the entry above; the `Rx / Ry` elliptical slash SHIPPED in the
+         border-radius-elliptical cycle): rounded NON-uniform border strokes (the margin-box per-corner
+         radius + rounded border + image clip reached parity in the margin-box-border-radius cycle);
          `background-attachment: fixed` PAGE-relative positioning; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared

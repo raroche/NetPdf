@@ -10,8 +10,10 @@ namespace NetPdf.Pdf;
 /// A circular corner has <c>X == Y</c>; a percentage <c>border-radius</c> on a non-square box
 /// resolves to <c>X != Y</c> (an ellipse). Corners are named in CSS terms (top-left … etc.);
 /// <see cref="PdfPage"/> maps them to its bottom-left-origin coordinate space when it builds the
-/// path. The explicit two-radii-per-corner <c>Rx / Ry</c> spelling is NOT representable upstream
-/// yet (AngleSharp drops it) — that is a documented deferral, not a limitation of this type.</summary>
+/// path. The explicit two-radii-per-corner <c>Rx / Ry</c> spelling is recovered upstream
+/// (border-radius-elliptical cycle): AngleSharp drops the slash form, so <c>BorderRadiusShorthandExpander</c>
+/// expands its vertical radii onto the internal <c>-netpdf-border-{corner}-radius-y</c> longhands, which
+/// <c>FragmentPainter.ReadCornerRadii</c> reads as each corner's vertical component.</summary>
 public readonly record struct CornerRadii(
     double TopLeftX, double TopLeftY,
     double TopRightX, double TopRightY,

@@ -741,6 +741,12 @@ internal static class CssPreprocessor
                   // string-set + content() so the attr()/literal forms AngleSharp already keeps aren't
                   // duplicate-recovered.)
                   || (lowerName == "string-set" && ContainsContentFunction(rawValue))
+                  // Per the border-radius-elliptical cycle — AngleSharp.Css DROPS the elliptical
+                  // `border-radius: <h> / <v>` slash form entirely (it expands the circular 1–4-value
+                  // form but not the slash). Recover ONLY the slash form (the circular form AngleSharp
+                  // already handles — recovering it would duplicate) so the BorderRadiusShorthandExpander
+                  // expands it into the horizontal corner longhands + the internal vertical -y longhands.
+                  || (lowerName == "border-radius" && BorderRadiusShorthandExpander.HasTopLevelSlash(rawValue))
                   // Per the body-calc cycle — AngleSharp.Css drops/normalizes declarations whose value
                   // carries a CSS math function it can't represent (`width: calc(1in - 24pt)` never
                   // reaches the cascade), so the body-calc first cut would silently see nothing.
@@ -989,6 +995,19 @@ internal static class CssPreprocessor
                         EmitInvalidGridShorthandRecovery(output,
                             "grid-auto-flow", GridInvalidShorthandSentinel, isImportant, ordinal);
                     }
+                }
+                else if (normalizedName == "border-radius"
+                    && BorderRadiusShorthandExpander.TryExpand("border-radius", cleanValue, out var brLonghands))
+                {
+                    // border-radius-elliptical cycle — the dropped `border-radius: <h> / <v>` slash form
+                    // expands into the four horizontal corner longhands + the four internal
+                    // `-netpdf-border-{corner}-radius-y` vertical longhands, all sharing this shorthand's
+                    // source ordinal.
+                    foreach (var (prop, val) in brLonghands)
+                        output.Add(new CssDeclarationRecovery(
+                            prop, val, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
                 }
                 else
                 {

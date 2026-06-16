@@ -1676,23 +1676,20 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 3 + cycle 4
-  + post-PR-#95 review H6.
-- **Behavior** — `GridSizing.ItemOuterContribution` always adds
-  the item's border + padding + margin to its declared
-  width/height when contributing to intrinsic track sizing. This
-  is correct for the CSS default `box-sizing: content-box` but
-  WRONG for `box-sizing: border-box` where the declared
-  width/height already includes border + padding (= we
-  double-count by adding chrome again).
-- **Missing** — read `PropertyId.BoxSizing` in
-  `ItemOuterContribution` + short-circuit the chrome adds for
-  `border-box` items. The fix is local to GridSizing but the
-  broader `box-sizing: border-box` support is cross-cutting —
-  BlockLayouter + FlexLayouter + TableLayouter all have similar
-  declared-vs-rendered-size issues that should be addressed
-  symmetrically. Tracked as a single cross-cutting task rather
-  than per-layouter patches.
+- **Status** — `partially resolved` (GRID ships — grid box-sizing cycle). The grid-item intrinsic
+  contribution now honors `box-sizing`; the remaining gap is the BROADER cross-cutting audit (other
+  layouters + a shared helper).
+- **Behavior** — `GridSizing.ItemOuterContribution` now honors `box-sizing` (grid box-sizing cycle, CSS
+  Basic UI 4 §10) via the new `ItemBorderBoxExtent`: a `box-sizing: border-box` item's declared
+  width/height IS its border box (border + padding inside), so the chrome is NOT added again; the initial
+  `content-box` is byte-identical to the pre-cycle `max(declared, content, min) + chrome`. A
+  CONTENT-measured `auto` size is always a content box, so its chrome is added regardless of box-sizing;
+  the `min-*` floor is border- or content-box per box-sizing.
+- **Missing** — the BROADER `box-sizing: border-box` support is still cross-cutting — BlockLayouter +
+  FlexLayouter + TableLayouter have similar declared-vs-rendered-size readers that should be addressed
+  symmetrically with a shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)` helper. (A `%`
+  width/height/min still reads 0 in the grid contribution — the chicken-and-egg gap — so box-sizing on a
+  PERCENTAGE size is moot there.)
 - **Trigger** — a dedicated `box-sizing` pass that audits every
   declared-dimension reader across all layouters + introduces a
   shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)`
@@ -1711,9 +1708,10 @@ flags the categories):
   or padding.
 - **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
   in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
-  formalized as a deferral entry.
-- **Removal condition** — cross-cutting box-sizing audit ships +
-  GridSizing reads BoxSizing.
+  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle.
+- **Removal condition** — the cross-cutting box-sizing audit ships (BlockLayouter / FlexLayouter /
+  TableLayouter symmetric handling + a shared used-size helper). The GRID intrinsic-contribution side is
+  DONE.
 
 ---
 

@@ -5538,6 +5538,42 @@ public sealed class GridLayouterTests
         AssertInlineSize(sink, probe1, 10);
     }
 
+    [Fact]
+    public void Border_box_grid_item_sizes_its_column_to_the_declared_size_not_plus_chrome()
+    {
+        // Grid box-sizing cycle (CSS Basic UI 4 §10) — a `box-sizing: border-box` item's declared 100px
+        // IS its border box, so the auto column = 100 (the padding is INSIDE). The content-box control
+        // adds the chrome → 100 + (10+10) padding = 120. (The border component is exercised by the
+        // production test `Production_html_border_box_grid_item_sizes_column_to_declared_width`, where a
+        // real `border: 5px solid` resolves a readable border-width.)
+        Assert.Equal(100.0, ColumnWidthForSizedItem(borderBox: true), precision: 3);
+        Assert.Equal(120.0, ColumnWidthForSizedItem(borderBox: false), precision: 3);
+    }
+
+    /// <summary>Post-PR-#185 (grid box-sizing cycle) — the resolved width of an `auto` column sized by a
+    /// single 100px item with 10px h-padding, read via an auto-width probe in row 2.</summary>
+    private static double ColumnWidthForSizedItem(bool borderBox)
+    {
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForLength(20), TrackEntry.ForLength(20)),
+            cols: Tracks(TrackEntry.ForAuto()));
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        SetExplicitWidth(item, 100);
+        item.Style.Set(PropertyId.PaddingLeft, ComputedSlot.FromLengthPx(10));
+        item.Style.Set(PropertyId.PaddingRight, ComputedSlot.FromLengthPx(10));
+        if (borderBox) item.Style.Set(PropertyId.BoxSizing, ComputedSlot.FromKeyword(1));
+        var probe = BuildItemWithExplicitPlacement(row: 2, col: 1);   // auto → stretches to the column
+        grid.AppendChild(item);
+        grid.AppendChild(probe);
+        RunGridLayouter(grid, sink, diag, shaper);
+        foreach (var f in sink.Fragments)
+            if (f.Box == probe) return f.InlineSize;
+        throw new System.InvalidOperationException("no probe fragment emitted");
+    }
+
     // =====================================================================
     //  Helpers
     // =====================================================================

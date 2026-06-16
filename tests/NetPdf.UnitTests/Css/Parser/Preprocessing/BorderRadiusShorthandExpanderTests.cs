@@ -23,12 +23,17 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
-    public void One_value_applies_to_all_four_corners()
+    public void One_value_applies_to_all_four_corners_both_axes()
     {
+        // A circular value sets BOTH axes (post-PR-#186 review P1) — the 4 horizontal corner longhands
+        // AND the 4 internal `-y` longhands, all 8px, so a later circular value resets a prior elliptical.
         var d = Expand("8px");
-        Assert.Equal(4, d.Count);
+        Assert.Equal(8, d.Count);
         foreach (var corner in new[] { "top-left", "top-right", "bottom-right", "bottom-left" })
+        {
             Assert.Equal("8px", d[$"border-{corner}-radius"]);
+            Assert.Equal("8px", d[$"-netpdf-border-{corner}-radius-y"]);
+        }
     }
 
     [Fact]
@@ -91,10 +96,11 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
-    public void Css_wide_keyword_maps_to_every_corner()
+    public void Css_wide_keyword_maps_to_every_corner_both_axes()
     {
+        // A CSS-wide keyword maps to every corner on BOTH axes (post-PR-#186 review P1).
         var d = Expand("inherit");
-        Assert.Equal(4, d.Count);
+        Assert.Equal(8, d.Count);
         foreach (var v in d.Values) Assert.Equal("inherit", v);
     }
 
@@ -136,13 +142,38 @@ public sealed class BorderRadiusShorthandExpanderTests
         var map = new Dictionary<string, string>();
         foreach (var (prop, val) in longhands) map[prop] = val;
         Assert.Equal("calc(10px / 2)", map["border-top-left-radius"]);
-        Assert.DoesNotContain("-netpdf-border-top-left-radius-y", map.Keys);
+        // Circular (no top-level slash) sets both axes — the `-y` equals the horizontal (post-PR-#186 P1).
+        Assert.Equal("calc(10px / 2)", map["-netpdf-border-top-left-radius-y"]);
         // A real top-level slash with a calc on one side EXPANDS (h = calc(10px), v = 4px).
         Assert.True(BorderRadiusShorthandExpander.TryExpand("border-radius", "calc(10px) / 4px", out var sl));
         var slMap = new Dictionary<string, string>();
         foreach (var (prop, val) in sl) slMap[prop] = val;
         Assert.Equal("calc(10px)", slMap["border-top-left-radius"]);
         Assert.Equal("4px", slMap["-netpdf-border-top-left-radius-y"]);
+    }
+
+    [Fact]
+    public void Corner_longhand_co_writes_the_vertical_for_lockstep_reset()
+    {
+        // post-PR-#186 review P1 — a 1-value / CSS-wide corner longhand co-writes its internal `-y` (so a
+        // later corner longhand RESETS a prior elliptical's stale vertical); a 2-value elliptical corner
+        // longhand and a non-corner property stay unsupported.
+        Assert.True(BorderRadiusShorthandExpander.IsCornerRadiusLonghand("border-top-left-radius"));
+        Assert.False(BorderRadiusShorthandExpander.IsCornerRadiusLonghand("border-radius"));
+
+        Assert.True(BorderRadiusShorthandExpander.TryExpandCornerVertical(
+            "border-top-left-radius", "5px", out var p1, out var v1));
+        Assert.Equal("-netpdf-border-top-left-radius-y", p1);
+        Assert.Equal("5px", v1);
+
+        Assert.True(BorderRadiusShorthandExpander.TryExpandCornerVertical(
+            "border-bottom-right-radius", "inherit", out _, out var v2));
+        Assert.Equal("inherit", v2);
+
+        Assert.False(BorderRadiusShorthandExpander.TryExpandCornerVertical(
+            "border-top-left-radius", "5px 3px", out _, out _));   // 2-value elliptical longhand: unsupported
+        Assert.False(BorderRadiusShorthandExpander.TryExpandCornerVertical(
+            "border-width", "5px", out _, out _));                 // not a corner radius longhand
     }
 
     [Fact]

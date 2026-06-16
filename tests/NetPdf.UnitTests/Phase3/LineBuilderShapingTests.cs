@@ -172,15 +172,17 @@ public class LineBuilderShapingTests
         var box = Box.CreateRoot(MakeStyle());
         var sourceRuns = new List<TextRun>
         {
-            new("\uFFFC", MakeStyle(), new InlineAtomic(box, WidthPx: 40, HeightPx: 24)),
+            new("\uFFFC", MakeStyle(), new InlineAtomic(
+                box, AdvancePx: 40, BorderBoxWidthPx: 40, BorderBoxHeightPx: 24,
+                MarginInlineStartPx: 0, MarginBlockStartPx: 0, MarginBlockEndPx: 0)),
         };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
         var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         var shaped = Assert.Single(result);
         Assert.NotNull(shaped.Atomic);
-        Assert.Equal(40.0, shaped.Atomic!.Value.WidthPx, precision: 4);
-        Assert.Equal(24.0, shaped.Atomic!.Value.HeightPx, precision: 4);
+        Assert.Equal(40.0, shaped.Atomic!.Value.AdvancePx, precision: 4);
+        Assert.Equal(24.0, shaped.Atomic!.Value.BorderBoxHeightPx, precision: 4);
         Assert.Equal(40.0, shaped.TotalAdvance, precision: 4);
         var glyph = Assert.Single(shaped.Glyphs);
         Assert.Equal(40.0, glyph.XAdvance, precision: 4);
@@ -197,14 +199,16 @@ public class LineBuilderShapingTests
         var runs = new List<TextRun>
         {
             new("Hello ", MakeStyle()),
-            new("\uFFFC", MakeStyle(), new InlineAtomic(box, WidthPx: 16, HeightPx: 16)),
+            new("\uFFFC", MakeStyle(), new InlineAtomic(
+                box, AdvancePx: 16, BorderBoxWidthPx: 16, BorderBoxHeightPx: 16,
+                MarginInlineStartPx: 0, MarginBlockStartPx: 0, MarginBlockEndPx: 0)),
             new(" World", MakeStyle()),
         };
         var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal);
 
         Assert.Equal(3, result.Count);
         Assert.NotNull(result[1].Atomic);
-        Assert.Equal(16.0, result[1].Atomic!.Value.WidthPx, precision: 4);
+        Assert.Equal(16.0, result[1].Atomic!.Value.AdvancePx, precision: 4);
         Assert.Equal("\uFFFC", result[1].Text);
     }
 

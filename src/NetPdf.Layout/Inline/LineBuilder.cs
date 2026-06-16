@@ -351,7 +351,7 @@ internal static class LineBuilder
             // around it); the painter skips the glyph + paints the box from its own emitted fragment.
             if (sourceTextRuns[run.SourceTextRunIndex].Atomic is { } atomic)
             {
-                var atomicAdvance = (float)Math.Max(0, atomic.WidthPx);
+                var atomicAdvance = (float)Math.Max(0, atomic.AdvancePx);
                 output[runIdx] = new ShapedRun(
                     run,
                     new[]
@@ -360,7 +360,7 @@ internal static class LineBuilder
                             GlyphId: 0, XAdvance: atomicAdvance, YAdvance: 0,
                             XOffset: 0, YOffset: 0, Cluster: run.Utf16Start),
                     },
-                    atomic.WidthPx,
+                    atomic.AdvancePx,
                     atomic);
                 continue;
             }

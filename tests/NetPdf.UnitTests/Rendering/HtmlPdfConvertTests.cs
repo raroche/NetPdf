@@ -3415,6 +3415,39 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_border_radius_circular_after_slash_resets_the_vertical_radii()
+    {
+        // post-PR-#186 review P1 — a later circular `border-radius` RESETS the internal `-y` slots a prior
+        // elliptical `Rx / Ry` set, so `…10px / 30px; …5px` renders IDENTICAL to a plain circular 5px (NOT
+        // 5px / 30px with a stale vertical radius). Same fix covers single-value corner longhands.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Box(string radius) =>
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;background-color:#3366cc;"
+            + radius + "}</style></head><body><div class=\"box\"></div></body></html>";
+        var reset = Latin1(HtmlPdf.Convert(Box("border-radius:10px / 30px;border-radius:5px"), opts));
+        var circular = Latin1(HtmlPdf.Convert(Box("border-radius:5px"), opts));
+        var stale = Latin1(HtmlPdf.Convert(Box("border-radius:10px / 30px"), opts));
+        Assert.Equal(circular, reset);     // the second declaration fully resets the elliptical's vertical
+        Assert.NotEqual(stale, reset);     // and is NOT the leftover 5px / 30px ellipse
+    }
+
+    [Fact]
+    public void Body_corner_radius_longhands_after_slash_reset_their_vertical_radii()
+    {
+        // post-PR-#186 review P1 — single-value corner longhands also reset their corner's stale `-y`
+        // after an elliptical shorthand: all four 5px corner longhands == a plain circular 5px.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Box(string radius) =>
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;background-color:#3366cc;"
+            + radius + "}</style></head><body><div class=\"box\"></div></body></html>";
+        var reset = Latin1(HtmlPdf.Convert(Box(
+            "border-radius:10px / 30px;border-top-left-radius:5px;border-top-right-radius:5px;"
+            + "border-bottom-right-radius:5px;border-bottom-left-radius:5px"), opts));
+        var circular = Latin1(HtmlPdf.Convert(Box("border-radius:5px"), opts));
+        Assert.Equal(circular, reset);
+    }
+
+    [Fact]
     public void Page_margin_box_border_radius_slash_form_rounds_the_band()
     {
         // border-radius-elliptical cycle — a margin box's `border-radius: <h> / <v>` rounds its band
@@ -4223,6 +4256,27 @@ public sealed class HtmlPdfConvertTests
         var shortBlock = shortImg.Find(q => Math.Abs(q.H - 12.0) < 1.0);
         Assert.True(tallBlock.Y < shortBlock.Y - 20.0,
             $"tall inline img should push the block img down: tall.blockY={tallBlock.Y}, short.blockY={shortBlock.Y}");
+    }
+
+    [Fact]
+    public void Inline_img_with_padding_reserves_advance_and_still_paints_content()
+    {
+        // post-PR-#186 review P1 — an inline <img> with padding reserves the MARGIN-box advance and emits
+        // a BORDER-box fragment, so ImagePainter (which subtracts the img's own padding/border to get the
+        // content box) still paints the content. Before the fix the fragment was content-sized →
+        // ImagePainter subtracted the padding into a negative content box → no image painted.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var padded = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>I<img src=\"{PngDataUri(16, 16)}\" style=\"padding:10px\">X</p></body></html>", opts)));
+        var plain = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>I<img src=\"{PngDataUri(16, 16)}\">X</p></body></html>", opts)));
+        var p = Assert.Single(padded);      // content STILL painted (not subtracted into nothing)
+        Assert.Single(plain);
+        Assert.Equal(12.0, p.W, 1);          // the 16px content = 12pt, intact
+        Assert.Equal(12.0, p.H, 1);
+        // The padded img's content is inset by the 10px (7.5pt) left padding → further right than plain.
+        Assert.True(p.X > plain[0].X + 5.0,
+            $"padded img content should be inset by its padding: padded.X={p.X}, plain.X={plain[0].X}");
     }
 
     [Fact]

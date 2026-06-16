@@ -44,7 +44,7 @@ namespace NetPdf.Layout.Inline;
 /// length without enforcing a sign invariant on the wrapper itself.</param>
 /// <param name="Atomic">Inline-atomic-boxes cycle — set when this run is an ATOMIC inline box (an
 /// inline <c>&lt;img&gt;</c>): <see cref="Glyphs"/> is then a single synthetic glyph whose
-/// <c>XAdvance</c> equals <see cref="InlineAtomic.WidthPx"/> (NOT HarfBuzz-shaped), and
+/// <c>XAdvance</c> equals <see cref="InlineAtomic.AdvancePx"/> (NOT HarfBuzz-shaped), and
 /// <see cref="TotalAdvance"/> equals that width. The painter skips the synthetic glyph — the atomic's
 /// box is painted from its own emitted fragment — but still advances the line cursor by it. Null for
 /// ordinary text runs.</param>

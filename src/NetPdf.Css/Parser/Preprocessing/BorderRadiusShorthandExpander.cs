@@ -43,6 +43,33 @@ internal static class BorderRadiusShorthandExpander
         !string.IsNullOrWhiteSpace(rawValue)
         && TrySplitTopLevelSlash(CssShorthandHelpers.StripBlockComments(rawValue), out _, out _);
 
+    /// <summary>Whether <paramref name="propertyName"/> is one of the four <c>border-{corner}-radius</c>
+    /// corner LONGHANDS (which also accept a 1- or 2-value <c>h [v]</c> and so must co-write the internal
+    /// `-y` slot — post-PR-#186 review P1).</summary>
+    public static bool IsCornerRadiusLonghand(string propertyName) =>
+        propertyName is "border-top-left-radius" or "border-top-right-radius"
+            or "border-bottom-right-radius" or "border-bottom-left-radius";
+
+    /// <summary>For a SINGLE-value (or CSS-wide) <c>border-{corner}-radius</c> corner longhand, the
+    /// internal vertical (<c>-netpdf-…-radius-y</c>) longhand it should co-write so the corner's two axes
+    /// stay in lockstep — chiefly so a 1-value circular corner longhand RESETS the `-y` a prior elliptical
+    /// `Rx / Ry` set (post-PR-#186 review P1; `-y` = the same value is byte-identical to the painter's
+    /// horizontal-vs-height fallback otherwise). The 2-value elliptical <c>h v</c> corner longhand stays
+    /// unsupported (returns <see langword="false"/> — the same pre-cycle behavior), as does a malformed
+    /// value.</summary>
+    public static bool TryExpandCornerVertical(string propertyName, string rawValue, out string verticalProperty, out string verticalValue)
+    {
+        verticalProperty = $"-netpdf-{propertyName}-y";
+        verticalValue = string.Empty;
+        if (!IsCornerRadiusLonghand(propertyName) || string.IsNullOrWhiteSpace(rawValue)) return false;
+        var trimmed = CssShorthandHelpers.StripBlockComments(rawValue).Trim();
+        if (CssWideKeyword.Is(trimmed)) { verticalValue = trimmed; return true; }
+        if (!CssShorthandHelpers.SplitTopLevel(trimmed, out var values) || values.Count != 1)
+            return false;
+        verticalValue = values[0];   // 1-value → circular: `-y` == the horizontal.
+        return IsValidLonghand(verticalProperty, verticalValue);
+    }
+
     /// <summary>Expand <c>border-radius</c> into its corner longhands — the four
     /// <c>border-{corner}-radius</c> horizontal longhands plus, for the elliptical <c>Rx / Ry</c> slash
     /// form, the four internal <c>-netpdf-border-{corner}-radius-y</c> vertical longhands. Returns
@@ -58,19 +85,25 @@ internal static class BorderRadiusShorthandExpander
         var stripped = CssShorthandHelpers.StripBlockComments(rawValue);
         var trimmed = stripped.Trim();
 
-        // A whole-value CSS-wide keyword applies to every corner (horizontal slot only — a CSS-wide
-        // keyword has no slash form). Resolved at the cascade by MarginBoxStyle.
+        // A `border-radius` declaration ALWAYS sets BOTH axes of every corner (CSS B&B §6.1 — each
+        // `border-{corner}-radius` is one property holding an h + v pair), so it ALWAYS emits both the
+        // horizontal corner longhands AND the internal `-netpdf-border-{corner}-radius-y` vertical
+        // longhands. Emitting `-y` even for the circular / CSS-wide / no-slash forms keeps the vertical
+        // radii in LOCKSTEP with the horizontal: a later circular `border-radius` RESETS the `-y` slots a
+        // prior elliptical `Rx / Ry` set, so `border-radius: 10px / 30px; border-radius: 5px` renders
+        // circular 5px, not 5px / 30px (post-PR-#186 review P1).
+
+        // A whole-value CSS-wide keyword applies to every corner, both axes.
         if (CssWideKeyword.Is(trimmed))
         {
             foreach (var corner in Corners) longhands.Add(($"border-{corner}-radius", trimmed));
+            foreach (var corner in Corners) longhands.Add(($"-netpdf-border-{corner}-radius-y", trimmed));
             return true;
         }
 
         // The elliptical `<horizontal> / <vertical>` form (border-radius-elliptical cycle): split at the
-        // TOP-LEVEL `/` (a `/` inside `calc(...)` is a division, NOT the separator) and expand the
-        // horizontal radii onto the corner longhands + the vertical radii onto the internal
-        // `-netpdf-border-{corner}-radius-y` longhands. A circular value (no top-level `/`) expands
-        // horizontal-only — the painter falls the vertical back to the horizontal.
+        // TOP-LEVEL `/` (a `/` inside `calc(...)` is a division, NOT the separator) → horizontal radii
+        // onto the corner longhands, vertical radii onto the `-y` longhands.
         if (TrySplitTopLevelSlash(stripped, out var horizontal, out var vertical))
         {
             if (!ExpandFourCorners(horizontal, vertical: false, longhands)
@@ -82,7 +115,10 @@ internal static class BorderRadiusShorthandExpander
             return ValidateAll(longhands);
         }
 
-        if (!ExpandFourCorners(stripped, vertical: false, longhands))
+        // A circular value (no top-level `/`): the vertical radii equal the horizontal (X == Y), emitted
+        // onto the `-y` longhands too so they stay in lockstep / reset a prior elliptical.
+        if (!ExpandFourCorners(stripped, vertical: false, longhands)
+            || !ExpandFourCorners(stripped, vertical: true, longhands))
         {
             longhands.Clear();
             return false;

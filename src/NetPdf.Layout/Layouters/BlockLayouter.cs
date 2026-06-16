@@ -7053,7 +7053,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
                 {
                     anyAtomic = true;
-                    if (a.HeightPx > maxAtomicHeight) maxAtomicHeight = a.HeightPx;
+                    // The line box grows to fit the atomic's MARGIN box (border box + block margins).
+                    if (a.MarginBoxHeightPx > maxAtomicHeight) maxAtomicHeight = a.MarginBoxHeightPx;
                 }
             }
             perLineHeights[li] = Math.Max(textLineHeightPx, maxAtomicHeight);
@@ -7088,9 +7089,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 xCursorPx += slice.SliceAdvance;
                 if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
                 {
-                    // `vertical-align: baseline` — the atomic's bottom margin edge sits on the baseline.
+                    // `vertical-align: baseline` — the atomic's MARGIN-box bottom sits on the baseline; the
+                    // emitted BORDER-box fragment is inset by the bottom margin (block) + the leading
+                    // inline margin (so ImagePainter's content box, after it removes the img's own
+                    // padding/border, lands correctly — post-PR-#186 review P1).
+                    var borderBoxTopPx = baselineTopPx - a.MarginBlockEndPx - a.BorderBoxHeightPx;
                     placements.Add(new InlineAtomicPlacement(
-                        a.Box, sliceStartXPx, baselineTopPx - a.HeightPx, a.WidthPx, a.HeightPx));
+                        a.Box, sliceStartXPx + a.MarginInlineStartPx, borderBoxTopPx,
+                        a.BorderBoxWidthPx, a.BorderBoxHeightPx));
                 }
             }
             cumulativeTopPx += thisLineHeightPx;
@@ -7674,14 +7680,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // BlockLayouter emits a positioned fragment; ImagePainter paints it from the image
                     // cache. An img with no usable size (no CSS/attribute size AND a failed load → 0
                     // slots) can't be laid out — it falls through to the skip + diagnostic below.
-                    var atomicWidthPx = child.Style.ReadLengthPxOrZero(PropertyId.Width);
-                    var atomicHeightPx = child.Style.ReadLengthPxOrZero(PropertyId.Height);
-                    if (atomicWidthPx > 0 && atomicHeightPx > 0)
+                    var atomicContentWidthPx = child.Style.ReadLengthPxOrZero(PropertyId.Width);
+                    var atomicContentHeightPx = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+                    if (atomicContentWidthPx > 0 && atomicContentHeightPx > 0)
                     {
+                        // Box model (post-PR-#186 review P1) \u2014 the used CONTENT size is wrapped by the
+                        // img's own padding + border (\u2192 the BORDER box the emitted fragment carries, since
+                        // ImagePainter subtracts them back to the content) + margins (\u2192 the line advance).
+                        var s = child.Style;
+                        var borderBoxWidthPx = atomicContentWidthPx
+                            + s.ReadLengthPxOrZero(PropertyId.PaddingLeft) + s.ReadLengthPxOrZero(PropertyId.PaddingRight)
+                            + s.ReadLengthPxOrZero(PropertyId.BorderLeftWidth) + s.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                        var borderBoxHeightPx = atomicContentHeightPx
+                            + s.ReadLengthPxOrZero(PropertyId.PaddingTop) + s.ReadLengthPxOrZero(PropertyId.PaddingBottom)
+                            + s.ReadLengthPxOrZero(PropertyId.BorderTopWidth) + s.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                        var marginInlineStartPx = s.ReadLengthPxOrZero(PropertyId.MarginLeft);
+                        var advancePx = borderBoxWidthPx
+                            + marginInlineStartPx + s.ReadLengthPxOrZero(PropertyId.MarginRight);
                         textRuns.Add(new NetPdf.Layout.Inline.TextRun(
-                            "\uFFFC", child.Style,
+                            "\uFFFC", s,
                             new NetPdf.Layout.Inline.InlineAtomic(
-                                child, atomicWidthPx, atomicHeightPx)));
+                                child, advancePx, borderBoxWidthPx, borderBoxHeightPx,
+                                marginInlineStartPx,
+                                s.ReadLengthPxOrZero(PropertyId.MarginTop),
+                                s.ReadLengthPxOrZero(PropertyId.MarginBottom))));
                         break;
                     }
                     skipCount++;

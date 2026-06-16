@@ -42,6 +42,6 @@ namespace NetPdf.Layout.Inline;
 /// <param name="Atomic">Inline-atomic-boxes cycle — set when this run is an ATOMIC inline box (an
 /// inline <c>&lt;img&gt;</c>) rather than text. <see cref="Text"/> is then a single <c>U+FFFC</c> OBJECT
 /// REPLACEMENT CHARACTER (so concat/index bookkeeping stays aligned); the shaper produces one synthetic
-/// glyph whose advance is <see cref="InlineAtomic.WidthPx"/> instead of calling HarfBuzz. Null for
+/// glyph whose advance is <see cref="InlineAtomic.AdvancePx"/> instead of calling HarfBuzz. Null for
 /// ordinary text runs (the byte-identical default).</param>
 internal readonly record struct TextRun(string Text, ComputedStyle Style, InlineAtomic? Atomic = null);

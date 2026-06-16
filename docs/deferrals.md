@@ -234,9 +234,13 @@ grepping the ID).
   cache). `TextPainter` skips the synthetic glyph. The OTHER atomic kinds
   (`InlineBlockContainer` / `InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized
   inline-replaced) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
+- **Box model (post-PR-#186 review P1)** — the img's own padding + border + margin are honored: the line
+  reserves the MARGIN-box advance, the emitted fragment is the BORDER box (so `ImagePainter`, which
+  subtracts the img's padding/border to recover the content box, paints correctly), and the margin-box
+  bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut.
 - **Missing (first-cut approximations)** —
-  - Only `vertical-align: baseline` is honoured (the atomic's bottom sits on the line's text baseline);
-    other `vertical-align` values are not yet read.
+  - Only `vertical-align: baseline` is honoured (the atomic's margin-box bottom sits on the line's text
+    baseline); other `vertical-align` values are not yet read.
   - The baseline uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no
     font-metric access; the painter uses the REAL metrics for glyphs, so an atomic's bottom aligns to the
     text baseline within typical-font tolerance).
@@ -1676,9 +1680,9 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `partially resolved` (GRID ships — grid box-sizing cycle). The grid-item intrinsic
-  contribution now honors `box-sizing`; the remaining gap is the BROADER cross-cutting audit (other
-  layouters + a shared helper).
+- **Status** — `approximated` (GRID side ships — grid box-sizing cycle; the BROADER cross-cutting audit
+  remains). The grid-item intrinsic contribution now honors `box-sizing`; the remaining gap is the other
+  layouters + a shared helper.
 - **Behavior** — `GridSizing.ItemOuterContribution` now honors `box-sizing` (grid box-sizing cycle, CSS
   Basic UI 4 §10) via the new `ItemBorderBoxExtent`: a `box-sizing: border-box` item's declared
   width/height IS its border box (border + padding inside), so the chrome is NOT added again; the initial

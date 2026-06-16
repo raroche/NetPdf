@@ -221,53 +221,45 @@ grepping the ID).
 ## inline-atomic-boxes
 
 - **ID** — `inline-atomic-boxes`
-- **Status** — `approximated` (skip + diagnostic).
-- **Behavior** — `BlockLayouter.CollectInlineTextRuns` recognizes
-  inline-level atomic boxes (`BoxKind.InlineBlockContainer`,
-  `InlineFlexContainer`, `InlineGridContainer`, `InlineTable`,
-  `InlineReplacedElement`) but currently SKIPS their content. Each
-  skipped occurrence emits the
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` diagnostic (Warning) so
-  callers see the gap rather than silently mis-rendering.
-- **Missing** — Per CSS Inline L3, atomic inline boxes participate
-  in the inline formatting context as opaque units: their intrinsic
-  width/height contributes to line-box advance + line-box block
-  extent, the surrounding text shapes around them, and they're
-  positioned on the baseline (or whatever `vertical-align`
-  resolves to). The line builder needs an "atomic inline glyph"
-  primitive carrying box-fragment width + ascent/descent so wrap
-  decisions account for it. Replaced elements specifically need
-  intrinsic-sizing via the existing `ImageSafetyValidator` /
-  `FontSafetyValidator` resolved intrinsic dimensions.
-- **Trigger** — corpus needs inline-block / inline-replaced
-  content (typical use case: `<img>` inline in a paragraph, or
-  `display: inline-block` styled spans), OR a user-reported case
-  where atomic inline content disappears.
+- **Status** — `approximated` (inline `<img>` SHIPS first-cut — inline-atomic-boxes cycle; inline-block /
+  -flex / -grid / -table still skip + diagnose).
+- **Behavior** — An inline `<img>` (`BoxKind.InlineReplacedElement`) with a resolved used size now
+  participates in line layout as an ATOMIC box: `BlockLayouter.CollectInlineTextRuns` converts it into a
+  one-char `U+FFFC` `TextRun` carrying an `InlineAtomic` (box + used border-box width/height); the
+  glyph-centric pipeline (`TextRun → Itemize → Shape → Wrap`) reserves its advance (a synthetic
+  single-glyph `ShapedRun` whose advance is the used width, shaped WITHOUT HarfBuzz — `LineBuilder.Shape`),
+  the white-space preprocessor passes the atomic through verbatim (preserving the payload), the line box
+  grows to fit a tall atomic (`BlockLayouter.ComputeInlineAtomicLayout` → per-line heights), and
+  `BlockLayouter` emits a positioned `BoxFragment` for the box (so `ImagePainter` paints it from the image
+  cache). `TextPainter` skips the synthetic glyph. The OTHER atomic kinds
+  (`InlineBlockContainer` / `InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized
+  inline-replaced) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
+- **Missing (first-cut approximations)** —
+  - Only `vertical-align: baseline` is honoured (the atomic's bottom sits on the line's text baseline);
+    other `vertical-align` values are not yet read.
+  - The baseline uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no
+    font-metric access; the painter uses the REAL metrics for glyphs, so an atomic's bottom aligns to the
+    text baseline within typical-font tolerance).
+  - The inline offset is start-relative — a centred / right / justified line, and RTL paragraphs, don't
+    yet shift the atomic with the text.
+  - `inline-block` / `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out
+    sub-box, not just an intrinsic size) remain deferred.
+- **Trigger** — a centred/justified/RTL inline `<img>`, a non-baseline `vertical-align`, or a styled
+  `display: inline-block` span in the corpus.
 - **Owner files** —
-  - `src/NetPdf.Layout/Inline/LineBuilder.cs` — define an "atomic
-    glyph" primitive (or extend `ShapedGlyph` with an atomic-box
-    payload) that wrap decisions treat as a single non-breakable
-    unit with its own advance + ascent/descent.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::CollectInlineTextRuns`
-    — convert each atomic inline box into the new primitive
-    instead of emitting the warning + skip.
-  - `src/NetPdf.Layout/Inline/InlineLayouter.cs::LayoutPerRun` —
-    pass atomic primitives through to `LineBuilder.Wrap`.
-- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4
-  (this branch).
-- **Still deferred (riders PR, branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`)** — inline
-  `<img>` was scoped into that PR but pulled back out by decision: the inline pipeline
-  (`TextRun → Itemize → Shape → Wrap → InlineLayoutResult`) is entirely GLYPH-centric, so giving an
-  atomic replaced box a line position + advance is a genuine core-engine extension (the "atomic glyph"
-  primitive below) that all text layout depends on — too large/risky to slot alongside the contained
-  paged-media / grid riders. It gets its own focused PR. (Painting is free once an inline `<img>` gets a
-  positioned `BoxFragment` — `ImagePainter` already paints any cached-image fragment by its geometry — so
-  the remaining work is purely the inline-layout side.)
-- **Removal condition** — `CollectInlineTextRuns` no longer emits
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`; atomic inline boxes
-  participate in line layout as opaque advances; a test renders
-  a paragraph with an inline `<img>` and the image's geometry is
-  preserved in the emitted fragments.
+  - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
+  - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
+  - `src/NetPdf.Layout/Inline/LineBuilder.cs` — `Shape` (synthetic glyph) + the white-space
+    preprocessors (atomic pass-through). Wrap treats the 1-glyph run as a non-breakable unit.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert),
+    `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit the
+    atomic's own fragment). The remaining vertical-align / alignment / inline-block work extends here.
+  - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
+- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; first cut shipped in the inline-atomic-boxes
+  cycle (this branch).
+- **Removal condition** — `vertical-align` (incl. non-baseline) + centred / RTL alignment honoured for
+  inline `<img>`, and inline-block / -flex / -grid / -table atomics laid out (no longer
+  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 

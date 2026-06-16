@@ -4141,6 +4141,68 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Inline_img_in_text_is_laid_out_and_painted()
+    {
+        // inline-atomic-boxes cycle — an INLINE <img> (default display) inside a line of text is no
+        // longer skipped (LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001): it reserves its used size on the
+        // line as an atomic and paints. 16×16 px = 12×12 pt placement, one XObject.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<p>Hello <img src=\"{PngDataUri(16, 16)}\"> World</p>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(12.0, p.W, 1);
+        Assert.Equal(12.0, p.H, 1);
+        Assert.Contains("/Subtype /Image", pdf);
+        // The handled inline <img> no longer raises the atomic-not-supported diagnostic.
+        Assert.DoesNotContain(result.Warnings,
+            d => d.Code == DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
+    [Fact]
+    public void Inline_img_advances_with_preceding_text_on_the_line()
+    {
+        // inline flow — the img sits AFTER the leading text on the line, so more leading text shifts
+        // its placement to the right (proves it participates in line layout, not anchored at x=0).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var near = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>I<img src=\"{PngDataUri(16, 16)}\"></p></body></html>", opts)));
+        var far = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>IIIIIIIIII<img src=\"{PngDataUri(16, 16)}\"></p></body></html>", opts)));
+        Assert.Single(near);
+        Assert.Single(far);
+        Assert.True(far[0].X > near[0].X + 5.0,
+            $"img after more text should be further right: near.X={near[0].X}, far.X={far[0].X}");
+    }
+
+    [Fact]
+    public void Inline_img_taller_than_text_grows_its_line_box()
+    {
+        // inline-atomic-boxes cycle — a tall inline <img> grows its line box (max(text line-height,
+        // img height)), so a following BLOCK image is pushed further down the page (a smaller
+        // bottom-up PDF Y). The block image is identified by its 12×12 pt size.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var tall = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<p>x<img src=\"{PngDataUri(16, 16)}\" width=\"16\" height=\"64\"></p>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block\">" +
+            "</body></html>", opts)));
+        var shortImg = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<p>x<img src=\"{PngDataUri(16, 16)}\" width=\"16\" height=\"8\"></p>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block\">" +
+            "</body></html>", opts)));
+        Assert.Equal(2, tall.Count);       // inline img + block img
+        Assert.Equal(2, shortImg.Count);
+        var tallBlock = tall.Find(q => Math.Abs(q.H - 12.0) < 1.0);
+        var shortBlock = shortImg.Find(q => Math.Abs(q.H - 12.0) < 1.0);
+        Assert.True(tallBlock.Y < shortBlock.Y - 20.0,
+            $"tall inline img should push the block img down: tall.blockY={tallBlock.Y}, short.blockY={shortBlock.Y}");
+    }
+
+    [Fact]
     public void Img_css_width_completes_height_from_the_intrinsic_ratio()
     {
         // §10.3.2 — width: 32px declared, height auto, intrinsic 16×16 → height completes via

@@ -347,6 +347,10 @@ internal static class TextPainter
 
                 if (slice.GlyphLength <= 0) continue;
                 var run = shapedRuns[slice.ShapedRunIndex];
+                // Inline-atomic-boxes cycle — an inline `<img>` atomic's synthetic glyph only reserves
+                // advance (already applied above); the box itself paints from its own emitted fragment
+                // (ImagePainter), so emit no glyph here.
+                if (run.Atomic is not null) continue;
                 var runStyle = preRuns[run.Source.SourceTextRunIndex].Style;
 
                 var fontSizePx = runStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);

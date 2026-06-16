@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using NetPdf.Css.ComputedValues;
+using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Text.Bidi;
 using NetPdf.Text.Shaping;
@@ -156,6 +157,55 @@ public class LineBuilderShapingTests
         {
             Assert.Equal(itemized[i], result[i].Source);
         }
+    }
+
+    // --- Inline-atomic boxes (inline `<img>`) --------------------
+
+    [Fact]
+    public void Shape_atomic_run_emits_one_synthetic_glyph_carrying_the_atomic()
+    {
+        // inline-atomic-boxes cycle — an atomic TextRun (an inline `<img>`; its text is a single
+        // U+FFFC) is NOT HarfBuzz-shaped: Shape emits one synthetic glyph whose advance is the atomic's
+        // used width, TotalAdvance == that width, and the ShapedRun carries the Atomic payload so the
+        // painter skips the glyph + the box paints from its own fragment.
+        using var resolver = new TestShaperResolver();
+        var box = Box.CreateRoot(MakeStyle());
+        var sourceRuns = new List<TextRun>
+        {
+            new("\uFFFC", MakeStyle(), new InlineAtomic(box, WidthPx: 40, HeightPx: 24)),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var shaped = Assert.Single(result);
+        Assert.NotNull(shaped.Atomic);
+        Assert.Equal(40.0, shaped.Atomic!.Value.WidthPx, precision: 4);
+        Assert.Equal(24.0, shaped.Atomic!.Value.HeightPx, precision: 4);
+        Assert.Equal(40.0, shaped.TotalAdvance, precision: 4);
+        var glyph = Assert.Single(shaped.Glyphs);
+        Assert.Equal(40.0, glyph.XAdvance, precision: 4);
+        Assert.Same(box, shaped.Atomic!.Value.Box);
+    }
+
+    [Fact]
+    public void Preprocess_preserves_the_atomic_payload_through_whitespace_collapse()
+    {
+        // inline-atomic-boxes cycle — white-space collapsing must NOT drop an atomic run's payload (a
+        // `new TextRun(text, style)` reconstruction would). The atomic survives verbatim between two
+        // collapsed text runs under the default `white-space: normal`.
+        var box = Box.CreateRoot(MakeStyle());
+        var runs = new List<TextRun>
+        {
+            new("Hello ", MakeStyle()),
+            new("\uFFFC", MakeStyle(), new InlineAtomic(box, WidthPx: 16, HeightPx: 16)),
+            new(" World", MakeStyle()),
+        };
+        var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal);
+
+        Assert.Equal(3, result.Count);
+        Assert.NotNull(result[1].Atomic);
+        Assert.Equal(16.0, result[1].Atomic!.Value.WidthPx, precision: 4);
+        Assert.Equal("\uFFFC", result[1].Text);
     }
 
     // --- Multi-run inputs ----------------------------------------

@@ -760,6 +760,194 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_spanning_item_distributes_after_subtracting_fixed_tracks()
+    {
+        // Riders-2 grid spanning-item distribution cycle (CSS Grid §11.5.1) — a content item spanning a
+        // FIXED + an AUTO column distributes its width to the AUTO track AFTER subtracting what the fixed
+        // track already covers, not equal-share across both. Spanner content 250px over `100px auto`:
+        // the auto column = max(0, 250 − 100) = 150 (was 250/2 = 125 under equal-share). A second item in
+        // column 2 reads the track width.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: 100px auto; grid-template-rows: 20px 20px; }
+                .spanner { grid-row-start: 1; grid-column-start: 1; grid-column-end: 3; }
+                .col2 { grid-row-start: 2; grid-column-start: 2; }
+                .inner { width: 250px; height: 10px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="spanner"><div class="inner"></div></div>
+              <div class="col2"></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var col2 = FindByClass(sink, "col2");
+        Assert.NotNull(col2);
+        // The auto column (track 2) = the spanner's 250px content minus the fixed 100px column = 150
+        // (NOT the 125 an equal-share contribution/span would give).
+        Assert.Equal(150.0, col2!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_spanning_item_subtracts_prior_non_spanning_intrinsic_track()
+    {
+        // Post-PR-#185 review F1 (CSS Grid §11.5.1) — a spanning item's extra space subtracts the
+        // CURRENT base of EVERY spanned track, including an INTRINSIC track a non-spanning item already
+        // sized (the first cut subtracted only NON-intrinsic tracks → double-counted). `auto auto`, a
+        // 100px non-spanning item in col 1 + a 150px item spanning both → extra = 150 − (100 + 0) = 50,
+        // split equally → col 1 = 125, col 2 = 25 (total 150, NOT the 175 the double-count produced).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: auto auto; grid-template-rows: 20px 20px 20px; }
+                .prior { grid-row-start: 1; grid-column-start: 1; }
+                .spanner { grid-row-start: 2; grid-column-start: 1; grid-column-end: 3; }
+                .p0 { grid-row-start: 3; grid-column-start: 1; }
+                .p1 { grid-row-start: 3; grid-column-start: 2; }
+                .w100 { width: 100px; height: 10px; }
+                .w150 { width: 150px; height: 10px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="prior"><div class="w100"></div></div>
+              <div class="spanner"><div class="w150"></div></div>
+              <div class="p0"></div>
+              <div class="p1"></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var p0 = FindByClass(sink, "p0");
+        var p1 = FindByClass(sink, "p1");
+        Assert.NotNull(p0);
+        Assert.NotNull(p1);
+        Assert.Equal(125.0, p0!.Value.InlineSize, precision: 3); // 100 (prior) + 25 (spanner share)
+        Assert.Equal(25.0, p1!.Value.InlineSize, precision: 3);  // 0 + 25 (spanner share)
+    }
+
+    [Fact]
+    public async Task Production_html_spanning_item_keeps_fixed_min_of_minmax_column()
+    {
+        // Post-PR-#185 review F1 (CSS Grid §11.5 step 3 / §11.5.1) — a minmax(100px, auto) track has a
+        // FIXED min, so a spanning item's base distribution SUBTRACTS its 100px base but never GROWS it
+        // (only its growth limit grows). `minmax(100px, auto) auto`, a 150px spanner → extra = 150 −
+        // (100 + 0) = 50 to the single base-growing track (col 2) → col 1 = 100, col 2 = 50.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: minmax(100px, auto) auto; grid-template-rows: 20px 20px; }
+                .spanner { grid-row-start: 1; grid-column-start: 1; grid-column-end: 3; }
+                .p0 { grid-row-start: 2; grid-column-start: 1; }
+                .p1 { grid-row-start: 2; grid-column-start: 2; }
+                .w150 { width: 150px; height: 10px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="spanner"><div class="w150"></div></div>
+              <div class="p0"></div>
+              <div class="p1"></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var p0 = FindByClass(sink, "p0");
+        var p1 = FindByClass(sink, "p1");
+        Assert.NotNull(p0);
+        Assert.NotNull(p1);
+        Assert.Equal(100.0, p0!.Value.InlineSize, precision: 3); // fixed min, not grown
+        Assert.Equal(50.0, p1!.Value.InlineSize, precision: 3);  // gets the whole 50 remainder
+    }
+
+    [Fact]
+    public async Task Production_html_spanning_item_does_not_grow_tracks_on_negative_remainder()
+    {
+        // Post-PR-#185 review F1 (CSS Grid §11.5.1) — when the spanned tracks already exceed the
+        // spanning item's contribution, extra = max(0, …) = 0 and NO intrinsic track grows. `auto auto`
+        // with a 200px item in col 1 + a 10px item in col 2 (both non-spanning) + a 150px spanner over
+        // both → extra = 150 − (200 + 10) = 0; cols stay 200 / 10.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: auto auto; grid-template-rows: 20px 20px 20px; }
+                .big { grid-row-start: 1; grid-column-start: 1; }
+                .small { grid-row-start: 1; grid-column-start: 2; }
+                .spanner { grid-row-start: 2; grid-column-start: 1; grid-column-end: 3; }
+                .p0 { grid-row-start: 3; grid-column-start: 1; }
+                .p1 { grid-row-start: 3; grid-column-start: 2; }
+                .w200 { width: 200px; height: 10px; }
+                .w10 { width: 10px; height: 10px; }
+                .w150 { width: 150px; height: 10px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="big"><div class="w200"></div></div>
+              <div class="small"><div class="w10"></div></div>
+              <div class="spanner"><div class="w150"></div></div>
+              <div class="p0"></div>
+              <div class="p1"></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var p0 = FindByClass(sink, "p0");
+        var p1 = FindByClass(sink, "p1");
+        Assert.NotNull(p0);
+        Assert.NotNull(p1);
+        Assert.Equal(200.0, p0!.Value.InlineSize, precision: 3); // unchanged
+        Assert.Equal(10.0, p1!.Value.InlineSize, precision: 3);  // unchanged
+    }
+
+    [Fact]
+    public async Task Production_html_full_span_item_over_large_repeat_grid_distributes_evenly()
+    {
+        // Post-PR-#185 review F2 — perf-path canary: ONE item spanning a large repeat() grid is O(N) (a
+        // single visit per spanned track), not the O(N²) the old per-track × per-span re-scan produced.
+        // repeat(50, auto) + a 500px item spanning all 50 → each track 10, the spanner 500.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: repeat(50, auto); grid-template-rows: 20px 20px; }
+                .spanner { grid-row-start: 1; grid-column-start: 1; grid-column-end: 51; }
+                .p0 { grid-row-start: 2; grid-column-start: 1; }
+                .w500 { width: 500px; height: 10px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="spanner"><div class="w500"></div></div>
+              <div class="p0"></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var p0 = FindByClass(sink, "p0");
+        var spanner = FindByClass(sink, "spanner");
+        Assert.NotNull(p0);
+        Assert.NotNull(spanner);
+        Assert.Equal(10.0, p0!.Value.InlineSize, precision: 3);    // 500 / 50
+        Assert.Equal(500.0, spanner!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_grid_row_honors_item_min_height_floor()
+    {
+        // Riders-2 grid min-height cycle — an auto row's content-determined item now honors its
+        // `min-height` floor (CSS Box Sizing §6.1): a min-height TALLER than the content grows the row,
+        // while a min-height SHORTER than the content doesn't shrink it (content wins).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: 100px; grid-template-rows: auto auto; width: 100px; }
+                .tall-min { min-height: 80px; }
+                .short-min { min-height: 20px; }
+                .inner { height: 30px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="tall-min" style="grid-row-start:1"><div class="inner"></div></div>
+              <div class="short-min" style="grid-row-start:2"><div class="inner"></div></div>
+            </div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var tall = FindByClass(sink, "tall-min");
+        var shortMin = FindByClass(sink, "short-min");
+        Assert.NotNull(tall);
+        Assert.NotNull(shortMin);
+        Assert.Equal(80.0, tall!.Value.BlockSize, precision: 3);     // min-height 80 floors the 30px content
+        Assert.Equal(30.0, shortMin!.Value.BlockSize, precision: 3); // content 30 > min-height 20 → content wins
+    }
+
+    [Fact]
     public async Task Production_html_auto_row_sizes_from_item_CONTENT_not_just_declared_height()
     {
         // Non-block-pagination arc (grid CONTENT-sized rows) — an auto row with

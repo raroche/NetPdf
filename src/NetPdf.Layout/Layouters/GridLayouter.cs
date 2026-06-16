@@ -531,6 +531,22 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 measureCache[item] = extent;
                 return extent;
             };
+            // Grid content-width cycle — a SECOND measurer reporting the cell's MAX-CONTENT inline extent
+            // (ContentInlineExtent) at the caller's unconstrained probe width, so auto / min-content /
+            // max-content COLUMNS size to their content width. Separate cache (different measured value —
+            // width, not height).
+            var widthMeasureCache = new System.Collections.Generic.Dictionary<Box, double>(
+                System.Collections.Generic.ReferenceEqualityComparer.Instance);
+            GridSizing.GridContentMeasurer widthMeasurer = (item, availInline) =>
+            {
+                if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;
+                var extent = NestedContentMeasurer.Measure(
+                    item, availInline, measureBlockBudget, _shaperResolver,
+                    measureWritingMode, measureIsRtl, cancellationToken)
+                    .ContentInlineExtent;
+                widthMeasureCache[item] = extent;
+                return extent;
+            };
             var sizing = GridSizing.Resolve(
                 gridBox: _rootBox,
                 contentInlineOffset: 0,
@@ -539,7 +555,8 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 contentBlockSize: _contentBlockSize,
                 emit: SafeEmit,
                 cancellationToken: cancellationToken,
-                contentMeasurer: contentMeasurer);
+                contentMeasurer: contentMeasurer,
+                widthMeasurer: widthMeasurer);
 
             if (!sizing.HasExplicitTracks)
             {

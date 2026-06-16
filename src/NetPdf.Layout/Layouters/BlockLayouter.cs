@@ -8804,6 +8804,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 measureCache[item] = extent;
                 return extent;
             };
+        // Grid content-width cycle — also wire the MAX-CONTENT inline measurer so the pre-measure's
+        // auto / intrinsic COLUMN widths match the real GridLayouter emission (else the pre-measure's
+        // narrower columns would over-estimate row heights → mispredict pagination).
+        var widthMeasureCache = new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
+        GridSizing.GridContentMeasurer? widthMeasurer = _shaperResolver is null
+            ? null
+            : (item, availInline) =>
+            {
+                if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;
+                var extent = NestedContentMeasurer.Measure(
+                    item, availInline,
+                    blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                    shaperResolver: _shaperResolver,
+                    writingMode: WritingMode.HorizontalTb, isRtl: false,
+                    cancellationToken: cancellationToken).ContentInlineExtent;
+                widthMeasureCache[item] = extent;
+                return extent;
+            };
         var sizing = GridSizing.Resolve(
             gridBox: gridBox,
             contentInlineOffset: 0,
@@ -8812,7 +8830,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentBlockSize: 1,  // indefinite block: auto-height grid's extent is what we compute
             emit: null,
             cancellationToken: cancellationToken,
-            contentMeasurer: measurer);
+            contentMeasurer: measurer,
+            widthMeasurer: widthMeasurer);
         return sizing.RowExtentSum;
     }
 

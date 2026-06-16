@@ -5401,6 +5401,144 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Post-PR-#185 review F1 — §11.5.1 spanning-item base distribution
+    //  (subtract ALL spanned track sizes; grow only base-growing tracks;
+    //  order-independent planned increases). Declared item widths make the
+    //  outer contributions deterministic without a content measurer; auto-
+    //  width probe items stretch to their cell so InlineSize == track size.
+    // =====================================================================
+
+    [Fact]
+    public void Spanning_distribution_subtracts_prior_non_spanning_intrinsic_track()
+    {
+        // CSS Grid §11.5.1: a spanning item's extra space subtracts the CURRENT base size of EVERY
+        // spanned track — including an INTRINSIC track a non-spanning item already sized (the first cut
+        // subtracted only NON-intrinsic tracks → double-counted). `auto auto`, a 100px non-spanning item
+        // in col 1, a 150px item spanning both → extra = 150 − (100 + 0) = 50, split equally → col 1 =
+        // 125, col 2 = 25 (total 150, NOT the 175 the double-count produced).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForLength(20), TrackEntry.ForLength(20), TrackEntry.ForLength(20)),
+            cols: Tracks(TrackEntry.ForAuto(), TrackEntry.ForAuto()));
+        var prior = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        SetExplicitWidth(prior, 100);
+        var spanner = BuildItemWithExplicitStartAndSpan(rowStart: 2, rowSpan: 1, colStart: 1, colSpan: 2);
+        SetExplicitWidth(spanner, 150);
+        var probe0 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        var probe1 = BuildItemWithExplicitPlacement(row: 3, col: 2);
+        grid.AppendChild(prior);
+        grid.AppendChild(spanner);
+        grid.AppendChild(probe0);
+        grid.AppendChild(probe1);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertInlineSize(sink, probe0, 125);
+        AssertInlineSize(sink, probe1, 25);
+    }
+
+    [Fact]
+    public void Spanning_distribution_keeps_fixed_min_of_minmax_and_grows_only_intrinsic_min_track()
+    {
+        // CSS Grid §11.5 step 3 / §11.5.1: a minmax(100px, auto) track has a FIXED min, so a spanning
+        // item's base distribution SUBTRACTS its 100px base but never GROWS it (only its growth limit
+        // grows, §11.5 step 4). `minmax(100px, auto) auto`, a 150px spanner → extra = 150 − (100 + 0) =
+        // 50 to the single base-growing track (col 2) → col 1 = 100 (unchanged), col 2 = 50.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForLength(20), TrackEntry.ForLength(20)),
+            cols: Tracks(
+                TrackEntry.ForMinMax(TrackEntry.ForLength(100), TrackEntry.ForAuto()),
+                TrackEntry.ForAuto()));
+        var spanner = BuildItemWithExplicitStartAndSpan(rowStart: 1, rowSpan: 1, colStart: 1, colSpan: 2);
+        SetExplicitWidth(spanner, 150);
+        var probe0 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var probe1 = BuildItemWithExplicitPlacement(row: 2, col: 2);
+        grid.AppendChild(spanner);
+        grid.AppendChild(probe0);
+        grid.AppendChild(probe1);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertInlineSize(sink, probe0, 100);
+        AssertInlineSize(sink, probe1, 50);
+    }
+
+    [Fact]
+    public void Spanning_distribution_is_order_independent_for_overlapping_equal_span_items()
+    {
+        // CSS Grid §11.5.1 commits per-track PLANNED increases (max over the items in a span-count
+        // group) AFTER the group, so two equal-span spanners sharing a track distribute
+        // ORDER-INDEPENDENTLY. `auto auto auto`, spanner A over cols 1-2 (100px) + spanner B over cols
+        // 2-3 (100px) → each track 50 (50/50/50), NOT the order-dependent 50/75/25 immediate growth gives.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForLength(20), TrackEntry.ForLength(20)),
+            cols: Tracks(TrackEntry.ForAuto(), TrackEntry.ForAuto(), TrackEntry.ForAuto()));
+        var spanA = BuildItemWithExplicitStartAndSpan(rowStart: 1, rowSpan: 1, colStart: 1, colSpan: 2);
+        SetExplicitWidth(spanA, 100);
+        var spanB = BuildItemWithExplicitStartAndSpan(rowStart: 1, rowSpan: 1, colStart: 2, colSpan: 2);
+        SetExplicitWidth(spanB, 100);
+        var probe0 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var probe1 = BuildItemWithExplicitPlacement(row: 2, col: 2);
+        var probe2 = BuildItemWithExplicitPlacement(row: 2, col: 3);
+        grid.AppendChild(spanA);
+        grid.AppendChild(spanB);
+        grid.AppendChild(probe0);
+        grid.AppendChild(probe1);
+        grid.AppendChild(probe2);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertInlineSize(sink, probe0, 50);
+        AssertInlineSize(sink, probe1, 50);
+        AssertInlineSize(sink, probe2, 50);
+    }
+
+    [Fact]
+    public void Spanning_distribution_does_not_grow_tracks_when_remainder_is_negative()
+    {
+        // CSS Grid §11.5.1: when the spanned tracks already exceed the spanning item's contribution,
+        // extra = max(0, …) = 0 and NO intrinsic track grows. `auto auto` with a 200px item in col 1 +
+        // a 10px item in col 2 (both non-spanning), a 150px spanner over both → extra = 150 − (200 + 10)
+        // = 0; cols stay 200 / 10.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForLength(20), TrackEntry.ForLength(20), TrackEntry.ForLength(20)),
+            cols: Tracks(TrackEntry.ForAuto(), TrackEntry.ForAuto()));
+        var big0 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        SetExplicitWidth(big0, 200);
+        var small1 = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        SetExplicitWidth(small1, 10);
+        var spanner = BuildItemWithExplicitStartAndSpan(rowStart: 2, rowSpan: 1, colStart: 1, colSpan: 2);
+        SetExplicitWidth(spanner, 150);
+        var probe0 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        var probe1 = BuildItemWithExplicitPlacement(row: 3, col: 2);
+        grid.AppendChild(big0);
+        grid.AppendChild(small1);
+        grid.AppendChild(spanner);
+        grid.AppendChild(probe0);
+        grid.AppendChild(probe1);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertInlineSize(sink, probe0, 200);
+        AssertInlineSize(sink, probe1, 10);
+    }
+
+    // =====================================================================
     //  Helpers
     // =====================================================================
 
@@ -5455,6 +5593,32 @@ public sealed class GridLayouterTests
         Assert.Equal(blockOffset, found.Value.BlockOffset, precision: 3);
         Assert.Equal(inlineSize, found.Value.InlineSize, precision: 3);
         Assert.Equal(blockSize, found.Value.BlockSize, precision: 3);
+    }
+
+    /// <summary>Post-PR-#185 — asserts the emitted fragment for <paramref name="box"/> has the expected
+    /// inline size. An auto-width grid item stretches to fill its cell, so this reads the resolved TRACK
+    /// size (used by the §11.5.1 spanning-distribution tests via auto-width probe items).</summary>
+    private static void AssertInlineSize(RecordingFragmentSink sink, Box box, double expected)
+    {
+        BoxFragment? found = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == box) { found = f; break; }
+        }
+        Assert.NotNull(found);
+        Assert.Equal(expected, found!.Value.InlineSize, precision: 3);
+    }
+
+    /// <summary>Post-PR-#185 — builds a <see cref="TrackList"/> from a sequence of
+    /// <see cref="TrackEntry"/> sizing functions (each wrapped in a <see cref="TrackListEntry"/>).</summary>
+    private static TrackList Tracks(params TrackEntry[] entries)
+    {
+        var builder = ImmutableArray.CreateBuilder<TrackListItem>(entries.Length);
+        foreach (var e in entries)
+        {
+            builder.Add(new TrackListEntry(e));
+        }
+        return new TrackList(builder.MoveToImmutable());
     }
 
     private static Box BuildGridContainer(double[] rowsPx, double[] colsPx)

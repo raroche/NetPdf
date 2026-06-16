@@ -134,11 +134,37 @@ public sealed class AtPageMarginResolverTests
     [Fact]
     public async Task Resolve_defers_left_right_blank_and_named_selectors()
     {
-        // :left/:right/:blank/named-page selectors are recognized but not applied (multi-page-gated).
+        // The CONTEXT-FREE overload (document default) recognizes but doesn't apply :left/:right/:blank/
+        // named-page selectors — the per-page geometry comes from the context-aware overload below.
         Assert.False((await ResolveCss("@page :left { margin: 5px }")).HasAny);
         Assert.False((await ResolveCss("@page :right { margin: 5px }")).HasAny);
         Assert.False((await ResolveCss("@page :blank { margin: 5px }")).HasAny);
         Assert.False((await ResolveCss("@page chapter { margin: 5px }")).HasAny);
+    }
+
+    // ---- Context-aware per-page margins (per-page-geometry cycle — duplex / named) ----
+
+    [Fact]
+    public async Task Resolve_with_context_applies_duplex_left_right_margins()
+    {
+        // Duplex margins: `@page :left`/`:right` give the left/right pages different insets. Page 0 is a
+        // RIGHT page (index 0), page 1 a LEFT page — each gets its own margin-left.
+        const string css = "@page { margin: 0 } @page :left { margin-left: 96px } @page :right { margin-left: 24px }";
+        var right = await ResolveCss(css, new AtPageRules.PageSelectorContext(0));
+        var left = await ResolveCss(css, new AtPageRules.PageSelectorContext(1));
+        Assert.Equal(24.0, right.LeftPx!.Value, 3);   // :right
+        Assert.Equal(96.0, left.LeftPx!.Value, 3);    // :left
+    }
+
+    [Fact]
+    public async Task Resolve_with_context_applies_a_named_page_margin()
+    {
+        // A named page's margin applies on a page assigned that name; an unnamed page keeps the bare.
+        const string css = "@page { margin: 10px } @page chapter { margin: 40px }";
+        var named = await ResolveCss(css, new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter"));
+        var unnamed = await ResolveCss(css, new AtPageRules.PageSelectorContext(2));
+        Assert.Equal(40.0, named.TopPx!.Value, 3);    // @page chapter
+        Assert.Equal(10.0, unnamed.TopPx!.Value, 3);  // bare
     }
 
     [Fact]
@@ -262,6 +288,18 @@ public sealed class AtPageMarginResolverTests
             sheet, preprocess, href: null, origin: CssStylesheetOrigin.Author,
             ownerKind: CssStylesheetOwnerKind.Unknown, mediaQuery: sheetMedia, isDisabled: isDisabled, order: 0);
         return AtPageMarginResolver.Resolve(new[] { stylesheet }, media ?? PrintContext);
+    }
+
+    private static async Task<AtPageMarginResolver.ResolvedPageMargins> ResolveCss(
+        string css, AtPageRules.PageSelectorContext ctx)
+    {
+        var sheet = await ParseSheet(css);
+        var preprocess = CssPreprocessor.Process(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, href: null, origin: CssStylesheetOrigin.Author,
+            ownerKind: CssStylesheetOwnerKind.Unknown, mediaQuery: null, isDisabled: false, order: 0);
+        return AtPageMarginResolver.Resolve(
+            new[] { stylesheet }, PrintContext, PrintContext.ViewportWidthPx, PrintContext.ViewportHeightPx, ctx);
     }
 
     private static async Task<ICssStyleSheet> ParseSheet(string css)

@@ -1007,6 +1007,56 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(3, TotalGlyphCount(pdf));   // body "x" (1) + compound box "AB" (2)
     }
 
+    // ---- Per-page @page GEOMETRY (per-page-geometry cycle) ----
+
+    [Fact]
+    public void At_page_left_right_duplex_margins_shift_the_body_per_page()
+    {
+        // Per-page-geometry cycle — duplex margins. `@page :right { margin-left: 24px }` /
+        // `@page :left { margin-left: 96px }` give the right (page 0) and left (page 1) pages DIFFERENT
+        // left insets, so the body paints at a different X on each page. Four 400px blocks (1600px) on a
+        // margin-0 A4 (~1122px content) split 2 / 2 across two pages. The body is laid out against the
+        // bare content area (documented approximation) but the per-page LEFT margin shifts the PAINT:
+        // page 0 fills at 24px → 18pt, page 1 at 96px → 72pt.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { margin: 0 } @page :right { margin-left: 24px } @page :left { margin-left: 96px }" +
+            "</style></head><body>");
+        for (var i = 0; i < 4; i++) sb.Append("<div style=\"height:400px;background-color:#3366cc\"></div>");
+        sb.Append("</body></html>");
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+        var rects = AllRects(Latin1(result.Pdf));
+
+        Assert.Equal(2, result.PageCount);
+        Assert.True(rects.Count >= 4, $"expected a fill per block, got {rects.Count}");
+        Assert.Equal(18.0, rects[0].X, 1);    // page 0 (right) — margin-left 24px
+        Assert.Equal(72.0, rects[^1].X, 1);   // page 1 (left)  — margin-left 96px
+    }
+
+    [Fact]
+    public void At_page_named_page_size_changes_that_pages_media_box()
+    {
+        // Per-page-geometry cycle — a NAMED page's `size` changes its own MediaBox. `@page chapter { size:
+        // A5 }` while the bare page stays A4; the second section (`page: chapter`) forces a break onto a
+        // "chapter" page, so page 0's MediaBox is A4 and page 1's is A5 (the first cut applies per-page
+        // SIZE to the page's MediaBox; the body still fragments against the bare A4 area).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { size: A4 } @page chapter { size: A5 }" +
+            ".ch { page: chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:100px\"></div><section class=\"ch\" style=\"height:100px\"></section>" +
+            "</body></html>");
+        var boxes = AllMediaBoxes(Latin1(result.Pdf));
+
+        Assert.Equal(2, result.PageCount);
+        Assert.Equal(2, boxes.Count);
+        Assert.Equal(595.3, boxes[0].W, 1);   // page 0 — A4 (bare)
+        Assert.Equal(841.9, boxes[0].H, 1);
+        Assert.Equal(419.5, boxes[1].W, 1);   // page 1 — A5 (@page chapter)
+        Assert.Equal(595.3, boxes[1].H, 1);
+    }
+
     [Fact]
     public void At_page_size_is_ignored_when_PreferCssPageSize_is_false()
     {
@@ -1048,6 +1098,23 @@ public sealed class HtmlPdfConvertTests
         var nums = pdf[(open + 1)..close].Split(' ', StringSplitOptions.RemoveEmptyEntries);  // 0 0 W H
         return (double.Parse(nums[2], CultureInfo.InvariantCulture),
             double.Parse(nums[3], CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>Every page's <c>/MediaBox [0 0 W H]</c> (W, H) in pt, in page order — for per-page
+    /// geometry tests where pages differ in size.</summary>
+    private static List<(double W, double H)> AllMediaBoxes(string pdf)
+    {
+        var boxes = new List<(double, double)>();
+        for (var i = pdf.IndexOf("/MediaBox", StringComparison.Ordinal); i >= 0;
+             i = pdf.IndexOf("/MediaBox", i + 9, StringComparison.Ordinal))
+        {
+            var open = pdf.IndexOf('[', i);
+            var close = pdf.IndexOf(']', open);
+            var nums = pdf[(open + 1)..close].Split(' ', StringSplitOptions.RemoveEmptyEntries);  // 0 0 W H
+            boxes.Add((double.Parse(nums[2], CultureInfo.InvariantCulture),
+                double.Parse(nums[3], CultureInfo.InvariantCulture)));
+        }
+        return boxes;
     }
 
     [Fact]

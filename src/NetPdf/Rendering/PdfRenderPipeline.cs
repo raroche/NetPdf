@@ -334,9 +334,43 @@ internal static class PdfRenderPipeline
                 marginHost!, phase2.Cascade, elementToPage, totalPages);
         }
 
+        // Per-page @page GEOMETRY (per-page-geometry cycle): a page's `:left`/`:right`/`:blank`/named
+        // selectors can set its OWN margins + size (CSS Page 3 — duplex margins, named-page sizes). The
+        // size/margin resolvers are now context-aware; each distinct page context's geometry is resolved
+        // ONCE (cached by the same key the margin boxes use). FIRST CUT (documented approximation): the
+        // per-page geometry drives the PAINT only — the page's MediaBox, its margin boxes, and the body's
+        // paint offsets — while the BODY stays FRAGMENTED against the document-level (bare-@page) content
+        // area (true per-page fragmentation needs an iterative layout, deferrals.md). For a page whose
+        // geometry equals the document default (every page when no per-page-specific rule exists) this is
+        // byte-identical. The fall-back base is the CONFIGURED options (not the doc-level overrides), so an
+        // unspecified side matches the document default exactly.
+        var pageGeometryCache =
+            new Dictionary<(bool First, bool Right, bool Blank, string? Name),
+                (PageSize Size, PageMargins Margins, MediaBoxSize Box)>();
+        (PageSize Size, PageMargins Margins, MediaBoxSize Box) ResolvePageGeometry(
+            AtPageRules.PageSelectorContext ctx)
+        {
+            var key = (ctx.IsFirstPage, ctx.IsRightPage, ctx.IsBlank, ctx.AssignedPageName);
+            if (pageGeometryCache.TryGetValue(key, out var cached)) return cached;
+            var sz = options.PageSize;
+            if (options.PreferCssPageSize
+                && AtPageSizeResolver.Resolve(phase2.Sheets, media, ctx) is { } cs)
+                sz = new PageSize(cs.WidthPx, cs.HeightPx);
+            var mg = options.Margins;
+            var pm = AtPageMarginResolver.Resolve(phase2.Sheets, media, sz.WidthPx, sz.HeightPx, ctx);
+            if (pm.HasAny)
+                mg = new PageMargins(
+                    TopPx: pm.TopPx ?? mg.TopPx, RightPx: pm.RightPx ?? mg.RightPx,
+                    BottomPx: pm.BottomPx ?? mg.BottomPx, LeftPx: pm.LeftPx ?? mg.LeftPx);
+            var result = (sz, mg,
+                new MediaBoxSize(PdfUnits.PxToPt(sz.WidthPx), PdfUnits.PxToPt(sz.HeightPx)));
+            pageGeometryCache[key] = result;
+            return result;
+        }
+
         // PHASE B — paint each laid-out page (cycle 3/4). Pages are page-local (a fresh
-        // fragmentainer per page), so every page shares the same content origin; the only
-        // per-page variation is the page-number counters.
+        // fragmentainer per page); per-page variation is the page-number counters + (per-page-geometry
+        // cycle) each page's own MediaBox / margins.
         // Font-dedup-across-pages: ONE text-paint session spans every page — it collects all pages'
         // glyphs (one HarfBuzz shaping pass) and, in Finish() after the loop, subsets + embeds each font
         // ONCE from the cross-page union (so a shared font is embedded once, not once per page). The
@@ -347,40 +381,40 @@ internal static class PdfRenderPipeline
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var page = document.AddPage(mediaBox);
             var bodyFragments = pageFragments[pageIndex];
 
+            // The page's selector context (cycle 6 + 7): first-page + LTR parity + blank + the used `page`
+            // name of its first content box. Drives BOTH the per-page geometry AND the margin-box selectors.
+            var pageName = FirstContentPageName(bodyFragments);
+            var pageCtx = new AtPageRules.PageSelectorContext(
+                pageIndex, IsBlank: bodyFragments.Count == 0,
+                AssignedPageName: pageName.Length == 0 ? null : pageName);
+
+            // Per-page geometry (size + margins + MediaBox) — equals the document default when no
+            // per-page-specific @page rule applies (then byte-identical to the pre-cycle output).
+            var (ppSize, ppMargins, ppMediaBox) = ResolvePageGeometry(pageCtx);
+
+            var page = document.AddPage(ppMediaBox);
+
             FragmentPainter.PaintFragments(
-                bodyFragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
+                bodyFragments, page, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx,
                 paintBackgrounds: options.PrintBackgrounds, diagnostics,
                 imageCache, document);
 
             // Replaced-element content (img-pipeline cycle): each <img> fragment places its
             // decoded XObject at its content box — over every band/border, under the glyphs.
             ImagePainter.PaintImages(
-                bodyFragments, page, document, imageCache, mediaBox.HeightPts,
-                margins.LeftPx, margins.TopPx, diagnostics);
+                bodyFragments, page, document, imageCache, ppMediaBox.HeightPts,
+                ppMargins.LeftPx, ppMargins.TopPx, diagnostics);
 
             var textFragments = bodyFragments;
             if (hasMarginBoxes)
             {
-                // Per-page selector context (cycle 6): the page's `:first`/`:left`/`:right`/`:blank`
-                // selectors pick which @page rules' margin boxes + page-context style apply, so a left
-                // page paints `@page :left`'s header, the first page `@page :first`'s, etc., over the
-                // bare @page. A page with NO body fragments is `:blank` (CSS Page 3 — an intentionally
-                // blank page; the terminal empty resume page was already dropped in PHASE A). Parity is
-                // the LTR mapping (page 0 = right). Per-page GEOMETRY (margins / size differing by
-                // `:left`/`:right`) needs an iterative layout and stays deferred — only the margin-box
-                // CONTENT/STYLE varies per page here.
-                // Named page (cycle 7 + PR #179 review P1): the page's name is the used `page` value of
-                // its break-triggering box — the first CONTENT box on the page. The layouter now forces a
-                // page break before a box whose `page` differs (CSS Page 3 §3.4), so the box that STARTS a
-                // named page carries the name (computed at build time onto `Box.PageName`). A `@page <name>`
-                // selector then applies to pages with that name.
-                var pageName = FirstContentPageName(bodyFragments);
-                var pageCtx = new AtPageRules.PageSelectorContext(
-                    pageIndex, IsBlank: bodyFragments.Count == 0,
-                    AssignedPageName: pageName.Length == 0 ? null : pageName);
+                // The per-page selector context (cycle 6 / 7) computed at the top of the loop picks which
+                // @page rules' margin boxes + page-context style apply, so a left page paints `@page :left`'s
+                // header, a named page `@page <name>`'s, etc., over the bare @page. Per-page GEOMETRY (size /
+                // margins) now ALSO varies per page (per-page-geometry cycle) — `ppSize`/`ppMargins` above —
+                // and the margin boxes lay out against the page's OWN size + margins.
                 var ctxKey = (pageCtx.IsFirstPage, pageCtx.IsRightPage, pageCtx.IsBlank, pageCtx.AssignedPageName);
                 if (!marginBoxCache!.TryGetValue(ctxKey, out var resolvedForCtx))
                 {
@@ -398,13 +432,13 @@ internal static class PdfRenderPipeline
                 var pageCounters = new CssContentList.PageCounters(
                     page: pageIndex + 1, pages: totalPages);
                 var marginResult = PageMarginBoxPainter.Layout(
-                    pageBoxes, pageSize.WidthPx, pageSize.HeightPx,
-                    margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
-                    margins.LeftPx, margins.TopPx, marginHost!, marginRootStyle!,
+                    pageBoxes, ppSize.WidthPx, ppSize.HeightPx,
+                    ppMargins.TopPx, ppMargins.RightPx, ppMargins.BottomPx, ppMargins.LeftPx,
+                    ppMargins.LeftPx, ppMargins.TopPx, marginHost!, marginRootStyle!,
                     pageDecls, pageCounters, marginContexts[pageIndex], shaper, diagnostics);
                 // Background bands paint BEHIND the header/footer text; PrintBackgrounds-gated.
                 if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
-                    PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
+                    PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, ppMediaBox.HeightPts);
                 // Background images tile over the bands, under borders/text; PrintBackgrounds-gated.
                 if (options.PrintBackgrounds && marginResult.BackgroundImages.Count > 0)
                 {
@@ -412,7 +446,7 @@ internal static class PdfRenderPipeline
                     {
                         if (!imageCache.TryGetByRawUrl(bi.RawUrl, out var biEntry)) continue;
                         FragmentPainter.PaintBackgroundImageTiles(
-                            page, document, biEntry, mediaBox.HeightPts,
+                            page, document, biEntry, ppMediaBox.HeightPts,
                             bi.LeftPx, bi.TopPx, bi.WidthPx, bi.HeightPx,
                             diagnostics, ref marginVariantReported,
                             bi.RepeatRaw, bi.SizeRaw, bi.PositionRaw,
@@ -422,7 +456,7 @@ internal static class PdfRenderPipeline
                 }
                 // Margin-box borders paint over the bands, before the text — NOT PrintBackgrounds-gated.
                 if (marginResult.Borders.Count > 0)
-                    PageMarginBoxPainter.PaintBorders(page, marginResult.Borders, mediaBox.HeightPts, diagnostics);
+                    PageMarginBoxPainter.PaintBorders(page, marginResult.Borders, ppMediaBox.HeightPts, diagnostics);
                 if (marginResult.Fragments.Count > 0)
                 {
                     var combined = new List<BoxFragment>(bodyFragments.Count + marginResult.Fragments.Count);
@@ -435,8 +469,9 @@ internal static class PdfRenderPipeline
             // Text paints OVER backgrounds + borders, ONE pass over body + margin-box fragments.
             // Collect this page's glyphs + draw commands now (the kept-alive shaper shapes once); the
             // actual glyph runs are replayed in Finish() below, after every font is subset + embedded
-            // once from the cross-page union.
-            textSession.CollectPage(page, textFragments);
+            // once from the cross-page union. Per-page geometry: the y-flip + content origin use the
+            // page's OWN MediaBox height + margins (= the session defaults when no per-page rule applies).
+            textSession.CollectPage(page, textFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx);
         }
 
         // Build each font ONCE (cross-page union) + replay every page's text — font-dedup-across-pages.

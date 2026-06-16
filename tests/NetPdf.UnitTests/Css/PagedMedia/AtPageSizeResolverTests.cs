@@ -150,6 +150,42 @@ public sealed class AtPageSizeResolverTests
         Assert.Null(await ResolveSize("@page :left, :right { size: A5 }"));
     }
 
+    // ---- Context-aware per-page size (per-page-geometry cycle) ----
+
+    [Fact]
+    public async Task Resolve_with_context_applies_a_left_page_size()
+    {
+        // Per-page-geometry cycle — the context-aware overload applies `:left`/`:right` size by parity.
+        // Page 1 is a LEFT page (index 1), so `@page :left { size: A5 }` wins there; the right page (index
+        // 0) keeps the bare A4.
+        const string css = "@page { size: A4 } @page :left { size: A5 }";
+        var left = await ResolveSize(css, new AtPageRules.PageSelectorContext(1));   // left page
+        var right = await ResolveSize(css, new AtPageRules.PageSelectorContext(0));  // right (first) page
+        Assert.Equal(559, left!.Value.WidthPx, 0);    // A5 — :left applied
+        Assert.Equal(794, right!.Value.WidthPx, 0);   // A4 — bare
+    }
+
+    [Fact]
+    public async Task Resolve_with_context_applies_a_named_page_size()
+    {
+        // A named page's `size` applies on a page assigned that name; an unnamed page keeps the bare size.
+        const string css = "@page { size: A4 } @page chapter { size: A5 }";
+        var named = await ResolveSize(css, new AtPageRules.PageSelectorContext(2, AssignedPageName: "chapter"));
+        var unnamed = await ResolveSize(css, new AtPageRules.PageSelectorContext(2));
+        Assert.Equal(559, named!.Value.WidthPx, 0);    // A5 — @page chapter
+        Assert.Equal(794, unnamed!.Value.WidthPx, 0);  // A4 — bare
+    }
+
+    [Fact]
+    public async Task Resolve_with_context_first_applies_only_to_the_first_page()
+    {
+        // `:first` size applies to page 0 only (not every page — the document-level context-free
+        // resolver over-applied it; per-page is correct).
+        const string css = "@page { size: A4 } @page :first { size: A5 }";
+        Assert.Equal(559, (await ResolveSize(css, new AtPageRules.PageSelectorContext(0)))!.Value.WidthPx, 0); // A5
+        Assert.Equal(794, (await ResolveSize(css, new AtPageRules.PageSelectorContext(2)))!.Value.WidthPx, 0); // A4
+    }
+
     // ---- Duplicate / invalid grammar (review P2) ----
 
     [Theory]
@@ -259,6 +295,17 @@ public sealed class AtPageSizeResolverTests
             sheet, preprocess, href: null, origin: CssStylesheetOrigin.Author,
             ownerKind: CssStylesheetOwnerKind.Unknown, mediaQuery: sheetMedia, isDisabled: false, order: 0);
         return AtPageSizeResolver.Resolve(new[] { stylesheet }, PrintContext);
+    }
+
+    private static async Task<AtPageSizeResolver.ResolvedPageSize?> ResolveSize(
+        string css, AtPageRules.PageSelectorContext ctx)
+    {
+        var sheet = await ParseSheet(css);
+        var preprocess = CssPreprocessor.Process(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, href: null, origin: CssStylesheetOrigin.Author,
+            ownerKind: CssStylesheetOwnerKind.Unknown, mediaQuery: null, isDisabled: false, order: 0);
+        return AtPageSizeResolver.Resolve(new[] { stylesheet }, PrintContext, ctx);
     }
 
     private static async Task<ICssStyleSheet> ParseSheet(string css)

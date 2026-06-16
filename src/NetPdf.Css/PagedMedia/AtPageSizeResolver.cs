@@ -17,7 +17,7 @@ namespace NetPdf.Css.PagedMedia;
 /// The <c>size</c> descriptor is dropped by AngleSharp.Css; the pre-pass
 /// (<c>CssPreprocessor.ParsePageRule</c>) recovers it and the adapter re-attaches it as a
 /// synthetic <c>size</c> declaration, which this resolver reads. Applicability + ordering use the
-/// shared <see cref="AtPageRules.EnumeratePageRulesWithMediaInfo"/> (cascade-style media / disabled
+/// shared <see cref="AtPageRules.EnumeratePageRulesWithMediaInfo(System.Collections.Generic.IEnumerable{NetPdf.Css.Parser.CssStylesheet}, NetPdf.Css.Cascade.CssMediaContext)"/> (cascade-style media / disabled
 /// filtering; bare <c>@page</c> then <c>@page :first</c> in specificity order, so a <c>:first</c>
 /// <c>size</c> overrides the bare one on the first page). Among contributing declarations the cascade
 /// winner is chosen by importance then source order: an <c>!important</c> <c>size</c> beats a
@@ -48,11 +48,30 @@ internal static class AtPageSizeResolver
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumeratePageRulesWithMediaInfo(sheets, media), media);
+    }
 
+    /// <summary>The PER-PAGE size for the page described by <paramref name="ctx"/> (per-page-geometry
+    /// cycle): like <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext)"/> but the applicable
+    /// rules + cascade order come from the context-aware enumeration, so a <c>@page :left</c> /
+    /// <c>:right</c> / <c>:blank</c> / named-page <c>size</c> wins on the matching page (and <c>:first</c>
+    /// applies to the first page ONLY, not every page). The §3.3 paper-size-conditioned ignore still
+    /// applies per rule.</summary>
+    public static ResolvedPageSize? Resolve(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, AtPageRules.PageSelectorContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumeratePageRulesWithMediaInfo(sheets, media, ctx), media);
+    }
+
+    private static ResolvedPageSize? ResolveFrom(
+        IEnumerable<AtPageRules.PageRule> rules, CssMediaContext media)
+    {
         var seen = false;
         var important = false;
         ResolvedPageSize? dims = null;
-        foreach (var bare in AtPageRules.EnumeratePageRulesWithMediaInfo(sheets, media))
+        foreach (var bare in rules)
         {
             // CSS Page 3 §3.3 — a `size` qualified by a paper-size @media (or sheet media query)
             // is ignored to avoid a circular page-size dependency. Margins from the same rule

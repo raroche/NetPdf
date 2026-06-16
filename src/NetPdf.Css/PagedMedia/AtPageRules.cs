@@ -86,8 +86,8 @@ internal static class AtPageRules
         foreach (var r in Walk(sheets, media, PageSelectorKind.First)) yield return r;
     }
 
-    /// <summary>The rule-only view of <see cref="EnumeratePageRulesWithMediaInfo"/> — bare then
-    /// <c>:first</c>, in specificity order.</summary>
+    /// <summary>The rule-only view of <see cref="EnumeratePageRulesWithMediaInfo(IEnumerable{CssStylesheet}, CssMediaContext)"/>
+    /// — bare then <c>:first</c>, in specificity order.</summary>
     public static IEnumerable<CssAtRule> EnumeratePageRules(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media)
     {
@@ -130,22 +130,34 @@ internal static class AtPageRules
     public static IEnumerable<CssAtRule> EnumeratePageRules(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorContext ctx)
     {
+        foreach (var pr in EnumeratePageRulesWithMediaInfo(sheets, media, ctx)) yield return pr.Rule;
+    }
+
+    /// <summary>The context-aware view of <see cref="EnumeratePageRulesWithMediaInfo(IEnumerable{CssStylesheet}, CssMediaContext)"/>
+    /// (per-page-geometry cycle): the <c>@page</c> rules applicable TO A GIVEN PAGE in CASCADE
+    /// SPECIFICITY ORDER (bare → <c>:left</c>/<c>:right</c> → <c>:first</c>/<c>:blank</c> → named →
+    /// compounds), each WITH its paper-size conditioning so the context-aware
+    /// <see cref="AtPageSizeResolver"/> can honor the CSS Page 3 §3.3 ignore rule per page. Same tier
+    /// binning as the rule-only <see cref="EnumeratePageRules(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>.</summary>
+    public static IEnumerable<PageRule> EnumeratePageRulesWithMediaInfo(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorContext ctx)
+    {
         // ONE walk over the stylesheets, binning each applicable rule by its matching specificity tier,
         // then yielding the bins in ascending-tier order (post-PR-#178 Copilot — previously one full walk
         // per tier). Source order within a tier is preserved (the walk visits in source order), so the
         // cascade result is unchanged.
-        List<CssAtRule>?[]? bins = null;
-        foreach (var at in WalkAllPageRules(sheets, media))
+        List<PageRule>?[]? bins = null;
+        foreach (var pr in WalkAllPageRules(sheets, media))
         {
-            var tier = MatchTier(at.Prelude, ctx);
+            var tier = MatchTier(pr.Rule.Prelude, ctx);
             if (tier < 0) continue;                                   // no selector matched — skip
-            (bins ??= new List<CssAtRule>?[MaxSelectorTier + 1])[tier] ??= new();
-            bins[tier]!.Add(at);
+            (bins ??= new List<PageRule>?[MaxSelectorTier + 1])[tier] ??= new();
+            bins[tier]!.Add(pr);
         }
         if (bins is null) yield break;
         for (var t = 0; t <= MaxSelectorTier; t++)
             if (bins[t] is { } list)
-                foreach (var at in list) yield return at;
+                foreach (var pr in list) yield return pr;
     }
 
     /// <summary>The DISTINCT page contexts whose <c>@page</c> selector match-sets differ — every
@@ -320,8 +332,9 @@ internal static class AtPageRules
         IEnumerable<CssStylesheet> sheets, CssMediaContext media)
     {
         HashSet<string>? seen = null;
-        foreach (var at in WalkAllPageRules(sheets, media))
+        foreach (var pr in WalkAllPageRules(sheets, media))
         {
+            var at = pr.Rule;
             if (string.IsNullOrWhiteSpace(at.Prelude)) continue;
             foreach (var raw in at.Prelude.Split(','))
             {
@@ -357,12 +370,15 @@ internal static class AtPageRules
         return string.Empty;
     }
 
-    /// <summary>Rule-only recursive walk (cycle 6) yielding EVERY applicable <c>@page</c> rule in source
-    /// order, with the SAME sheet-media / disabled filtering + <c>@media</c> recursion as <see cref="Walk"/>.
-    /// The caller (<see cref="EnumeratePageRules(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>)
-    /// bins by <see cref="MatchTier"/>. Paper-size conditioning is not tracked (margin boxes — the only
-    /// consumer — ignore it).</summary>
-    private static IEnumerable<CssAtRule> WalkAllPageRules(
+    /// <summary>Recursive walk (cycle 6) yielding EVERY applicable <c>@page</c> rule in source order WITH
+    /// its paper-size conditioning, with the SAME sheet-media / disabled filtering + <c>@media</c>
+    /// recursion as <see cref="Walk"/>. The callers
+    /// (<see cref="EnumeratePageRules(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>
+    /// + <see cref="EnumeratePageRulesWithMediaInfo(IEnumerable{CssStylesheet}, CssMediaContext, PageSelectorContext)"/>)
+    /// bin by <see cref="MatchTier"/>. Conditioning is now tracked (per-page-geometry cycle — the
+    /// context-aware size resolver honors the §3.3 paper-size ignore; the margin / margin-box consumers
+    /// ignore the flag).</summary>
+    private static IEnumerable<PageRule> WalkAllPageRules(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media)
     {
         ArgumentNullException.ThrowIfNull(sheets);
@@ -371,12 +387,13 @@ internal static class AtPageRules
         {
             if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
             if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
-            foreach (var at in FromAllPageRules(sheet.Rules, media)) yield return at;
+            var conditioned = IsPaperSizeConditioned(sheet.MediaQuery);
+            foreach (var at in FromAllPageRules(sheet.Rules, media, conditioned)) yield return at;
         }
     }
 
-    private static IEnumerable<CssAtRule> FromAllPageRules(
-        ImmutableArray<CssRule> rules, CssMediaContext media)
+    private static IEnumerable<PageRule> FromAllPageRules(
+        ImmutableArray<CssRule> rules, CssMediaContext media, bool conditioned)
     {
         foreach (var rule in rules)
         {
@@ -384,11 +401,16 @@ internal static class AtPageRules
             if (string.Equals(at.Name, "media", StringComparison.OrdinalIgnoreCase))
             {
                 if (media.Matches(at.Prelude)) // recurse only when the @media condition matches
-                    foreach (var r in FromAllPageRules(at.ChildRules, media)) yield return r;
+                {
+                    // Conditioning is sticky down the tree (mirrors FromRules): a paper-size @media wrap
+                    // keeps nested rules conditioned even if their own @media isn't.
+                    var nested = conditioned || IsPaperSizeConditioned(at.Prelude);
+                    foreach (var r in FromAllPageRules(at.ChildRules, media, nested)) yield return r;
+                }
             }
             else if (string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase))
             {
-                yield return at;
+                yield return new PageRule(at, conditioned);
             }
         }
     }

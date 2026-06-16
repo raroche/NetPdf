@@ -93,5 +93,10 @@ internal static class NonNegativeProperties
         // would silently clamp. Applies to body + margin boxes (the longhands are shared).
         PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
         PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius,
+        // The internal vertical-radius longhands (border-radius-elliptical cycle) — a negative vertical
+        // radius is invalid (CSS B&B §6.1) exactly like the horizontal, so `10px / -5px` rejects the
+        // whole shorthand instead of clamping the vertical to 0 (post-PR-#186 Copilot review).
+        PropertyId.BorderTopLeftRadiusY, PropertyId.BorderTopRightRadiusY,
+        PropertyId.BorderBottomRightRadiusY, PropertyId.BorderBottomLeftRadiusY,
     }.ToFrozenSet();
 }

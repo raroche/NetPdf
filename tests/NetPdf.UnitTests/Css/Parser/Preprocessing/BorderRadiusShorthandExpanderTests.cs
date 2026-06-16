@@ -177,6 +177,16 @@ public sealed class BorderRadiusShorthandExpanderTests
     }
 
     [Fact]
+    public void Negative_vertical_radius_in_a_slash_rejects_the_whole_shorthand()
+    {
+        // post-PR-#186 Copilot review — a negative VERTICAL radius (`10px / -5px`) is invalid (CSS B&B
+        // §6.1) exactly like a negative horizontal, so the whole shorthand is rejected (the raw is kept
+        // → unrounds), NOT clamped to 0. Requires the internal `-y` properties in NonNegativeProperties.
+        Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "10px / -5px", out _));
+        Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "-5px / 10px", out _));
+    }
+
+    [Fact]
     public void Invalid_value_rejects_the_whole_shorthand()
     {
         Assert.False(BorderRadiusShorthandExpander.TryExpand("border-radius", "8px bogus", out _));

@@ -1087,22 +1087,30 @@ internal static class FragmentPainter
     /// overlap clamping happens later, in <see cref="CornerRadii.NormalizedFor"/>.</summary>
     internal static CornerRadii ReadCornerRadii(ComputedStyle style, double widthPx, double heightPx)
     {
-        (double Rx, double Ry) Corner(PropertyId id)
+        static double ResolveAxis(ComputedSlot slot, double extentPx) => slot.Tag switch
         {
-            var slot = style.Get(id);
-            return slot.Tag switch
-            {
-                ComputedSlotTag.LengthPx => (Math.Max(0, slot.AsLengthPx()), Math.Max(0, slot.AsLengthPx())),
-                ComputedSlotTag.Percentage => (
-                    Math.Max(0, slot.AsPercentage() / 100.0 * widthPx),
-                    Math.Max(0, slot.AsPercentage() / 100.0 * heightPx)),
-                _ => (0.0, 0.0),
-            };
+            ComputedSlotTag.LengthPx => Math.Max(0, slot.AsLengthPx()),
+            ComputedSlotTag.Percentage => Math.Max(0, slot.AsPercentage() / 100.0 * extentPx),
+            _ => 0.0,
+        };
+        (double Rx, double Ry) Corner(PropertyId horizontalId, PropertyId verticalId)
+        {
+            var hSlot = style.Get(horizontalId);
+            var rx = ResolveAxis(hSlot, widthPx);
+            // The vertical radius comes from the INTERNAL `-netpdf-border-{corner}-radius-y` longhand
+            // (the elliptical `Rx / Ry` slash form — border-radius-elliptical cycle) WHEN SET; otherwise
+            // it falls back to the HORIZONTAL longhand resolved against the box HEIGHT — a circular
+            // length gives X == Y, a percentage the §4.1 ellipse (the pre-cycle behavior).
+            var vSlot = style.Get(verticalId);
+            var ry = vSlot.Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage
+                ? ResolveAxis(vSlot, heightPx)
+                : ResolveAxis(hSlot, heightPx);
+            return (rx, ry);
         }
-        var (tlX, tlY) = Corner(PropertyId.BorderTopLeftRadius);
-        var (trX, trY) = Corner(PropertyId.BorderTopRightRadius);
-        var (brX, brY) = Corner(PropertyId.BorderBottomRightRadius);
-        var (blX, blY) = Corner(PropertyId.BorderBottomLeftRadius);
+        var (tlX, tlY) = Corner(PropertyId.BorderTopLeftRadius, PropertyId.BorderTopLeftRadiusY);
+        var (trX, trY) = Corner(PropertyId.BorderTopRightRadius, PropertyId.BorderTopRightRadiusY);
+        var (brX, brY) = Corner(PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomRightRadiusY);
+        var (blX, blY) = Corner(PropertyId.BorderBottomLeftRadius, PropertyId.BorderBottomLeftRadiusY);
         return new CornerRadii(tlX, tlY, trX, trY, brX, brY, blX, blY);
     }
 

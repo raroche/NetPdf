@@ -1,6 +1,10 @@
 {
   "$schema-comment": "Single source of truth for CSS property metadata. Consumed at compile time by NetPdf.SourceGen/CssPropertyGenerator. To add a property: append an entry, rebuild. Properties are sorted alphabetically for diff stability. EVERY field is REQUIRED — the generator emits NPDFGEN0005 on any missing field. Fields: name (lowercase CSS property name), id (PascalCase enum identifier), type (PropertyType enum value name), default (initial-value text per CSS spec), inherit (true if the property inherits per spec), applies_to (AppliesTo enum value name — for VALIDATION + USED-VALUE-time only, NOT for cascade-time filtering), computed (ComputedValueKind enum value name).",
   "properties": [
+    { "name": "-netpdf-border-bottom-left-radius-y", "id": "BorderBottomLeftRadiusY", "type": "LengthPercentage", "default": "0", "inherit": false, "applies_to": "All", "computed": "Specified" },
+    { "name": "-netpdf-border-bottom-right-radius-y", "id": "BorderBottomRightRadiusY", "type": "LengthPercentage", "default": "0", "inherit": false, "applies_to": "All", "computed": "Specified" },
+    { "name": "-netpdf-border-top-left-radius-y", "id": "BorderTopLeftRadiusY", "type": "LengthPercentage", "default": "0", "inherit": false, "applies_to": "All", "computed": "Specified" },
+    { "name": "-netpdf-border-top-right-radius-y", "id": "BorderTopRightRadiusY", "type": "LengthPercentage", "default": "0", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "align-content", "id": "AlignContent", "type": "Keyword", "default": "normal", "inherit": false, "applies_to": "FlexContainers", "computed": "Specified" },
     { "name": "align-items", "id": "AlignItems", "type": "Keyword", "default": "normal", "inherit": false, "applies_to": "FlexContainers", "computed": "Specified" },
     { "name": "align-self", "id": "AlignSelf", "type": "Keyword", "default": "auto", "inherit": false, "applies_to": "FlexItems", "computed": "Specified" },

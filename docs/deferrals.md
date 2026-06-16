@@ -221,53 +221,49 @@ grepping the ID).
 ## inline-atomic-boxes
 
 - **ID** — `inline-atomic-boxes`
-- **Status** — `approximated` (skip + diagnostic).
-- **Behavior** — `BlockLayouter.CollectInlineTextRuns` recognizes
-  inline-level atomic boxes (`BoxKind.InlineBlockContainer`,
-  `InlineFlexContainer`, `InlineGridContainer`, `InlineTable`,
-  `InlineReplacedElement`) but currently SKIPS their content. Each
-  skipped occurrence emits the
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` diagnostic (Warning) so
-  callers see the gap rather than silently mis-rendering.
-- **Missing** — Per CSS Inline L3, atomic inline boxes participate
-  in the inline formatting context as opaque units: their intrinsic
-  width/height contributes to line-box advance + line-box block
-  extent, the surrounding text shapes around them, and they're
-  positioned on the baseline (or whatever `vertical-align`
-  resolves to). The line builder needs an "atomic inline glyph"
-  primitive carrying box-fragment width + ascent/descent so wrap
-  decisions account for it. Replaced elements specifically need
-  intrinsic-sizing via the existing `ImageSafetyValidator` /
-  `FontSafetyValidator` resolved intrinsic dimensions.
-- **Trigger** — corpus needs inline-block / inline-replaced
-  content (typical use case: `<img>` inline in a paragraph, or
-  `display: inline-block` styled spans), OR a user-reported case
-  where atomic inline content disappears.
+- **Status** — `approximated` (inline `<img>` SHIPS first-cut — inline-atomic-boxes cycle; inline-block /
+  -flex / -grid / -table still skip + diagnose).
+- **Behavior** — An inline `<img>` (`BoxKind.InlineReplacedElement`) with a resolved used size now
+  participates in line layout as an ATOMIC box: `BlockLayouter.CollectInlineTextRuns` converts it into a
+  one-char `U+FFFC` `TextRun` carrying an `InlineAtomic` (box + used border-box width/height); the
+  glyph-centric pipeline (`TextRun → Itemize → Shape → Wrap`) reserves its advance (a synthetic
+  single-glyph `ShapedRun` whose advance is the used width, shaped WITHOUT HarfBuzz — `LineBuilder.Shape`),
+  the white-space preprocessor passes the atomic through verbatim (preserving the payload), the line box
+  grows to fit a tall atomic (`BlockLayouter.ComputeInlineAtomicLayout` → per-line heights), and
+  `BlockLayouter` emits a positioned `BoxFragment` for the box (so `ImagePainter` paints it from the image
+  cache). `TextPainter` skips the synthetic glyph. The OTHER atomic kinds
+  (`InlineBlockContainer` / `InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized
+  inline-replaced) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
+- **Box model (post-PR-#186 review P1)** — the img's own padding + border + margin are honored: the line
+  reserves the MARGIN-box advance, the emitted fragment is the BORDER box (so `ImagePainter`, which
+  subtracts the img's padding/border to recover the content box, paints correctly), and the margin-box
+  bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut.
+- **Missing (first-cut approximations)** —
+  - Only `vertical-align: baseline` is honoured (the atomic's margin-box bottom sits on the line's text
+    baseline); other `vertical-align` values are not yet read.
+  - The baseline uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no
+    font-metric access; the painter uses the REAL metrics for glyphs, so an atomic's bottom aligns to the
+    text baseline within typical-font tolerance).
+  - The inline offset is start-relative — a centred / right / justified line, and RTL paragraphs, don't
+    yet shift the atomic with the text.
+  - `inline-block` / `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out
+    sub-box, not just an intrinsic size) remain deferred.
+- **Trigger** — a centred/justified/RTL inline `<img>`, a non-baseline `vertical-align`, or a styled
+  `display: inline-block` span in the corpus.
 - **Owner files** —
-  - `src/NetPdf.Layout/Inline/LineBuilder.cs` — define an "atomic
-    glyph" primitive (or extend `ShapedGlyph` with an atomic-box
-    payload) that wrap decisions treat as a single non-breakable
-    unit with its own advance + ascent/descent.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::CollectInlineTextRuns`
-    — convert each atomic inline box into the new primitive
-    instead of emitting the warning + skip.
-  - `src/NetPdf.Layout/Inline/InlineLayouter.cs::LayoutPerRun` —
-    pass atomic primitives through to `LineBuilder.Wrap`.
-- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4
-  (this branch).
-- **Still deferred (riders PR, branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`)** — inline
-  `<img>` was scoped into that PR but pulled back out by decision: the inline pipeline
-  (`TextRun → Itemize → Shape → Wrap → InlineLayoutResult`) is entirely GLYPH-centric, so giving an
-  atomic replaced box a line position + advance is a genuine core-engine extension (the "atomic glyph"
-  primitive below) that all text layout depends on — too large/risky to slot alongside the contained
-  paged-media / grid riders. It gets its own focused PR. (Painting is free once an inline `<img>` gets a
-  positioned `BoxFragment` — `ImagePainter` already paints any cached-image fragment by its geometry — so
-  the remaining work is purely the inline-layout side.)
-- **Removal condition** — `CollectInlineTextRuns` no longer emits
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`; atomic inline boxes
-  participate in line layout as opaque advances; a test renders
-  a paragraph with an inline `<img>` and the image's geometry is
-  preserved in the emitted fragments.
+  - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
+  - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
+  - `src/NetPdf.Layout/Inline/LineBuilder.cs` — `Shape` (synthetic glyph) + the white-space
+    preprocessors (atomic pass-through). Wrap treats the 1-glyph run as a non-breakable unit.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert),
+    `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit the
+    atomic's own fragment). The remaining vertical-align / alignment / inline-block work extends here.
+  - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
+- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; first cut shipped in the inline-atomic-boxes
+  cycle (this branch).
+- **Removal condition** — `vertical-align` (incl. non-baseline) + centred / RTL alignment honoured for
+  inline `<img>`, and inline-block / -flex / -grid / -table atomics laid out (no longer
+  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 
@@ -1684,23 +1680,20 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 3 + cycle 4
-  + post-PR-#95 review H6.
-- **Behavior** — `GridSizing.ItemOuterContribution` always adds
-  the item's border + padding + margin to its declared
-  width/height when contributing to intrinsic track sizing. This
-  is correct for the CSS default `box-sizing: content-box` but
-  WRONG for `box-sizing: border-box` where the declared
-  width/height already includes border + padding (= we
-  double-count by adding chrome again).
-- **Missing** — read `PropertyId.BoxSizing` in
-  `ItemOuterContribution` + short-circuit the chrome adds for
-  `border-box` items. The fix is local to GridSizing but the
-  broader `box-sizing: border-box` support is cross-cutting —
-  BlockLayouter + FlexLayouter + TableLayouter all have similar
-  declared-vs-rendered-size issues that should be addressed
-  symmetrically. Tracked as a single cross-cutting task rather
-  than per-layouter patches.
+- **Status** — `approximated` (GRID side ships — grid box-sizing cycle; the BROADER cross-cutting audit
+  remains). The grid-item intrinsic contribution now honors `box-sizing`; the remaining gap is the other
+  layouters + a shared helper.
+- **Behavior** — `GridSizing.ItemOuterContribution` now honors `box-sizing` (grid box-sizing cycle, CSS
+  Basic UI 4 §10) via the new `ItemBorderBoxExtent`: a `box-sizing: border-box` item's declared
+  width/height IS its border box (border + padding inside), so the chrome is NOT added again; the initial
+  `content-box` is byte-identical to the pre-cycle `max(declared, content, min) + chrome`. A
+  CONTENT-measured `auto` size is always a content box, so its chrome is added regardless of box-sizing;
+  the `min-*` floor is border- or content-box per box-sizing.
+- **Missing** — the BROADER `box-sizing: border-box` support is still cross-cutting — BlockLayouter +
+  FlexLayouter + TableLayouter have similar declared-vs-rendered-size readers that should be addressed
+  symmetrically with a shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)` helper. (A `%`
+  width/height/min still reads 0 in the grid contribution — the chicken-and-egg gap — so box-sizing on a
+  PERCENTAGE size is moot there.)
 - **Trigger** — a dedicated `box-sizing` pass that audits every
   declared-dimension reader across all layouters + introduces a
   shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)`
@@ -1719,9 +1712,10 @@ flags the categories):
   or padding.
 - **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
   in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
-  formalized as a deferral entry.
-- **Removal condition** — cross-cutting box-sizing audit ships +
-  GridSizing reads BoxSizing.
+  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle.
+- **Removal condition** — the cross-cutting box-sizing audit ships (BlockLayouter / FlexLayouter /
+  TableLayouter symmetric handling + a shared used-size helper). The GRID intrinsic-contribution side is
+  DONE.
 
 ---
 
@@ -3447,12 +3441,29 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **`border-radius: Rx / Ry` elliptical slash (body + margin-box) — DONE (border-radius-elliptical
+         cycle):** the explicit two-radii-per-corner `border-radius: <h-list> / <v-list>` form now renders
+         ELLIPTICALLY (it previously dropped to square). AngleSharp drops the slash, so the body
+         `CssPreprocessor.ScanDeclarations` recovers it (gated to a well-formed TOP-LEVEL slash via
+         `BorderRadiusShorthandExpander.HasTopLevelSlash` — a circular form AngleSharp already expands; a `/`
+         inside `calc()` is a division) and the (now slash-aware) `BorderRadiusShorthandExpander.TryExpand`
+         expands BOTH sides by the 1–4-value box distribution: the horizontal radii onto the
+         `border-{corner}-radius` longhands + the vertical radii onto FOUR new INTERNAL
+         `-netpdf-border-{corner}-radius-y` properties (vendor-prefixed in `properties.json`, so real
+         `@supports` queries for the standard radius properties are unaffected). `FragmentPainter.ReadCornerRadii`
+         reads each corner's vertical radius from the `-y` slot (falling back to the horizontal slot resolved
+         against the box HEIGHT when unset — the circular / `%`-ellipse pre-cycle behavior). The margin box
+         shares it (the expander runs in `CssParserAdapter.ParseRawDeclarations`; the four `-y` ids JOINED
+         `MarginBoxStyle.CascadedStyleIds`; a malformed slash that fails to expand is diagnosed
+         `CSS-PROPERTY-VALUE-INVALID-001` as before). STILL DEFERRED: font-/viewport-relative margin-box radii
+         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders.
        - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
          image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
          shorthand is expanded by the NEW `BorderRadiusShorthandExpander` (1–4 values → the four corner
-         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; a TOP-LEVEL `Rx / Ry` slash defers, but a
-         `/` inside `calc()` is a division that evaluates — post-PR-#174 self-review) inside
+         longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; a TOP-LEVEL `Rx / Ry` slash now also
+         expands the vertical radii onto the internal `-y` longhands — border-radius-elliptical cycle — and a
+         `/` inside `calc()` is a division that evaluates) inside
          `CssParserAdapter.ParseRawDeclarations`, and the four corner longhands JOINED
          `MarginBoxStyle.CascadedStyleIds` so they cascade onto the box's `ComputedStyle` (importance +
          CSS-wide + validation for free). **(Task 1)** the band fill reads PER-CORNER radii
@@ -3465,11 +3476,11 @@ flags the categories):
          = the box radii inset to the clip box via `FragmentPainter.InsetRadii`, threaded to the shared
          tiler). Post-PR-#174 review: an INVALID/malformed margin-box `border-radius` (`8px bogus`, an
          unbalanced function, or a NEGATIVE radius — `border-*-radius` joined `NonNegativeProperties`) is
-         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped
-         (`BorderRadiusShorthandExpander.IsDeferredElliptical` distinguishes the silent square deferral);
+         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped;
          a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). DEFERRED (still
-         render square, SILENTLY): the elliptical `Rx / Ry` slash form; font-/viewport-relative margin-box
-         radii (`em`/`vw` defer in the margin-box cascade, like the body). Rounded NON-uniform borders.
+         render square, SILENTLY): font-/viewport-relative margin-box radii (`em`/`vw` defer in the
+         margin-box cascade, like the body). Rounded NON-uniform borders. (The elliptical `Rx / Ry` slash
+         SHIPPED later — border-radius-elliptical cycle, see that entry above.)
        - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
@@ -3515,16 +3526,11 @@ flags the categories):
          a stroke's `/CA`). **(Task 3 — rounded background-image clip)** a border-radius rounds the
          background-image clip (`PdfPage.BeginRoundedRectangleClip`, the background-clip box's radii inset
          per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
-         rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
-         spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
-         segments transitioning between edge widths/colours). (The MARGIN-box border-radius reached parity
-         in the margin-box-border-radius cycle — see the entry above.) **Why `Rx / Ry` is a focused cycle,
-         not a batch rider** (assessed in the riders-2 round): the corner-radius STORAGE is one
-         `ComputedSlot` per corner (one value, used for both X and Y in `ReadCornerRadii`), so distinct
-         horizontal vs vertical radii need a 2-radii-per-corner model change (a paired slot, or 4 internal
-         vertical-radius properties — the latter would wrongly surface in `@supports`). The elliptical
-         RENDERING already exists (`CornerRadii` has per-corner X/Y); only the style storage + slash
-         recovery are missing.
+         rectangular clip (byte-identical). The explicit two-radii `Rx / Ry` slash spelling SHIPPED later
+         (border-radius-elliptical cycle — recovered into 4 internal `-netpdf-…-radius-y` longhands; see that
+         entry above). STILL DEFERRED: rounded NON-uniform borders (per-corner arc segments transitioning
+         between edge widths/colours). (The MARGIN-box border-radius reached parity in the
+         margin-box-border-radius cycle — see the entry above.)
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
@@ -3544,9 +3550,9 @@ flags the categories):
          + CSS-wide + invalid-value diagnostics — post-PR-#171 review P2, not RawDeclarationWinner;
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
          negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
-         border-radius-completion cycle — see the entry above): the explicit `Rx / Ry` elliptical slash
-         spelling + rounded NON-uniform border strokes (the margin-box per-corner radius + rounded border +
-         image clip reached parity in the margin-box-border-radius cycle);
+         border-radius-completion cycle — see the entry above; the `Rx / Ry` elliptical slash SHIPPED in the
+         border-radius-elliptical cycle): rounded NON-uniform border strokes (the margin-box per-corner
+         radius + rounded border + image clip reached parity in the margin-box-border-radius cycle);
          `background-attachment: fixed` PAGE-relative positioning; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared

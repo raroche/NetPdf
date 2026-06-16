@@ -920,6 +920,29 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_border_box_grid_item_sizes_column_to_declared_width()
+    {
+        // Grid box-sizing cycle (CSS Basic UI 4 §10) — a `box-sizing: border-box` item with
+        // width:100px; padding:0 10px; border:5px sizes its auto column to 100 (the declared width IS the
+        // border box; padding + border are inside), NOT 100 + 30 chrome = 130. An auto probe in row 2
+        // reads the column width.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid-template-columns: auto; grid-template-rows: 20px 20px; }
+                .item { box-sizing: border-box; width: 100px; padding: 0 10px; border: 5px solid;
+                        grid-row-start: 1; grid-column-start: 1; }
+                .probe { grid-row-start: 2; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid"><div class="item"></div><div class="probe"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var probe = FindByClass(sink, "probe");
+        Assert.NotNull(probe);
+        Assert.Equal(100.0, probe!.Value.InlineSize, precision: 3);   // declared border box, not 130
+    }
+
+    [Fact]
     public async Task Production_html_grid_row_honors_item_min_height_floor()
     {
         // Riders-2 grid min-height cycle — an auto row's content-determined item now honors its

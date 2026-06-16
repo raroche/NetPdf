@@ -7002,7 +7002,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 PropertyId.FontSize, defaultPx: 16);
             lineHeight = fontSizePx * 1.2;
         }
-        var contentBlockSize = inlineResult.Lines.Length * lineHeight;
+        // Inline-atomic-boxes cycle — inline `<img>` atomics on a line grow that line to fit them and
+        // are emitted as positioned child fragments. The walk returns per-line heights (null when the
+        // block has no atomic, keeping the uniform text path byte-identical), the atomics' placements
+        // relative to the content box, and the resulting content block size.
+        var (perLineHeightsPx, atomicPlacements, contentBlockSize) =
+            ComputeInlineAtomicLayout(inlineResult, lineHeight, inlineOnlyBlock.Style);
         var borderBoxBlockSize = contentBlockSize
             + metrics.BorderBlockStart + metrics.PaddingBlockStart
             + metrics.PaddingBlockEnd + metrics.BorderBlockEnd;
@@ -7011,8 +7016,105 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             InlineResult: inlineResult,
             BorderBoxInlineSize: borderBoxInlineSize,
             BorderBoxBlockSize: borderBoxBlockSize,
-            ContentBlockSize: contentBlockSize);
+            ContentBlockSize: contentBlockSize,
+            PerLineHeightsPx: perLineHeightsPx,
+            AtomicPlacements: atomicPlacements);
     }
+
+    /// <summary>Inline-atomic-boxes cycle — second pass over an <see cref="InlineLayoutResult"/> that
+    /// places inline-atomic boxes (inline <c>&lt;img&gt;</c>) on their lines. For each line the height
+    /// is <c>max(text line-height, tallest atomic on the line)</c> so a tall atomic grows its line box;
+    /// each atomic is positioned with its bottom on the line's text baseline
+    /// (<c>vertical-align: baseline</c>, CSS 2.2 §10.8) at the inline offset reached by the preceding
+    /// slices' advances. Returns <c>(null, empty, lines × lineHeight)</c> when the block has no atomic,
+    /// so the text-only path is byte-identical.
+    ///
+    /// <para><b>Approximations (first cut).</b> The baseline uses an approximate font ascent/descent
+    /// (0.8 / −0.2 em — the layout layer has no font-metric access; the painter uses the REAL font
+    /// metrics for glyphs, so an atomic's bottom aligns to the text baseline within typical-font
+    /// tolerance); the inline offset is start-relative (a centred / right / justified line, and RTL,
+    /// shift the atomic with the text in a later cut); and only <c>vertical-align: baseline</c> is
+    /// honoured.</para></summary>
+    private (IReadOnlyList<double>? PerLineHeightsPx,
+             IReadOnlyList<InlineAtomicPlacement> Placements,
+             double ContentBlockSize)
+        ComputeInlineAtomicLayout(
+            InlineLayoutResult inlineResult, double textLineHeightPx, ComputedStyle blockStyle)
+    {
+        var lines = inlineResult.Lines;
+        var shapedRuns = inlineResult.ShapedRuns;
+        var perLineHeights = new double[lines.Length];
+        var anyAtomic = false;
+        for (var li = 0; li < lines.Length; li++)
+        {
+            double maxAtomicHeight = 0;
+            foreach (var slice in lines[li].Slices)
+            {
+                if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
+                {
+                    anyAtomic = true;
+                    // The line box grows to fit the atomic's MARGIN box (border box + block margins).
+                    if (a.MarginBoxHeightPx > maxAtomicHeight) maxAtomicHeight = a.MarginBoxHeightPx;
+                }
+            }
+            perLineHeights[li] = Math.Max(textLineHeightPx, maxAtomicHeight);
+        }
+
+        if (!anyAtomic)
+        {
+            return (null, System.Array.Empty<InlineAtomicPlacement>(),
+                lines.Length * textLineHeightPx);
+        }
+
+        // Approximate Latin font ascent/descent as a fraction of font-size (consistent with the
+        // codebase's 1.2 line-height factor: ascent 0.8em + |descent| 0.2em + 0.2em leading).
+        var fontSizePx = blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        var ascentPx = fontSizePx * 0.8;
+        var descentPx = fontSizePx * -0.2;
+
+        var placements = new List<InlineAtomicPlacement>();
+        var cumulativeTopPx = 0.0;
+        for (var li = 0; li < lines.Length; li++)
+        {
+            var lineTopPx = cumulativeTopPx;
+            var thisLineHeightPx = perLineHeights[li];
+            // Mirror TextPainter's baseline: centre the em box in the line box (half-leading), drop to
+            // the baseline by the ascent.
+            var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
+            var baselineTopPx = lineTopPx + halfLeadingPx + ascentPx;
+            var xCursorPx = 0.0;
+            foreach (var slice in lines[li].Slices)
+            {
+                var sliceStartXPx = xCursorPx;
+                xCursorPx += slice.SliceAdvance;
+                if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
+                {
+                    // `vertical-align: baseline` — the atomic's MARGIN-box bottom sits on the baseline; the
+                    // emitted BORDER-box fragment is inset by the bottom margin (block) + the leading
+                    // inline margin (so ImagePainter's content box, after it removes the img's own
+                    // padding/border, lands correctly — post-PR-#186 review P1).
+                    var borderBoxTopPx = baselineTopPx - a.MarginBlockEndPx - a.BorderBoxHeightPx;
+                    placements.Add(new InlineAtomicPlacement(
+                        a.Box, sliceStartXPx + a.MarginInlineStartPx, borderBoxTopPx,
+                        a.BorderBoxWidthPx, a.BorderBoxHeightPx));
+                }
+            }
+            cumulativeTopPx += thisLineHeightPx;
+        }
+        return (perLineHeights, placements, cumulativeTopPx);
+    }
+
+    /// <summary>Inline-atomic-boxes cycle — an inline-atomic box (inline <c>&lt;img&gt;</c>) positioned
+    /// relative to its inline-only block's CONTENT box. <see cref="EmitInlineOnlyBlockFragment"/> adds
+    /// the block fragment's border-box origin + the block's leading border + padding to emit the
+    /// atomic's own <see cref="BoxFragment"/> (so <c>ImagePainter</c> paints it from the image
+    /// cache).</summary>
+    private readonly record struct InlineAtomicPlacement(
+        Box Box,
+        double ContentInlineOffsetPx,
+        double ContentBlockOffsetPx,
+        double WidthPx,
+        double HeightPx);
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — bundle the
     /// pre-emit metrics carried out of
@@ -7023,7 +7125,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         InlineLayoutResult InlineResult,
         double BorderBoxInlineSize,
         double BorderBoxBlockSize,
-        double ContentBlockSize);
+        double ContentBlockSize,
+        // Inline-atomic-boxes cycle — per-line heights when the block carries an inline `<img>` atomic
+        // (a tall atomic grows its line); null for a text-only block, so the painter's uniform-pitch
+        // path is byte-identical. The inline-atomic boxes' own positioned fragments.
+        IReadOnlyList<double>? PerLineHeightsPx = null,
+        IReadOnlyList<InlineAtomicPlacement>? AtomicPlacements = null);
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
     /// review Findings 3 + 5 + 6 — main-loop dispatch for an
@@ -7301,7 +7408,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             BlockOffset: blockOffsetFromContentOrigin,
             InlineSize: comp.BorderBoxInlineSize,
             BlockSize: comp.BorderBoxBlockSize,
-            InlineLayout: comp.InlineResult));
+            InlineLayout: comp.InlineResult,
+            // Inline-atomic-boxes cycle — a line carrying a tall inline `<img>` grew; the painter walks
+            // these per-line heights so glyph baselines match the grown lines. Null for text-only
+            // blocks → the uniform-pitch path, byte-identical.
+            PerLineHeightsPx: comp.PerLineHeightsPx));
+
+        // Inline-atomic-boxes cycle — emit each inline `<img>` atomic's own positioned fragment so
+        // ImagePainter paints it from the image cache. The placement is content-box-relative; add the
+        // block fragment's border-box origin + the block's leading border + padding to reach the
+        // content box.
+        if (comp.AtomicPlacements is { Count: > 0 } placements)
+        {
+            var contentInlineOrigin = fragmentInlineOffset
+                + metrics.BorderInlineStart + metrics.PaddingInlineStart;
+            var contentBlockOrigin = blockOffsetFromContentOrigin
+                + metrics.BorderBlockStart + metrics.PaddingBlockStart;
+            foreach (var placement in placements)
+            {
+                _sink.Emit(new BoxFragment(
+                    Box: placement.Box,
+                    InlineOffset: contentInlineOrigin + placement.ContentInlineOffsetPx,
+                    BlockOffset: contentBlockOrigin + placement.ContentBlockOffsetPx,
+                    InlineSize: placement.WidthPx,
+                    BlockSize: placement.HeightPx));
+            }
+        }
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
@@ -7540,17 +7672,49 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     skipCount += CollectInlineTextRuns(
                         child, textRuns, child.Style, cancellationToken);
                     break;
-                // Atomic inlines — sub-cycle 2 TODOs.
                 case BoxKind.InlineReplacedElement:
+                    // Inline-atomic-boxes cycle — an inline `<img>` with a resolved used size (written
+                    // into its `width`/`height` slots by the pre-layout ReplacedSizeResolver) becomes an
+                    // ATOMIC inline box: a one-char U+FFFC OBJECT REPLACEMENT CHARACTER TextRun carrying
+                    // the box + its used border-box size. LineBuilder reserves the advance + line-height;
+                    // BlockLayouter emits a positioned fragment; ImagePainter paints it from the image
+                    // cache. An img with no usable size (no CSS/attribute size AND a failed load → 0
+                    // slots) can't be laid out — it falls through to the skip + diagnostic below.
+                    var atomicContentWidthPx = child.Style.ReadLengthPxOrZero(PropertyId.Width);
+                    var atomicContentHeightPx = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+                    if (atomicContentWidthPx > 0 && atomicContentHeightPx > 0)
+                    {
+                        // Box model (post-PR-#186 review P1) \u2014 the used CONTENT size is wrapped by the
+                        // img's own padding + border (\u2192 the BORDER box the emitted fragment carries, since
+                        // ImagePainter subtracts them back to the content) + margins (\u2192 the line advance).
+                        var s = child.Style;
+                        var borderBoxWidthPx = atomicContentWidthPx
+                            + s.ReadLengthPxOrZero(PropertyId.PaddingLeft) + s.ReadLengthPxOrZero(PropertyId.PaddingRight)
+                            + s.ReadLengthPxOrZero(PropertyId.BorderLeftWidth) + s.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                        var borderBoxHeightPx = atomicContentHeightPx
+                            + s.ReadLengthPxOrZero(PropertyId.PaddingTop) + s.ReadLengthPxOrZero(PropertyId.PaddingBottom)
+                            + s.ReadLengthPxOrZero(PropertyId.BorderTopWidth) + s.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                        var marginInlineStartPx = s.ReadLengthPxOrZero(PropertyId.MarginLeft);
+                        var advancePx = borderBoxWidthPx
+                            + marginInlineStartPx + s.ReadLengthPxOrZero(PropertyId.MarginRight);
+                        textRuns.Add(new NetPdf.Layout.Inline.TextRun(
+                            "\uFFFC", s,
+                            new NetPdf.Layout.Inline.InlineAtomic(
+                                child, advancePx, borderBoxWidthPx, borderBoxHeightPx,
+                                marginInlineStartPx,
+                                s.ReadLengthPxOrZero(PropertyId.MarginTop),
+                                s.ReadLengthPxOrZero(PropertyId.MarginBottom))));
+                        break;
+                    }
+                    skipCount++;
+                    break;
+                // Atomic inlines still unsupported — inline-block / inline-flex / inline-grid /
+                // inline-table (+ an unsized inline-replaced, above). Per Finding #4 — count + caller
+                // emits one LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 diagnostic per skip.
                 case BoxKind.InlineBlockContainer:
                 case BoxKind.InlineFlexContainer:
                 case BoxKind.InlineGridContainer:
                 case BoxKind.InlineTable:
-                    // Per Finding #4 — count + caller emits one
-                    // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001
-                    // diagnostic per skip. Sub-cycle 1 still skips
-                    // the atomic — sub-cycle 2 will inject a
-                    // placeholder line metric box.
                     skipCount++;
                     break;
                 default:

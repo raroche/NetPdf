@@ -1475,10 +1475,10 @@ internal static class GridSizing
     /// width/height. Pre-F3 only raw <c>width</c>/<c>height</c> was
     /// counted, so an item with <c>width:100; padding:20; border:5;
     /// margin:10</c> was sized at 100 instead of the spec-correct
-    /// 170. KNOWN GAPS:
+    /// 170. The chrome is computed in <see cref="ItemBorderBoxExtent"/>, which honors
+    /// <c>box-sizing</c> (grid box-sizing cycle): a <c>border-box</c> item's declared size already
+    /// includes the border + padding, so they are NOT added again. KNOWN GAPS:
     /// <list type="bullet">
-    ///   <item><b>box-sizing: border-box</b> — assumes content-box
-    ///   default; border-box items over-count chrome.</item>
     ///   <item><b>Percentage dimensions</b> (<c>width: 50%</c>) — return
     ///   0 from <c>ReadLengthPxOrZero</c>; resolved against the cell,
     ///   which is what we're sizing (= chicken-and-egg). Future cycle
@@ -1491,76 +1491,84 @@ internal static class GridSizing
     {
         if (isRowAxis)
         {
-            var declared = itemBox.Style.ReadLengthPxOrZero(PropertyId.Height);
-            // Non-block-pagination arc (grid CONTENT-sized rows) — when the item
-            // has no DEFINITE height, its row contribution comes from its
-            // CONTENT block extent measured at its column width, not the 0 a
-            // declared-only read returns (which collapsed `grid-auto-rows: auto`
-            // cells to nothing). `declared` is the `height` longhand only (0 in
-            // this content-determined branch). Margins / borders / padding
-            // are added below as chrome.
-            if (contentMeasurer is not null && IsHeightContentDetermined(itemBox))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var measured = contentMeasurer(itemBox, availableInlineSize);
-                if (double.IsFinite(measured) && measured > declared)
-                {
-                    declared = measured;
-                }
-            }
-            // `min-height` floor (grid min-height cycle) — the content-box size is at least the absolute
-            // `min-height` (CSS Box Sizing 3 §6.1), so a min-height taller than the declared / content
-            // height grows the row. A percentage / keyword min-height reads 0 here (resolves against the
-            // cell — chicken-and-egg — the documented gap), matching how `height` is read.
-            var minHeight = itemBox.Style.ReadLengthPxOrZero(PropertyId.MinHeight);
-            if (minHeight > declared) declared = minHeight;
-            var borderTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-            var paddingTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-            var borderBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-            var paddingBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-            var marginTop = itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
-            var marginBottom = itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
-            // Per cycle-3 approximation: declared (or content) height + chrome
-            // on both sides. Margins included per CSS Sizing's "outer size"
-            // semantics for grid item contributions.
-            return declared + borderTop + paddingTop + borderBottom + paddingBottom
-                + marginTop + marginBottom;
+            var borderBox = ItemBorderBoxExtent(
+                itemBox, contentMeasurer, availableInlineSize, cancellationToken,
+                sizeId: PropertyId.Height, minSizeId: PropertyId.MinHeight,
+                isContentDetermined: IsHeightContentDetermined(itemBox),
+                leadingBorderId: PropertyId.BorderTopWidth, leadingPaddingId: PropertyId.PaddingTop,
+                trailingBorderId: PropertyId.BorderBottomWidth, trailingPaddingId: PropertyId.PaddingBottom);
+            return borderBox
+                + itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginTop)
+                + itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
         }
         else
         {
-            var declared = itemBox.Style.ReadLengthPxOrZero(PropertyId.Width);
-            // Grid content-width cycle — when the item has no DEFINITE width, its column contribution
-            // comes from its MAX-CONTENT inline extent (measured at the unconstrained probe width passed
-            // by the caller), not the 0 a declared-only read returns (which collapsed a content-only
-            // `auto` / `min-content` / `max-content` column to its chrome). `declared` is the `width`
-            // longhand only (0 in this content-determined branch); the max() is defensive. Margins /
-            // borders / padding are added below as chrome. (§11.5 max-content; min-content / the
-            // available-width fit are approximated by max-content, mirroring the row L19 approximation.)
-            if (contentMeasurer is not null && IsWidthContentDetermined(itemBox))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var measured = contentMeasurer(itemBox, availableInlineSize);
-                if (double.IsFinite(measured) && measured > declared)
-                {
-                    declared = measured;
-                }
-            }
-            // `min-width` floor (grid min-height/min-width floor cycle — the inline-axis analog of the
-            // row axis's `min-height` floor above): the content-box inline size is at least the absolute
-            // `min-width` (CSS Box Sizing 3 §6.1). A percentage / keyword min-width reads 0 here (the
-            // documented chicken-and-egg gap).
-            var minWidth = itemBox.Style.ReadLengthPxOrZero(PropertyId.MinWidth);
-            if (minWidth > declared) declared = minWidth;
-            var borderLeft = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-            var paddingLeft = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-            var borderRight = itemBox.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-            var paddingRight = itemBox.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-            var marginLeft = itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginLeft);
-            var marginRight = itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
-            return declared + borderLeft + paddingLeft + borderRight + paddingRight
-                + marginLeft + marginRight;
+            var borderBox = ItemBorderBoxExtent(
+                itemBox, contentMeasurer, availableInlineSize, cancellationToken,
+                sizeId: PropertyId.Width, minSizeId: PropertyId.MinWidth,
+                isContentDetermined: IsWidthContentDetermined(itemBox),
+                leadingBorderId: PropertyId.BorderLeftWidth, leadingPaddingId: PropertyId.PaddingLeft,
+                trailingBorderId: PropertyId.BorderRightWidth, trailingPaddingId: PropertyId.PaddingRight);
+            return borderBox
+                + itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
+                + itemBox.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
         }
     }
+
+    /// <summary>The item's BORDER-BOX outer-contribution extent on one axis (border + padding included;
+    /// the caller adds margins). Honors `box-sizing` (grid box-sizing cycle, CSS Basic UI 4 §10): the
+    /// extent is the MAX of —
+    /// <list type="bullet">
+    ///   <item>the chrome floor (border + padding around 0 content — a replaced/empty cell);</item>
+    ///   <item>the DECLARED size — a BORDER box under `box-sizing: border-box` (chrome already inside),
+    ///   a CONTENT box + chrome under the initial `content-box`;</item>
+    ///   <item>the CONTENT-measured size + chrome (an `auto` size measured from content is ALWAYS a
+    ///   content box, so chrome is added regardless of box-sizing);</item>
+    ///   <item>the `min-*` floor (CSS Box Sizing 3 §6.1) — border- or content-box per box-sizing.</item>
+    /// </list>
+    /// For the initial `content-box` this is byte-identical to the pre-cycle `max(declared, content,
+    /// min) + chrome`. A `%`/keyword size or min reads 0 (the documented chicken-and-egg gap).</summary>
+    private static double ItemBorderBoxExtent(
+        Box itemBox, GridContentMeasurer? contentMeasurer, double availableInlineSize,
+        CancellationToken cancellationToken,
+        PropertyId sizeId, PropertyId minSizeId, bool isContentDetermined,
+        PropertyId leadingBorderId, PropertyId leadingPaddingId,
+        PropertyId trailingBorderId, PropertyId trailingPaddingId)
+    {
+        var style = itemBox.Style;
+        var chrome = style.ReadLengthPxOrZero(leadingBorderId) + style.ReadLengthPxOrZero(leadingPaddingId)
+            + style.ReadLengthPxOrZero(trailingBorderId) + style.ReadLengthPxOrZero(trailingPaddingId);
+        var isBorderBox = IsBorderBoxSizing(style);
+
+        // The chrome floor (border + padding around 0 content) — a border box is at least this.
+        var extent = chrome;
+
+        // DECLARED size: a border box under border-box, a content box (+ chrome) under content-box.
+        var declared = style.ReadLengthPxOrZero(sizeId);
+        if (declared > 0)
+            extent = Math.Max(extent, isBorderBox ? declared : declared + chrome);
+
+        // CONTENT-measured size (a content-determined `auto` size) is a CONTENT box → + chrome.
+        if (contentMeasurer is not null && isContentDetermined)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var measured = contentMeasurer(itemBox, availableInlineSize);
+            if (double.IsFinite(measured) && measured > 0)
+                extent = Math.Max(extent, measured + chrome);
+        }
+
+        // `min-*` floor (CSS Box Sizing 3 §6.1) — border- or content-box per box-sizing.
+        var minSize = style.ReadLengthPxOrZero(minSizeId);
+        if (minSize > 0)
+            extent = Math.Max(extent, isBorderBox ? minSize : minSize + chrome);
+
+        return extent;
+    }
+
+    /// <summary>Grid box-sizing cycle — whether the item uses `box-sizing: border-box` (1) vs the
+    /// initial `content-box` (0). Mirrors <c>BlockLayouter.IsBorderBoxSizing</c>.</summary>
+    private static bool IsBorderBoxSizing(ComputedStyle style) =>
+        style.ReadKeywordOrDefault(PropertyId.BoxSizing, defaultIndex: 0) == 1;
 
     /// <summary>The unconstrained probe width (CSS px) for grid content-WIDTH (max-content) column
     /// measurement (grid content-width cycle): the width measurer lays the cell out at this width so its

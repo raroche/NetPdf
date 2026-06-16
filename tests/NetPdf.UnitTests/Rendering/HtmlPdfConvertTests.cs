@@ -3395,6 +3395,77 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_border_radius_slash_form_rounds_the_background_elliptically()
+    {
+        // border-radius-elliptical cycle — `border-radius: <h> / <v>` (dropped by AngleSharp) is
+        // recovered + rounds the body background band with DISTINCT horizontal/vertical radii. The
+        // elliptical band has Bézier corners (the slash was applied, not squared) AND differs from the
+        // circular `<h>` band (the vertical radius is honored, not collapsed to circular).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var ellipse = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;" +
+            "background-color:#3366cc;border-radius:40px / 8px}</style></head>" +
+            "<body><div class=\"box\"></div></body></html>", opts));
+        var circle = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;" +
+            "background-color:#3366cc;border-radius:40px}</style></head>" +
+            "<body><div class=\"box\"></div></body></html>", opts));
+        Assert.True(CountOccurrences(ellipse, " c ") >= 4);   // Bézier corners → rounded (slash applied)
+        Assert.NotEqual(circle, ellipse);                     // 8px vertical honored, not circular 40px
+    }
+
+    [Fact]
+    public void Body_border_radius_circular_after_slash_resets_the_vertical_radii()
+    {
+        // post-PR-#186 review P1 — a later circular `border-radius` RESETS the internal `-y` slots a prior
+        // elliptical `Rx / Ry` set, so `…10px / 30px; …5px` renders IDENTICAL to a plain circular 5px (NOT
+        // 5px / 30px with a stale vertical radius). Same fix covers single-value corner longhands.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Box(string radius) =>
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;background-color:#3366cc;"
+            + radius + "}</style></head><body><div class=\"box\"></div></body></html>";
+        var reset = Latin1(HtmlPdf.Convert(Box("border-radius:10px / 30px;border-radius:5px"), opts));
+        var circular = Latin1(HtmlPdf.Convert(Box("border-radius:5px"), opts));
+        var stale = Latin1(HtmlPdf.Convert(Box("border-radius:10px / 30px"), opts));
+        Assert.Equal(circular, reset);     // the second declaration fully resets the elliptical's vertical
+        Assert.NotEqual(stale, reset);     // and is NOT the leftover 5px / 30px ellipse
+    }
+
+    [Fact]
+    public void Body_corner_radius_longhands_after_slash_reset_their_vertical_radii()
+    {
+        // post-PR-#186 review P1 — single-value corner longhands also reset their corner's stale `-y`
+        // after an elliptical shorthand: all four 5px corner longhands == a plain circular 5px.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Box(string radius) =>
+            "<!DOCTYPE html><html><head><style>.box{width:120px;height:60px;background-color:#3366cc;"
+            + radius + "}</style></head><body><div class=\"box\"></div></body></html>";
+        var reset = Latin1(HtmlPdf.Convert(Box(
+            "border-radius:10px / 30px;border-top-left-radius:5px;border-top-right-radius:5px;"
+            + "border-bottom-right-radius:5px;border-bottom-left-radius:5px"), opts));
+        var circular = Latin1(HtmlPdf.Convert(Box("border-radius:5px"), opts));
+        Assert.Equal(circular, reset);
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_slash_form_rounds_the_band()
+    {
+        // border-radius-elliptical cycle — a margin box's `border-radius: <h> / <v>` rounds its band
+        // (BorderRadiusShorthandExpander → the corner + internal `-y` longhands → MarginBoxStyle cascade
+        // → ReadCornerRadii), with NO malformed diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 8px / 3px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // rounded band (slash applied)
+    }
+
+    [Fact]
     public void Page_margin_box_border_radius_em_is_deferred_to_a_square()
     {
         // margin-box-border-radius cycle — the radius now cascades through the corner longhands. A
@@ -3495,23 +3566,8 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square
     }
 
-    [Fact]
-    public void Page_margin_box_border_radius_elliptical_slash_defers_without_a_diagnostic()
-    {
-        // post-PR-#174 review P2 — the elliptical `Rx / Ry` form stays the DOCUMENTED silent deferral
-        // (square, NO diagnostic), distinct from the malformed cases above.
-        var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; width: 80px; " +
-            "background-color: #3366cc; border-radius: 8px / 4px } }</style></head><body></body></html>",
-            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
-
-        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
-            && d.Message.Contains("border-radius"));
-        var pdf = Latin1(result.Pdf);
-        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
-        Assert.True(i >= 0);
-        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square (deferred)
-    }
+    // (The elliptical `Rx / Ry` slash form, formerly a documented square deferral here, now ROUNDS —
+    //  border-radius-elliptical cycle — covered by Page_margin_box_border_radius_slash_form_rounds_the_band.)
 
     [Fact]
     public void Page_margin_box_border_radius_with_uniform_border_paints_a_ring()
@@ -4138,6 +4194,89 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(12.0, p.W, 1);
         Assert.Equal(12.0, p.H, 1);
         Assert.Contains("/Subtype /Image", pdf);
+    }
+
+    [Fact]
+    public void Inline_img_in_text_is_laid_out_and_painted()
+    {
+        // inline-atomic-boxes cycle — an INLINE <img> (default display) inside a line of text is no
+        // longer skipped (LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001): it reserves its used size on the
+        // line as an atomic and paints. 16×16 px = 12×12 pt placement, one XObject.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<p>Hello <img src=\"{PngDataUri(16, 16)}\"> World</p>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        var p = Assert.Single(AllImagePlacements(pdf));
+        Assert.Equal(12.0, p.W, 1);
+        Assert.Equal(12.0, p.H, 1);
+        Assert.Contains("/Subtype /Image", pdf);
+        // The handled inline <img> no longer raises the atomic-not-supported diagnostic.
+        Assert.DoesNotContain(result.Warnings,
+            d => d.Code == DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
+    [Fact]
+    public void Inline_img_advances_with_preceding_text_on_the_line()
+    {
+        // inline flow — the img sits AFTER the leading text on the line, so more leading text shifts
+        // its placement to the right (proves it participates in line layout, not anchored at x=0).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var near = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>I<img src=\"{PngDataUri(16, 16)}\"></p></body></html>", opts)));
+        var far = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>IIIIIIIIII<img src=\"{PngDataUri(16, 16)}\"></p></body></html>", opts)));
+        Assert.Single(near);
+        Assert.Single(far);
+        Assert.True(far[0].X > near[0].X + 5.0,
+            $"img after more text should be further right: near.X={near[0].X}, far.X={far[0].X}");
+    }
+
+    [Fact]
+    public void Inline_img_taller_than_text_grows_its_line_box()
+    {
+        // inline-atomic-boxes cycle — a tall inline <img> grows its line box (max(text line-height,
+        // img height)), so a following BLOCK image is pushed further down the page (a smaller
+        // bottom-up PDF Y). The block image is identified by its 12×12 pt size.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var tall = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<p>x<img src=\"{PngDataUri(16, 16)}\" width=\"16\" height=\"64\"></p>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block\">" +
+            "</body></html>", opts)));
+        var shortImg = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<p>x<img src=\"{PngDataUri(16, 16)}\" width=\"16\" height=\"8\"></p>" +
+            $"<img src=\"{PngDataUri(16, 16)}\" style=\"display:block\">" +
+            "</body></html>", opts)));
+        Assert.Equal(2, tall.Count);       // inline img + block img
+        Assert.Equal(2, shortImg.Count);
+        var tallBlock = tall.Find(q => Math.Abs(q.H - 12.0) < 1.0);
+        var shortBlock = shortImg.Find(q => Math.Abs(q.H - 12.0) < 1.0);
+        Assert.True(tallBlock.Y < shortBlock.Y - 20.0,
+            $"tall inline img should push the block img down: tall.blockY={tallBlock.Y}, short.blockY={shortBlock.Y}");
+    }
+
+    [Fact]
+    public void Inline_img_with_padding_reserves_advance_and_still_paints_content()
+    {
+        // post-PR-#186 review P1 — an inline <img> with padding reserves the MARGIN-box advance and emits
+        // a BORDER-box fragment, so ImagePainter (which subtracts the img's own padding/border to get the
+        // content box) still paints the content. Before the fix the fragment was content-sized →
+        // ImagePainter subtracted the padding into a negative content box → no image painted.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var padded = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>I<img src=\"{PngDataUri(16, 16)}\" style=\"padding:10px\">X</p></body></html>", opts)));
+        var plain = AllImagePlacements(Latin1(HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><p>I<img src=\"{PngDataUri(16, 16)}\">X</p></body></html>", opts)));
+        var p = Assert.Single(padded);      // content STILL painted (not subtracted into nothing)
+        Assert.Single(plain);
+        Assert.Equal(12.0, p.W, 1);          // the 16px content = 12pt, intact
+        Assert.Equal(12.0, p.H, 1);
+        // The padded img's content is inset by the 10px (7.5pt) left padding → further right than plain.
+        Assert.True(p.X > plain[0].X + 5.0,
+            $"padded img content should be inset by its padding: padded.X={p.X}, plain.X={plain[0].X}");
     }
 
     [Fact]

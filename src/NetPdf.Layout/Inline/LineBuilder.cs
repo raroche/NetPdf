@@ -345,6 +345,26 @@ internal static class LineBuilder
                     nameof(itemizedRuns));
             }
 
+            // Inline-atomic-boxes cycle — an ATOMIC inline box (an inline `<img>`) is NOT text-shaped.
+            // Emit one synthetic glyph whose advance is the atomic's used width so the wrap pass treats
+            // it as a single non-breakable unit (the source `U+FFFC` carries UAX #14 break opportunities
+            // around it); the painter skips the glyph + paints the box from its own emitted fragment.
+            if (sourceTextRuns[run.SourceTextRunIndex].Atomic is { } atomic)
+            {
+                var atomicAdvance = (float)Math.Max(0, atomic.AdvancePx);
+                output[runIdx] = new ShapedRun(
+                    run,
+                    new[]
+                    {
+                        new ShapedGlyph(
+                            GlyphId: 0, XAdvance: atomicAdvance, YAdvance: 0,
+                            XOffset: 0, YOffset: 0, Cluster: run.Utf16Start),
+                    },
+                    atomic.AdvancePx,
+                    atomic);
+                continue;
+            }
+
             var style = sourceTextRuns[run.SourceTextRunIndex].Style;
             var direction = run.IsRtl
                 ? ShapingDirection.RightToLeft
@@ -2184,6 +2204,16 @@ internal static class LineBuilder
         var inWs = true;
         for (var r = 0; r < runs.Count; r++)
         {
+            // Inline-atomic-boxes cycle — an atomic run (its text is a single U+FFFC) is an opaque
+            // non-whitespace unit: pass it through VERBATIM (preserving the Atomic payload that a
+            // `new TextRun(text, style)` would drop) and reset the collapse state so a following space
+            // isn't trimmed as leading.
+            if (runs[r].Atomic is not null)
+            {
+                output[r] = runs[r];
+                inWs = false;
+                continue;
+            }
             output[r] = new TextRun(
                 CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
                 runs[r].Style);
@@ -2310,6 +2340,15 @@ internal static class LineBuilder
             // Per cycle 3d sub-cycle 1 review Rec #4 — observe
             // cancellation at every source-run boundary.
             cancellationToken.ThrowIfCancellationRequested();
+            // Inline-atomic-boxes cycle — an atomic run (its text is a single U+FFFC) is an opaque
+            // non-whitespace unit: pass it through VERBATIM (preserving the Atomic payload) regardless
+            // of its mode, and reset the collapse state so a following space isn't trimmed as leading.
+            if (runs[r].Atomic is not null)
+            {
+                output[r] = runs[r];
+                inWs = false;
+                continue;
+            }
             var mode = modes[r];
             if (mode is WhiteSpace.Pre
                 or WhiteSpace.PreWrap

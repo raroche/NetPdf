@@ -128,7 +128,11 @@ internal static class MarginBoxStyle
             // `border-radius` shorthand expands to these four via BorderRadiusShorthandExpander (margin-box
             // bodies bypass AngleSharp), each absolute or `%`; a malformed/elliptical value is handled above.
             PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
-            PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius);
+            PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius,
+            // The internal vertical-radius longhands (border-radius-elliptical cycle) — the
+            // `border-radius: <h> / <v>` slash expander emits these alongside the horizontal corners.
+            PropertyId.BorderTopLeftRadiusY, PropertyId.BorderTopRightRadiusY,
+            PropertyId.BorderBottomRightRadiusY, PropertyId.BorderBottomLeftRadiusY);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 
@@ -219,22 +223,20 @@ internal static class MarginBoxStyle
                         decl.Location));
                     continue;
                 }
-                // A `border-radius` shorthand reaching here failed to expand (a valid 1–4-value form
-                // becomes the four corner longhands upstream). It's either the INTENTIONALLY-deferred
-                // elliptical `Rx / Ry` form (a top-level `/`, silent → square per the documented
-                // deferral) or a MALFORMED value (`8px bogus`, an unbalanced function, a negative
-                // radius) — only the latter is surfaced instead of silently dropping (PR #174 review P2).
+                // A `border-radius` reaching here failed to expand — a valid 1–4-value CIRCULAR form
+                // AND a valid elliptical `Rx / Ry` slash form both become longhands upstream
+                // (border-radius-elliptical cycle), so the value is MALFORMED (`8px bogus`, an unbalanced
+                // function, a negative radius, an empty slash side). Surface it instead of silently
+                // dropping (PR #174 review P2).
                 if (BorderRadiusShorthandExpander.IsBorderRadiusShorthand(decl.Property))
                 {
-                    if (!BorderRadiusShorthandExpander.IsDeferredElliptical(decl.Value.RawText))
-                        diagnostics?.Emit(new CssDiagnostic(
-                            CssDiagnosticCodes.CssPropertyValueInvalid001,
-                            $"Could not apply 'border-radius: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' " +
-                            "in an @page margin box — the value is an unsupported or malformed border-radius " +
-                            "(<length-percentage>{1,4}, non-negative); the elliptical `Rx / Ry` slash form is a " +
-                            "documented deferral (it renders square).",
-                            CssDiagnosticSeverity.Warning,
-                            decl.Location));
+                    diagnostics?.Emit(new CssDiagnostic(
+                        CssDiagnosticCodes.CssPropertyValueInvalid001,
+                        $"Could not apply 'border-radius: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' " +
+                        "in an @page margin box — the value is an unsupported or malformed border-radius " +
+                        "(<length-percentage>{1,4}, optionally `/ <length-percentage>{1,4}`, non-negative).",
+                        CssDiagnosticSeverity.Warning,
+                        decl.Location));
                     continue;
                 }
                 if (!PropertyMetadata.NameToId.TryGetValue(decl.Property, out var id)) continue;

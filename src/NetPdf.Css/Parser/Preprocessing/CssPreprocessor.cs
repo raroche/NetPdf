@@ -741,6 +741,16 @@ internal static class CssPreprocessor
                   // string-set + content() so the attr()/literal forms AngleSharp already keeps aren't
                   // duplicate-recovered.)
                   || (lowerName == "string-set" && ContainsContentFunction(rawValue))
+                  // Per the border-radius-elliptical cycle — recover EVERY `border-radius` shorthand. For
+                  // the SLASH form AngleSharp drops everything, so the recovery emits the horizontal
+                  // corner longhands + the internal vertical `-y` longhands. For the CIRCULAR / CSS-wide
+                  // form AngleSharp already emits the horizontal corners, so the emission below recovers
+                  // ONLY the `-y` longhands — keeping the vertical radii in LOCKSTEP so a later circular
+                  // value RESETS a prior elliptical's stale `-y` (post-PR-#186 review P1).
+                  || lowerName == "border-radius"
+                  // The four `border-{corner}-radius` LONGHANDS likewise set both axes (1 value → circular,
+                  // 2 values → h v); AngleSharp emits the horizontal, so the recovery co-writes the `-y`.
+                  || BorderRadiusShorthandExpander.IsCornerRadiusLonghand(lowerName)
                   // Per the body-calc cycle — AngleSharp.Css drops/normalizes declarations whose value
                   // carries a CSS math function it can't represent (`width: calc(1in - 24pt)` never
                   // reaches the cascade), so the body-calc first cut would silently see nothing.
@@ -989,6 +999,40 @@ internal static class CssPreprocessor
                         EmitInvalidGridShorthandRecovery(output,
                             "grid-auto-flow", GridInvalidShorthandSentinel, isImportant, ordinal);
                     }
+                }
+                else if (normalizedName == "border-radius"
+                    && BorderRadiusShorthandExpander.TryExpand("border-radius", cleanValue, out var brLonghands))
+                {
+                    // border-radius-elliptical cycle + post-PR-#186 review P1 — recover the WHOLE border-
+                    // radius (horizontal corner longhands + the internal `-netpdf-…-y` vertical longhands)
+                    // for EVERY form (slash + circular + CSS-wide). Emitting the full set keeps the merge
+                    // SYMMETRIC: a later circular `border-radius` overrides ALL of a prior elliptical's
+                    // longhands (horizontal AND vertical) by source order, so it RESETS the stale `-y`
+                    // (e.g. `10px / 30px; 5px` → circular 5px). The horizontal corners duplicate
+                    // AngleSharp's expansion for a circular value (same value → benign last-wins).
+                    foreach (var (prop, val) in brLonghands)
+                        output.Add(new CssDeclarationRecovery(
+                            prop, val, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                }
+                else if (BorderRadiusShorthandExpander.IsCornerRadiusLonghand(normalizedName)
+                    && BorderRadiusShorthandExpander.TryExpandCornerVertical(
+                        normalizedName, cleanValue, out var cornerYProperty, out var cornerYValue))
+                {
+                    // A `border-{corner}-radius` longhand sets BOTH axes. Co-emit the horizontal corner
+                    // (duplicates AngleSharp's — same value, benign last-wins) AND the internal `-y`, so
+                    // the merge treats it as a complete both-axes override that RESETS a prior elliptical's
+                    // stale `-y` for this corner (post-PR-#186 review P1; the lone `-y` alone doesn't win
+                    // the merge against a full shorthand expansion).
+                    output.Add(new CssDeclarationRecovery(
+                        normalizedName, cleanValue, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        cornerYProperty, cornerYValue, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
                 }
                 else
                 {

@@ -1578,15 +1578,20 @@ flags the categories):
     branch `phase-3-riders-perpage-geometry-inline-img-grid-cols` —
     `GridSizing.ItemOuterContribution` + the `widthMeasurer` closure).
     A cell with a DECLARED dimension still uses it (the L19
-    declared-dimension contribution + border + padding + margin).
+    declared-dimension contribution + border + padding + margin), and
+    the contribution is FLOORED at the item's absolute `min-height` /
+    `min-width` (grid min-height cycle — CSS Box Sizing §6.1; a %/keyword
+    min-* still reads 0, the chicken-and-egg gap).
 - **NOT in cycle 3 / still approximated** — explicitly deferred so the
   narrowed scope doesn't drift:
   - **Spec-strict §11.5 min-content vs max-content distinction** — the
     content measurement above reports MAX-content for both axes;
     `min-content` / `fit-content` / the available-width fit are
     approximated by max-content (same L19 simplification). A spanning
-    item still uses the equal-share distribution, not the §11.5.1
-    remainder algorithm.
+    item now SUBTRACTS the fixed spanned tracks before distributing
+    (grid spanning-item distribution cycle, see
+    `grid-spanning-item-intrinsic-distribution-deferral`), but splits the
+    remainder EQUALLY across intrinsic tracks, not proportional to headroom.
   - **§11.6 Maximize step** — the post-fr-resolution pass that
     grows base sizes up to growth limits when the grid has free
     space + no fr tracks consumed it. Cycle 4 picks this up.
@@ -2306,28 +2311,22 @@ flags the categories):
 ## grid-spanning-item-intrinsic-distribution-deferral
 
 - **ID** — `grid-spanning-item-intrinsic-distribution-deferral`
-- **Status** — `approximated`. Phase 3 Task 18 cycle 6a ships
-  equal-share distribution; spec-strict §11.5.1 step 3
-  distribution-proportional is post-cycle-6.
+- **Status** — `approximated` (PARTIALLY improved — grid spanning-item distribution cycle). The
+  subtract-fixed-tracks step now ships; the remaining gap is the PROPORTIONAL (vs equal) split of the
+  remainder across intrinsic tracks.
 - **Behavior** — A spanning item (= `grid-row: span N` or
   `grid-row: A / B` with `B - A > 1`) contributes to the
   intrinsic sizing of EACH spanned track per
-  `GridSizing.ResolveIntrinsicTracks`. Cycle 6a's approximation:
-  `perTrackContribution = itemContribution / span`. The item's
-  outer contribution (= declared dimension + chrome) is divided
-  equally across spanned intrinsic tracks. A spanning item with
-  no intrinsic tracks in its span (= all definite-length /
-  fr / minmax-definite) doesn't grow any track.
-- **Missing** — Per CSS Grid L1 §11.5.1 step 3, the spec
-  distributes a spanning item's contribution as follows:
-  - Subtract the BaseSize contributions of any spanned tracks
-    with definite (Length / Fr-with-min) base sizing.
-  - The remainder is distributed across the spanning intrinsic
-    tracks proportional to each track's intrinsic-size
-    contribution (= proportional-to-headroom), not equal-share.
-  - When the remainder is negative (= sum of definite bases
-    exceeds the item's contribution), no growth is distributed
-    (= the intrinsic tracks stay at their current bases).
+  `GridSizing.ResolveIntrinsicTracks`. The contribution is now
+  `max(0, itemContribution − sum(spanned NON-intrinsic base sizes)) / intrinsicSpannedCount`
+  (`SpanFixedSumAndIntrinsicCount`): the fixed (length / fr / fixed-minmax) tracks the item spans are
+  SUBTRACTED, and the remainder is split EQUALLY across the spanned INTRINSIC tracks. For an all-intrinsic
+  span this equals the prior `itemContribution / span` (no change); a spanning item with no intrinsic
+  tracks in its span doesn't grow any track (the remainder has nowhere to go).
+- **Missing** — Per CSS Grid L1 §11.5.1 step 3, the remainder should be distributed PROPORTIONAL to each
+  intrinsic track's headroom (its max-content − base size), not split equally; and the spec runs SEPARATE
+  min-content and max-content distribution passes. The subtract-fixed-tracks step + the negative-remainder
+  floor (no growth) now match the spec; only the proportional/min-max split remains an approximation.
 - **Trigger** — corpus invoice / report uses `grid-row: span N`
   with mixed-kind tracks (some length / fr, some auto /
   min-content) AND the equal-share approximation produces
@@ -3507,7 +3506,13 @@ flags the categories):
          rectangular clip (byte-identical). STILL DEFERRED: the explicit two-radii `Rx / Ry` slash
          spelling (AngleSharp drops it → all-zero → square); rounded NON-uniform borders (per-corner arc
          segments transitioning between edge widths/colours). (The MARGIN-box border-radius reached parity
-         in the margin-box-border-radius cycle — see the entry above.)
+         in the margin-box-border-radius cycle — see the entry above.) **Why `Rx / Ry` is a focused cycle,
+         not a batch rider** (assessed in the riders-2 round): the corner-radius STORAGE is one
+         `ComputedSlot` per corner (one value, used for both X and Y in `ReadCornerRadii`), so distinct
+         horizontal vs vertical radii need a 2-radii-per-corner model change (a paired slot, or 4 internal
+         vertical-radius properties — the latter would wrongly surface in `@supports`). The elliptical
+         RENDERING already exists (`CornerRadii` has per-corner X/Y); only the style storage + slash
+         recovery are missing.
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band

@@ -150,6 +150,10 @@ namespace NetPdf.Layout.Layouters;
 /// at its inset (a leaf block's own padding-left). Null = none.</param>
 /// <param name="PerLineInsetRightPx">Per-line RIGHT INSETS (hpadding cycle) — together with the
 /// left inset, shrinks line i's alignment extent. Null = none.</param>
+/// <param name="SuppressBoxDecoration">Non-block-pagination arc — when true the painter skips this
+/// fragment's BOX DECORATION (background, borders, outline) and paints only its text; set on the
+/// inline-only-root content fragment a flex / grid item emits (box == the item) so the decoration the
+/// item's GEOMETRY fragment already painted isn't painted twice. Default false = byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -174,7 +178,15 @@ internal readonly record struct BoxFragment(
     // and its alignment extent shrinks by both insets (a leaf block's own horizontal padding).
     // Null = no insets.
     System.Collections.Generic.IReadOnlyList<double>? PerLineInsetLeftPx = null,
-    System.Collections.Generic.IReadOnlyList<double>? PerLineInsetRightPx = null);
+    System.Collections.Generic.IReadOnlyList<double>? PerLineInsetRightPx = null,
+    // Non-block-pagination arc (flex item / grid cell CONTENT layout): when true the painter
+    // skips this fragment's BOX DECORATION (background-color / -image, borders, outline) and
+    // paints only its <see cref="InlineLayout"/> text. Set on the inline-only-root content
+    // fragment a flex / grid item emits (box == the item) — the item's flex / grid GEOMETRY
+    // fragment already paints the decoration, so without this the background / border would
+    // paint TWICE (benign for an opaque background, visibly doubled for a translucent one).
+    // DEFAULT false leaves every other fragment byte-identical.
+    bool SuppressBoxDecoration = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

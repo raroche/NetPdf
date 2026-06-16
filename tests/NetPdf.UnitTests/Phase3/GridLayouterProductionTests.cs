@@ -760,6 +760,44 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_auto_row_sizes_from_item_CONTENT_not_just_declared_height()
+    {
+        // Non-block-pagination arc (grid CONTENT-sized rows) — an auto row with
+        // a content-bearing item that has NO declared height now sizes to the
+        // item's CONTENT block extent (its 60px inner block), instead of
+        // collapsing to 0 (LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001).
+        // Two stacked rows prove they don't overlap at y=0.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-columns: 200px;
+                    grid-auto-rows: auto;
+                    width: 200px;
+                }
+                .inner { height: 60px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="item1"><div class="inner"></div></div>
+              <div class="item2"><div class="inner"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var item1 = FindByClass(sink, "item1");
+        var item2 = FindByClass(sink, "item2");
+        Assert.NotNull(item1);
+        Assert.NotNull(item2);
+        // Each auto row content-sized to the 60px inner block (NOT 0).
+        Assert.Equal(60.0, item1!.Value.BlockSize, precision: 3);
+        Assert.Equal(60.0, item2!.Value.BlockSize, precision: 3);
+        // Row 2 stacks below row 1 (content-sized rows don't overlap at 0).
+        Assert.Equal(60.0, item2.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
     public async Task Production_html_auto_plus_fr_redistributes_after_intrinsic()
     {
         // grid-template-rows: auto 1fr with explicit height 400.

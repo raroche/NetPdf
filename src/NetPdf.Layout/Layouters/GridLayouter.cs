@@ -503,6 +503,34 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // GridSizing.Resolve. Per F3 — call with content offsets
             // set to 0 so the returned positions are relative-from-
             // content-origin (= cache shape).
+            //
+            // Non-block-pagination arc (grid CONTENT-sized rows) — wire a
+            // content measurer so `grid-auto-rows: auto` (and min/max-content)
+            // rows size to their cells' content block extent instead of
+            // collapsing to 0. The measurer lays each item out at its column
+            // width via the shared NestedContentMeasurer. Reading the ref-struct
+            // layout context's fields into locals first (a lambda can't capture
+            // a ref struct).
+            var measureWritingMode = layout.WritingMode;
+            var measureIsRtl = layout.IsRtl;
+            var measureBlockBudget = fragmentainer.BlockSize;
+            // Memoize per item box for this Resolve — a row-SPANNING intrinsic
+            // item is otherwise re-measured once per intersected row track
+            // (ResolveIntrinsicTracks's per-track loop). An item's available
+            // inline (column) width is deterministic within a Resolve, so the
+            // box reference is a sufficient key.
+            var measureCache = new System.Collections.Generic.Dictionary<Box, double>(
+                System.Collections.Generic.ReferenceEqualityComparer.Instance);
+            GridSizing.GridContentMeasurer contentMeasurer = (item, availInline) =>
+            {
+                if (measureCache.TryGetValue(item, out var cached)) return cached;
+                var extent = NestedContentMeasurer.Measure(
+                    item, availInline, measureBlockBudget, _shaperResolver,
+                    measureWritingMode, measureIsRtl, cancellationToken)
+                    .ContentBlockExtent;
+                measureCache[item] = extent;
+                return extent;
+            };
             var sizing = GridSizing.Resolve(
                 gridBox: _rootBox,
                 contentInlineOffset: 0,
@@ -510,7 +538,8 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 contentInlineSize: _contentInlineSize,
                 contentBlockSize: _contentBlockSize,
                 emit: SafeEmit,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                contentMeasurer: contentMeasurer);
 
             if (!sizing.HasExplicitTracks)
             {
@@ -1213,7 +1242,11 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         var translatingSink = new TranslatingFragmentSink(
             outerSink: _sink,
             inlineTranslation: cellInlineOffset,
-            blockTranslation: cellBlockOffset);
+            blockTranslation: cellBlockOffset,
+            // The grid item owns its own content's decoration: an inline-only-root
+            // content fragment (box == itemBox) paints text only (the item geometry
+            // fragment already painted its background / border).
+            decorationOwner: itemBox);
 
         // Inner fragmentainer sized to the cell. Per cycle 1 this is
         // atomic — the sub-BlockLayouter commits the item's content in
@@ -1246,7 +1279,18 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // the discarded continuation. Suppress grid pagination
             // here until nested-continuation propagation is wired
             // (= 5c.2d scope).
-            disableGridPagination: true);
+            disableGridPagination: true,
+            // PR-#182 review P1 — a grid cell with a tall nested column-flex
+            // would otherwise PageComplete(FlexContinuation) into this discarded
+            // result + drop the deferred items. Suppress flex pagination too so
+            // the cell content is atomic.
+            disableFlexPagination: true,
+            // Non-block-pagination arc (grid content-sized rows) — the common
+            // grid item (`<div>text</div>`) has DIRECT inline children; opt the
+            // nested layouter into emitting the inline-only ROOT's own content
+            // (else the block-only child loop skips the cell's text — the same
+            // gap flex items had). See BlockLayouter's _layoutRootInlineContent.
+            layoutRootInlineContent: true);
         using var itemResolver = new BreakResolver();
         _ = itemLayouter.AttemptLayout(
             innerFragmentainer,
@@ -1268,26 +1312,36 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         private readonly double _inlineTranslation;
         private readonly double _blockTranslation;
         private readonly int _baseline;
+        private readonly Box? _decorationOwner;
 
         public TranslatingFragmentSink(
             IBlockFragmentSink outerSink,
             double inlineTranslation,
-            double blockTranslation)
+            double blockTranslation,
+            Box? decorationOwner = null)
         {
             _outer = outerSink;
             _inlineTranslation = inlineTranslation;
             _blockTranslation = blockTranslation;
             _baseline = outerSink.Cursor;
+            _decorationOwner = decorationOwner;
         }
 
         public int Cursor => _outer.Cursor - _baseline;
 
         public void Emit(BoxFragment fragment)
         {
+            // The inline-only-root content fragment (box == the grid item) paints
+            // text only — the item's grid GEOMETRY fragment already paints its
+            // decoration, so suppress it here to avoid a double paint. Block-CHILD
+            // fragments (box != the item) keep their own decoration.
+            var suppressDecoration = _decorationOwner is not null
+                && ReferenceEquals(fragment.Box, _decorationOwner);
             _outer.Emit(fragment with
             {
                 InlineOffset = fragment.InlineOffset + _inlineTranslation,
                 BlockOffset = fragment.BlockOffset + _blockTranslation,
+                SuppressBoxDecoration = fragment.SuppressBoxDecoration || suppressDecoration,
             });
         }
 

@@ -2940,21 +2940,61 @@ flags the categories):
        engages. Covered at the recursion path, with `1fr` columns, and as the root's direct child (outer
        dispatch). **REMAINING — prioritized backlog (each is its own substantial / risky standalone task;
        investigated + deferred to keep this PR's regression surface small):**
-       1. **flex item CONTENT layout** (highest value) — `FlexLayouter` emits each item's BOX geometry but does
-          NOT lay out the item's inner content (text / block children), so flex item text doesn't render
-          (orthogonal to pagination — the column-flex facade tests assert via per-item background fills, not
-          glyphs). Needs the table-cell nested-BlockLayouter + translating-buffered-sink pattern, coupled with
-          the item-split/re-anchor logic. Own PR.
-       2. **grid CONTENT-sized rows** — `grid-auto-rows: auto` (the default) rows sized by cell content collapse
-          to 0 (`LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001`); same content-measurement-under-indefinite-
-          height family as flex item content + the fr-under-indefinite approximation. Own PR.
-       3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001`** — a `flex-direction: column`
-          with an explicit `height` TALLER than the page paginates CORRECTLY (right page count, no content loss)
-          but emits a spurious forced-overflow warning per page. Root cause: the block wrapping the explicit-
-          height flex hits BlockLayouter's top-level forced-overflow path (`BlockLayouter.cs` ~2374) — the
-          measure treats the explicit height as a rigid oversized block — whereas the auto-height flex takes the
-          clean path. The fix is in the delicate top-level break/measure logic (high regression risk for a
-          spurious-warning-only defect); deferred.
+       1. **flex item CONTENT layout — DONE** (highest value; flex/grid item-content + spurious-overflow PR).
+          `FlexLayouter` now lays out each flex item's inner content (text / block children) via a nested
+          `BlockLayouter` into a per-item `BufferingMeasureSink`, flushed at the item's FINAL (re-anchored)
+          content-box origin in the emission loop (only COMMITTED items flush; out-of-flow descendants stay
+          outer-pass-owned). Column AUTO-height items CONTENT-SIZE to the measured block extent (closing the
+          `<div>text</div>` collapse-to-0 gap), feeding justify-content + the column item-split budget. The
+          common `<div>text</div>` item has DIRECT inline children, so a new OPT-IN `BlockLayouter`
+          `layoutRootInlineContent` flag makes a nested layouter whose root is itself inline-only emit the
+          root's own inline content (the block-only child loop otherwise skipped it); gated → zero blast radius
+          outside flex/grid. Shared `NestedContentMeasurer` + `BufferingMeasureSink` are the DRY home.
+          STILL DEFERRED: content-SIZED (auto-height) column PAGINATION (the wrapper pre-measure
+          `PreMeasureFlexMainExtent` still sums declared item heights → an auto-height column doesn't drive the
+          wrapper overflow that engages pagination; explicit-height columns DO paginate + render); ROW main-axis
+          content-WIDTH (max-content) sizing (row auto-width items keep their flex-resolved width, content
+          overflows a narrow box — grid's zero-cell contract). **`flex-grid-item-content-border-box-placement`
+          (named deferral, PR-#182 review P3):** the nested content is placed at the item's BORDER-box origin —
+          its own padding / border are NOT inset (content overflows into the padding strip), mirroring grid's
+          cycle-1 approximation; pinned by `Flex_item_own_margin_and_padding_do_not_offset_inline_content`.
+          **PR-#182 review HARDENING (landed in the same PR):** **(P1)** a new `BlockLayouter`
+          `disableFlexPagination` flag (mirrors `disableGridPagination`) — nested content callers
+          (`NestedContentMeasurer`, `DispatchGridItemContents`, the table cell) DISCARD the layout result, so an
+          un-suppressed nested column-flex split would `PageComplete(FlexContinuation)` + silently DROP the
+          deferred items; now the nested flex is atomic (content overflows). The flex subtree-extent projection
+          is gated by it too. **(P2)** flex item content diagnostics are BUFFERED per item + flushed only when
+          the item COMMITS (a deferred item's buffer is discarded + re-generated on its page) — no longer
+          suppressed (`diagnostics: null`) nor duplicated across pages. **(Copilot)** the nested-content root's
+          OWN margins are SUPPRESSED (`DispatchInlineOnlyBlock(suppressOwnMargins:true)`) so a margined item's
+          text isn't shifted + its measured extent isn't inflated (the margin double-count is FIXED, not
+          deferred); and `CollectInlineTextRuns` now SKIPS out-of-flow inline descendants so a `position:absolute`
+          span inside an inline-only item doesn't join the line (it's anchored by the abspos pass instead).
+       2. **grid CONTENT-sized rows — DONE** (same PR). `GridSizing.Resolve` gained an optional
+          `GridContentMeasurer` callback; `ItemOuterContribution` measures a cell's content block extent at its
+          column width when the declared height is auto/0 (was 0 → `LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001`).
+          Wired at the `GridLayouter` emission Resolve AND `BlockLayouter.PreMeasureGridRowExtent` (so the wrapper
+          grows + content-sized auto-row grids PAGINATE, like implicit-row grids), each memoized per item box
+          (a row-spanning intrinsic item would otherwise re-measure per track). Grid items also opt into
+          `layoutRootInlineContent` so inline-text cells render. STILL DEFERRED: content-WIDTH (max-content)
+          COLUMN sizing (columns stay declared-width-only); the `min-height` floor isn't honored in the
+          content-determined branch; the pre-measure Resolve + emission Resolve each shape a cell once (2× per
+          conversion, bounded — a per-conversion cross-Resolve cache is a follow-up); fr-under-indefinite
+          interplay unchanged.
+       3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001` — DONE** (same PR). The
+          subtree-extent measure (`MeasureSubtreeVisualBlockExtentRecursive`) now PROJECTS a paginatable flex
+          descendant to `min(authored, pageBlockSize)` — EXACTLY like the existing paginatable-grid projection —
+          so an auto-height wrapper whose subtree read the flex's rigid explicit height (e.g. 2000px) no longer
+          trips the ancestor's top-level forced-overflow path (the flex splits cleanly at item boundaries via
+          the recursive dispatch). An auto-height flex returned 0 there, which is why only the explicit-height
+          case showed the warning.
+       3b. **inline-text item + background double-paint — FIXED** (same PR; discovered while shipping #1). A
+          flex/grid item with BOTH a background and inline text emitted the box decoration TWICE (the item's
+          geometry fragment + the inline-only content fragment, both box == the item) — benign for an opaque
+          fill, a visibly darker band for a translucent one. New OPT-IN `BoxFragment.SuppressBoxDecoration`
+          (set on the content fragment by `BufferingMeasureSink` / grid's `TranslatingFragmentSink` when
+          `fragment.Box == the item`) makes `FragmentPainter` skip that fragment's background / borders / outline
+          (text still paints in its own pass). Default false = byte-identical for every other fragment.
        4. **column-reverse / column-wrap** flex pagination + **row-flex** main-axis per-item split — atomic
           today; column-reverse needs reverse iteration + per-fragment reverse-origin re-derivation.
        5. **compound `@page` selectors** (`chapter:first`) — `AtPageRules.MatchSelector` defers them; supporting
@@ -2962,6 +3002,12 @@ flags the categories):
        6. register `page` / `object-position` as first-class properties (for `@supports` + validation) — both
           are read RAW today (AngleSharp drops `page`; `object-position` via the `ImgSpec` raw winner), so
           registration is entangled with the recovery→cascade flow, not a clean drop-in.
+       7. **content-SIZED auto-height column-flex + grid PAGINATION via a CONTENT-AWARE pre-measure** — the
+          shared follow-up to #1/#2's deferred-pagination notes: `PreMeasureFlexMainExtent` (flex) sums declared
+          item heights only, so an AUTO-height column whose items are content-sized doesn't overflow the wrapper
+          → doesn't paginate (grid's `PreMeasureGridRowExtent` already content-measures, so grid auto-rows DO
+          paginate; flex is the remaining gap). Needs `PreMeasureFlexMainExtent` to content-measure auto items
+          (mirroring the grid pre-measure), with a per-conversion measurement cache to bound the cost.
        (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals.)
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in

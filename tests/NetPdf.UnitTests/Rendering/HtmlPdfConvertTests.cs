@@ -462,6 +462,220 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(12, fills);   // every item, once
     }
 
+    [Fact]
+    public void Flex_column_item_text_content_renders()
+    {
+        // Flex item CONTENT layout — a `flex-direction: column` with text items
+        // now renders each item's inner TEXT (FlexLayouter previously emitted
+        // only the item BOX geometry, dropping the content entirely). 10 items,
+        // each "AA" (2 glyphs); all 10 glyph runs must appear in the PDF.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 10; i++) sb.Append("<div>AA</div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(10, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every item's text, once
+    }
+
+    [Fact]
+    public void Flex_row_item_text_content_renders()
+    {
+        // Row-direction parity — a `flex-direction: row` lays out each item's
+        // inner text too. 3 items, each "RR" (2 glyphs), with explicit widths
+        // so they don't collapse; all 3 runs render.
+        const string html =
+            "<!DOCTYPE html><html><body><div style=\"display:flex\">"
+            + "<div style=\"width:80px\">RR</div>"
+            + "<div style=\"width:80px\">RR</div>"
+            + "<div style=\"width:80px\">RR</div>"
+            + "</div></body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(
+            html, new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(3, GlyphRunCountOfLength(Latin1(result.Pdf), 2));
+    }
+
+    [Fact]
+    public void Flex_column_text_items_paginate_and_render_all_content()
+    {
+        // Content rendering + the column item-split cooperate: 25 explicit-
+        // height (50px ⇒ 1250px) column-flex items, each carrying text "CC"
+        // (2 glyphs), paginate across pages AND render their text — every
+        // item's text follows its item to the correct page and survives the
+        // split exactly once (no loss / duplication). The content flush uses
+        // each committed item's RE-ANCHORED offset, so resumed-page items paint
+        // their text in the right place.
+        //
+        // NOTE: explicit heights here so the EXISTING column pre-measure
+        // (PreMeasureFlexMainExtent, which sums declared item heights) sees the
+        // overflow and engages pagination. Content-SIZED (auto-height) column
+        // items render + content-size on a page but don't yet drive the
+        // pre-measure to paginate — that needs a content-aware pre-measure
+        // (the same deferral as grid content-sized auto rows; see deferrals.md).
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 25; i++) sb.Append("<div style=\"height:50px\">CC</div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.True(result.PageCount >= 2, $"expected the column flex to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(25, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every item's text, once
+    }
+
+    [Fact]
+    public void Grid_auto_rows_size_to_text_content_no_zero_sized_warning()
+    {
+        // Grid CONTENT-sized rows — `grid-auto-rows: auto` rows now size to
+        // their cells' content. 4 text cells "HH" (2 glyphs) on one page: every
+        // cell renders, and the rows are no longer zero-sized (no
+        // LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001). Before the fix the
+        // rows collapsed to 0 + emitted that warning.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:100px;grid-auto-rows:auto\">");
+        for (var i = 0; i < 4; i++) sb.Append("<div>HH</div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(1, result.PageCount);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001);
+        Assert.Equal(4, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every cell's text
+    }
+
+    [Fact]
+    public void Grid_content_sized_auto_rows_paginate_and_render_all_content()
+    {
+        // Grid CONTENT-sized rows + pagination — `grid-auto-rows: auto` rows
+        // size to content; with enough rows the grid overflows the page and
+        // paginates (the content-aware pre-measure grows the wrapper so the
+        // already-wired grid pagination engages). 80 text cells "GG" (2 glyphs);
+        // every cell survives the page split exactly once, no zero-sized-cell
+        // warning, no truncation.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:grid;grid-template-columns:100px;grid-auto-rows:auto\">");
+        for (var i = 0; i < 80; i++) sb.Append("<div>GG</div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(
+            sb.ToString(), new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.True(result.PageCount >= 2, $"expected the content-sized auto-row grid to paginate, got {result.PageCount} page(s)");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(80, GlyphRunCountOfLength(Latin1(result.Pdf), 2));   // every cell's text, once
+    }
+
+    [Fact]
+    public void Flex_column_explicit_height_taller_than_page_paginates_without_spurious_overflow()
+    {
+        // A `flex-direction: column` with an EXPLICIT height taller than the
+        // page paginates correctly (right page count, every item once) but used
+        // to emit a SPURIOUS PAGINATION-FORCED-OVERFLOW-001 per page — the block
+        // wrapping the rigid explicit-height flex hit BlockLayouter's top-level
+        // forced-overflow path even though the flex itself splits cleanly. The
+        // warning must NOT fire when no content is actually clipped.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column;height:2000px\">");
+        for (var i = 0; i < 10; i++)
+            sb.Append("<div style=\"height:200px;background-color:#3366cc\"></div>");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.True(result.PageCount >= 2, $"expected the column flex to paginate, got {result.PageCount} page(s)");
+        Assert.Equal(10, CountOccurrences(Latin1(result.Pdf), " re f"));   // every item, once
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaginationForcedOverflow001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void Flex_item_with_translucent_background_and_text_paints_background_once()
+    {
+        // A flex item with BOTH a TRANSLUCENT background AND inline text renders
+        // its text (the new content layout) WITHOUT double-painting the
+        // background: the item's flex geometry fragment paints the background;
+        // the inline-only content fragment (box == the item) paints text only.
+        // A translucent fill makes the regression observable — before the
+        // SuppressBoxDecoration fix the `/ca` alpha band painted twice (= a
+        // visibly darker box), which a single fill-op count locks out.
+        const string html = "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">"
+            + "<div style=\"background-color:rgba(51,102,204,0.5)\">AA</div></div></body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(
+            html, new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Equal(1, CountOccurrences(pdf, " re f"));            // background fill painted ONCE
+        Assert.Equal(1, CountOccurrences(pdf, "/ca 0.501961"));    // alpha band set ONCE (not doubled)
+        Assert.Equal(1, GlyphRunCountOfLength(pdf, 2));            // text rendered ONCE
+    }
+
+    [Fact]
+    public void Flex_item_with_tall_nested_column_flex_renders_all_content_atomically()
+    {
+        // PR-#182 review P1 — a flex ITEM whose content is a TALL nested
+        // column-flex must render ALL of it: the nested measurement DISCARDS
+        // the layout result, so an un-suppressed nested flex split would
+        // PageComplete(FlexContinuation) and silently drop the deferred items.
+        // disableFlexPagination makes the nested flex atomic. 5 × 400px items
+        // (2000px) exceed the page; all 5 backgrounds must render exactly once.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"display:flex\">"
+            + "<div style=\"width:200px\"><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 5; i++)
+            sb.Append("<div style=\"height:400px;background-color:#3366cc\"></div>");
+        sb.Append("</div></div></div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.Equal(5, CountOccurrences(Latin1(result.Pdf), " re f"));   // every nested item, once
+    }
+
+    [Fact]
+    public void Grid_cell_with_tall_nested_column_flex_renders_all_content_atomically()
+    {
+        // PR-#182 review P1 — same for a GRID CELL whose content is a tall
+        // nested column-flex (DispatchGridItemContents discards the result too).
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"display:grid;grid-template-columns:200px;grid-template-rows:500px\">"
+            + "<div><div style=\"display:flex;flex-direction:column\">");
+        for (var i = 0; i < 5; i++)
+            sb.Append("<div style=\"height:400px;background-color:#3366cc\"></div>");
+        sb.Append("</div></div></div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString());
+
+        Assert.Equal(5, CountOccurrences(Latin1(result.Pdf), " re f"));   // every nested item, once
+    }
+
+    [Fact]
+    public void Flex_item_content_diagnostics_surface_once()
+    {
+        // PR-#182 review P2 — flex item content diagnostics are no longer
+        // suppressed (they were measured with a null sink). A flex item with an
+        // atomic inline (inline-block) inside it surfaces
+        // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 once (buffered during item
+        // measurement, flushed when the item commits).
+        const string html =
+            "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">"
+            + "<div>text <span style=\"display:inline-block\">X</span></div>"
+            + "</div></body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(
+            html, new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var n = 0;

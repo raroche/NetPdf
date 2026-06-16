@@ -1007,6 +1007,34 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(3, TotalGlyphCount(pdf));   // body "x" (1) + compound box "AB" (2)
     }
 
+    [Fact]
+    public void At_page_pure_pseudo_compound_selector_margin_box_paints()
+    {
+        // Pure/multi-pseudo cycle — a PURE-pseudo compound `@page :first:right` margin box paints on a
+        // page that is BOTH first AND right (page 0 in LTR), overriding the bare `@page` "A" (1 glyph)
+        // with "AB" (2 glyphs). Pre-cycle a pure-pseudo compound was deferred (no match) → the bare "A".
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"A\" } } " +
+            "@page :first:right { @top-center { content: \"AB\" } }</style></head>" +
+            "<body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // the :first:right box "AB", not the bare "A"
+    }
+
+    [Fact]
+    public void At_page_multi_pseudo_named_compound_selector_margin_box_paints()
+    {
+        // Pure/multi-pseudo cycle — a MULTI-pseudo named compound `@page chapter:first:right` margin box
+        // paints on a page that is named "chapter" AND first AND right (the most specific, tier 111),
+        // overriding the bare "A". Body "x" (1) + the compound box "AB" (2) = 3.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"A\" } } " +
+            "@page chapter:first:right { @bottom-center { content: \"AB\" } }</style></head>" +
+            "<body><div style=\"page:chapter\">x</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(3, TotalGlyphCount(pdf));   // body "x" (1) + compound box "AB" (2)
+    }
+
     // ---- Per-page @page GEOMETRY (per-page-geometry cycle) ----
 
     [Fact]

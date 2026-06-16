@@ -80,19 +80,24 @@ internal static class PdfRenderPipeline
         // + page-margin boxes are later cycles.
         var media = Phase2Pipeline.BuildMediaContext(options);
 
-        // `@page { size }` (cycle 2) overrides the page size when PreferCssPageSize (default on).
+        // `@page { size }` (cycle 2) overrides the page size when PreferCssPageSize (default on). The
+        // LAYOUT baseline uses the BARE-`@page`-only size (post-PR-#184 review F2) — NOT the context-free
+        // bare + `:first` resolve — so a `@page :first { size }` doesn't drive EVERY page's fragmentation
+        // (the per-page PAINT applies `:first` / `:left` / named size on its page). For a single-page
+        // document the body is still painted at the per-page (`:first`) MediaBox.
         if (options.PreferCssPageSize
-            && AtPageSizeResolver.Resolve(phase2.Sheets, media) is { } cssSize)
+            && AtPageSizeResolver.ResolveBare(phase2.Sheets, media) is { } cssSize)
         {
             pageSize = new PageSize(cssSize.WidthPx, cssSize.HeightPx);
         }
 
-        // `@page { margin… }` (cycle 1) overrides the option's page margins, per side. Percentage
-        // margins resolve against the RESOLVED page box — `pageSize` already reflects any
-        // `@page { size }` override above — so `@page { size: A5; margin: 10% }` computes its
-        // percentages against A5, not the configured page size (CSS Page 3). Media applicability
+        // `@page { margin… }` (cycle 1) overrides the option's page margins, per side — again the
+        // BARE-only baseline (review F2), so the body fragments against the bare margins (the per-page
+        // PAINT applies selector margins). Percentage margins resolve against the RESOLVED page box —
+        // `pageSize` already reflects any bare `@page { size }` override above — so
+        // `@page { size: A5; margin: 10% }` computes its percentages against A5. Media applicability
         // still uses the original context.
-        var pageMargins = AtPageMarginResolver.Resolve(
+        var pageMargins = AtPageMarginResolver.ResolveBare(
             phase2.Sheets, media, pageSize.WidthPx, pageSize.HeightPx);
         if (pageMargins.HasAny)
         {
@@ -261,12 +266,10 @@ internal static class PdfRenderPipeline
             pageFragments.Add(System.Array.Empty<BoxFragment>());
         }
 
-        // Inline overflow / the page-count cap clips content; surface once. Block content past
-        // page 1 now FLOWS onto further pages, so it is no longer truncated.
-        if (!fontResolutionFailed && clippedOrTruncated)
-        {
-            EmitOverflowClipped(diagnostics);
-        }
+        // The overflow/clip diagnostic is emitted AFTER the paint loop (post-PR-#184 review F3): the
+        // per-page-geometry overflow check needs each page's resolved size/margins, which the paint loop
+        // computes. `clippedOrTruncated` is already set here for inline-overflow / the page-cap; the paint
+        // loop adds per-page-geometry overflow before the single emission.
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -394,6 +397,18 @@ internal static class PdfRenderPipeline
             // per-page-specific @page rule applies (then byte-identical to the pre-cycle output).
             var (ppSize, ppMargins, ppMediaBox) = ResolvePageGeometry(pageCtx);
 
+            // Per-page-geometry overflow (review F3): the body fragments against the bare-@page content
+            // area (the layout baseline), so a page with SMALLER per-page geometry (a `:left`/named page
+            // with a smaller size or larger margins) can clip content that fit the bare area. Check this
+            // page's fragments against its OWN content rect; the single overflow diagnostic is emitted
+            // after the loop. (Equal to the bare check when the page's geometry matches the baseline.)
+            var ppContentInlinePx = Math.Max(0, ppSize.WidthPx - ppMargins.LeftPx - ppMargins.RightPx);
+            var ppContentBlockPx = Math.Max(0, ppSize.HeightPx - ppMargins.TopPx - ppMargins.BottomPx);
+            if (FragmentsOverflowContentRect(bodyFragments, ppContentInlinePx, ppContentBlockPx))
+            {
+                clippedOrTruncated = true;
+            }
+
             var page = document.AddPage(ppMediaBox);
 
             FragmentPainter.PaintFragments(
@@ -472,6 +487,14 @@ internal static class PdfRenderPipeline
             // once from the cross-page union. Per-page geometry: the y-flip + content origin use the
             // page's OWN MediaBox height + margins (= the session defaults when no per-page rule applies).
             textSession.CollectPage(page, textFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx);
+        }
+
+        // Inline overflow / the page-count cap / per-page-geometry clipping (review F3) surfaced once.
+        // Block content past page 1 FLOWS onto further pages, so it is not truncated. Emitted here (after
+        // the paint loop) so the per-page-geometry overflow check above is included.
+        if (!fontResolutionFailed && clippedOrTruncated)
+        {
+            EmitOverflowClipped(diagnostics);
         }
 
         // Build each font ONCE (cross-page union) + replay every page's text — font-dedup-across-pages.

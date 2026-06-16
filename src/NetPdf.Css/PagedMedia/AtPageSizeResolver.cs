@@ -65,6 +65,18 @@ internal static class AtPageSizeResolver
         return ResolveFrom(AtPageRules.EnumeratePageRulesWithMediaInfo(sheets, media, ctx), media);
     }
 
+    /// <summary>The BARE-<c>@page</c>-ONLY size — bare rules only, with NO <c>:first</c> / selectors
+    /// (post-PR-#184 review F2). The multi-page LAYOUT baseline uses this so the body fragments against
+    /// the bare page geometry; the per-page PAINT then applies <c>:first</c> / <c>:left</c> / named size
+    /// per page. (The context-free <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext)"/>
+    /// includes <c>:first</c>, which is correct only for a single-page document.)</summary>
+    public static ResolvedPageSize? ResolveBare(IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumerateBarePageRulesWithMediaInfo(sheets, media), media);
+    }
+
     private static ResolvedPageSize? ResolveFrom(
         IEnumerable<AtPageRules.PageRule> rules, CssMediaContext media)
     {

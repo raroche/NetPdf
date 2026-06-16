@@ -8789,19 +8789,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Skipped when there's no shaper (text wouldn't shape anyway).
         // Memoize per item box (a row-spanning intrinsic item is otherwise
         // re-measured per intersected row track in ResolveIntrinsicTracks).
-        var measureCache = new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
+        // Keyed by (item, availInline) — post-PR-#184 review F1: the block-extent measurement depends on
+        // the available (column) width, so the cache must not return a height measured at a stale width.
+        var measureCache = new Dictionary<(Box Item, double AvailInline), double>();
         GridSizing.GridContentMeasurer? measurer = _shaperResolver is null
             ? null
             : (item, availInline) =>
             {
-                if (measureCache.TryGetValue(item, out var cached)) return cached;
+                var key = (item, availInline);
+                if (measureCache.TryGetValue(key, out var cached)) return cached;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline,
                     blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
                     shaperResolver: _shaperResolver,
                     writingMode: WritingMode.HorizontalTb, isRtl: false,
                     cancellationToken: cancellationToken).ContentBlockExtent;
-                measureCache[item] = extent;
+                measureCache[key] = extent;
                 return extent;
             };
         // Grid content-width cycle — also wire the MAX-CONTENT inline measurer so the pre-measure's

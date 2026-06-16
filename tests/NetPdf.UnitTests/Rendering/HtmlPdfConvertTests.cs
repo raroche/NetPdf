@@ -1086,6 +1086,57 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void At_page_first_only_geometry_does_not_drive_the_whole_body_fragmentation()
+    {
+        // Post-PR-#184 review F2 — the multi-page LAYOUT baseline is the BARE `@page` geometry, NOT the
+        // context-free bare + `:first`. `@page { size: A4; margin: 0 }` + `@page :first { size: A5 }`:
+        // three 500px blocks fragment against the BARE A4 content box (~1122px → two blocks per page → TWO
+        // pages). If the body had wrongly fragmented against the smaller `:first` A5 (~793px), only ONE
+        // block would fit per page → THREE pages. Page 0 still PAINTS the `:first` A5 MediaBox; page 1
+        // paints the bare A4.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { size: A4; margin: 0 } @page :first { size: A5 }" +
+            "</style></head><body>" +
+            "<div style=\"height:500px\"></div><div style=\"height:500px\"></div><div style=\"height:500px\"></div>" +
+            "</body></html>");
+        var boxes = AllMediaBoxes(Latin1(result.Pdf));
+
+        Assert.Equal(2, result.PageCount);   // bare A4 baseline → 2 blocks/page (NOT 3 pages from :first A5)
+        Assert.Equal(419.5, boxes[0].W, 1);  // page 0 PAINTS :first A5
+        Assert.Equal(595.3, boxes[1].W, 1);  // page 1 PAINTS bare A4
+    }
+
+    [Fact]
+    public void At_page_named_page_larger_margins_clip_body_and_emit_overflow_warning()
+    {
+        // Post-PR-#184 review F3 — per-page geometry can clip content the BARE baseline accepted, so the
+        // overflow check runs per painted page against its OWN content rect. `@page chapter { margin: 300px }`
+        // shrinks the chapter page's content box to ~522px (A4 1122px − 2×300px); a 700px `page: chapter`
+        // block fits the bare A4 at layout but overflows the chapter page's content box at paint → the
+        // overflow diagnostic fires.
+        var clipping = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { size: A4; margin: 0 } @page chapter { margin: 300px }" +
+            ".ch { page: chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:100px\"></div><div class=\"ch\" style=\"height:700px\"></div>" +
+            "</body></html>");
+        Assert.Contains(clipping.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+
+        // Control — the SAME content with no shrinking chapter margin fits the bare A4 → NO overflow
+        // (proves the warning above comes from the per-page geometry, not the body itself).
+        var ok = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { size: A4; margin: 0 } @page chapter { margin: 0 }" +
+            ".ch { page: chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:100px\"></div><div class=\"ch\" style=\"height:700px\"></div>" +
+            "</body></html>");
+        Assert.DoesNotContain(ok.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
     public void At_page_size_is_ignored_when_PreferCssPageSize_is_false()
     {
         var mb = MediaBox(Latin1(HtmlPdf.Convert(

@@ -293,27 +293,28 @@ internal static class GridSizing
         }
         _ = grownOccupancy;
 
-        // Intrinsic resolution from placed items. The ROW axis passes the
-        // content measurer + the (already-sized) column tracks so an auto /
-        // intrinsic row sizes to its cells' content block extent measured at
-        // their column width (non-block-pagination arc — grid content-sized
-        // rows). The COLUMN axis (grid content-width cycle) passes the
-        // `widthMeasurer` so an auto / min-content / max-content column sizes
-        // to its cells' MAX-CONTENT inline extent (measured unconstrained,
-        // since columns resolve before rows — no circular dependency).
-        var rowIntrinsicChanged = ResolveIntrinsicTracks(
-            rowInfos, placedItems, isRowAxis: true,
-            contentMeasurer, colInfos, cancellationToken);
+        // Intrinsic resolution from placed items. CSS Grid §11 sizes COLUMNS BEFORE ROWS, so the COLUMN
+        // axis resolves FIRST (post-PR-#184 review F1 — the prior row-before-column order measured row
+        // content at a STALE 0/1px column width and kept an inflated row height after the column later
+        // widened). The COLUMN axis (grid content-width cycle) passes the `widthMeasurer` so an auto /
+        // min-content / max-content column sizes to its cells' MAX-CONTENT inline extent (measured
+        // unconstrained — no row dependency), then its fr is re-resolved, so the column base sizes are
+        // FINAL before rows measure. The ROW axis then passes the content measurer + the now-sized column
+        // tracks so an auto / intrinsic row sizes to its cells' content block extent measured at their
+        // FINAL column width.
         var colIntrinsicChanged = ResolveIntrinsicTracks(
             colInfos, placedItems, isRowAxis: false,
             widthMeasurer, otherAxisInfos: null, cancellationToken);
-        if (rowIntrinsicChanged)
-        {
-            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
-        }
         if (colIntrinsicChanged)
         {
             ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken);
+        }
+        var rowIntrinsicChanged = ResolveIntrinsicTracks(
+            rowInfos, placedItems, isRowAxis: true,
+            contentMeasurer, colInfos, cancellationToken);
+        if (rowIntrinsicChanged)
+        {
+            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
         }
 
         // Per Phase 3 Task 17 cycle 4 + post-PR-#95 review C1 — §11.6

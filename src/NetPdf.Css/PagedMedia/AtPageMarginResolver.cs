@@ -98,6 +98,20 @@ internal static class AtPageMarginResolver
         return ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx), pageWidthPx, pageHeightPx);
     }
 
+    /// <summary>The BARE-<c>@page</c>-ONLY margins — bare rules only, with NO <c>:first</c> / selectors
+    /// (post-PR-#184 review F2). The multi-page LAYOUT baseline uses this so the body fragments against the
+    /// bare page margins; the per-page PAINT then applies the selector margins per page. (The
+    /// <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext, double, double)"/> overload includes
+    /// <c>:first</c>, correct only for a single-page document.)</summary>
+    public static ResolvedPageMargins ResolveBare(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media,
+        double pageWidthPx, double pageHeightPx)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+        return ResolveFrom(AtPageRules.EnumerateBarePageRules(sheets, media), pageWidthPx, pageHeightPx);
+    }
+
     private static ResolvedPageMargins ResolveFrom(
         IEnumerable<CssAtRule> rules, double pageWidthPx, double pageHeightPx)
     {

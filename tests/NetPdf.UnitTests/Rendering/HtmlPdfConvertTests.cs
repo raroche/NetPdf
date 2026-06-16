@@ -1495,6 +1495,30 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Multi_page_dashed_named_page_selects_its_margin_box()
+    {
+        // Post-PR-#183 review P2 — a DASHED page name (`--chapter`) is a valid <custom-ident>, so the
+        // whole named-page path works end-to-end: `@page --chapter` is matched, the section's
+        // `page: --chapter` (recovered by the preprocessor) starts a "--chapter" page, and its header
+        // ("AB") paints on page 2 while the bare page paints "AA" on page 1. Pre-fix the dashed name was
+        // rejected by both validators so both pages painted the bare header.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page --chapter { @top-center { content: \"AB\" } }" +
+            "@page { @top-center { content: \"AA\" } }" +
+            ".ch { page: --chapter }" +
+            "</style></head><body>" +
+            "<div style=\"height:600px\"></div><div class=\"ch\" style=\"height:600px\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);            // one header per page
+        Assert.NotEqual(runs[0], runs[1]);       // page 1 bare "AA" ≠ page 2 --chapter "AB"
+    }
+
+    [Fact]
     public void Named_page_forces_a_break_even_when_the_content_fits()
     {
         // Post-PR-#179 review P1: CSS Page 3 §3.4 — a change in the used `page` value forces a page break

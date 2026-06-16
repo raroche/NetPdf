@@ -30,8 +30,10 @@ internal static class PageNameResolver
         // `auto` — the initial value (no named page).
         if (value.Equals("auto", StringComparison.OrdinalIgnoreCase))
             return ResolverResult.Deferred(value);
-        // Otherwise a <custom-ident> — a single identifier token, not a reserved word.
-        if (IsCustomIdent(value))
+        // Otherwise a <custom-ident> — a single identifier token, not a reserved word. Shared with the
+        // `@page <name>` selector + used-name walk via CssCustomIdent (post-PR-#183 review P2 — a dashed
+        // ident like `--chapter` is valid and must be accepted by BOTH).
+        if (CssCustomIdent.IsValidPageName(value))
             return ResolverResult.Deferred(value);
         var safeValue = DiagnosticTextSanitizer.Sanitize(value);
         diagnostics?.Emit(new CssDiagnostic(
@@ -41,30 +43,4 @@ internal static class PageNameResolver
             location));
         return ResolverResult.Invalid();
     }
-
-    /// <summary>A single CSS Syntax 3 §4.3.11 <c>&lt;custom-ident&gt;</c> token usable as a page
-    /// name: a non-empty identifier (no whitespace), first code point an ident-start (letter / <c>_</c>
-    /// / non-ASCII ≥ U+0080) OR a leading <c>-</c> before an ident-start, then ident chars; and NOT a
-    /// CSS-wide keyword or the reserved <c>default</c> (<c>auto</c> is accepted by the caller).</summary>
-    private static bool IsCustomIdent(string value)
-    {
-        if (value.Length == 0) return false;
-        foreach (var ch in value)
-            if (char.IsWhiteSpace(ch)) return false;   // a single token only
-        var first = value[0];
-        bool startOk = IsIdentStart(first)
-            || (first == '-' && value.Length > 1 && IsIdentStart(value[1]));
-        if (!startOk) return false;
-        foreach (var ch in value)
-            if (!IsIdentStart(ch) && !(ch >= '0' && ch <= '9') && ch != '-') return false;
-        return !value.Equals("inherit", StringComparison.OrdinalIgnoreCase)
-            && !value.Equals("initial", StringComparison.OrdinalIgnoreCase)
-            && !value.Equals("unset", StringComparison.OrdinalIgnoreCase)
-            && !value.Equals("revert", StringComparison.OrdinalIgnoreCase)
-            && !value.Equals("revert-layer", StringComparison.OrdinalIgnoreCase)
-            && !value.Equals("default", StringComparison.OrdinalIgnoreCase);   // reserved (CSS Page 3)
-    }
-
-    private static bool IsIdentStart(char c) =>
-        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= '\u0080';
 }

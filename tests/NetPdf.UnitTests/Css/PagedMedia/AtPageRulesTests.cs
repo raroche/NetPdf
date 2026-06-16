@@ -176,6 +176,23 @@ public sealed class AtPageRulesTests
     }
 
     [Theory]
+    [InlineData("--chapter")]   // a dashed ident — a valid <custom-ident> (CSS Syntax §4.3.9)
+    [InlineData("--c")]
+    [InlineData("--two-dashes")]
+    public void MatchTier_accepts_a_dashed_named_page(string name)
+    {
+        // Post-PR-#183 review P2 — a DASHED ident (`--name`) is a valid <custom-ident> and so a valid
+        // named page; it was wrongly rejected before centralizing the validator. It matches its assigned
+        // page at tier 3, and (like any name) outranks `:first` on a named first page.
+        var named = new AtPageRules.PageSelectorContext(0, AssignedPageName: name);
+        Assert.Equal(3, AtPageRules.MatchTier(name, named));
+        Assert.Equal(-1, AtPageRules.MatchTier(name,
+            new AtPageRules.PageSelectorContext(0, AssignedPageName: "other")));
+        // The compound `--chapter:first` form also matches a named first page (tier 5).
+        Assert.Equal(5, AtPageRules.MatchTier($"{name}:first", named));
+    }
+
+    [Theory]
     [InlineData("auto")]           // the initial page value, not a name
     [InlineData("inherit")]        // a CSS-wide keyword, not a name
     [InlineData("initial")]
@@ -185,7 +202,7 @@ public sealed class AtPageRulesTests
     [InlineData("chapter:first")]  // a compound — deferred
     [InlineData("123")]            // leading digit — not an ident
     [InlineData("-1")]             // a leading '-' before a digit is not a valid ident (review P1)
-    [InlineData("--name")]         // custom-property syntax — not a page name
+    [InlineData("-")]              // a lone '-' is the delim token, not an ident
     [InlineData(":nth(2)")]        // an unknown pseudo
     public void MatchTier_rejects_non_name_or_compound_selectors(string prelude)
     {
@@ -242,6 +259,18 @@ public sealed class AtPageRulesTests
         Assert.Equal("chapter", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#p"), cascade));
         Assert.Equal("", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#q"), cascade));  // no page in chain
         Assert.Equal("", AtPageRules.ResolveUsedPageName(null, cascade));                     // a blank page
+    }
+
+    [Fact]
+    public async Task ResolveUsedPageName_reads_a_dashed_custom_ident()
+    {
+        // Post-PR-#183 review P2 — a DASHED ident (`--chapter`) is a valid <custom-ident>, so the used
+        // `page` value walk returns it (it was wrongly treated as invalid → "" before centralizing the
+        // validator). Exercises the CssPreprocessor recovery (AngleSharp drops `page`) for the dashed form.
+        var (doc, cascade) = await ResolveAsync(
+            "<html><body><div class='ch'><p id='p'>x</p></div></body></html>",
+            ".ch { page: --chapter }");
+        Assert.Equal("--chapter", AtPageRules.ResolveUsedPageName(doc.QuerySelector("#p"), cascade));
     }
 
     private static async Task<(IDocument Doc, ResolvedCascadeResult Cascade)> ResolveAsync(

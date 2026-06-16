@@ -24,6 +24,25 @@ This doc proposes the design for each, a phased PR breakdown that fits the proje
 
 ## Progress log
 
+- **2026-06-16 — PR #183 review cycle applied (3 findings)** (same branch). **(P2)** Valid DASHED page
+  names (`--chapter`) are now accepted: `PageNameResolver.IsCustomIdent` and `AtPageRules.IsBarePageName`
+  were duplicated and BOTH wrongly rejected `--name`, even though a dashed ident is a valid
+  `<custom-ident>` (CSS Syntax 3 §4.3.9 accepts a leading `-` followed by another `-`). Centralized into
+  the new shared `CssCustomIdent.IsValidPageName` (`NetPdf.Css.Parser`), used by both; `page: --chapter`,
+  `@page --chapter`, `@page --chapter:first`, `@supports (page: --chapter)`, `DeclaredPageNames`, and
+  `ResolveUsedPageName` all work (resolver/MatchTier/DeclaredPageNames/ResolveUsedPageName/facade tests).
+  **(P3)** `<position>` parsing is PAREN-AWARE: `PositionResolver` and
+  `FragmentPainter.TryParseBackgroundPosition` now tokenize via `CssShorthandHelpers.SplitTopLevel`, so a
+  math function (`object-position: calc(50% - 10px) top`) stays one component instead of fragmenting into
+  broken tokens — `@supports` validates the expression, and the painter evaluates a %/absolute math
+  function against the §3.6 range (`TryEvalPositionMath`); a font-/viewport-relative math function has no
+  context in the static painter helper and falls back to the 0% 0% default + diagnostic (documented
+  limitation). **(P3)** Stronger column-reverse continuation tests (`DriveFlexColumnPages`): VARIED item
+  heights over THREE pages + an `order` variant, asserting VISUAL reverse-DOM order, top re-anchoring, no
+  loss/duplication, and clean termination (proving the per-page `FlexContinuation.ItemIndex` re-anchors
+  correctly). Gates: **6901 unit / 5 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance ·
+  0-warning Release**.
+
 - **2026-06-15 — BACKLOG #4–#7 (5 tasks) DONE** (branch `phase-3-backlog-flex-pagination-paged-media`). The
   REMAINING prioritized backlog, one PR. **(#7) Content-aware flex pre-measure:** `PreMeasureFlexMainExtent`
   now measures a content-determined (auto-height) item's content block extent (memoized; mirrors grid's

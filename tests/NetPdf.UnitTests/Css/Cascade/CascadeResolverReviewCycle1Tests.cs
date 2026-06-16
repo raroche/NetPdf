@@ -260,6 +260,26 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
+    public async Task AtSupports_object_position_accepts_math_function_components()
+    {
+        // Post-PR-#183 review P3 — a length-percentage math function (`calc(50% - 10px)`) is a valid
+        // <position> component, so `@supports (object-position: calc(50% - 10px) top)` evaluates TRUE.
+        // Pre-fix the whitespace tokenizer fragmented the calc into broken tokens and reported FALSE. A
+        // malformed math function (`calc(50% +)`) still evaluates FALSE.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (object-position: calc(50% - 10px) top) { p { color: red } } " +
+            "@supports (object-position: min(10px, 5%) clamp(0px, 50%, 100px)) { p { font-weight: bold } } " +
+            "@supports (object-position: calc(50% +) top) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));          // calc(50% - 10px) top → supported
+        Assert.NotNull(rules?.GetWinner("font-weight"));    // min()/clamp() pair → supported
+        Assert.Null(rules?.GetWinner("font-size"));         // malformed calc → unsupported
+    }
+
+    [Fact]
     public async Task AtSupports_page_property_evaluates_true_when_registered()
     {
         // Backlog #6 — the `page` property is now REGISTERED (type `PageName` + PageNameResolver:
@@ -270,6 +290,23 @@ public sealed class CascadeResolverReviewCycle1Tests
         var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
             CssMediaContext.DefaultPrint);
         Assert.NotNull(result.TryGetStylesFor(Q(doc, "p")));
+    }
+
+    [Fact]
+    public async Task AtSupports_page_property_accepts_a_dashed_custom_ident()
+    {
+        // Post-PR-#183 review P2 — a DASHED ident (`--chapter`) is a valid <custom-ident>, so
+        // `@supports (page: --chapter)` must evaluate TRUE (it was wrongly rejected before centralizing
+        // the validator). A digit-start (`page: 1up`) stays unsupported.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet(
+            "@supports (page: --chapter) { p { color: red } } " +
+            "@supports (page: 1up) { p { font-size: 20px } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        var rules = result.TryGetStylesFor(Q(doc, "p"));
+        Assert.NotNull(rules?.GetWinner("color"));         // `page: --chapter` supported → block applies
+        Assert.Null(rules?.GetWinner("font-size"));        // `page: 1up` unsupported → block excluded
     }
 
     [Fact]

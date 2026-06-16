@@ -275,10 +275,13 @@ public sealed class AtPageMarginBoxResolverTests
     [Fact]
     public async Task DeclaredPageNames_collects_named_selectors_including_a_compounds_leading_name()
     {
-        var sheet = await BuildSheet("@page chapter { } @page index:first { } @page :left { } @page { }");
+        var sheet = await BuildSheet(
+            "@page chapter { } @page index:first { } @page --dashed { } @page --d:first { } @page :left { } @page { }");
         var names = System.Linq.Enumerable.ToList(AtPageRules.DeclaredPageNames(new[] { sheet }, PrintContext));
         Assert.Contains("chapter", names);
         Assert.Contains("index", names);           // the leading name of `index:first`
+        Assert.Contains("--dashed", names);        // a dashed ident IS a valid name (post-PR-#183 review P2)
+        Assert.Contains("--d", names);             // the leading dashed name of `--d:first`
         Assert.DoesNotContain(":left", names);     // a pseudo, not a name
     }
 

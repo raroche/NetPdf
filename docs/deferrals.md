@@ -2931,16 +2931,38 @@ flags the categories):
        now splits at flex-ITEM boundaries (`FlexLayouter` main-axis item split → `FlexContinuation.ItemIndex`,
        propagated by `BlockLayouter` with a natural-size / page-budget DUAL-INPUT mirroring the grid page-budget
        so flex resolution sizes items naturally instead of shrinking them to fit the page). `IsPaginatablePerStyle`
-       now accepts column-nowrap; column-reverse + column-wrap stay atomic (documented below). **REMAINING:**
-       (a) **grid with IMPLICIT rows** (`grid-auto-rows` / auto-placed rows) doesn't paginate — the wrapper
-       pre-measure `PreMeasureGridRowExtent` only sums `grid-template-rows`, so an auto-row grid stays
-       chrome-height + never overflows + never triggers the (already-wired) grid pagination. Fixing it means
-       teaching the pre-measure to account for implicit rows under an indefinite block size (interacts with the
-       fr-under-indefinite approximation). (b) **flex item CONTENT layout** — `FlexLayouter` emits each item's
-       BOX geometry but does NOT lay out the item's inner content (text / block children), so flex item text
-       doesn't render (orthogonal to pagination; the column-flex facade test asserts via per-item background
-       fills, not glyphs). (c) **row-flex** main-axis nowrap per-item split + **column-reverse / column-wrap**
-       (atomic). (d) intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals.
+       now accepts column-nowrap; column-reverse + column-wrap stay atomic (documented below).
+       **GRID with IMPLICIT rows — DONE (non-block-pagination completion):** a grid sized by IMPLICIT tracks
+       (`grid-auto-rows` / auto-placed rows, NOT `grid-template-rows`) now paginates too. The wrapper
+       pre-measure `PreMeasureGridRowExtent` no longer early-returns 0 on an empty `grid-template-rows` —
+       `GridSizing.Resolve` already generates implicit tracks (CSS Grid §7.4), so the natural row extent is now
+       measured for explicit AND implicit rows, the wrapper overflows, and the (already-wired) grid pagination
+       engages. Covered at the recursion path, with `1fr` columns, and as the root's direct child (outer
+       dispatch). **REMAINING — prioritized backlog (each is its own substantial / risky standalone task;
+       investigated + deferred to keep this PR's regression surface small):**
+       1. **flex item CONTENT layout** (highest value) — `FlexLayouter` emits each item's BOX geometry but does
+          NOT lay out the item's inner content (text / block children), so flex item text doesn't render
+          (orthogonal to pagination — the column-flex facade tests assert via per-item background fills, not
+          glyphs). Needs the table-cell nested-BlockLayouter + translating-buffered-sink pattern, coupled with
+          the item-split/re-anchor logic. Own PR.
+       2. **grid CONTENT-sized rows** — `grid-auto-rows: auto` (the default) rows sized by cell content collapse
+          to 0 (`LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001`); same content-measurement-under-indefinite-
+          height family as flex item content + the fr-under-indefinite approximation. Own PR.
+       3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001`** — a `flex-direction: column`
+          with an explicit `height` TALLER than the page paginates CORRECTLY (right page count, no content loss)
+          but emits a spurious forced-overflow warning per page. Root cause: the block wrapping the explicit-
+          height flex hits BlockLayouter's top-level forced-overflow path (`BlockLayouter.cs` ~2374) — the
+          measure treats the explicit height as a rigid oversized block — whereas the auto-height flex takes the
+          clean path. The fix is in the delicate top-level break/measure logic (high regression risk for a
+          spurious-warning-only defect); deferred.
+       4. **column-reverse / column-wrap** flex pagination + **row-flex** main-axis per-item split — atomic
+          today; column-reverse needs reverse iteration + per-fragment reverse-origin re-derivation.
+       5. **compound `@page` selectors** (`chapter:first`) — `AtPageRules.MatchSelector` defers them; supporting
+          them needs the §3.1 (A,B,C) specificity tuple (changes the single-int tier encoding → test churn).
+       6. register `page` / `object-position` as first-class properties (for `@supports` + validation) — both
+          are read RAW today (AngleSharp drops `page`; `object-position` via the `ImgSpec` raw winner), so
+          registration is entangled with the recovery→cascade flow, not a clean drop-in.
+       (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals.)
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`

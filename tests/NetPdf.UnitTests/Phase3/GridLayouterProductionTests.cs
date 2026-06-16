@@ -118,6 +118,56 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_implicit_auto_row_grid_paginates_when_taller_than_page()
+    {
+        // Non-block-pagination completion — an IMPLICIT-row grid (grid-auto-rows,
+        // NO grid-template-rows) taller than the fragmentainer now paginates. The
+        // wrapper pre-measure (PreMeasureGridRowExtent) used to sum only template
+        // rows + early-return 0 for an implicit-only grid, so the wrapper stayed
+        // chrome-height + never overflowed. Now it measures the implicit-row
+        // extent, the wrapper overflows, + the (already-wired) grid pagination
+        // engages: PageComplete carrying a GridContinuation. 5 rows × 200 = 1000px
+        // content; a 500px page fits 2 ⇒ split.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+              .grid { display: grid; grid-template-columns: 100px; grid-auto-rows: 200px; }
+              .grid > div { background-color: #3366cc; }
+            </style></head><body>
+              <div class="grid">
+                <div></div><div></div><div></div><div></div><div></div>
+              </div>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        using var layouter = new BlockLayouter(box, sink, null, diag, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        // The continuation chain (block → … → grid) ends in a GridContinuation.
+        LayoutContinuation? cont = result.Continuation;
+        GridContinuation? grid = null;
+        while (cont is BlockContinuation bc)
+        {
+            if (bc.LayouterState is GridContinuation g) { grid = g; break; }
+            cont = bc.LayouterState as LayoutContinuation;
+        }
+        Assert.NotNull(grid);
+    }
+
+    [Fact]
     public async Task Production_html_sparse_auto_placement_fills_row_major()
     {
         // 4 auto-placed items (no grid-row-start / grid-column-start)

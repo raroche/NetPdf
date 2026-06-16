@@ -24,6 +24,24 @@ This doc proposes the design for each, a phased PR breakdown that fits the proje
 
 ## Progress log
 
+- **2026-06-15 — BACKLOG #4–#7 (5 tasks) DONE** (branch `phase-3-backlog-flex-pagination-paged-media`). The
+  REMAINING prioritized backlog, one PR. **(#7) Content-aware flex pre-measure:** `PreMeasureFlexMainExtent`
+  now measures a content-determined (auto-height) item's content block extent (memoized; mirrors grid's
+  `PreMeasureGridRowExtent`), so an AUTO-height column-flex whose items are content-sized overflows the wrapper
+  + paginates (PR #182 left this deferred — the pre-measure summed declared heights only). **(#4) Column-reverse
+  pagination:** a tall `flex-direction: column-reverse` paginates at item boundaries in VISUAL (reverse-DOM)
+  order — the emission reverses the (per-attempt) item sequence + emits forward, reusing the forward column
+  item-split; gated to the paginating case so non-paginating column-reverse is byte-identical. **(#5) Compound
+  `@page` selectors:** `AtPageRules.MatchSelector` matches `<name>:<pseudo>` (e.g. `chapter:first`) at tiers
+  4/5 above the bare named page (3) per CSS Page 3 §3.1 — existing single-selector tiers unchanged (no churn);
+  reachable via the per-page margin-box path. **(#6) Register `page` + `object-position`:** both gained a
+  properties.json entry + a validating resolver (`PageNameResolver` / `PositionResolver`), so `@supports`
+  answers correctly + invalid values diagnose — SAFE because the cascade winner's `ResolvedValue` is the
+  var-substituted RAW value (the painter / named-page machinery still read raw). DEFERRED: column-wrap +
+  row-flex intra-item fragmentation; pure/multi-pseudo compound `@page`; `<position>` axis-conflict rules.
+  Gates: **6885 unit / 5 skip · 30 LayoutSnapshots · 97 RealDocuments · 0-warning Release · AOT/JIT parity
+  verified**.
+
 - **2026-06-15 — FLEX/GRID item CONTENT + spurious-overflow (prioritized backlog #1+#2+#3) DONE** (branch
   `phase-3-flex-grid-item-content`). The top three non-block-pagination backlog items, one PR. **(#1) Flex item
   CONTENT layout:** `FlexLayouter` lays out each item's inner content (text / block children) via a nested

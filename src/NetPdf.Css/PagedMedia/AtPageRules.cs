@@ -114,8 +114,10 @@ internal static class AtPageRules
 
     /// <summary>The highest page-selector specificity tier (CSS Page 3 §3.1) the context-aware
     /// enumeration walks: bare (0) → <c>:left</c>/<c>:right</c> (1) → <c>:first</c>/<c>:blank</c> (2) →
-    /// a NAMED page (3, cycle 7).</summary>
-    private const int MaxSelectorTier = 3;
+    /// a NAMED page (3, cycle 7) → a COMPOUND <c>&lt;name&gt;:&lt;left|right&gt;</c> (4) →
+    /// <c>&lt;name&gt;:&lt;first|blank&gt;</c> (5) — the named-compound selectors outrank the bare named
+    /// page.</summary>
+    private const int MaxSelectorTier = 5;
 
     /// <summary>Yields the <c>@page</c> rules applicable TO A GIVEN PAGE (cycle 6) in CASCADE
     /// SPECIFICITY ORDER — bare first, then the matching <c>:left</c>/<c>:right</c> parity rules, then
@@ -248,22 +250,57 @@ internal static class AtPageRules
 
     /// <summary>Match ONE page selector against the context, returning its specificity tier + whether
     /// it matches. The single pseudo-class selectors <c>:first</c> / <c>:blank</c> (tier 2) and
-    /// <c>:left</c> / <c>:right</c> (tier 1), plus a bare NAMED page <c>&lt;custom-ident&gt;</c> (tier 3 —
-    /// matches a page assigned that name; cycle 7). A bare-pseudo token can't be a bare page (the empty
-    /// prelude is handled by <see cref="MatchTier"/>). A COMPOUND (<c>chapter:first</c>, <c>:first:left</c>)
-    /// or unknown pseudo returns (no tier, no match): deferred.</summary>
+    /// <c>:left</c> / <c>:right</c> (tier 1); a bare NAMED page <c>&lt;custom-ident&gt;</c> (tier 3 —
+    /// matches a page assigned that name; cycle 7); and a COMPOUND <c>&lt;name&gt;:&lt;pseudo&gt;</c>
+    /// (e.g. <c>chapter:first</c>) — the named part PLUS the pseudo's axis, so it OUTRANKS the bare
+    /// named page per CSS Page 3 §3.1 specificity (named + <c>:first</c>/<c>:blank</c> → tier 5; named +
+    /// <c>:left</c>/<c>:right</c> → tier 4; both above the bare named tier 3). The compound matches iff
+    /// BOTH the name AND the pseudo match. A bare-pseudo token can't be a bare page (the empty prelude is
+    /// handled by <see cref="MatchTier"/>). A PURE-PSEUDO compound (<c>:first:left</c>) or a multi-pseudo
+    /// named compound (<c>chapter:first:left</c>) or an unknown pseudo returns (no tier, no match):
+    /// deferred (a first-cut limitation — the common <c>&lt;name&gt;:&lt;pseudo&gt;</c> form ships).</summary>
     private static (int Tier, bool Matches) MatchSelector(string selector, PageSelectorContext ctx)
     {
-        if (selector.Equals(":first", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsFirstPage);
-        if (selector.Equals(":blank", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsBlank);
-        if (selector.Equals(":left", StringComparison.OrdinalIgnoreCase)) return (1, !ctx.IsRightPage);
-        if (selector.Equals(":right", StringComparison.OrdinalIgnoreCase)) return (1, ctx.IsRightPage);
-        // A bare <custom-ident> is a NAMED page selector (cycle 7) — matches a page whose break-triggering
-        // box assigned it that name (case-SENSITIVE, CSS custom-idents). Compounds stay deferred.
+        // A lone pseudo-class — :first/:blank (tier 2) or :left/:right (tier 1).
+        var (pTier, pMatches, pKnown) = MatchPagePseudo(selector, ctx);
+        if (pKnown) return (pTier, pMatches);
+        // A bare <custom-ident> NAMED page selector (cycle 7) — tier 3. Case-SENSITIVE.
         if (IsBarePageName(selector))
-            return (3, !string.IsNullOrEmpty(ctx.AssignedPageName)
-                       && string.Equals(ctx.AssignedPageName, selector, StringComparison.Ordinal));
-        return (-1, false);   // compound / unknown → deferred
+            return (3, NamedMatches(selector, ctx));
+        // A COMPOUND <name>:<single-pseudo> (e.g. chapter:first). The named part (tier 3 axis) plus the
+        // pseudo's axis — first/blank → tier 5, left/right → tier 4 — so the compound outranks both the
+        // bare named page (3) and the bare pseudo (1/2). The pseudo substring must be exactly ONE known
+        // pseudo (a multi-pseudo compound has a second ':' inside it → MatchPagePseudo doesn't match it).
+        var colon = selector.IndexOf(':');
+        if (colon > 0)
+        {
+            var (cTier, cMatches, cKnown) = MatchPagePseudo(selector.Substring(colon), ctx);
+            if (cKnown && IsBarePageName(selector.Substring(0, colon)))
+            {
+                var tier = cTier == 2 ? 5 : 4;
+                return (tier, NamedMatches(selector.Substring(0, colon), ctx) && cMatches);
+            }
+        }
+        return (-1, false);   // pure-pseudo / multi-pseudo compound / unknown → deferred
+    }
+
+    /// <summary>Does <paramref name="name"/> (a bare custom-ident) match the page's assigned name?
+    /// Case-SENSITIVE per CSS custom-idents; a context with no assigned name never matches.</summary>
+    private static bool NamedMatches(string name, PageSelectorContext ctx)
+        => !string.IsNullOrEmpty(ctx.AssignedPageName)
+           && string.Equals(ctx.AssignedPageName, name, StringComparison.Ordinal);
+
+    /// <summary>Classify ONE page pseudo-class token (<c>:first</c>/<c>:blank</c> → axis tier 2,
+    /// <c>:left</c>/<c>:right</c> → axis tier 1), returning its tier, whether it matches the context, and
+    /// whether the token was a KNOWN single page pseudo (false → not a recognized lone pseudo, so the
+    /// caller falls through to named / compound / deferred).</summary>
+    private static (int Tier, bool Matches, bool Known) MatchPagePseudo(string pseudo, PageSelectorContext ctx)
+    {
+        if (pseudo.Equals(":first", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsFirstPage, true);
+        if (pseudo.Equals(":blank", StringComparison.OrdinalIgnoreCase)) return (2, ctx.IsBlank, true);
+        if (pseudo.Equals(":left", StringComparison.OrdinalIgnoreCase)) return (1, !ctx.IsRightPage, true);
+        if (pseudo.Equals(":right", StringComparison.OrdinalIgnoreCase)) return (1, ctx.IsRightPage, true);
+        return (0, false, false);
     }
 
     /// <summary><see langword="true"/> when <paramref name="selector"/> is a valid bare CSS

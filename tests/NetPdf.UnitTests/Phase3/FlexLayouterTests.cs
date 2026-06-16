@@ -10228,6 +10228,92 @@ public sealed class FlexLayouterTests
         Assert.Equal(2, glyphCount);
     }
 
+    [Fact]
+    public void Flex_column_auto_height_content_items_paginate_first_attempt_PageComplete()
+    {
+        // Backlog #7 — an AUTO-height column flex whose items are content-sized
+        // (each a 200px block child, no explicit item height) taller than the
+        // fragmentainer now PAGINATES: the content-aware PreMeasureFlexMainExtent
+        // grows the wrapper so the first AttemptLayout returns PageComplete
+        // (before, the pre-measure saw 0 → AllDone, all on one overflowing page).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        for (var i = 0; i < 5; i++)
+        {
+            var item = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            var childStyle = MakeStyle();
+            SetLengthPx(childStyle, PropertyId.Height, 200);
+            item.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+            flex.AppendChild(item);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // 5 × 200px content (1000px) > 500px fragmentainer → paginates.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+    }
+
+    [Fact]
+    public void Flex_column_reverse_paginates_in_visual_reverse_dom_order()
+    {
+        // Backlog #4 — a PAGINATING column-reverse emits in VISUAL (reverse-DOM)
+        // order: the first page's first item is the LAST DOM item. 4 × 300px
+        // items on a 500px page → page 1 fits exactly one item = DOM item 3.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(3)); // column-reverse
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 300);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        // The flex-item fragments emitted on this first page (in emission order).
+        var emitted = new List<Box>();
+        foreach (var f in sink.Fragments)
+            for (var i = 0; i < 4; i++)
+                if (f.Box == items[i]) { emitted.Add(f.Box); break; }
+        // Page 1's FIRST item is the VISUAL-first = the LAST DOM item (items[3]),
+        // anchored at the page top (block offset 0).
+        Assert.NotEmpty(emitted);
+        Assert.Same(items[3], emitted[0]);
+        BoxFragment? firstItemFrag = null;
+        foreach (var f in sink.Fragments) if (f.Box == items[3]) { firstItemFrag = f; break; }
+        Assert.NotNull(firstItemFrag);
+        Assert.Equal(0.0, firstItemFrag!.Value.BlockOffset, precision: 3);
+    }
+
     // ====================================================================
     //  Helpers
     // ====================================================================

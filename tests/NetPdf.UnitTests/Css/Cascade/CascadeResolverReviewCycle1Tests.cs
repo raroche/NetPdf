@@ -233,18 +233,43 @@ public sealed class CascadeResolverReviewCycle1Tests
     }
 
     [Fact]
-    public async Task AtSupports_object_position_evaluates_false_unregistered()
+    public async Task AtSupports_object_position_evaluates_true_when_registered()
     {
-        // PR #169 review P2 — object-position renders from the RAW cascade winner but is NOT
-        // registered in properties.json (a 2-component <position> needs a metadata type — deferred,
-        // like border-radius), so `@supports (object-position: …)` evaluates FALSE and its block is
-        // skipped (the property is unknown to PropertyMetadata.NameToId). Pins the documented gap
-        // between the rendering support and the @supports report.
+        // Backlog #6 — object-position is now REGISTERED (properties.json type `Position` +
+        // PositionResolver), so `@supports (object-position: right bottom)` evaluates TRUE and gates
+        // its block IN: the property is known to PropertyMetadata.NameToId AND the <position> value
+        // validates. It still renders from the RAW cascade winner at paint time (validation-only
+        // registration — was PR #169's documented gap, now closed).
         var doc = await ParseHtml("<p>x</p>");
         var sheet = await ParseSheet("@supports (object-position: right bottom) { p { color: red } }");
         var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
             CssMediaContext.DefaultPrint);
+        Assert.NotNull(result.TryGetStylesFor(Q(doc, "p")));
+    }
+
+    [Fact]
+    public async Task AtSupports_object_position_invalid_value_evaluates_false()
+    {
+        // An INVALID <position> component (not a keyword or <length-percentage>) → PositionResolver
+        // returns Invalid → @supports evaluates FALSE → the block is skipped.
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet("@supports (object-position: not-a-position) { p { color: red } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
         Assert.Null(result.TryGetStylesFor(Q(doc, "p")));
+    }
+
+    [Fact]
+    public async Task AtSupports_page_property_evaluates_true_when_registered()
+    {
+        // Backlog #6 — the `page` property is now REGISTERED (type `PageName` + PageNameResolver:
+        // `auto | <custom-ident>`), so `@supports (page: chapter)` evaluates TRUE. The named-page
+        // machinery still reads the name raw onto Box.PageName (validation-only registration).
+        var doc = await ParseHtml("<p>x</p>");
+        var sheet = await ParseSheet("@supports (page: chapter) { p { color: red } }");
+        var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
+            CssMediaContext.DefaultPrint);
+        Assert.NotNull(result.TryGetStylesFor(Q(doc, "p")));
     }
 
     [Fact]

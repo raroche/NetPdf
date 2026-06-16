@@ -245,6 +245,12 @@ public sealed class PropertyDefaultsParityTests
             PropertyType.FontSize,
             PropertyType.FontWeight,
             PropertyType.FontFamilyList,
+            // Backlog #6 — Position (object-position) + PageName (page) are validation-only
+            // registrations (PositionResolver / PageNameResolver). Their defaults `50% 50%` / `auto`
+            // validate to Deferred (the value is consumed raw downstream), so they are NOT
+            // UnsupportedUnvalidated — exclude them from the cycle-2 check.
+            PropertyType.Position,
+            PropertyType.PageName,
         };
 
         var failures = new List<string>();

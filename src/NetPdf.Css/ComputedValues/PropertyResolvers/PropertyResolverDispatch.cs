@@ -149,6 +149,13 @@ internal static class PropertyResolverDispatch
                 trimmed, propertyId, meta.Name, diagnostics, location),
             PropertyType.FontFamilyList => FontFamilyListResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
+            // Backlog #6 — validation-only registrations (@supports + invalid-value diagnostics);
+            // both are consumed RAW downstream (object-position by the image painter, page by the
+            // named-page machinery), so the typed slot is a Deferred raw-text carrier.
+            PropertyType.Position => PositionResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
+            PropertyType.PageName => PageNameResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
 
             // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)
             // because the dispatch hasn't validated the value text against the

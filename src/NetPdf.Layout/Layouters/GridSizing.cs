@@ -1585,12 +1585,14 @@ internal static class GridSizing
         return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
-    /// <summary>Grid content-WIDTH cycle — whether a grid item's inline-size (<c>width</c>) is
-    /// content-determined (auto), so its column contribution should come from max-content measurement.
-    /// True iff the <c>width</c> slot is Unset / Keyword (= <c>auto</c>); a definite length or percentage
-    /// gives a definite contribution that content must not replace (a % resolves against the cell —
-    /// chicken-and-egg — and stays declared-only, the documented gap). Mirrors
-    /// <see cref="IsHeightContentDetermined"/>.</summary>
+    /// <summary>Grid content-WIDTH cycle — whether a grid ITEM's own inline-size (the <c>width</c>
+    /// PROPERTY on the item) is content-determined, so its contribution to an intrinsic column should
+    /// come from max-content measurement rather than a declared width. True iff the item's <c>width</c>
+    /// slot is Unset / a Keyword (i.e. <c>auto</c> — NOT a definite length/percentage). This is ORTHOGONAL
+    /// to the column track's kind (<c>auto</c>/<c>min-content</c>/<c>max-content</c>) — the caller already
+    /// gated on the TRACK being intrinsic; this gates on the ITEM having no definite width. A definite
+    /// length / % stays declared-only (a % resolves against the cell — chicken-and-egg — the documented
+    /// gap). Mirrors <see cref="IsHeightContentDetermined"/>.</summary>
     private static bool IsWidthContentDetermined(Box itemBox)
     {
         var slot = itemBox.Style.Get(PropertyId.Width);

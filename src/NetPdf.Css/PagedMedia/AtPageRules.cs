@@ -268,9 +268,10 @@ internal static class AtPageRules
     {
         if (selector.Length == 0) return (-1, false);
         // Split on ':' — the first segment is the optional name; the rest are pseudo-classes (a leading
-        // ':' makes segment[0] empty = a pure-pseudo selector).
+        // ':' makes segment[0] empty = a pure-pseudo selector). Each segment is TRIMMED (post-PR-#184
+        // Copilot) so incidental whitespace around a colon (`chapter :first`) doesn't break matching.
         var segments = selector.Split(':');
-        var name = segments[0];
+        var name = segments[0].Trim();
         var hasName = name.Length > 0;
         if (hasName && !IsBarePageName(name)) return (-1, false);   // an invalid name → not a page selector
         var a = hasName ? 1 : 0;
@@ -279,7 +280,7 @@ internal static class AtPageRules
         var matches = !hasName || NamedMatches(name, ctx);
         for (var i = 1; i < segments.Length; i++)
         {
-            var (pseudoTier, pMatches, pKnown) = MatchPagePseudo(":" + segments[i], ctx);
+            var (pseudoTier, pMatches, pKnown) = MatchPagePseudo(":" + segments[i].Trim(), ctx);
             if (!pKnown) return (-1, false);   // an unknown / empty / pseudo-element token → not a selector
             if (pseudoTier == 2) b++; else c++;   // :first/:blank → B axis; :left/:right → C axis
             matches = matches && pMatches;

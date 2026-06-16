@@ -176,6 +176,19 @@ public sealed class AtPageRulesTests
     }
 
     [Fact]
+    public void MatchTier_tolerates_whitespace_around_the_colon()
+    {
+        // Post-PR-#184 Copilot — incidental whitespace around the colon doesn't break matching: the
+        // segments are trimmed, so `chapter :first` matches the same page as `chapter:first` (tier 110),
+        // and `:first :right` (pure-pseudo with a space) matches a first + right page (tier 11). Internal
+        // whitespace in a NAME is still rejected (not trimmed away).
+        var firstNamed = new AtPageRules.PageSelectorContext(0, AssignedPageName: "chapter"); // first + right
+        Assert.Equal(110, AtPageRules.MatchTier("chapter :first", firstNamed));
+        Assert.Equal(11, AtPageRules.MatchTier(":first :right", firstNamed));
+        Assert.Equal(-1, AtPageRules.MatchTier("chap ter:first", firstNamed));   // internal space in name → invalid
+    }
+
+    [Fact]
     public void MatchTier_accepts_a_non_ascii_named_page()
     {
         // Copilot: a CSS <custom-ident> admits non-ASCII code points (≥ U+0080), so a non-ASCII page name

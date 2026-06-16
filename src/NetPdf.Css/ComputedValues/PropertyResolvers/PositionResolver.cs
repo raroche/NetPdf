@@ -164,9 +164,12 @@ internal static class PositionResolver
         if (i >= k.Length) return false;                             // need a second component
         var e1 = k[i++];
         if (e1 == Comp.LengthPct) return false;
-        if (i < k.Length && k[i] == Comp.LengthPct) i++;             // e1's optional offset
+        var o1 = i < k.Length && k[i] == Comp.LengthPct ? k[i++] : (Comp?)null;
         if (i != k.Length) return false;                            // a leftover token → invalid
-        if (e0 == Comp.Center && o0 is not null) return false;       // `center` takes no offset
+        // `center` takes no offset — on EITHER component (post-PR-#184 Copilot: `left 10px center 5px`
+        // and `center center 10px` must reject, not just an offset after a LEADING center).
+        if (e0 == Comp.Center && o0 is not null) return false;
+        if (e1 == Comp.Center && o1 is not null) return false;
         // Resolve which component is X vs Y; two same-axis edges → invalid (a `center` floats).
         var a0 = Axis(e0);
         var a1 = Axis(e1);

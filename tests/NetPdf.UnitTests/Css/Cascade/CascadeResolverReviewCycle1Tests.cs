@@ -293,15 +293,20 @@ public sealed class CascadeResolverReviewCycle1Tests
             "@supports (object-position: left right) { p { font-weight: bold } } " +
             "@supports (object-position: 20px left) { p { font-size: 20px } } " +
             "@supports (object-position: left 10px right 5px) { p { line-height: 2 } } " +
-            "@supports (object-position: center center center) { p { text-indent: 5px } }");
+            "@supports (object-position: center center center) { p { text-indent: 5px } } " +
+            // Post-PR-#184 Copilot — `center` takes no offset on EITHER edge of the edge-offset form.
+            "@supports (object-position: left 10px center 5px) { p { letter-spacing: 1px } } " +
+            "@supports (object-position: center center 10px) { p { word-spacing: 1px } }");
         var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
             CssMediaContext.DefaultPrint);
         var rules = result.TryGetStylesFor(Q(doc, "p"));
-        Assert.Null(rules?.GetWinner("color"));         // top bottom — two Y
-        Assert.Null(rules?.GetWinner("font-weight"));   // left right — two X
-        Assert.Null(rules?.GetWinner("font-size"));     // 20px left — X keyword in Y slot
-        Assert.Null(rules?.GetWinner("line-height"));   // left 10px right 5px — two X edges
-        Assert.Null(rules?.GetWinner("text-indent"));   // center center center — leftover token
+        Assert.Null(rules?.GetWinner("color"));          // top bottom — two Y
+        Assert.Null(rules?.GetWinner("font-weight"));    // left right — two X
+        Assert.Null(rules?.GetWinner("font-size"));      // 20px left — X keyword in Y slot
+        Assert.Null(rules?.GetWinner("line-height"));    // left 10px right 5px — two X edges
+        Assert.Null(rules?.GetWinner("text-indent"));    // center center center — leftover token
+        Assert.Null(rules?.GetWinner("letter-spacing")); // left 10px center 5px — center (2nd edge) + offset
+        Assert.Null(rules?.GetWinner("word-spacing"));   // center center 10px — center (2nd edge) + offset
     }
 
     [Fact]

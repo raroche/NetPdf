@@ -5574,6 +5574,53 @@ public sealed class GridLayouterTests
         throw new System.InvalidOperationException("no probe fragment emitted");
     }
 
+    [Fact]
+    public void Cross_attempt_measure_cache_keeps_repeated_layout_identical()
+    {
+        // Measurement-cache cycle — the GridLayouter's instance-level measure caches persist across
+        // AttemptLayout attempts (a paginating grid re-resolves per page). A second attempt on the SAME
+        // layouter produces IDENTICAL geometry from the cached (deterministic, not stale) measurements.
+        using var shaper = new SyntheticShaperResolver();
+        var diag = new RecordingDiagnosticsSink();
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForAuto()),
+            cols: Tracks(TrackEntry.ForLength(100)));
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var inner = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetExplicitHeight(inner, 60);   // content-determined auto row → exercises the content measurer
+        item.AppendChild(inner);
+        grid.AppendChild(item);
+
+        var sink = new RecordingFragmentSink();
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink, incomingContinuation: null, diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 400, contentBlockSize: 400, allowPagination: false);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
+
+        var layoutCtx1 = new LayoutContext(ctx);
+        using (var resolver1 = new BreakResolver())
+            layouter.AttemptLayout(ctx, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+        var afterFirst = sink.Fragments.Count;
+        Assert.True(afterFirst > 0);
+
+        // Second attempt on the SAME layouter — reuses the cross-attempt measure cache.
+        var layoutCtx2 = new LayoutContext(ctx);
+        using (var resolver2 = new BreakResolver())
+            layouter.AttemptLayout(ctx, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+        Assert.Equal(2 * afterFirst, sink.Fragments.Count);
+        for (var i = 0; i < afterFirst; i++)
+        {
+            var a = sink.Fragments[i];
+            var b = sink.Fragments[afterFirst + i];
+            Assert.Equal(a.InlineOffset, b.InlineOffset, precision: 3);
+            Assert.Equal(a.BlockOffset, b.BlockOffset, precision: 3);
+            Assert.Equal(a.InlineSize, b.InlineSize, precision: 3);
+            Assert.Equal(a.BlockSize, b.BlockSize, precision: 3);
+        }
+    }
+
     // =====================================================================
     //  Helpers
     // =====================================================================

@@ -2996,9 +2996,15 @@ flags the categories):
           (a row-spanning intrinsic item would otherwise re-measure per track). Grid items also opt into
           `layoutRootInlineContent` so inline-text cells render. STILL DEFERRED: content-WIDTH (max-content)
           COLUMN sizing (columns stay declared-width-only); the `min-height` floor isn't honored in the
-          content-determined branch; the pre-measure Resolve + emission Resolve each shape a cell once (2× per
-          conversion, bounded — a per-conversion cross-Resolve cache is a follow-up); fr-under-indefinite
-          interplay unchanged.
+          content-determined branch; fr-under-indefinite interplay unchanged. **Measurement caching (partial):** the
+          `GridLayouter`'s content-extent + max-content-width caches now persist ACROSS its `AttemptLayout`
+          attempts (instance-level — a PAGINATING grid re-resolves per page and re-measured every item each
+          attempt; measurement-cache cycle, safe because a cell's measured extent is deterministic for
+          `(item, available inline width)`, independent of the block budget + writing mode). STILL DEFERRED:
+          the CROSS-COMPONENT per-conversion cache — the pre-measure Resolve (`BlockLayouter.
+          PreMeasureGridRowExtent`) + the emission Resolve (`GridLayouter`) still shape a cell once EACH (2×)
+          because they don't share a cache; a per-conversion cache threaded through the ~15 `LayoutContext`
+          creation sites is the remaining follow-up.
        3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001` — DONE** (same PR). The
           subtree-extent measure (`MeasureSubtreeVisualBlockExtentRecursive`) now PROJECTS a paginatable flex
           descendant to `min(authored, pageBlockSize)` — EXACTLY like the existing paginatable-grid projection —

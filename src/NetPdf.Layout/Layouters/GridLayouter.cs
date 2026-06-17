@@ -130,6 +130,19 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
+    // Per-GridLayouter (cross-AttemptLayout) measurement caches (measurement-cache cycle). A PAGINATING
+    // grid re-runs AttemptLayout once per page attempt, each of which re-resolves the tracks + re-measures
+    // every content-determined item; persisting the measurements across attempts on this instance avoids
+    // the redundant NestedContentMeasurer passes. SAFE to share across attempts: an item's measured
+    // CONTENT block extent is deterministic for (item, available inline width) and its max-content inline
+    // extent for the item alone — both independent of the block budget (the atomic measure pass never
+    // paginates) and of the grid's writing mode (stable per grid). (Cross-COMPONENT sharing with
+    // BlockLayouter.PreMeasureGridRowExtent — a per-conversion cache threaded through the layout context —
+    // remains a follow-up; see docs/deferrals.md.)
+    private readonly System.Collections.Generic.Dictionary<(Box Item, double AvailInline), double> _blockExtentCache = new();
+    private readonly System.Collections.Generic.Dictionary<Box, double> _inlineExtentCache =
+        new(System.Collections.Generic.ReferenceEqualityComparer.Instance);
+
     private double _contentInlineOffset;
     private double _contentBlockOffset;
     private double _contentInlineSize;
@@ -524,7 +537,11 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // at a stale width if the same item were ever measured at two widths. (With the columns-first
             // ordering in GridSizing.Resolve the row pass uses the FINAL column width, so this is also
             // defensive.)
-            var measureCache = new System.Collections.Generic.Dictionary<(Box Item, double AvailInline), double>();
+            // Measurement-cache cycle — the instance-level caches persist across this grid's AttemptLayout
+            // attempts (a paginating grid re-resolves per page). Keyed by (item, available inline width);
+            // the measured value is deterministic for that key, so reusing a prior attempt's measurement
+            // is correct.
+            var measureCache = _blockExtentCache;
             GridSizing.GridContentMeasurer contentMeasurer = (item, availInline) =>
             {
                 var key = (item, availInline);
@@ -540,8 +557,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // (ContentInlineExtent) at the caller's unconstrained probe width, so auto / min-content /
             // max-content COLUMNS size to their content width. Separate cache (different measured value —
             // width, not height).
-            var widthMeasureCache = new System.Collections.Generic.Dictionary<Box, double>(
-                System.Collections.Generic.ReferenceEqualityComparer.Instance);
+            var widthMeasureCache = _inlineExtentCache;
             GridSizing.GridContentMeasurer widthMeasurer = (item, availInline) =>
             {
                 if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;

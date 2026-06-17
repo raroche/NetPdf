@@ -248,21 +248,27 @@ grepping the ID).
   bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut. The
   inline-block atomic carries the same margin-box advance + border-box fragment.
 - **Missing (first-cut approximations)** —
-  - Only `vertical-align: baseline` is honoured (the atomic's margin-box bottom sits on the line's text
-    baseline); other `vertical-align` values are not yet read. For an inline-block this means the spec's
-    last-in-flow-line-box baseline (CSS 2.2 §10.8.1) is approximated as the margin-box bottom (like an img).
-  - The baseline uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no
-    font-metric access; the painter uses the REAL metrics for glyphs, so an atomic's bottom aligns to the
-    text baseline within typical-font tolerance).
-  - The inline offset is start-relative — a centred / right / justified line, and RTL paragraphs, don't
-    yet shift the atomic with the text.
+  - `vertical-align` `sub` / `super` and a numeric `<length>` / `<percentage>` are VALIDATED (the resolver
+    is wired) but CONSUMED as `baseline`; the box-affecting keywords `top` / `bottom` / `middle` /
+    `text-top` / `text-bottom` ARE honoured for an atomic (vertical-align cycle, CSS 2.2 §10.8.1). The
+    §10.8.1 overflow≠visible baseline exception isn't read (overflow isn't consumed in the layout layer).
+    Text (non-atomic) `vertical-align` is deferred.
+  - An inline-block aligns by its LAST in-flow line box's baseline (CSS 2.2 §10.8.1 — it sits ON the
+    surrounding text baseline; the line box is sized by the max-ascent model) — but the last line's descent
+    is approximated from the box's OWN font / line-height (no per-line content metrics); with NO in-flow
+    line box the baseline is the bottom margin edge (the img-ish placement). The baseline still uses an
+    approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no font-metric access; the
+    painter uses the REAL metrics for glyphs, so an atomic aligns within typical-font tolerance).
+  - A `text-align: justify` line carrying an inline ATOMIC stays start-aligned (the atomic + inter-word-gap
+    interaction is deferred); RTL paragraphs don't shift the atomic with the text. (center / right / end DO
+    shift the atomic with its text — body text-align cycle.)
   - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
     separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
     by document depth, not a dedicated cap); LTR horizontal-tb.
   - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
     formatting context) remain deferred.
-- **Trigger** — a centred/justified/RTL inline `<img>` or inline-block, a non-baseline `vertical-align`, or
-  an `inline-flex`/`-grid`/`-table` span in the corpus.
+- **Trigger** — an RTL or `text-align: justify` inline `<img>` or inline-block, a `sub`/`super`/numeric
+  `vertical-align`, text (non-atomic) `vertical-align`, or an `inline-flex`/`-grid`/`-table` span.
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
@@ -278,9 +284,10 @@ grepping the ID).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
   inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
-- **Removal condition** — `vertical-align` (incl. non-baseline) + centred / RTL alignment honoured for
-  inline atomics, the inline-block's true last-line baseline + min-content shrink-to-fit, and
-  inline-flex / -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+- **Removal condition** — `vertical-align` `sub`/`super`/numeric + text vertical-align consumed (not just
+  validated), RTL + `text-align: justify` alignment honoured for inline atomics, the inline-block's
+  last-line baseline using true per-line content metrics + min-content shrink-to-fit, and inline-flex /
+  -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 

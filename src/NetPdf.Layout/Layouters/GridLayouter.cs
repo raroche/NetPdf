@@ -540,6 +540,13 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             var measureWritingMode = layout.WritingMode;
             var measureIsRtl = layout.IsRtl;
             var measureBlockBudget = fragmentainer.BlockSize;
+            // Cross-COMPONENT per-conversion cache (measurement-cache cycle) — when the
+            // root pipeline wired a shared GridMeasurementCache through the layout
+            // context, PREFER it so this grid's pre-measure (BlockLayouter.
+            // PreMeasureGridRowExtent), emission Resolve, and successive page dispatches
+            // all reuse one another's measurements. Null (e.g. a direct-layouter test) →
+            // the per-instance caches below (#187), so correctness holds either way.
+            var sharedMeasureCache = layout.GridMeasureCache as GridMeasurementCache;
             // Memoize per item box for this Resolve — a row-SPANNING intrinsic
             // item is otherwise re-measured once per intersected row track
             // (ResolveIntrinsicTracks's per-track loop). An item's available
@@ -557,6 +564,12 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             var measureCache = _blockExtentCache;
             GridSizing.GridContentMeasurer contentMeasurer = (item, availInline) =>
             {
+                if (sharedMeasureCache is not null)
+                {
+                    return sharedMeasureCache.BlockExtent(
+                        item, availInline, measureBlockBudget, _shaperResolver,
+                        measureWritingMode, measureIsRtl, cancellationToken);
+                }
                 var key = (item, availInline, measureBlockBudget, measureWritingMode, measureIsRtl);
                 if (measureCache.TryGetValue(key, out var cached)) return cached;
                 MeasurePassCount++;
@@ -575,6 +588,12 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             var widthMeasureCache = _inlineExtentCache;
             GridSizing.GridContentMeasurer widthMeasurer = (item, availInline) =>
             {
+                if (sharedMeasureCache is not null)
+                {
+                    return sharedMeasureCache.InlineExtent(
+                        item, availInline, measureBlockBudget, _shaperResolver,
+                        measureWritingMode, measureIsRtl, cancellationToken);
+                }
                 var key = (item, measureBlockBudget, measureWritingMode, measureIsRtl);
                 if (widthMeasureCache.TryGetValue(key, out var cached)) return cached;
                 MeasurePassCount++;

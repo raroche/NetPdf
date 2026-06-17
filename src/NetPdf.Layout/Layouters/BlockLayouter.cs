@@ -897,6 +897,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // return path — cycle-2c-style continuations would be needed).
         _capturedFragmentainer = fragmentainer;
         _capturedDiagSink = layout.Diagnostics ?? _diagnostics;
+        // Cross-COMPONENT per-conversion grid measure cache (measurement-cache
+        // cycle) — capture the shared cache the root pipeline wired through the
+        // layout context into an instance field, so PreMeasureGridRowExtent + the
+        // nested-context creations (which have no direct LayoutContext) can reach
+        // it. Re-captured each AttemptLayout (idempotent — the same per-conversion
+        // object). Null when no shared cache is wired (the per-instance fallback).
+        _gridMeasureCache = layout.GridMeasureCache as GridMeasurementCache;
 
         // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2) —
         // clear the per-AttemptLayout nested-table content-height
@@ -4285,6 +4292,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             Diagnostics = outerLayout.Diagnostics,
             WritingMode = outerLayout.WritingMode,
             IsRtl = outerLayout.IsRtl,
+            GridMeasureCache = outerLayout.GridMeasureCache,   // measurement-cache cycle
         };
         using var innerLayouter = new BlockLayouter(
             rootBox: box,
@@ -5549,6 +5557,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     var nestedMulticolLayoutCtx = new LayoutContext(_capturedFragmentainer)
                     {
                         Diagnostics = _diagnostics,
+                        GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
                     };
                     nestedMulticolResult = nestedMulticolLayouter.AttemptLayout(
                         _capturedFragmentainer,
@@ -5682,6 +5691,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     var nestedFlexLayoutCtx = new LayoutContext(_capturedFragmentainer)
                     {
                         Diagnostics = _diagnostics,
+                        GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
                     };
                     nestedFlexResult = DispatchFlexInner(
                         flexBox: child,
@@ -5822,6 +5832,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nestedGridLayoutCtx = new LayoutContext(_capturedFragmentainer)
                 {
                     Diagnostics = _diagnostics,
+                    // Measurement-cache cycle — propagate the per-conversion cache so a
+                    // nested (html→body-nested) grid's emission shares with its pre-measure.
+                    GridMeasureCache = _gridMeasureCache,
                 };
 
                 // Per cycle 5c.2d — resume contract: extract any
@@ -6274,6 +6287,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// AttemptLayout entry; the ambient diagnostic sink for nested-
     /// float overflow emission.</summary>
     private IPaginateDiagnosticsSink? _capturedDiagSink;
+
+    /// <summary>Measurement-cache cycle — the per-conversion grid measure cache
+    /// captured from the layout context at AttemptLayout entry. Used by
+    /// <see cref="PreMeasureGridRowExtent"/> (which has no LayoutContext) +
+    /// propagated onto the nested-dispatch contexts so a nested grid's emission
+    /// shares it. Null ⇒ no shared cache wired (per-instance fallback).</summary>
+    private GridMeasurementCache? _gridMeasureCache;
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2)
     /// — per-AttemptLayout cache of nested-table CONTENT HEIGHT
@@ -8956,6 +8976,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private double PreMeasureGridRowExtent(
         Box gridBox, double contentInlineSize, CancellationToken cancellationToken)
     {
+        // Cross-component cache (measurement-cache cycle) — captured at AttemptLayout
+        // entry; reaches both the outer + recursive pre-grow sites without a
+        // LayoutContext param (EmitBlockSubtreeRecursive has none).
+        var sharedCache = _gridMeasureCache;
         // Non-block-pagination arc (grid CONTENT-sized rows) — wire the SAME
         // content measurer the real emission uses so an auto-row grid's
         // pre-measured extent reflects its cells' content. Without it a
@@ -8970,16 +8994,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // re-measured per intersected row track in ResolveIntrinsicTracks).
         // Keyed by (item, availInline) — post-PR-#184 review F1: the block-extent measurement depends on
         // the available (column) width, so the cache must not return a height measured at a stale width.
+        // Cross-COMPONENT per-conversion cache (measurement-cache cycle) — PREFER
+        // the shared cache when the root pipeline wired one, so this pre-measure +
+        // the GridLayouter emission Resolve of the SAME grid shape each cell ONCE
+        // (the cross-component win). The budget (the captured fragmentainer's block
+        // size) + the horizontal-tb / LTR dry-run defaults match the emission for the
+        // common case (the cache key carries them, so a writing-mode mismatch just
+        // misses + re-measures — correct, never stale). Null → the local caches.
+        var measureBudget = _capturedFragmentainer?.BlockSize ?? 1_000_000;
         var measureCache = new Dictionary<(Box Item, double AvailInline), double>();
         GridSizing.GridContentMeasurer? measurer = _shaperResolver is null
             ? null
             : (item, availInline) =>
             {
+                if (sharedCache is not null)
+                {
+                    return sharedCache.BlockExtent(
+                        item, availInline, measureBudget, _shaperResolver,
+                        WritingMode.HorizontalTb, isRtl: false, cancellationToken);
+                }
                 var key = (item, availInline);
                 if (measureCache.TryGetValue(key, out var cached)) return cached;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline,
-                    blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                    blockBudget: measureBudget,
                     shaperResolver: _shaperResolver,
                     writingMode: WritingMode.HorizontalTb, isRtl: false,
                     cancellationToken: cancellationToken).ContentBlockExtent;
@@ -8994,10 +9032,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             ? null
             : (item, availInline) =>
             {
+                if (sharedCache is not null)
+                {
+                    return sharedCache.InlineExtent(
+                        item, availInline, measureBudget, _shaperResolver,
+                        WritingMode.HorizontalTb, isRtl: false, cancellationToken);
+                }
                 if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline,
-                    blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                    blockBudget: measureBudget,
                     shaperResolver: _shaperResolver,
                     writingMode: WritingMode.HorizontalTb, isRtl: false,
                     cancellationToken: cancellationToken).ContentInlineExtent;

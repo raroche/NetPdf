@@ -3002,14 +3002,19 @@ flags the categories):
           is the FULL set of inputs `NestedContentMeasurer.Measure` consumes — `(item, available inline width,
           block budget, writing mode, RTL)` — so a hit only reuses a value measured under identical inputs (PR
           #187 review [P1] #2: a percent-height cell measures a different extent under a different budget, so the
-          budget is in the key — no stale cross-budget reuse). SCOPE (PR #187 review [P1] #1): the production
-          dispatch (`BlockLayouter.DispatchGridInner`) builds a FRESH `GridLayouter` per page and calls
-          `AttemptLayout` ONCE, so these instance caches benefit same-instance retries only (a regression test
-          asserts a second identical attempt adds ZERO measurement passes). STILL DEFERRED — the real production
-          win: the CROSS-COMPONENT per-conversion cache — the pre-measure Resolve (`BlockLayouter.PreMeasureGridRowExtent`)
-          + the emission Resolve (`GridLayouter`) still shape a cell once EACH (2×) because they don't share a
-          cache, and successive page dispatches build fresh layouters; a per-conversion cache threaded through the
-          ~15 `LayoutContext` creation sites is the immediate follow-up.
+          budget is in the key — no stale cross-budget reuse). **Cross-COMPONENT per-conversion cache — DONE:** a
+          shared `GridMeasurementCache` (NetPdf.Layout, same full key) is allocated ONCE at the root pipeline
+          (`PdfRenderPipeline`) + threaded through the `LayoutContext` (as `object?`, cast at the consumers —
+          captured into a `BlockLayouter._gridMeasureCache` instance field at AttemptLayout entry so the
+          context-less `PreMeasureGridRowExtent` + the nested-dispatch contexts reach it). Both the pre-measure
+          pre-grow AND the `GridLayouter` emission Resolve PREFER it (per-instance caches stay the null-cache
+          fallback), so a content cell is shaped ONCE per conversion instead of 2× — AND successive page dispatches
+          reuse prior pages' measurements (the per-page fresh `GridLayouter` no longer re-shapes). Byte-identical
+          (deterministic values); a facade test asserts the pre-measure + emission of one grid total ONE measure
+          pass. STILL DEFERRED: a grid nested inside a flex-item / table-cell CONTENT measure (`NestedContentMeasurer`'s
+          inner context doesn't carry the cache — a deep-nesting edge); aligning `PreMeasureGridRowExtent`'s
+          dry-run writing mode to the cascaded value (it stays horizontal-tb / LTR, so a non-default writing-mode
+          grid misses the cross-component hit — correct, just unshared).
        3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001` — DONE** (same PR). The
           subtree-extent measure (`MeasureSubtreeVisualBlockExtentRecursive`) now PROJECTS a paginatable flex
           descendant to `min(authored, pageBlockSize)` — EXACTLY like the existing paginatable-grid projection —
@@ -3031,9 +3036,19 @@ flags the categories):
           re-anchor + cut by page budget), instead of the bottom-packed reverse FLIP. Gated to the PAGINATING
           case ONLY — non-paginating column-reverse keeps its flip, byte-identical; reversing the order is safe
           because the single column-nowrap line covers every item and the flex / content-measure results are
-          indexed by DOM index. STILL DEFERRED: **column-wrap** flex pagination (lines stack on the inline axis —
-          not a fragment boundary) + **row-flex** intra-item content fragmentation (a row line taller than the
-          page); the spec-strict reverse-flow fragment ORDER (a reasonable visual-order interpretation shipped).
+          indexed by DOM index. **row-nowrap intra-item content fragmentation — DONE (first cut):** a
+          `flex-direction: row` / `nowrap` flex whose item CONTENT is taller than the page splits the content
+          across pages at a SHARED cross cut (all items continue at the same cross position on the next page) —
+          `IsPaginatablePerStyle` admits row-nowrap, a new `FlexContinuation.ConsumedCrossExtent` accumulates the
+          cut, `BufferingMeasureSink.FlushRangeTo` slices each item's buffer to `[cut, cut + budget)`
+          (partition-by-top, force-overflow straddlers — no loss / no double), and the dual-input pagination flag
+          (renamed `outerFlexDualInputPaginating` / `nestedFlexDualInputPaginating`) extends from column to
+          row-nowrap. STILL DEFERRED: **auto-height** row items (need a content-aware row pre-measure — mirrors
+          the column auto-height work; the first cut covers EXPLICIT-height items taller than the page);
+          intra-fragment splitting (an over-tall single line force-overflows); `box-decoration-break: clone`
+          approximation (the box repeats per page); `flex-wrap: wrap-reverse` (cross-swap origin from the
+          unfragmented size); **column-wrap** flex pagination (lines stack on the inline axis — not a fragment
+          boundary); the spec-strict reverse-flow fragment ORDER (a reasonable visual-order interpretation shipped).
        5. **compound `@page` selectors — DONE** (`chapter:first`; same PR). `AtPageRules.MatchSelector` now
           matches a COMPOUND `<name>:<single-pseudo>` — the named part PLUS the pseudo's axis, so it outranks the
           bare named page per CSS Page 3 §3.1 (named + `:first`/`:blank` → tier 5; named + `:left`/`:right` →
@@ -3064,8 +3079,9 @@ flags the categories):
           contributes its measured content block extent (memoized per item box) instead of 0, so an auto-height
           column whose items are content-sized overflows the wrapper + the (paginatable-flex) split engages.
           Explicit-height items keep their declared height (byte-identical).
-       (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals; column-wrap +
-       row-flex intra-item fragmentation remain the open non-block items — pure/multi-pseudo compound `@page` +
+       (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals; row-NOWRAP
+       intra-item content fragmentation shipped a first cut [explicit-height items]; column-wrap + row-flex
+       AUTO-height intra-item fragmentation remain the open non-block items — pure/multi-pseudo compound `@page` +
        `<position>` axis-conflict + grid content-WIDTH columns + per-page `@page` geometry all shipped in the
        riders PR `phase-3-riders-perpage-geometry-inline-img-grid-cols`.)
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare

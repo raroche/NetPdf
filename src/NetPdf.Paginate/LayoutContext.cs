@@ -84,6 +84,23 @@ internal ref struct LayoutContext
     /// helper which is null-safe.</para></summary>
     public IPaginateDiagnosticsSink? Diagnostics;
 
+    /// <summary>Per-conversion grid measurement cache (measurement-cache cycle —
+    /// the cross-COMPONENT follow-up to the per-instance caches). A grid's cells
+    /// are shaped twice today — once by <c>BlockLayouter.PreMeasureGridRowExtent</c>
+    /// (the auto-row pre-grow) and once by the <c>GridLayouter</c> emission Resolve.
+    /// A shared cache, allocated ONCE at the root pipeline + threaded through the
+    /// layout context, lets the two sites reuse each other's measurements (and
+    /// successive page dispatches reuse prior pages'). Typed <c>object?</c> to keep
+    /// the NetPdf.Paginate → NetPdf.Layout dependency edge clean (the concrete
+    /// <c>GridMeasurementCache</c> lives in NetPdf.Layout, cast at the consumers —
+    /// the same pattern as <see cref="LayoutContinuation"/>'s <c>LayouterState</c>).
+    /// A measured CONTENT extent is deterministic for its keyed inputs (the atomic
+    /// measure pass never paginates), so a hit is byte-identical to a fresh measure.
+    /// <see langword="null"/> ⇒ no shared cache wired (e.g. a direct-layouter test);
+    /// the consumer falls back to its own per-instance cache, so correctness holds
+    /// even if a nested context misses propagation.</summary>
+    public object? GridMeasureCache;
+
     /// <summary>Document-scoped counter values per CSS Lists L3 §4.
     /// Keys are counter names (<c>page</c>, <c>pages</c>, author-defined);
     /// values are integer counter readings at the current layout
@@ -104,6 +121,7 @@ internal ref struct LayoutContext
         IsRtl = false;
         Fragmentainer = fragmentainer;
         Diagnostics = null;
+        GridMeasureCache = null;
         _counters = null;
     }
 

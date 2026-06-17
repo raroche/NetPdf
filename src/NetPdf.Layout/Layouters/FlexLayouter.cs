@@ -1002,19 +1002,46 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // Row-nowrap intra-item content split — the content is taller than the
         // page, so measuring it into a page-sized inner fragmentainer would CLIP
         // the part beyond the page (the nested LastResort pass clips past its
-        // budget). Measure into a buffer as tall as the NATURAL cross extent
-        // (_contentBlockSize, the dual-input natural sizing input) so the whole
-        // item content is buffered + can be sliced per page. Other cases keep the
-        // page-sized budget (byte-identical). Content exceeding the natural extent
-        // (box overflow) is still clipped — a documented first-cut limitation.
+        // budget). Measure into the effectively-unbounded buffer so the WHOLE item
+        // content is captured (an auto-height item's natural cross extent EQUALS its
+        // content, so a budget of exactly the natural extent would clip the last line
+        // at the float boundary) + can be sliced per page. Other cases keep the
+        // page-sized budget (byte-identical). The budget is a practical cap, not truly
+        // unbounded (see the const doc); a measured extent that REACHES it is surfaced
+        // as LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001 below so truncation isn't silent.
         var contentMeasureBudget = isRowNowrapContentPagination
-            ? System.Math.Max(_contentBlockSize, fragmentainer.BlockSize)
+            ? NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx
             : fragmentainer.BlockSize;
         var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,
             mainSizeProperty, crossSizeProperty, containerCrossSize, isWrapping,
             fragmentainer, layout.WritingMode, layout.IsRtl,
             effectiveDiagnostics, contentMeasureBudget, cancellationToken);
+
+        // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
+        // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
+        // an item whose measured content REACHES it was clipped by the single atomic pass.
+        // Surface it (CLAUDE.md #7 — never drop content silently) so the (no-real-document)
+        // truncation isn't silent. The page-by-page streaming measure is the documented
+        // follow-up. Once per attempt suffices for a warning this rare.
+        if (isRowNowrapContentPagination && effectiveDiagnostics is not null)
+        {
+            foreach (var b in itemContentBuffers)
+            {
+                if (b is not null
+                    && b.ContentBlockExtent >= NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx)
+                {
+                    effectiveDiagnostics.Emit(new PaginateDiagnostic(
+                        Code: PaginateDiagnosticCodes.LayoutFlexItemContentTruncated001,
+                        Message: "A row-nowrap flex item's measured content block extent reached the "
+                            + "intra-item measurement budget cap; content taller than the cap is clipped "
+                            + "(the atomic measure pass does not paginate). Unreachable for any real "
+                            + "document; the page-by-page streaming measure is the documented follow-up.",
+                        Severity: PaginateDiagnosticSeverity.Warning));
+                    break;
+                }
+            }
+        }
 
         // After flexibility resolution, each line's LineMainSize must
         // be updated to the sum of RESOLVED item main-sizes (NOT the
@@ -1869,8 +1896,40 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         double containerMainSize,
         CancellationToken cancellationToken)
     {
-        var endPos = line.FirstItemIndex + line.ItemCount;
-        var itemCount = line.ItemCount;
+        // Resolve via the shared static §9.7 helper (position-keyed), then scatter
+        // back to the DOM-children-keyed `resolved` array the emission loop reads.
+        var count = line.ItemCount;
+        var lineItems = new Box[count];
+        for (var i = 0; i < count; i++)
+            lineItems[i] = _rootBox.Children[_sortedFlexChildIndices[line.FirstItemIndex + i]];
+        var lineResolved = ResolveFlexLineMainSizes(
+            lineItems, mainSizeProperty, minSizeProperty, maxSizeProperty,
+            containerMainSize, cancellationToken);
+        for (var i = 0; i < count; i++)
+            resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
+    }
+
+    /// <summary>Box-sizing / pre-measure share (PR #189 review P1) — the CSS
+    /// Flexbox L1 §9.7 flexibility algorithm (incl. the step-4 min/max clamping
+    /// iteration) for ONE line, keyed by POSITION within <paramref name="lineItems"/>
+    /// (not DOM index). The resolved main size per item is ORDER-INDEPENDENT (the
+    /// distribution is by flex-grow/shrink ratios, not source order), so callers may
+    /// pass items in any order. The instance
+    /// <see cref="ResolveLineWithMinMaxClamping"/> wraps this for the DOM-keyed
+    /// emission array; the BlockLayouter row-flex pre-measure calls it DIRECTLY so an
+    /// auto-height row item is measured at the SAME flex-resolved width FlexLayouter
+    /// will emit it at (a pre-measure at the declared/container width would under- or
+    /// over-count wrapped height + mis-trigger pagination).</summary>
+    internal static double[] ResolveFlexLineMainSizes(
+        IReadOnlyList<Box> lineItems,
+        PropertyId mainSizeProperty,
+        PropertyId minSizeProperty,
+        PropertyId maxSizeProperty,
+        double containerMainSize,
+        CancellationToken cancellationToken)
+    {
+        var itemCount = lineItems.Count;
+        var resolved = new double[itemCount];
 
         // Stack-friendly per-item state: hypothetical + (min, max) +
         // frozen flag, keyed by sorted-position within the line.
@@ -1883,19 +1942,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
 
         // Pass 1 — read hypothetical + min/max per item. The hypothetical
         // is also the INITIAL resolved value (= the §9.7 starting point).
-        // Keep the resolved[] array's DOM-children indexing for the
-        // emission loop; the local arrays above are line-local (= the
-        // sorted-position view used by the iterative clamping loop).
+        // All arrays here are POSITION-keyed (0..itemCount within the line).
         for (var i = 0; i < itemCount; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
-            var item = _rootBox.Children[itemIdx];
+            var item = lineItems[i];
 
             var hypothetical = ResolveHypotheticalMainSize(
                 item, mainSizeProperty, containerMainSize);
             hypotheticals[i] = hypothetical;
-            resolved[itemIdx] = hypothetical;
+            resolved[i] = hypothetical;
 
             var (min, max) = item.ResolveFlexItemMinMaxMainSize(
                 minSizeProperty, maxSizeProperty);
@@ -1921,11 +1977,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             var sumScaledShrinks = 0.0;
             for (var i = 0; i < itemCount; i++)
             {
-                var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
-                var item = _rootBox.Children[itemIdx];
+                var item = lineItems[i];
                 if (frozen[i])
                 {
-                    sumFrozenResolved += resolved[itemIdx];
+                    sumFrozenResolved += resolved[i];
                 }
                 else
                 {
@@ -1935,7 +1990,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     // Reset unfrozen items to hypothetical before the
                     // distribution pass — each iteration redistributes
                     // the (smaller) remaining free-space from scratch.
-                    resolved[itemIdx] = hypotheticals[i];
+                    resolved[i] = hypotheticals[i];
                 }
             }
 
@@ -1951,12 +2006,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 for (var i = 0; i < itemCount; i++)
                 {
                     if (frozen[i]) continue;
-                    var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
-                    var item = _rootBox.Children[itemIdx];
-                    var grow = item.Style.ReadFlexGrow();
+                    var grow = lineItems[i].Style.ReadFlexGrow();
                     if (grow > 0)
                     {
-                        resolved[itemIdx] += (grow / growDivisor) * remainingFreeSpace;
+                        resolved[i] += (grow / growDivisor) * remainingFreeSpace;
                     }
                 }
             }
@@ -1966,14 +2019,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 for (var i = 0; i < itemCount; i++)
                 {
                     if (frozen[i]) continue;
-                    var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
-                    var item = _rootBox.Children[itemIdx];
-                    var shrink = item.Style.ReadFlexShrink();
+                    var shrink = lineItems[i].Style.ReadFlexShrink();
                     if (shrink > 0)
                     {
                         var scaledShrink = shrink * hypotheticals[i];
                         var absorb = (scaledShrink / sumScaledShrinks) * deficit;
-                        resolved[itemIdx] = Math.Max(0, resolved[itemIdx] - absorb);
+                        resolved[i] = Math.Max(0, resolved[i] - absorb);
                     }
                 }
             }
@@ -1989,12 +2040,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             for (var i = 0; i < itemCount; i++)
             {
                 if (frozen[i]) continue;
-                var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
-                var pre = resolved[itemIdx];
+                var pre = resolved[i];
                 var post = Math.Max(mins[i], Math.Min(maxs[i], pre));
                 if (post != pre)
                 {
-                    resolved[itemIdx] = post;
+                    resolved[i] = post;
                     totalViolation += post - pre;
                 }
             }
@@ -2014,9 +2064,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             for (var i = 0; i < itemCount; i++)
             {
                 if (frozen[i]) continue;
-                var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
                 var pre = hypotheticals[i];
-                var post = resolved[itemIdx];
+                var post = resolved[i];
                 if (freezeMinViolators ? (post > pre && post == mins[i])
                     : (post < pre && post == maxs[i]))
                 {
@@ -2035,6 +2084,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
             }
         }
+        return resolved;
     }
 
     /// <summary>Per Phase 3 Task 15 L8 + post-PR-#68 hardening F#1 —

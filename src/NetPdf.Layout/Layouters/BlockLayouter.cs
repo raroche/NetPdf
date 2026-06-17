@@ -1351,9 +1351,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, pctBase);
 
             // Per PR #22 review fix #3 + Copilot #2 — BoxFragment is
-            // the BORDER box on both axes.
-            var borderBoxBlockSize = borderStart + paddingStart + contentBlock
-                + paddingEnd + borderEnd;
+            // the BORDER box on both axes. Box-sizing audit: an explicit `height`
+            // under `box-sizing: border-box` IS the border box (chrome inside),
+            // floored at the chrome; `content-box` (initial) adds it — byte-identical.
+            var borderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
+                child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
 
             // Per Phase 3 Task 8 cycle 2 — flow around floats. The
             // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
@@ -6250,8 +6252,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
         var contentInline = child.Style.ReadLengthOrPercentPx(PropertyId.Width, bfcInlineSizePx);
 
-        var borderBoxBlockSize = borderStart + paddingStart + contentBlock
-            + paddingEnd + borderEnd;
+        // Box-sizing audit — a float's explicit `height` honors box-sizing (border-box
+        // → declared is the border box; content-box → declared + chrome, byte-identical).
+        var borderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
+            child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
         // Per cycle 1 post-PR-30 review (Copilot #2) — border-box
         // inline size includes inline-axis border + padding (the
         // content-box size alone mis-reports the float's footprint to
@@ -6757,7 +6761,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// table: 0 = content-box (the initial), 1 = border-box. Mirrors the margin-box reader
     /// (PR #155).</summary>
     private static bool IsBorderBoxSizing(ComputedStyle style) =>
-        style.ReadKeywordOrDefault(PropertyId.BoxSizing, defaultIndex: 0) == 1;
+        BoxSizingHelper.IsBorderBox(style);
 
     /// <summary>The used border-box inline size from a declared <c>width</c> +
     /// <paramref name="inlineInsets"/> (inline-axis borders + padding) under the box's
@@ -6769,9 +6773,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// (PR #165 review P2).</summary>
     private static double DeclaredWidthToBorderBox(
         ComputedStyle style, double declaredWidth, double inlineInsets) =>
-        IsBorderBoxSizing(style)
-            ? Math.Max(declaredWidth, inlineInsets)
-            : Math.Max(0, declaredWidth + inlineInsets);
+        BoxSizingHelper.DeclaredToBorderBox(style, declaredWidth, inlineInsets);
 
     /// <summary>Used border-box inline size for an in-flow block-level child (the CSS 2.2
     /// §10.3.3 cycle-1 subset; body-explicit-width gap fix). A plain block container

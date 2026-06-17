@@ -546,6 +546,34 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Border_box_sizing_makes_the_declared_height_the_border_box()
+    {
+        // Box-sizing audit (block HEIGHT — the symmetric gap to the done width work):
+        // height: 100 + 15px padding top/bottom → border-box → the fragment block size
+        // IS 100 (content 70); content-box (initial) → 130. Byte-identical for content-box.
+        foreach (var (borderBox, expected) in new[] { (true, 100.0), (false, 130.0) })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 200);
+            SetLengthPx(style, PropertyId.Height, 100);
+            SetLengthPx(style, PropertyId.PaddingTop, 15);
+            SetLengthPx(style, PropertyId.PaddingBottom, 15);
+            if (borderBox) SetKeyword(style, PropertyId.BoxSizing, 1);   // border-box
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].BlockSize);
+        }
+    }
+
+    [Fact]
     public void Float_percentage_width_resolves_against_the_bfc()
     {
         // Float-percent cycle — a float's width: 50% resolves against the 600px BFC content box.

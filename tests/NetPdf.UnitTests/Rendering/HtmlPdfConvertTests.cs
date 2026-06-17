@@ -783,6 +783,43 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_align_justify_spreads_words_and_pushes_the_last_word_right()
+    {
+        // text-align: justify cycle (CSS Text 3 §7.3) — a wrapping paragraph distributes each NON-LAST
+        // line's free space across its inter-word gaps. Observable two ways vs the left-aligned control:
+        // (a) each justified line is SPLIT into per-word show ops, so there are more Td operators; and
+        // (b) a justified line's last word is pushed toward the right edge, so the MAX Td x is larger.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:80px;text-align:" + align + "\">" +
+            "A A A A A A A A A A A A</div></body></html>";
+
+        var justify = Latin1(HtmlPdf.Convert(Doc("justify"), opts));
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+
+        // (a) justify splits non-last lines into per-word segments → strictly more Td operators.
+        Assert.True(TdCount(justify) > TdCount(left),
+            $"justify should split lines into per-word segments: justify={TdCount(justify)} left={TdCount(left)}");
+        // (b) a justified line's last word is pushed right → the rightmost Td x grows past the control.
+        Assert.True(MaxTdX(justify) > MaxTdX(left) + 5.0,
+            $"justify should push words toward the right edge: justify={MaxTdX(justify)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
+    public void Text_align_justify_leaves_a_single_line_start_aligned()
+    {
+        // text-align: justify cycle — the §7.3 last-line exception: the LAST line of a block is NOT
+        // justified (it stays start-aligned). A paragraph that fits on ONE line is all-last-line, so
+        // even WITH inter-word gaps present it must render byte-identical to left-aligned (no spread).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        byte[] Render(string align) => HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">A A A</div></body></html>",
+            opts);
+
+        Assert.Equal(Latin1(Render("left")), Latin1(Render("justify")));
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border
@@ -7321,6 +7358,22 @@ public sealed class HtmlPdfConvertTests
              i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
             n++;
         return n;
+    }
+
+    /// <summary>The maximum x operand across every <c>&lt;x&gt; &lt;y&gt; Td</c> text-position operator —
+    /// the rightmost glyph-run origin in the content stream. Used by the justify tests: justifying a
+    /// line pushes its last word toward the right edge, so the max Td x grows.</summary>
+    private static double MaxTdX(string pdf)
+    {
+        var max = double.NegativeInfinity;
+        for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0;
+             i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+        {
+            var nums = pdf[..i].TrimEnd().Split(' ');   // … <x> <y>
+            var x = double.Parse(nums[^2], CultureInfo.InvariantCulture);
+            if (x > max) max = x;
+        }
+        return max;
     }
 
     /// <summary>A deterministic <see cref="IFontResolver"/> that resolves every query to the

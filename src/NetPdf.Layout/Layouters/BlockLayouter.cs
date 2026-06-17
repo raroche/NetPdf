@@ -7507,7 +7507,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Body text-align cycle — center / right shifts each glyph line by
             // (content width − line advance) × factor (TextPainter consumes it). 0 (start, the
             // initial) is byte-identical to the pre-cycle no-shift output.
-            LineAlignFactor: inlineOnlyBlock.Style.ReadInlineAlignFactor()));
+            LineAlignFactor: inlineOnlyBlock.Style.ReadInlineAlignFactor(),
+            // text-align: justify cycle — distribute each non-last line's free space across its
+            // inter-word gaps (TextPainter splits at spaces). False (the default) byte-identical.
+            JustifyLines: inlineOnlyBlock.Style.ReadInlineJustify()));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the

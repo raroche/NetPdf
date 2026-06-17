@@ -166,11 +166,12 @@ internal static class ComputedStyleLayoutExtensions
     /// <summary>Body text-align cycle — the horizontal line-alignment FACTOR (CSS Text 3 §7.1)
     /// for inline content: the fraction of a line's free space (content width − line advance) the
     /// line shifts by. <c>center</c> → 0.5; <c>end</c> / <c>right</c> → 1.0 (right-align);
-    /// <c>start</c> / <c>left</c> → 0 (no shift, the initial). <c>justify</c> (inter-word
-    /// distribution) + <c>match-parent</c> / <c>justify-all</c> are approximated as <c>start</c>
-    /// (0) for the first cut. LTR horizontal-tb (RTL would swap start/end — deferred). Consumed by
-    /// <c>TextPainter</c> (the glyph lines, via <c>BoxFragment.LineAlignFactor</c>) + the
-    /// inline-atomic placement, so both shift together.</summary>
+    /// <c>start</c> / <c>left</c> → 0 (no shift, the initial). <c>justify</c> / <c>justify-all</c>
+    /// return 0 HERE — they distribute inter-word (not a whole-line shift) via
+    /// <see cref="ReadInlineJustify"/>, falling back to start (0) for the non-justified last line.
+    /// <c>match-parent</c> stays approximated as <c>start</c>. LTR horizontal-tb (RTL would swap
+    /// start/end — deferred). Consumed by <c>TextPainter</c> (the glyph lines, via
+    /// <c>BoxFragment.LineAlignFactor</c>) + the inline-atomic placement, so both shift together.</summary>
     public static double ReadInlineAlignFactor(this ComputedStyle s) =>
         s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) switch
         {
@@ -178,6 +179,17 @@ internal static class ComputedStyleLayoutExtensions
             1 or 3 => 1.0,   // end / right
             _ => 0.0,        // start(0) / left(2) / justify(5) / match-parent(6) / justify-all(7)
         };
+
+    /// <summary>text-align: justify cycle — whether inline content should be JUSTIFIED (CSS Text 3
+    /// §7.3 inter-word distribution): the line's free space (content width − line advance) is spread
+    /// across its inter-word gaps. True for <c>justify</c>(5) and <c>justify-all</c>(7) — both share the
+    /// inter-word distribution; the <c>justify-all</c> distinction (justifying the LAST line too) is a
+    /// documented approximation (treated as <c>justify</c>, so the last line stays start-aligned).
+    /// Consumed by <c>TextPainter</c>, which splits each justified line's glyphs at word-separator
+    /// spaces and adds per-gap advance. Mutually exclusive with <see cref="ReadInlineAlignFactor"/>
+    /// (which returns 0 for justify, so a non-justified line — the last one — falls back to start).</summary>
+    public static bool ReadInlineJustify(this ComputedStyle s) =>
+        s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) is 5 or 7;
 
     /// <summary>Maps a <c>border-*-width</c> PropertyId to its sibling
     /// <c>border-*-style</c> PropertyId for the §4.3 used-width style gate;

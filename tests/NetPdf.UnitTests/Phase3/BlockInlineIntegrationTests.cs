@@ -570,7 +570,7 @@ public sealed class BlockInlineIntegrationTests
     [InlineData(4, 0.5)]   // center → half the free space
     [InlineData(3, 1.0)]   // right  → all the free space
     [InlineData(1, 1.0)]   // end    → right (LTR)
-    [InlineData(5, 0.0)]   // justify → start (inter-word distribution deferred)
+    [InlineData(5, 0.0)]   // justify → factor 0 (NOT a whole-line shift; distributes via JustifyLines)
     public void Body_text_align_sets_inline_line_align_factor(int textAlignKeyword, double expectedFactor)
     {
         // Body text-align cycle — text-align on an inline-only block sets the emitted fragment's
@@ -594,6 +594,41 @@ public sealed class BlockInlineIntegrationTests
 
         var fragment = Assert.Single(sink.Fragments);
         Assert.Equal(expectedFactor, fragment.LineAlignFactor, precision: 3);
+    }
+
+    [Theory]
+    [InlineData(0, false)]   // start    → no justify
+    [InlineData(2, false)]   // left     → no justify
+    [InlineData(4, false)]   // center   → no justify
+    [InlineData(5, true)]    // justify  → JustifyLines
+    [InlineData(7, true)]    // justify-all → JustifyLines (last-line distinction approximated)
+    public void Body_text_align_justify_sets_fragment_justify_lines(int textAlignKeyword, bool expectedJustify)
+    {
+        // text-align: justify cycle — `justify` / `justify-all` set the emitted fragment's JustifyLines
+        // flag (the painter then distributes each non-last line's free space across inter-word gaps),
+        // while keeping LineAlignFactor 0 (justify is NOT a whole-line shift). Non-justify values leave
+        // JustifyLines false, so they stay byte-identical.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var blockStyle = MakeStyle();
+        blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        block.AppendChild(Box.TextRun("A A A", MakeStyle()));
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        var fragment = Assert.Single(sink.Fragments);
+        Assert.Equal(expectedJustify, fragment.JustifyLines);
+        // A justified fragment never ALSO carries a whole-line shift (justify distributes, it doesn't
+        // shift); non-justify keywords keep their own factor (center 0.5, etc.) so aren't checked here.
+        if (expectedJustify) Assert.Equal(0.0, fragment.LineAlignFactor, precision: 3);
     }
 
     [Fact]

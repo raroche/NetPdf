@@ -84,6 +84,14 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
     /// blocks), the baseline is the bottom margin edge (the img-ish placement).</summary>
     public bool HasInFlowLineBox { get; private set; }
 
+    /// <summary>Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — the BOTTOM (in the buffer's
+    /// content coordinate space, the same as <see cref="ContentBlockExtent"/>) of the LAST in-flow line
+    /// box: the greatest line-bearing fragment's inner bottom MINUS that fragment's block-end border +
+    /// padding (so trailing chrome below the last line, or a later non-line block, padding, or empty
+    /// box, doesn't pull the baseline down — post-PR-#192 review P1). 0 until a line box is seen
+    /// (read only when <see cref="HasInFlowLineBox"/>).</summary>
+    public double LastLineBoxBottom { get; private set; }
+
     public void Emit(BoxFragment fragment)
     {
         // Out-of-flow (position: absolute / fixed) descendants of a flex / grid
@@ -120,6 +128,13 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         if (fragment.InlineLayout is { } inlineLayout && inlineLayout.Lines.Length > 0)
         {
             HasInFlowLineBox = true;   // §10.8.1 — an inline-block with a line box has a baseline.
+            // The last line box's bottom = this fragment's inner bottom minus its OWN block-end chrome
+            // (the lines sit inside the border box). Track the GREATEST so the LAST in-flow line box wins;
+            // a trailing non-line block / padding (counted in ContentBlockExtent) does NOT move it.
+            var style = fragment.Box.Style;
+            var blockEndChrome = style.BlockBorderPaddingPx() - style.BlockStartBorderPaddingPx();
+            var lineBoxBottom = innerBottom - blockEndChrome;
+            if (lineBoxBottom > LastLineBoxBottom) LastLineBoxBottom = lineBoxBottom;
             var lines = inlineLayout.Lines;
             for (var i = 0; i < lines.Length; i++)
             {

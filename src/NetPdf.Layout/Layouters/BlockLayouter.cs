@@ -7144,18 +7144,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     anyAtomic = true;
                     if (a.MarginBoxHeightPx > maxAtomicMarginBoxHeight)
                         maxAtomicMarginBoxHeight = a.MarginBoxHeightPx;
-                    // Only a BASELINE-aligned inline-block drives the §10.8.1 max-ascent baseline; a
-                    // top / bottom / middle / text-* atomic is placed by line edges + keeps the centred
-                    // model (vertical-align cycle). sub / super / a numeric length-% approximate as
-                    // baseline (deferred consumption), so they still drive the baseline.
                     var valign = a.Box.Style.ReadKeywordOrDefault(PropertyId.VerticalAlign, 0);
+                    // Only a BASELINE-aligned inline-block drives the §10.8.1 max-ascent MODEL (Plan C —
+                    // img/text lines stay byte-identical); sub/super/numeric approximate as baseline.
                     if (a.BaselineFromBorderTopPx is not null && IsBaselineValign(valign))
                     {
                         lineHasBaselineAligned = true;
                         anyBaselineAligned = true;
-                        if (a.AscentAbovePx > ascentAbove) ascentAbove = a.AscentAbovePx;
-                        if (a.DescentBelowPx > descentBelow) descentBelow = a.DescentBelowPx;
                     }
+                    // Grow the baseline-relative extents from EVERY atomic per its vertical-align — so a
+                    // tall middle / text-top / text-bottom (or baseline / img) sibling is CONTAINED by the
+                    // max-ascent line without overflowing (post-PR-#192 review P1; was only the raw margin
+                    // box height, which left a baseline-relative sibling outside the box). top / bottom are
+                    // line-edge-relative → they contribute only the margin-box-height floor below.
+                    var (extentAbove, extentBelow) =
+                        AtomicBaselineExtents(a, valign, ascentPx, descentPx, fontSizePx);
+                    if (extentAbove > ascentAbove) ascentAbove = extentAbove;
+                    if (extentBelow > descentBelow) descentBelow = extentBelow;
                 }
             }
             if (lineHasBaselineAligned)
@@ -7233,6 +7238,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <c>bottom</c>(7) are placed by line/text edges instead. Indices MUST match
     /// <c>VerticalAlignResolver</c> (NetPdf.Css).</summary>
     private static bool IsBaselineValign(int valign) => valign is 0 or 1 or 2;
+
+    /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — an atomic's extent ABOVE / BELOW the line
+    /// baseline for its <paramref name="valign"/>, so the max-ascent line box grows to CONTAIN it.
+    /// <c>middle</c> / <c>text-top</c> / <c>text-bottom</c> are positioned relative to the baseline /
+    /// parent text metrics (so they have definite baseline-relative extents); <c>top</c> / <c>bottom</c>
+    /// are line-EDGE-relative (circular — they're contained by the margin-box-height floor instead, so
+    /// they contribute nothing here); <c>baseline</c> / <c>sub</c> / <c>super</c> / a numeric value use
+    /// the atomic's own baseline split (<see cref="NetPdf.Layout.Inline.InlineAtomic.AscentAbovePx"/>).
+    /// A negative extent (a short box that doesn't reach past the baseline) is harmless — it loses the
+    /// <c>Math.Max</c> against the text strut. Indices match <see cref="ComputeAtomicBorderBoxTop"/>.</summary>
+    private static (double Above, double Below) AtomicBaselineExtents(
+        in NetPdf.Layout.Inline.InlineAtomic a, int valign,
+        double ascentPx, double descentPx, double fontSizePx)
+    {
+        var mbH = a.MarginBoxHeightPx;
+        return valign switch
+        {
+            5 => (0.25 * fontSizePx + mbH / 2.0, mbH / 2.0 - 0.25 * fontSizePx),  // middle
+            3 => (ascentPx, mbH - ascentPx),                                       // text-top
+            4 => (mbH + descentPx, -descentPx),                                    // text-bottom (descent < 0)
+            6 or 7 => (0.0, 0.0),                                                   // top / bottom — line-edge
+            _ => (a.AscentAbovePx, a.DescentBelowPx),                              // baseline / sub / super
+        };
+    }
 
     /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — the atomic's BORDER-box top within the line box
     /// for its <paramref name="valign"/> keyword index (see <see cref="IsBaselineValign"/> for the
@@ -8067,9 +8096,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var contentLineHeightPx = declaredLineHeightPx > 0 ? declaredLineHeightPx : contentFontSizePx * 1.2;
             var descentBelowLastLinePx = Math.Max(0.0, contentLineHeightPx / 2.0 - 0.3 * contentFontSizePx);
             var blockStartChrome = s.BlockStartBorderPaddingPx();
+            // Anchor to the LAST LINE BOX's bottom (post-PR-#192 review P1) — NOT ContentBlockExtent,
+            // which a trailing non-line block / padding after the last line would push down. The buffer
+            // tracks LastLineBoxBottom already net of the line fragment's own block-end chrome, so the
+            // inline-only-root branch (C = border top) adds nothing further; the block-children branch
+            // (C = content top) adds the inline-block's block-start chrome.
             var rawBaseline = buffer.ContainsDecorationOwnerFragment
-                ? buffer.ContentBlockExtent - (blockChrome - blockStartChrome) - descentBelowLastLinePx
-                : blockStartChrome + buffer.ContentBlockExtent - descentBelowLastLinePx;
+                ? buffer.LastLineBoxBottom - descentBelowLastLinePx
+                : blockStartChrome + buffer.LastLineBoxBottom - descentBelowLastLinePx;
             baselineFromBorderTopPx = Math.Clamp(rawBaseline, 0.0, borderBoxH);
         }
 

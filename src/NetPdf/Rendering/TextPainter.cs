@@ -271,6 +271,19 @@ internal static class TextPainter
             + blockStyle.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
             + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingTop);
 
+        // text-align / justify is distributed within the CONTENT box, not the border box: the glyph
+        // origin already starts at contentLeftPx (border + padding added), so the available inline size
+        // for alignment must subtract the SAME inline border + padding from the border-box InlineSize.
+        // Otherwise center / right / justify treat the box's border+padding as extra free space AND
+        // desync from the inline-atomic placement, which aligns against the CONTENT inline size
+        // (post-PR-#192 Copilot review). With no border/padding (the common body block) it equals
+        // InlineSize, byte-identical.
+        var contentInlineSizePx = fragment.InlineSize
+            - blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+            - blockStyle.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+            - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingRight);
+
         // line-height: mirror BlockLayouter's inline-only block rule EXACTLY (declared
         // line-height when > 0, else 1.2 × the block's font-size) so painted lines stack at
         // the same pitch the layouter reserved. The line METRICS follow the fragment's
@@ -368,7 +381,7 @@ internal static class TextPainter
                 && !line.EndsWithMandatoryBreak && li < lines.Length - 1
                 && TryPlanJustification(line, shapedRuns, concatText, out justifyGapCount) && justifyGapCount > 0)
             {
-                var freePx = fragment.InlineSize - insetLeftPx - insetRightPx - line.TotalAdvance;
+                var freePx = contentInlineSizePx - insetLeftPx - insetRightPx - line.TotalAdvance;
                 if (freePx > 0) justifyExtraPerGapPx = freePx / justifyGapCount;
             }
 
@@ -382,7 +395,7 @@ internal static class TextPainter
             }
 
             var xCursorPx = insetLeftPx + (lineAlignFactor != 0.0
-                ? Math.Max(0.0, (fragment.InlineSize - insetLeftPx - insetRightPx - line.TotalAdvance) * lineAlignFactor)
+                ? Math.Max(0.0, (contentInlineSizePx - insetLeftPx - insetRightPx - line.TotalAdvance) * lineAlignFactor)
                 : 0.0);
 
             foreach (var slice in line.Slices)

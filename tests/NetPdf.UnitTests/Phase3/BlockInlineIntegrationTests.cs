@@ -648,6 +648,133 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(top <= 0.01, $"top-aligned box should sit at the line top; got {top}");
     }
 
+    // The line baseline (where the surrounding text sits) for the inline-block on the outer line.
+    private static double OuterLineBaseline(Box outerInlineOnlyBlock, RecordingFragmentSink sink)
+    {
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, outerInlineOnlyBlock) && f.InlineLayout is not null
+                && f.PerLineBaselineTopPx is { Count: > 0 } b)
+                return b[0];
+        throw new Xunit.Sdk.XunitException("no outer line fragment with a per-line baseline");
+    }
+
+    [Fact]
+    public void Inline_block_baseline_anchors_to_last_line_box_not_a_trailing_block()
+    {
+        // Post-PR-#192 review P1 — an inline-block with text FOLLOWED by a tall non-line block takes its
+        // baseline from the LAST line box (the text, near the top), NOT the content bottom. So the line
+        // baseline (PerLineBaselineTopPx — where the surrounding text sits) stays near the top, not
+        // pulled down to the ~119px content bottom (which the old ContentBlockExtent-based math did).
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var textBlock = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        textBlock.AppendChild(Box.TextRun("A", MakeStyle()));   // the last in-flow LINE box (~19px)
+        var tallStyle = MakeStyle();
+        tallStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(100));
+        var tall = Box.ForElement(BoxKind.BlockContainer, tallStyle, MakeElement());   // tall, NO line box
+
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));   // narrow → stays on the line with "A"
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(textBlock);
+        inlineBlock.AppendChild(tall);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));   // surrounding text → the outer line baseline
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        var lineBaseline = OuterLineBaseline(block, sink);
+        Assert.True(lineBaseline < 40,
+            $"the baseline should anchor to the last line box near the top, not the ~119px content bottom; got {lineBaseline}");
+    }
+
+    [Fact]
+    public void Inline_block_baseline_excludes_padding_below_the_last_line()
+    {
+        // Post-PR-#192 review P1 — an inline-block with bottom PADDING after its text takes its baseline
+        // from the text line, not the padding bottom. The outer line baseline stays near the text.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.PaddingBottom, ComputedSlot.FromLengthPx(50));   // padding after the last line
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        var lineBaseline = OuterLineBaseline(block, sink);
+        Assert.True(lineBaseline < 40,
+            $"the baseline should exclude the 50px bottom padding below the last line; got {lineBaseline}");
+    }
+
+    [Fact]
+    public void Inline_block_with_tall_middle_atomic_sibling_does_not_overflow_the_line()
+    {
+        // Post-PR-#192 review P1 — a baseline-aligned inline-block on a line WITH a tall vertical-align:
+        // middle atomic grows the line by the middle atomic's BASELINE-RELATIVE extents (not just its
+        // raw margin-box height), so the middle atomic is CONTAINED: no negative top overflow and no
+        // bottom overflow past the line box. Pre-fix the line was sized by the small inline-block's
+        // ascent/descent + the raw height, leaving the middle atomic hanging above the line top.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var smallIb = Box.ForElement(BoxKind.InlineBlockContainer, MakeStyle(), MakeElement());
+        smallIb.AppendChild(Box.TextRun("A", MakeStyle()));   // baseline-aligned, ~19px
+
+        var midStyle = MakeStyle();
+        midStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+        midStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(100));   // TALL
+        midStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(5));   // middle
+        var tallMiddle = Box.ForElement(BoxKind.InlineBlockContainer, midStyle, MakeElement());   // no line box
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(smallIb);
+        block.AppendChild(tallMiddle);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        BoxFragment? mid = null;
+        BoxFragment? outer = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, tallMiddle) && f.InlineLayout is null) mid = f;
+            else if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null) outer = f;
+        }
+        Assert.NotNull(mid);
+        Assert.NotNull(outer);
+        Assert.True(mid!.Value.BlockOffset >= -0.01,
+            $"the tall middle atomic should not overflow the line top; got {mid.Value.BlockOffset}");
+        Assert.True(mid.Value.BlockOffset + mid.Value.BlockSize <= outer!.Value.BlockSize + 0.01,
+            $"the tall middle atomic should fit the line: bottom {mid.Value.BlockOffset + mid.Value.BlockSize}" +
+            $" vs line {outer.Value.BlockSize}");
+    }
+
     [Theory]
     [InlineData(0, 0.0)]   // start  → no shift (the initial)
     [InlineData(2, 0.0)]   // left   → no shift (LTR)

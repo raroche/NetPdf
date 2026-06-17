@@ -166,9 +166,9 @@ public sealed class PropertyDefaultsParityTests
             PropertyType.FontWeight,
             PropertyType.FontFamilyList,
             // vertical-align cycle — VerticalAlign joined the resolved family via
-            // VerticalAlignResolver (keywords → a Keyword slot; <length>/<percentage> → a
-            // LengthPercentage slot). The default `baseline` resolves to Keyword(0); pre-cycle it
-            // returned UnsupportedUnvalidated.
+            // VerticalAlignResolver (keywords → a Keyword slot; a <length> → a LengthPx slot, a
+            // <percentage> → a Percentage slot — there is no "LengthPercentage" slot tag). The default
+            // `baseline` resolves to Keyword(0); pre-cycle it returned UnsupportedUnvalidated.
             PropertyType.VerticalAlign,
         };
 

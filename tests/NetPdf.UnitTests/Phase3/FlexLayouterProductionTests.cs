@@ -3402,6 +3402,85 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Row_nowrap_flex_AUTO_height_item_content_splits_across_pages()
+    {
+        // Auto-height completion (this PR) — a `row` + `nowrap` flex with an
+        // AUTO-height item (NO explicit height) whose CONTENT is taller than the
+        // page now paginates. PR #188's first cut required an explicit height
+        // because the row pre-measure (PreMeasureFlexCrossExtent) read only declared
+        // heights; it is now CONTENT-AWARE, so the auto-height wrapper overflows +
+        // the intra-item split engages. Each content line appears exactly once.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .item { width: 300px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item">
+                <div class="line l0">A</div><div class="line l1">B</div>
+                <div class="line l2">C</div><div class="line l3">D</div>
+                <div class="line l4">E</div><div class="line l5">F</div>
+                <div class="line l6">G</div><div class="line l7">H</div>
+              </div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var emittedLines = new List<string>();
+        var sawNonZeroCrossCut = false;
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 12;
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            using var shaper = new SyntheticShaperResolver();
+            using var layouter = new BlockLayouter(
+                rootBox: box, sink: sink, incomingContinuation: incoming,
+                diagnostics: new RecordingDiagnosticsSink(), shaperResolver: shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 80);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            foreach (var f in sink.Fragments)
+            {
+                var cls = f.Box.SourceElement?.GetAttribute("class");
+                if (cls != null && cls.StartsWith("line ", StringComparison.Ordinal))
+                {
+                    emittedLines.Add(cls.Substring("line ".Length));
+                }
+            }
+            if (result.Continuation is BlockContinuation bc)
+            {
+                object? walker = bc.LayouterState;
+                var depth = 0;
+                while (walker is BlockContinuation deeper && depth < 32) { walker = deeper.LayouterState; depth++; }
+                if (walker is FlexContinuation fc && fc.ConsumedCrossExtent > 0) sawNonZeroCrossCut = true;
+            }
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        Assert.True(pageCount >= 2, $"auto-height row item content should paginate; got {pageCount} page(s)");
+        Assert.True(sawNonZeroCrossCut, "expected the row-nowrap shared-cut continuation");
+        Assert.Equal(
+            new[] { "l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7" },
+            emittedLines.ToArray());
+    }
+
+    [Fact]
     public async Task Task16_cycle4b_paginated_flex_emits_first_page_items_in_dom_order()
     {
         // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P2 #4 —

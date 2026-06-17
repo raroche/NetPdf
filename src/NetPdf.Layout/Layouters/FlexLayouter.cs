@@ -1002,13 +1002,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // Row-nowrap intra-item content split — the content is taller than the
         // page, so measuring it into a page-sized inner fragmentainer would CLIP
         // the part beyond the page (the nested LastResort pass clips past its
-        // budget). Measure into a buffer as tall as the NATURAL cross extent
-        // (_contentBlockSize, the dual-input natural sizing input) so the whole
-        // item content is buffered + can be sliced per page. Other cases keep the
-        // page-sized budget (byte-identical). Content exceeding the natural extent
-        // (box overflow) is still clipped — a documented first-cut limitation.
+        // budget). Measure into an UNBOUNDED buffer so the WHOLE item content is
+        // captured (an auto-height item's natural cross extent EQUALS its content,
+        // so a budget of exactly the natural extent would clip the last line at the
+        // float boundary) + can be sliced per page. Other cases keep the page-sized
+        // budget (byte-identical).
         var contentMeasureBudget = isRowNowrapContentPagination
-            ? System.Math.Max(_contentBlockSize, fragmentainer.BlockSize)
+            ? 1_000_000.0
             : fragmentainer.BlockSize;
         var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,

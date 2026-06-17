@@ -1849,7 +1849,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 else
                 {
                     flexAxisExtent = PreMeasureFlexCrossExtent(
-                        child, cancellationToken);
+                        child, borderBoxInlineSize, cancellationToken);
                 }
                 if (!skipMainExtentGrow)
                 {
@@ -5157,7 +5157,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 else
                 {
                     nFlexAxisExtent = PreMeasureFlexCrossExtent(
-                        child, cancellationToken);
+                        child, childBorderBoxInlineSize, cancellationToken);
                 }
                 var nFlexDriven = nFlexAxisExtent + nFlexBorderPaddingBlock;
                 if (nFlexDriven > childBorderBoxBlockSize)
@@ -8529,6 +8529,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// FlexLayouter's own placement math. Both must move in lockstep.</para></summary>
     /// <param name="flexContainer">The flex container box (must satisfy
     /// <see cref="IsFlexContainer"/>; the caller is the gate).</param>
+    /// <param name="borderBoxInlineSize">The flex wrapper's border-box inline size
+    /// — its inline border + padding are subtracted to get the content inline size
+    /// an auto-height row item's content is measured at (auto-width items fill it).</param>
     /// <param name="cancellationToken">Per Phase 3 Task 15 L4 post-PR-#64
     /// review hardening F#4 — propagate cancellation into the per-item
     /// loop so a long flex container with many children honors the
@@ -8540,19 +8543,78 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// 0 when the container has no block-level children — matching
     /// FlexLayouter's own derivation, which skips inline-level
     /// children + anonymous-flex-item wrapping in L3 scope.</returns>
-    private static double PreMeasureFlexCrossExtent(
+    private double PreMeasureFlexCrossExtent(
         Box flexContainer,
+        double borderBoxInlineSize,
         CancellationToken cancellationToken)
     {
+        // Row-nowrap intra-item content fragmentation (auto-height completion) — the
+        // container's CONTENT inline size, for measuring an auto-height row item's
+        // content (an auto-WIDTH stretch item fills it; an explicit-width item uses
+        // its width). The pre-measure only needs the cross extent to detect overflow
+        // + grow the wrapper; the emission re-measures at the flex-resolved width.
+        var flexContentInlineSize = Math.Max(0,
+            borderBoxInlineSize
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+            - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingRight));
+        Dictionary<Box, double>? measureCache = null;
         var maxCross = 0.0;
         foreach (var item in flexContainer.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
-            var itemHeight = item.Style.ReadLengthPxOrZero(PropertyId.Height);
-            if (itemHeight > maxCross) maxCross = itemHeight;
+            var itemCross = item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // An AUTO-HEIGHT (content-determined cross-size) row item contributes its
+            // measured content BLOCK extent instead of 0, so an auto-height row whose
+            // items are content-sized overflows the wrapper + the row-nowrap intra-item
+            // split engages (completing PR #188's explicit-height-only first cut).
+            // Mirrors PreMeasureFlexMainExtent (column). Explicit-height items keep
+            // their declared height (byte-identical). Skipped without a shaper.
+            if (_shaperResolver is not null
+                && item.Children.Count > 0
+                && IsRowCrossSizeContentDetermined(item))
+            {
+                var widthAuto = item.Style.Get(PropertyId.Width).Tag
+                    is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+                var itemInline = widthAuto
+                    ? flexContentInlineSize
+                    : item.Style.ReadLengthPxOrZero(PropertyId.Width);
+                if (!(itemInline > 0)) itemInline = flexContentInlineSize;
+                measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
+                if (!measureCache.TryGetValue(item, out var measured))
+                {
+                    // UNBOUNDED block budget (not the page size) — the point of this
+                    // pre-measure is to detect a row item TALLER than the page so the
+                    // intra-item split engages; a page-sized inner fragmentainer would
+                    // CLIP the content at the page edge + under-report the natural cross
+                    // extent (so the wrapper wouldn't overflow + never paginate).
+                    measured = NestedContentMeasurer.Measure(
+                        item, itemInline,
+                        blockBudget: 1_000_000,
+                        shaperResolver: _shaperResolver,
+                        writingMode: WritingMode.HorizontalTb, isRtl: false,
+                        cancellationToken: cancellationToken).ContentBlockExtent;
+                    measureCache[item] = measured;
+                }
+                if (measured > itemCross) itemCross = measured;
+            }
+            if (itemCross > maxCross) maxCross = itemCross;
         }
         return maxCross;
+    }
+
+    /// <summary>Row-nowrap intra-item fragmentation (auto-height) — whether a flex
+    /// item's CROSS (block / height) size is content-determined under
+    /// <c>flex-direction: row</c>: the declared <c>height</c> is <c>auto</c> (Unset /
+    /// Keyword slot). Unlike the MAIN axis, the cross size doesn't depend on
+    /// flex-basis (that's a main-axis input), so a definite height is the only thing
+    /// that fixes a non-content cross size.</summary>
+    private static bool IsRowCrossSizeContentDetermined(Box item)
+    {
+        var slot = item.Style.Get(PropertyId.Height);
+        return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
     /// <summary>Per Phase 3 Task 15 L4 post-PR-#64 review hardening F#1 —

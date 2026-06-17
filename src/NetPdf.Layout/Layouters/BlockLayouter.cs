@@ -1005,7 +1005,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         if (_layoutRootInlineContent
             && _shaperResolver is not null
             && startChildIdx == 0
-            && IsInlineOnlyBlockContainer(_rootBox))
+            && IsInlineOnlyRootContainer(_rootBox))
         {
             var rootInlineResult = DispatchInlineOnlyBlock(
                 _rootBox, childIdx: 0, fragmentainer, ref layout, resolver,
@@ -6677,6 +6677,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return true;
     }
 
+    /// <summary>Inline-atomic-boxes cycle (inline-block first cut) — the nested-content-root
+    /// variant of <see cref="IsInlineOnlyBlockContainer"/>: it ALSO accepts an
+    /// <see cref="BoxKind.InlineBlockContainer"/> root with only inline children, so a nested
+    /// content measure of an inline-block whose direct content is text dispatches that content
+    /// as one inline-only-root fragment (box == the inline-block). Used ONLY at the
+    /// <c>_layoutRootInlineContent</c> root gate — the child-loop / outer-pipeline paths keep
+    /// the strict predicate, so an inline-block CHILD stays an ATOMIC in its parent's line
+    /// (it is never block-level-dispatched).</summary>
+    private static bool IsInlineOnlyRootContainer(Box box)
+    {
+        if (box.Kind == BoxKind.InlineBlockContainer)
+        {
+            if (box.Children.Count == 0) return false;
+            for (var i = 0; i < box.Children.Count; i++)
+                if (box.Children[i].IsBlockLevel) return false;
+            return true;
+        }
+        return IsInlineOnlyBlockContainer(box);
+    }
+
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
     /// review Finding #5 — read the inline-only block's box-model
     /// extents (margins, borders, padding, declared width) into a
@@ -6965,9 +6985,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // boxes inject a synthetic LF TextRun; Marker boxes recurse
         // (their child TextRun for bullet/number text).
         var textRuns = new List<NetPdf.Layout.Inline.TextRun>();
+        // Inline-atomic-boxes cycle — laid-out inline-block content keyed by its box, for
+        // EmitInlineOnlyBlockFragment to flush at the atomic's content-box origin. The
+        // collector measures each inline-block at `contentInlineSize` (the available line
+        // width) + records its buffer here.
+        var atomicContents = new Dictionary<Box, InlineAtomicContent>(ReferenceEqualityComparer.Instance);
         atomicInlineSkipCount = CollectInlineTextRuns(
             inlineOnlyBlock, textRuns, inlineOnlyBlock.Style,
-            cancellationToken);
+            contentInlineSize, atomicContents, cancellationToken);
 
         InlineLayoutResult inlineResult;
         if (textRuns.Count == 0)
@@ -7055,7 +7080,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             BorderBoxBlockSize: borderBoxBlockSize,
             ContentBlockSize: contentBlockSize,
             PerLineHeightsPx: perLineHeightsPx,
-            AtomicPlacements: atomicPlacements);
+            AtomicPlacements: atomicPlacements,
+            InlineBlockContents: atomicContents);
     }
 
     /// <summary>Inline-atomic-boxes cycle — second pass over an <see cref="InlineLayoutResult"/> that
@@ -7153,6 +7179,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double WidthPx,
         double HeightPx);
 
+    /// <summary>Inline-atomic-boxes cycle (inline-block first cut) — the laid-out content of an
+    /// <c>display: inline-block</c> atomic, flushed by <see cref="EmitInlineOnlyBlockFragment"/> at
+    /// the atomic's content-box origin (= its placed border-box origin + the inline-block's own
+    /// inline-/block-start border + padding). <see cref="IsInlineOnlyRoot"/> mirrors the flex
+    /// content-inset rule: an inline-only-root buffer (the inline-block's own text) sits at the
+    /// border-box origin (TextPainter insets its glyphs) — NOT inset here; block-child content is
+    /// inset by the recorded chrome.</summary>
+    private readonly record struct InlineAtomicContent(
+        BufferingMeasureSink Buffer,
+        bool IsInlineOnlyRoot,
+        double ContentInsetInlinePx,
+        double ContentInsetBlockPx);
+
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — bundle the
     /// pre-emit metrics carried out of
     /// <see cref="ComputeInlineOnlyBlockLayout"/>. Geometry is
@@ -7167,7 +7206,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // (a tall atomic grows its line); null for a text-only block, so the painter's uniform-pitch
         // path is byte-identical. The inline-atomic boxes' own positioned fragments.
         IReadOnlyList<double>? PerLineHeightsPx = null,
-        IReadOnlyList<InlineAtomicPlacement>? AtomicPlacements = null);
+        IReadOnlyList<InlineAtomicPlacement>? AtomicPlacements = null,
+        // Inline-block first cut — the laid-out content per inline-block atomic box, flushed at the
+        // atomic's content-box origin. Null/empty for a block with no inline-block atomic.
+        IReadOnlyDictionary<Box, InlineAtomicContent>? InlineBlockContents = null);
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
     /// review Findings 3 + 5 + 6 — main-loop dispatch for an
@@ -7451,10 +7493,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // blocks → the uniform-pitch path, byte-identical.
             PerLineHeightsPx: comp.PerLineHeightsPx));
 
-        // Inline-atomic-boxes cycle — emit each inline `<img>` atomic's own positioned fragment so
-        // ImagePainter paints it from the image cache. The placement is content-box-relative; add the
-        // block fragment's border-box origin + the block's leading border + padding to reach the
-        // content box.
+        // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
+        // placement is content-box-relative; add the block fragment's border-box origin + the
+        // block's leading border + padding to reach the content box. An inline `<img>` is painted
+        // by ImagePainter from the cache; an inline-BLOCK fragment is the box DECORATION (painted by
+        // FragmentPainter) + its laid-out content is flushed at the atomic's content-box origin.
         if (comp.AtomicPlacements is { Count: > 0 } placements)
         {
             var contentInlineOrigin = fragmentInlineOffset
@@ -7463,12 +7506,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + metrics.BorderBlockStart + metrics.PaddingBlockStart;
             foreach (var placement in placements)
             {
+                var atomicInlineOrigin = contentInlineOrigin + placement.ContentInlineOffsetPx;
+                var atomicBlockOrigin = contentBlockOrigin + placement.ContentBlockOffsetPx;
                 _sink.Emit(new BoxFragment(
                     Box: placement.Box,
-                    InlineOffset: contentInlineOrigin + placement.ContentInlineOffsetPx,
-                    BlockOffset: contentBlockOrigin + placement.ContentBlockOffsetPx,
+                    InlineOffset: atomicInlineOrigin,
+                    BlockOffset: atomicBlockOrigin,
                     InlineSize: placement.WidthPx,
                     BlockSize: placement.HeightPx));
+
+                // Inline-block first cut — flush the atomic's laid-out content at its content-box
+                // origin (= the placed border-box origin + the inline-block's own start border +
+                // padding for BLOCK-child content; an inline-only-root buffer stays at the border-box
+                // origin — TextPainter insets its glyphs by the same chrome). No entry → an inline
+                // `<img>` (ImagePainter paints it) or an empty box.
+                if (comp.InlineBlockContents is { Count: > 0 } contents
+                    && contents.TryGetValue(placement.Box, out var content))
+                {
+                    var insetI = content.IsInlineOnlyRoot ? 0 : content.ContentInsetInlinePx;
+                    var insetB = content.IsInlineOnlyRoot ? 0 : content.ContentInsetBlockPx;
+                    content.Buffer.FlushTo(_sink, atomicInlineOrigin + insetI, atomicBlockOrigin + insetB);
+                }
             }
         }
     }
@@ -7611,16 +7669,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   (typically a single TextRun for the bullet text "•" or
     ///   list number "1."). The marker's OWN style is used as the
     ///   TextRun's style when injecting.</item>
-    ///   <item>Atomic inlines
-    ///   (<see cref="BoxKind.InlineBlockContainer"/> /
+    ///   <item>Atomic inlines — an inline <c>&lt;img&gt;</c>
+    ///   (<see cref="BoxKind.InlineReplacedElement"/>) with a resolved size + a
+    ///   <see cref="BoxKind.InlineBlockContainer"/> (inline-block first cut, via
+    ///   <see cref="TryBuildInlineBlockAtomic"/>) become a one-char U+FFFC atomic TextRun;
     ///   <see cref="BoxKind.InlineFlexContainer"/> /
     ///   <see cref="BoxKind.InlineGridContainer"/> /
-    ///   <see cref="BoxKind.InlineTable"/> /
-    ///   <see cref="BoxKind.InlineReplacedElement"/>) — counted +
-    ///   the caller emits one LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001
-    ///   diagnostic per skipped atomic. Sub-cycle 2 will inject an
-    ///   atomic-inline placeholder line metric box via a per-
-    ///   layouter intrinsic-sizing seam.</item>
+    ///   <see cref="BoxKind.InlineTable"/> (+ an unsized inline-replaced / a failed
+    ///   inline-block layout) are still counted + the caller emits one
+    ///   LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 diagnostic per skipped atomic.</item>
     /// </list>
     /// </para></summary>
     /// <param name="parent">The current parent box being walked.</param>
@@ -7630,14 +7687,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// style. Used for the synthetic <c>"\n"</c> TextRun on
     /// <see cref="BoxKind.LineBreak"/> so the mandatory break
     /// inherits font / line metrics from the surrounding block.</param>
+    /// <param name="availInlineContentSize">The available inline CONTENT width of the
+    /// inline-only block — the width an inline-block atomic's content is measured at (it
+    /// shrink-to-fits within this).</param>
+    /// <param name="atomicContents">Accumulates each inline-block atomic's laid-out content
+    /// (keyed by its box) for <see cref="EmitInlineOnlyBlockFragment"/> to flush.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
     /// <returns>Count of atomic-inline descendants skipped; caller
     /// emits one diagnostic per skip (or one aggregated diagnostic
     /// for the total count).</returns>
-    private static int CollectInlineTextRuns(
+    private int CollectInlineTextRuns(
         Box parent,
         List<NetPdf.Layout.Inline.TextRun> textRuns,
         ComputedStyle parentBlockStyle,
+        double availInlineContentSize,
+        Dictionary<Box, InlineAtomicContent> atomicContents,
         CancellationToken cancellationToken)
     {
         var skipCount = 0;
@@ -7671,7 +7735,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // wrapper's own style doesn't need separate
                     // propagation at the LayoutPerRun seam.
                     skipCount += CollectInlineTextRuns(
-                        child, textRuns, parentBlockStyle, cancellationToken);
+                        child, textRuns, parentBlockStyle, availInlineContentSize,
+                        atomicContents, cancellationToken);
                     break;
                 case BoxKind.LineBreak:
                     // Per Finding #4 — inject a synthetic LINE
@@ -7707,7 +7772,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // for list-style-type) — use the marker's style,
                     // not the block's.
                     skipCount += CollectInlineTextRuns(
-                        child, textRuns, child.Style, cancellationToken);
+                        child, textRuns, child.Style, availInlineContentSize,
+                        atomicContents, cancellationToken);
                     break;
                 case BoxKind.InlineReplacedElement:
                     // Inline-atomic-boxes cycle — an inline `<img>` with a resolved used size (written
@@ -7745,10 +7811,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                     skipCount++;
                     break;
-                // Atomic inlines still unsupported — inline-block / inline-flex / inline-grid /
-                // inline-table (+ an unsized inline-replaced, above). Per Finding #4 — count + caller
-                // emits one LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 diagnostic per skip.
                 case BoxKind.InlineBlockContainer:
+                    // Inline-atomic-boxes cycle (inline-block first cut) — lay the box's content
+                    // out into a sub-box + place it as an ATOMIC inline (its content does NOT flow
+                    // into this line — no recurse). A failed layout (no shaper / empty / a
+                    // NotSupported inline pass) falls through to the skip + diagnostic.
+                    var inlineBlockAtomic = TryBuildInlineBlockAtomic(
+                        child, availInlineContentSize, atomicContents, cancellationToken);
+                    if (inlineBlockAtomic is { } iba)
+                    {
+                        textRuns.Add(new NetPdf.Layout.Inline.TextRun("\uFFFC", child.Style, iba));
+                        break;
+                    }
+                    skipCount++;
+                    break;
+                // Atomic inlines still unsupported — inline-flex / inline-grid / inline-table
+                // (+ an unsized inline-replaced, above). Per Finding #4 — count + caller emits one
+                // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 diagnostic per skip.
                 case BoxKind.InlineFlexContainer:
                 case BoxKind.InlineGridContainer:
                 case BoxKind.InlineTable:
@@ -7764,6 +7843,94 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
         }
         return skipCount;
+    }
+
+    /// <summary>Inline-atomic-boxes cycle (inline-block first cut) — lay a <c>display:
+    /// inline-block</c> box out as an atomic inline. Measures its content via
+    /// <see cref="NestedContentMeasurer"/> at the available content width, computes its used
+    /// BORDER-box size (a definite <c>width</c>/<c>height</c> honors <c>box-sizing</c> via
+    /// <see cref="BoxSizingHelper"/>; an <c>auto</c> width SHRINK-TO-FITs to the measured content
+    /// width + the inline chrome; an <c>auto</c> height = the measured content block extent + the
+    /// block chrome, or — for an inline-only-root buffer — the already-chrome-folded extent), and
+    /// records the buffer in <paramref name="atomicContents"/> for
+    /// <see cref="EmitInlineOnlyBlockFragment"/> to flush at the content-box origin. Returns the
+    /// <see cref="NetPdf.Layout.Inline.InlineAtomic"/> to add to the line, or <see langword="null"/>
+    /// (no shaper / a <see cref="NotSupportedException"/> inline pass / a zero-size box) so the caller
+    /// skips + diagnoses.
+    ///
+    /// <para><b>First-cut approximations.</b> The atomic is BASELINE-aligned like an inline
+    /// <c>&lt;img&gt;</c> (its margin-box bottom on the line's text baseline) — the spec's
+    /// last-in-flow-line-box baseline (CSS 2.2 §10.8.1) is deferred; shrink-to-fit uses the
+    /// max-content measured at the available width (no separate min-content pass); LTR
+    /// horizontal-tb; <c>-flex</c>/<c>-grid</c>/<c>-table</c> atomics still skip.</para></summary>
+    private NetPdf.Layout.Inline.InlineAtomic? TryBuildInlineBlockAtomic(
+        Box inlineBlock,
+        double availInlineContentSize,
+        Dictionary<Box, InlineAtomicContent> atomicContents,
+        CancellationToken cancellationToken)
+    {
+        if (_shaperResolver is null) return null;
+        var s = inlineBlock.Style;
+        var inlineChrome = s.InlineBorderPaddingPx();
+        var blockChrome = s.BlockBorderPaddingPx();
+        var marginInlineStart = s.ReadLengthPxOrZero(PropertyId.MarginLeft);
+        var marginInlineEnd = s.ReadLengthPxOrZero(PropertyId.MarginRight);
+
+        // Available CONTENT width for the inline-block = the line's available content width minus
+        // this box's own margins + border + padding (clamped > 0). Shrink-to-fit clamps to this
+        // (content wider than it wraps), so the measured ContentInlineExtent ≤ this.
+        var availContent = availInlineContentSize - marginInlineStart - marginInlineEnd - inlineChrome;
+        if (!(availContent > 0)) availContent = 1;
+
+        BufferingMeasureSink buffer;
+        try
+        {
+            buffer = NestedContentMeasurer.Measure(
+                inlineBlock, availContent,
+                blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                shaperResolver: _shaperResolver,
+                writingMode: WritingMode.HorizontalTb, isRtl: false,
+                cancellationToken: cancellationToken);
+        }
+        catch (NotSupportedException)
+        {
+            return null;   // an inline-pass mismatch in the sub-box → skip + diagnose (no crash)
+        }
+
+        // Used INLINE (border-box) size: a definite `width` honors box-sizing; `auto` shrink-to-fits
+        // to the measured content width (ContentInlineExtent — the widest LINE advance, already
+        // clamped to availContent by wrapping) plus the inline chrome.
+        var widthSlot = s.Get(PropertyId.Width);
+        var borderBoxW = widthSlot.Tag == ComputedSlotTag.LengthPx
+            ? BoxSizingHelper.DeclaredToBorderBox(s, Math.Max(0, widthSlot.AsLengthPx()), inlineChrome)
+            : buffer.ContentInlineExtent + inlineChrome;
+
+        // Used BLOCK (border-box) size: a definite `height` honors box-sizing; `auto` = the measured
+        // content block extent + the block chrome for BLOCK-child content (an inline-only-root
+        // buffer's extent already folds the chrome in — same two-shape rule as the flex content-inset).
+        var heightSlot = s.Get(PropertyId.Height);
+        var borderBoxH = heightSlot.Tag == ComputedSlotTag.LengthPx
+            ? BoxSizingHelper.DeclaredToBorderBox(s, Math.Max(0, heightSlot.AsLengthPx()), blockChrome)
+            : (buffer.ContainsDecorationOwnerFragment
+                ? buffer.ContentBlockExtent
+                : buffer.ContentBlockExtent + blockChrome);
+
+        if (!(borderBoxW > 0) || !(borderBoxH > 0)) return null;   // empty, no chrome → nothing to show
+
+        atomicContents[inlineBlock] = new InlineAtomicContent(
+            buffer,
+            buffer.ContainsDecorationOwnerFragment,
+            s.InlineStartBorderPaddingPx(),
+            s.BlockStartBorderPaddingPx());
+
+        return new NetPdf.Layout.Inline.InlineAtomic(
+            inlineBlock,
+            AdvancePx: borderBoxW + marginInlineStart + marginInlineEnd,
+            BorderBoxWidthPx: borderBoxW,
+            BorderBoxHeightPx: borderBoxH,
+            MarginInlineStartPx: marginInlineStart,
+            MarginBlockStartPx: s.ReadLengthPxOrZero(PropertyId.MarginTop),
+            MarginBlockEndPx: s.ReadLengthPxOrZero(PropertyId.MarginBottom));
     }
 
     /// <summary>Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
@@ -8586,22 +8753,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
             var resolvedItemMain = resolvedMain[itemPos++];
-            var itemCross = item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // Flex box-sizing cycle — the §9.7-resolved main size + the declared cross
+            // (height) are BORDER-box sizes; subtract the item's inline border + padding
+            // to measure content at its CONTENT width, and the declared height is mapped to
+            // a border box honoring `box-sizing` so a padded explicit-height item sizes the
+            // wrapper by its border box.
+            var inlineChrome = item.Style.InlineBorderPaddingPx();
+            var blockChrome = item.Style.BlockBorderPaddingPx();
+            var itemCross = BoxSizingHelper.DeclaredToBorderBox(
+                item.Style, item.Style.ReadLengthPxOrZero(PropertyId.Height), blockChrome);
             // An AUTO-HEIGHT (content-determined cross-size) row item contributes its
-            // measured content BLOCK extent instead of 0, so an auto-height row whose
-            // items are content-sized overflows the wrapper + the row-nowrap intra-item
-            // split engages (completing PR #188's explicit-height-only first cut).
-            // Mirrors PreMeasureFlexMainExtent (column). Explicit-height items keep
-            // their declared height (byte-identical). Skipped without a shaper.
+            // measured content BLOCK extent (+ its block chrome) instead of just the chrome,
+            // so an auto-height row whose items are content-sized overflows the wrapper + the
+            // row-nowrap intra-item split engages (completing PR #188's explicit-height-only
+            // first cut). Mirrors PreMeasureFlexMainExtent (column). Explicit-height items
+            // keep their (box-sizing-mapped) declared height. Skipped without a shaper.
             if (_shaperResolver is not null
                 && item.Children.Count > 0
                 && IsRowCrossSizeContentDetermined(item))
             {
-                // Measure at the flex-RESOLVED main (inline) width; a non-positive
-                // resolution falls back to the container content inline size.
-                var itemInline = resolvedItemMain > 0 ? resolvedItemMain : flexContentInlineSize;
+                // Measure at the flex-RESOLVED main (inline) CONTENT width (border box minus
+                // the item's inline chrome); a non-positive resolution falls back to the
+                // container content inline size.
+                var itemInline = resolvedItemMain > inlineChrome
+                    ? resolvedItemMain - inlineChrome
+                    : flexContentInlineSize;
                 measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
-                if (!measureCache.TryGetValue(item, out var measured))
+                if (!measureCache.TryGetValue(item, out var measuredBorderBox))
                 {
                     // Effectively-unbounded block budget (not the page size) — the point
                     // of this pre-measure is to detect a row item TALLER than the page so
@@ -8609,15 +8787,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // CLIP the content + under-report the natural cross extent (so the
                     // wrapper wouldn't overflow + never paginate). See the budget const doc
                     // for the (no-real-document) cap.
-                    measured = NestedContentMeasurer.Measure(
+                    var buf = NestedContentMeasurer.Measure(
                         item, itemInline,
                         blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
                         shaperResolver: _shaperResolver,
                         writingMode: WritingMode.HorizontalTb, isRtl: false,
-                        cancellationToken: cancellationToken).ContentBlockExtent;
-                    measureCache[item] = measured;
+                        cancellationToken: cancellationToken);
+                    // The item's cross BORDER box = measured content + its block chrome for
+                    // BLOCK-CHILD content; an inline-only-root buffer's extent already folds
+                    // in the item's own border + padding (flex box-sizing cycle).
+                    measuredBorderBox = buf.ContainsDecorationOwnerFragment
+                        ? buf.ContentBlockExtent
+                        : buf.ContentBlockExtent + blockChrome;
+                    measureCache[item] = measuredBorderBox;
                 }
-                if (measured > itemCross) itemCross = measured;
+                if (measuredBorderBox > itemCross) itemCross = measuredBorderBox;
             }
             if (itemCross > maxCross) maxCross = itemCross;
         }
@@ -8695,41 +8879,54 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
+            // Flex box-sizing cycle — the declared height (main) + width (cross) are
+            // BORDER-box sizes; map the height to a border box honoring `box-sizing`, and
+            // measure content at the CONTENT width (border box minus the inline chrome).
+            var inlineChrome = item.Style.InlineBorderPaddingPx();
+            var blockChrome = item.Style.BlockBorderPaddingPx();
             // For column direction (the only caller as of L4 hardening),
-            // main = block axis = Height.
-            var mainExtent = item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // main = block axis = Height (mapped to a border box).
+            var mainExtent = BoxSizingHelper.DeclaredToBorderBox(
+                item.Style, item.Style.ReadLengthPxOrZero(PropertyId.Height), blockChrome);
             // Backlog #7 — a CONTENT-determined (auto-height) item contributes
-            // its measured CONTENT block extent instead of 0, so an auto-height
-            // column whose items are content-sized reports its real natural
-            // extent + the wrapper overflows + (paginatable-flex) pagination
-            // engages. Mirrors grid's content-aware PreMeasureGridRowExtent.
-            // Explicit-height items keep their declared height (byte-identical
-            // to the pre-content-layout behavior). Skipped without a shaper.
+            // its measured CONTENT block extent (+ block chrome) instead of just the chrome,
+            // so an auto-height column whose items are content-sized reports its real natural
+            // extent + the wrapper overflows + (paginatable-flex) pagination engages. Mirrors
+            // grid's content-aware PreMeasureGridRowExtent. Explicit-height items keep their
+            // (box-sizing-mapped) declared height. Skipped without a shaper.
             if (_shaperResolver is not null
                 && item.Children.Count > 0
                 && IsColumnHeightContentDetermined(item))
             {
-                // Measure at the item's cross (inline) width: a stretch (auto-
-                // width) item fills the container content inline size; an
-                // explicit-width item uses its width. Memoized per item box.
+                // Measure at the item's cross (inline) CONTENT width: a stretch (auto-width)
+                // item fills the container content inline size; an explicit-width item uses
+                // its box-sizing-mapped width. Both minus the inline chrome. Memoized per box.
                 var crossAuto = item.Style.Get(PropertyId.Width).Tag
                     is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
-                var itemInline = crossAuto
+                var borderBoxCross = crossAuto
                     ? flexContentInlineSize
-                    : item.Style.ReadLengthPxOrZero(PropertyId.Width);
+                    : BoxSizingHelper.DeclaredToBorderBox(
+                        item.Style, item.Style.ReadLengthPxOrZero(PropertyId.Width), inlineChrome);
+                var itemInline = borderBoxCross - inlineChrome;
                 if (!(itemInline > 0)) itemInline = flexContentInlineSize;
                 measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
-                if (!measureCache.TryGetValue(item, out var measured))
+                if (!measureCache.TryGetValue(item, out var measuredBorderBox))
                 {
-                    measured = NestedContentMeasurer.Measure(
+                    var buf = NestedContentMeasurer.Measure(
                         item, itemInline,
                         blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
                         shaperResolver: _shaperResolver,
                         writingMode: WritingMode.HorizontalTb, isRtl: false,
-                        cancellationToken: cancellationToken).ContentBlockExtent;
-                    measureCache[item] = measured;
+                        cancellationToken: cancellationToken);
+                    // The item's main BORDER box = measured content + its block chrome for
+                    // BLOCK-CHILD content; an inline-only-root buffer's extent already folds
+                    // in the item's own border + padding (flex box-sizing cycle).
+                    measuredBorderBox = buf.ContainsDecorationOwnerFragment
+                        ? buf.ContentBlockExtent
+                        : buf.ContentBlockExtent + blockChrome;
+                    measureCache[item] = measuredBorderBox;
                 }
-                if (measured > mainExtent) mainExtent = measured;
+                if (measuredBorderBox > mainExtent) mainExtent = measuredBorderBox;
             }
             totalMain += mainExtent;
         }

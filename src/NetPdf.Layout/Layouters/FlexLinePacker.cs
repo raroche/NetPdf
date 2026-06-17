@@ -136,7 +136,7 @@ internal static class FlexLinePacker
                 var item = flexContainer.Children[idx];
                 totalMain += item.ResolveFlexItemHypotheticalMainSize(
                     mainProp, containerMainSize);
-                var c = item.Style.ReadLengthPxOrZero(crossProp);
+                var c = CrossBorderBoxSize(item, crossProp);
                 if (c > maxCross) maxCross = c;
             }
             lines.Add(new FlexLine(
@@ -163,7 +163,7 @@ internal static class FlexLinePacker
             var item = flexContainer.Children[domIdx];
             var itemMain = item.ResolveFlexItemHypotheticalMainSize(
                 mainProp, containerMainSize);
-            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
+            var itemCross = CrossBorderBoxSize(item, crossProp);
 
             if (currentCount > 0 && currentMain + itemMain > containerMainSize)
             {
@@ -255,7 +255,7 @@ internal static class FlexLinePacker
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var item = flexContainer.Children[idx];
-                var c = item.Style.ReadLengthPxOrZero(crossProp);
+                var c = CrossBorderBoxSize(item, crossProp);
                 if (c > maxCross) maxCross = c;
             }
             return maxCross;
@@ -276,7 +276,7 @@ internal static class FlexLinePacker
             var item = flexContainer.Children[domIdx];
             var itemMain = item.ResolveFlexItemHypotheticalMainSize(
                 mainProp, containerMainSize);
-            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
+            var itemCross = CrossBorderBoxSize(item, crossProp);
 
             if (currentCount > 0 && currentMain + itemMain > containerMainSize)
             {
@@ -297,6 +297,23 @@ internal static class FlexLinePacker
         }
 
         return sumLineCross;
+    }
+
+    /// <summary>Flex box-sizing cycle — the item's BORDER-box cross size for line packing.
+    /// A DEFINITE cross length is mapped via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>
+    /// (so a wrapping line's cross extent — which positions the next line + the wrapper
+    /// height + align-content — accounts for the item's cross border + padding, matching the
+    /// border-box cross size the emission lays out). An <c>auto</c> / percentage / unset cross
+    /// reads 0 (content / stretch sizes it later — byte-identical to the prior
+    /// <c>ReadLengthPxOrZero</c>).</summary>
+    private static double CrossBorderBoxSize(Box item, PropertyId crossProp)
+    {
+        var slot = item.Style.Get(crossProp);
+        return slot.Tag == ComputedSlotTag.LengthPx
+            ? BoxSizingHelper.DeclaredToBorderBox(
+                item.Style, System.Math.Max(0, slot.AsLengthPx()),
+                item.Style.AxisBorderPaddingPx(crossProp))
+            : 0.0;
     }
 }
 

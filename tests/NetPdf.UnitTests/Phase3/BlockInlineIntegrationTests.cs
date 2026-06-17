@@ -408,6 +408,127 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_block_atomic_explicit_size_emits_border_box_and_flushes_content()
+    {
+        // Inline-atomic-boxes cycle (inline-block first cut) — a `display: inline-block`
+        // span participates in the line as an atomic: it gets a positioned BORDER-box
+        // decoration fragment (content-box width 50 + 2×5 padding = 60; height 30 + 10 =
+        // 40), its content is flushed (a second box==inline-block fragment carrying the
+        // text), and NO atomic-not-supported diagnostic is emitted.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(50));
+        ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(30));
+        foreach (var p in new[] { PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft })
+            ibStyle.Set(p, ComputedSlot.FromLengthPx(5));
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        // The decoration fragment (box == inline-block, no InlineLayout — the placed atomic).
+        BoxFragment? decoration = null, content = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (!ReferenceEquals(f.Box, inlineBlock)) continue;
+            if (f.InlineLayout is null) decoration = f; else content = f;
+        }
+        Assert.NotNull(decoration);
+        Assert.Equal(60, decoration!.Value.InlineSize, precision: 3);
+        Assert.Equal(40, decoration.Value.BlockSize, precision: 3);
+        // Content laid out + flushed (the inline-block's own text fragment).
+        Assert.NotNull(content);
+        // No "atomic not supported" diagnostic — the inline-block was laid out, not skipped.
+        Assert.DoesNotContain(diagSink.Diagnostics,
+            d => d.Code == PaginateDiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
+    [Fact]
+    public void Inline_block_atomic_honors_box_sizing_border_box()
+    {
+        // Inline-atomic-boxes cycle — under `box-sizing: border-box` the declared width/
+        // height ARE the border box (50 × 30), the padding coming out of the content area.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(50));
+        ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(30));
+        ibStyle.Set(PropertyId.BoxSizing, ComputedSlot.FromKeyword(1)); // border-box
+        foreach (var p in new[] { PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft })
+            ibStyle.Set(p, ComputedSlot.FromLengthPx(5));
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        BoxFragment? decoration = null;
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) decoration = f;
+        Assert.NotNull(decoration);
+        Assert.Equal(50, decoration!.Value.InlineSize, precision: 3);
+        Assert.Equal(30, decoration.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Inline_block_atomic_auto_width_shrinks_to_fit_content()
+    {
+        // Inline-atomic-boxes cycle — an `auto`-width inline-block SHRINK-TO-FITs to its
+        // content (+ chrome), NOT the full available line width. With a single 'x' glyph +
+        // 4px padding each side, the border box is small (≪ the 600px line) but ≥ the 8px chrome.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();
+        foreach (var p in new[] { PropertyId.PaddingLeft, PropertyId.PaddingRight })
+            ibStyle.Set(p, ComputedSlot.FromLengthPx(4));
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        BoxFragment? decoration = null;
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) decoration = f;
+        Assert.NotNull(decoration);
+        Assert.True(decoration!.Value.InlineSize > 8,
+            $"shrink-to-fit width should exceed the 8px chrome; got {decoration.Value.InlineSize}");
+        Assert.True(decoration.Value.InlineSize < 100,
+            $"shrink-to-fit width should be ≪ the 600px line, not stretched; got {decoration.Value.InlineSize}");
+    }
+
+    [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {
         // Per Finding #5 — margin/border/padding/width applied to the

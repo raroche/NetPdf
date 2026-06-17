@@ -65,6 +65,19 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
     /// cursor for the inner <see cref="BlockLayouter"/>.</summary>
     public int Cursor => _buffered.Count;
 
+    /// <summary>Flex content-inset cycle — whether any buffered fragment IS the
+    /// decoration owner (box == the measured box), i.e. the box laid out as an
+    /// INLINE-ONLY root (its direct content is text, emitted as one own-box
+    /// fragment). In that shape the fragment is already the box's BORDER box
+    /// (<see cref="ContentBlockExtent"/> includes the box's own border + padding) and
+    /// <c>TextPainter</c> insets the glyphs by that border + padding — so the flex
+    /// caller must NOT inset it again. When false, the buffer holds BLOCK-CHILD
+    /// fragments (box != the measured box) laid out at the content-box origin without
+    /// the box's own chrome — the caller insets them + adds the chrome for the border
+    /// box. A box never produces BOTH (mixed inline + block children wrap inline runs
+    /// in anonymous blocks, so no own-box fragment).</summary>
+    public bool ContainsDecorationOwnerFragment { get; private set; }
+
     public void Emit(BoxFragment fragment)
     {
         // Out-of-flow (position: absolute / fixed) descendants of a flex / grid
@@ -86,6 +99,7 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         if (_decorationOwner is not null && ReferenceEquals(fragment.Box, _decorationOwner))
         {
             fragment = fragment with { SuppressBoxDecoration = true };
+            ContainsDecorationOwnerFragment = true;
         }
 
         var innerBottom = fragment.BlockOffset + fragment.BlockSize;

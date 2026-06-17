@@ -839,9 +839,8 @@ internal static class FragmentPainter
         // padding box (inner, radii reduced by the FULL border width) — so the border follows the fill's
         // rounded corners. A FILLED ring (not a centerline stroke): its outer corner is EXACT for any
         // border width (a small radius under a thick border keeps its rounding; post-PR-#172 review P1+P2)
-        // and it composites the border colour's alpha correctly (a fill, /ca). A non-uniform border, or a
-        // margin box (whose corner-radius longhands aren't cascaded → radii read zero), falls through to
-        // the per-edge square rects below.
+        // and it composites the border colour's alpha correctly (a fill, /ca). A non-uniform border falls
+        // through to the per-edge rects below (CLIPPED to the rounded outline when there's a radius).
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
         if (radiiPx.AnyPositive
             && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid))
@@ -871,6 +870,22 @@ internal static class FragmentPainter
             return;
         }
 
+        // Rounded NON-uniform border (rounded-nonuniform-borders cycle): a border-radius with
+        // per-edge-differing widths / styles / colours can't use the single uniform RING, so the four
+        // square edge rects are CLIPPED to the rounded BORDER-box outline (`q <rounded path> W n` …
+        // `Q`) — the box's OUTER corners follow the radius (matching the rounded background band +
+        // image clip, which already round regardless of border uniformity) instead of poking out
+        // square. The per-edge widths / colours, the (still-square) INNER corners, and the hard colour
+        // transition where two differently-coloured edges meet at a corner stay an approximation (true
+        // per-corner arc segments transitioning between edges are the follow-up). Zero radii → no clip
+        // (byte-identical to the prior square edges). The clip applies to a body block AND a margin box
+        // (its corner-radius longhands ARE cascaded — margin-box-border-radius cycle).
+        var rounded = radiiPx.AnyPositive;
+        if (rounded)
+        {
+            ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var bx, out var by, out var bw, out var bh);
+            page.BeginRoundedRectangleClip(bx, by, bw, bh, ToPt(radiiPx));
+        }
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
             currentColors.Top, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
@@ -879,6 +894,7 @@ internal static class FragmentPainter
             currentColors.Bottom, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
             currentColors.Left, diagnostics, ref styleApproximationReported);
+        if (rounded) page.RestoreGraphicsState();
     }
 
     /// <summary>Paint the CSS <c>outline</c> (CSS UI 4 §5 — outline cycle): a uniform line just OUTSIDE

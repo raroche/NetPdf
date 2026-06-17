@@ -221,8 +221,8 @@ grepping the ID).
 ## inline-atomic-boxes
 
 - **ID** — `inline-atomic-boxes`
-- **Status** — `approximated` (inline `<img>` SHIPS first-cut — inline-atomic-boxes cycle; inline-block /
-  -flex / -grid / -table still skip + diagnose).
+- **Status** — `approximated` (inline `<img>` + **inline-block** SHIP first-cut — inline-atomic-boxes
+  cycle; inline-flex / -grid / -table still skip + diagnose).
 - **Behavior** — An inline `<img>` (`BoxKind.InlineReplacedElement`) with a resolved used size now
   participates in line layout as an ATOMIC box: `BlockLayouter.CollectInlineTextRuns` converts it into a
   one-char `U+FFFC` `TextRun` carrying an `InlineAtomic` (box + used border-box width/height); the
@@ -231,39 +231,56 @@ grepping the ID).
   the white-space preprocessor passes the atomic through verbatim (preserving the payload), the line box
   grows to fit a tall atomic (`BlockLayouter.ComputeInlineAtomicLayout` → per-line heights), and
   `BlockLayouter` emits a positioned `BoxFragment` for the box (so `ImagePainter` paints it from the image
-  cache). `TextPainter` skips the synthetic glyph. The OTHER atomic kinds
-  (`InlineBlockContainer` / `InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized
-  inline-replaced) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
+  cache). `TextPainter` skips the synthetic glyph. **Inline-block (first cut)** — a `display: inline-block`
+  box is laid out the same way: `CollectInlineTextRuns.TryBuildInlineBlockAtomic` measures its content via
+  `NestedContentMeasurer` (at the available content width), computes its used border-box size (a definite
+  `width`/`height` honors `box-sizing`; `auto` width shrink-to-fits to the measured content width + the
+  inline chrome; `auto` height = the measured content block extent + the block chrome [block children] or
+  the already-chrome-folded extent [inline-only-root]), and records the buffer so
+  `EmitInlineOnlyBlockFragment` flushes the content at the atomic's content-box origin (gated by the
+  `BufferingMeasureSink.ContainsDecorationOwnerFragment` two-shape rule, like the flex content-inset). The
+  placed `BoxFragment` is the inline-block's BORDER box (painted by `FragmentPainter`). The OTHER atomic
+  kinds (`InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized inline-replaced /
+  a failed inline-block layout) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
 - **Box model (post-PR-#186 review P1)** — the img's own padding + border + margin are honored: the line
   reserves the MARGIN-box advance, the emitted fragment is the BORDER box (so `ImagePainter`, which
   subtracts the img's padding/border to recover the content box, paints correctly), and the margin-box
-  bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut.
+  bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut. The
+  inline-block atomic carries the same margin-box advance + border-box fragment.
 - **Missing (first-cut approximations)** —
   - Only `vertical-align: baseline` is honoured (the atomic's margin-box bottom sits on the line's text
-    baseline); other `vertical-align` values are not yet read.
+    baseline); other `vertical-align` values are not yet read. For an inline-block this means the spec's
+    last-in-flow-line-box baseline (CSS 2.2 §10.8.1) is approximated as the margin-box bottom (like an img).
   - The baseline uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no
     font-metric access; the painter uses the REAL metrics for glyphs, so an atomic's bottom aligns to the
     text baseline within typical-font tolerance).
   - The inline offset is start-relative — a centred / right / justified line, and RTL paragraphs, don't
     yet shift the atomic with the text.
-  - `inline-block` / `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out
-    sub-box, not just an intrinsic size) remain deferred.
-- **Trigger** — a centred/justified/RTL inline `<img>`, a non-baseline `vertical-align`, or a styled
-  `display: inline-block` span in the corpus.
+  - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
+    separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
+    by document depth, not a dedicated cap); LTR horizontal-tb.
+  - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
+    formatting context) remain deferred.
+- **Trigger** — a centred/justified/RTL inline `<img>` or inline-block, a non-baseline `vertical-align`, or
+  an `inline-flex`/`-grid`/`-table` span in the corpus.
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
   - `src/NetPdf.Layout/Inline/LineBuilder.cs` — `Shape` (synthetic glyph) + the white-space
     preprocessors (atomic pass-through). Wrap treats the 1-glyph run as a non-breakable unit.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert),
-    `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit the
-    atomic's own fragment). The remaining vertical-align / alignment / inline-block work extends here.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert) +
+    `TryBuildInlineBlockAtomic` (inline-block layout) + `IsInlineOnlyRootContainer` (the inline-block-root
+    gate), `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit
+    the atomic's fragment + flush inline-block content). The remaining vertical-align / alignment /
+    inline-flex/-grid/-table work extends here.
+  - `src/NetPdf.Layout/Layouters/BufferingMeasureSink.cs` — `ContainsDecorationOwnerFragment` (the
+    inline-only-root vs block-children two-shape flag, shared with the flex content-inset).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
-- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; first cut shipped in the inline-atomic-boxes
-  cycle (this branch).
+- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
+  inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
 - **Removal condition** — `vertical-align` (incl. non-baseline) + centred / RTL alignment honoured for
-  inline `<img>`, and inline-block / -flex / -grid / -table atomics laid out (no longer
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+  inline atomics, the inline-block's true last-line baseline + min-content shrink-to-fit, and
+  inline-flex / -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 
@@ -1680,42 +1697,56 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `approximated` (GRID + BLOCK + TABLE ship; the shared helper now exists; only FLEX remains).
-  The cross-cutting audit (box-sizing cycle) extracted a shared `BoxSizingHelper` and applied it to the
-  block + table declared-size readers; the grid intrinsic contribution keeps its own richer
-  `ItemBorderBoxExtent`. The remaining gap is FLEX.
+- **Status** — `approximated` (the cross-cutting audit's CORE is COMPLETE: GRID + BLOCK + TABLE + **FLEX**
+  all honor `box-sizing` on their declared sizes via the shared `BoxSizingHelper`; the flex box-sizing /
+  content-inset cycle closed the last layouter). Only minor residual APPROXIMATIONS remain (below).
 - **Behavior** — the shared `BoxSizingHelper.DeclaredToBorderBox(style, declared, chrome)` maps a declared
   size to the used BORDER box honoring `box-sizing` (CSS Basic UI 4 §10): `border-box` → the declared size
   IS the border box (floored at the chrome); `content-box` (initial) → declared + chrome (byte-identical
   to the prior `declared + chrome`). Consumers: `GridSizing.ItemOuterContribution`'s `ItemBorderBoxExtent`
   (grid box-sizing cycle); `BlockLayouter`'s `DeclaredWidthToBorderBox` (#165, now delegating) + the
   block/float explicit-HEIGHT border-box-block-size (box-sizing cycle); `TableLayouter.ReadColumnWidthPx`
-  via the new `ColumnBorderBoxWidth` (a cell's declared width feeds the column via its border box).
-- **Missing** — **FLEX item** box-sizing only. A `box-sizing: border-box` flex item's declared main/cross
-  size should be its border box, but the flex emission does NOT inset item content by the item's
-  border/padding (a documented box-model approximation) — so a box-sizing fix is ENTANGLED with that inset
-  + must move with it. (A `%` width/height/min still reads 0 in the grid contribution — the chicken-and-egg
-  gap — so box-sizing on a PERCENTAGE size is moot there.)
-- **Trigger** — FLEX item box-sizing, to be done in lockstep with the flex content-inset fix (the
-  declared main/cross size honors `box-sizing` once item content is inset by the item's border/padding).
+  via the new `ColumnBorderBoxWidth` (a cell's declared width feeds the column via its border box); and the
+  FLEX item main/cross readers — `ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize` +
+  `ResolveFlexItemMinMaxMainSize` (main), the emission cross-size read + `FlexLinePacker.CrossBorderBoxSize`
+  (cross). The flex emission ALSO now insets a BLOCK-child item's content to the item's content box (=
+  border-box origin + the new `InlineStartBorderPaddingPx`/`BlockStartBorderPaddingPx`); an INLINE-ONLY-root
+  item's content fragment is left at the border-box origin (the nested `BufferingMeasureSink` flags it via
+  `ContainsDecorationOwnerFragment` — `TextPainter` insets its glyphs + its measured extent already folds in
+  the item's chrome, so re-insetting / re-adding chrome would double-count).
+- **Missing (residual flex approximations only)** —
+  - **Percentage padding** reads 0 in the flex chrome (`InlineBorderPaddingPx` uses `ReadLengthPxOrZero`,
+    matching the row-flex pre-measure convention) — so a flex item with a `%` padding under-counts chrome.
+  - The content inset uses the **LTR horizontal-tb** physical mapping (inline-start = left, block-start =
+    top), consistent with the rest of the flex emission's writing-mode / RTL approximation.
+  - The flex MAIN-axis flex (grow/shrink) distributes in **border-box space** (the hypothetical + the
+    resolved size are border boxes) rather than the spec's content-box-size + outer-margin model — an
+    approximation consistent with the engine's border-box-throughout convention; visible only when an item
+    with non-zero chrome both has a definite basis AND flexes.
+  - A `%` width/height/min still reads 0 in the GRID intrinsic contribution (the chicken-and-egg gap), so
+    box-sizing on a PERCENTAGE grid-item size is moot there.
+- **Trigger** — a flex item with `%` padding, RTL/vertical writing mode, or a chrome'd flexing item where
+  the border-box-space distribution visibly diverges from the spec.
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/BoxSizingHelper.cs` — the shared declared→border-box mapping (box-sizing cycle).
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ItemOuterContribution` (grid's richer extent).
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width (#165) + height border-box-block-size.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width (#165) + height border-box-block-size + the two
+    flex pre-measures (`PreMeasureFlexCrossExtent` / `PreMeasureFlexMainExtent`).
   - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — `ColumnBorderBoxWidth`.
-  - (Remaining) `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — flex item main/cross size.
-- **Practical impact** — items using `box-sizing: border-box`
-  (the modern norm for reset stylesheets like Bootstrap) over-
-  count chrome in intrinsic tracks, causing auto/min-content/
-  max-content tracks to size larger than the spec dictates.
-  Visible only when an author mixes intrinsic-tracked grids
-  with declared-width/height items that have non-zero borders
-  or padding.
+  - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — emission cross-size + content inset (block-child only).
+  - `src/NetPdf.Layout/Layouters/FlexLinePacker.cs` — `CrossBorderBoxSize` (wrapping line cross extent).
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` — the chrome helpers + the flex-item
+    hypothetical / min-max box-sizing.
+  - `src/NetPdf.Layout/Layouters/BufferingMeasureSink.cs` — `ContainsDecorationOwnerFragment`.
+- **Practical impact** — RESOLVED for the audit's core: items using `box-sizing: border-box` (the modern
+  norm for reset stylesheets like Bootstrap) now size correctly across all four layouters. The residuals
+  above are niche.
 - **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
   in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
-  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle.
-- **Removal condition** — FLEX item box-sizing ships (the last layouter). GRID + BLOCK + TABLE + the shared
-  `BoxSizingHelper` are DONE.
+  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle; FLEX (the last layouter)
+  + the content inset resolved in the flex box-sizing / content-inset cycle.
+- **Removal condition** — the residual flex approximations (percentage-padding chrome, writing-mode/RTL
+  inset, border-box-space main flex) + the grid `%`-size chicken-and-egg gap are all closed.
 
 ---
 
@@ -3494,7 +3525,8 @@ flags the categories):
          shares it (the expander runs in `CssParserAdapter.ParseRawDeclarations`; the four `-y` ids JOINED
          `MarginBoxStyle.CascadedStyleIds`; a malformed slash that fails to expand is diagnosed
          `CSS-PROPERTY-VALUE-INVALID-001` as before). STILL DEFERRED: font-/viewport-relative margin-box radii
-         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders.
+         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders (the OUTER
+         corners now round via a clip — rounded-nonuniform-borders cycle; per-corner arc segments stay deferred).
        - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
          image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
@@ -3517,8 +3549,10 @@ flags the categories):
          DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped;
          a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). DEFERRED (still
          render square, SILENTLY): font-/viewport-relative margin-box radii (`em`/`vw` defer in the
-         margin-box cascade, like the body). Rounded NON-uniform borders. (The elliptical `Rx / Ry` slash
-         SHIPPED later — border-radius-elliptical cycle, see that entry above.)
+         margin-box cascade, like the body). Rounded NON-uniform borders FIRST CUT (the outer corners round
+         via a clip — rounded-nonuniform-borders cycle; per-corner arc segments / inner corners stay
+         deferred). (The elliptical `Rx / Ry` slash SHIPPED later — border-radius-elliptical cycle, see that
+         entry above.)
        - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
@@ -3566,9 +3600,16 @@ flags the categories):
          per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
          rectangular clip (byte-identical). The explicit two-radii `Rx / Ry` slash spelling SHIPPED later
          (border-radius-elliptical cycle — recovered into 4 internal `-netpdf-…-radius-y` longhands; see that
-         entry above). STILL DEFERRED: rounded NON-uniform borders (per-corner arc segments transitioning
-         between edge widths/colours). (The MARGIN-box border-radius reached parity in the
-         margin-box-border-radius cycle — see the entry above.)
+         entry above). **Rounded NON-uniform borders — FIRST CUT DONE (rounded-nonuniform-borders cycle):**
+         a border-radius with per-side-differing border widths / styles / colours can't use the uniform
+         ring, so `FragmentPainter.PaintBorders` now CLIPS the four square edge rects to the rounded
+         border-box outline (`PdfPage.BeginRoundedRectangleClip` … `RestoreGraphicsState`) — the box's OUTER
+         corners follow the radius (matching the already-rounded background band + image clip) instead of
+         poking out square. Applies to a body block AND a margin box. STILL DEFERRED (approximations): the
+         per-corner ARC SEGMENTS that transition between two edges' widths/colours (the INNER corners stay
+         square + a corner where two differently-coloured edges meet shows a hard split, not a diagonal
+         miter). (The MARGIN-box border-radius reached parity in the margin-box-border-radius cycle — see
+         the entry above.)
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
@@ -3589,8 +3630,10 @@ flags the categories):
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
          negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
          border-radius-completion cycle — see the entry above; the `Rx / Ry` elliptical slash SHIPPED in the
-         border-radius-elliptical cycle): rounded NON-uniform border strokes (the margin-box per-corner
-         radius + rounded border + image clip reached parity in the margin-box-border-radius cycle);
+         border-radius-elliptical cycle): rounded NON-uniform border strokes — FIRST CUT in the
+         rounded-nonuniform-borders cycle (the outer corners round via a clip; per-corner arc segments
+         transitioning between edges stay deferred). The margin-box per-corner radius + rounded border +
+         image clip reached parity in the margin-box-border-radius cycle.
          `background-attachment: fixed` PAGE-relative positioning; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared

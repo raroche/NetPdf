@@ -10166,11 +10166,13 @@ public sealed class FlexLayouterTests
     {
         // PR-#182 Copilot review (margins) + review P3 (border-box placement) —
         // the nested-content root must NOT apply the item's OWN margins (the
-        // outer flex already positioned the item including its margin), and the
-        // content anchors at the item's BORDER-box origin (padding is NOT inset
-        // — a documented approximation shared with grid). An inline-text item
-        // with margin + padding has its content fragment at the SAME origin as
-        // its flex geometry fragment (no +margin, no +padding shift).
+        // outer flex already positioned the item including its margin). For an
+        // INLINE-ONLY item the content fragment is box == item: it is emitted at
+        // the item's BORDER-box origin (= the same origin as the flex geometry
+        // fragment) and TextPainter insets the GLYPHS by the item's own border +
+        // padding — so the content-inset cycle leaves this fragment's ORIGIN
+        // unchanged (insetting it here would double-inset the glyphs). The
+        // block-CHILDREN content path is what the content-inset cycle shifts.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -10209,10 +10211,143 @@ public sealed class FlexLayouterTests
         }
         Assert.NotNull(geometry);
         Assert.NotNull(content);
-        // Content anchored at the item's border-box origin — margin NOT
-        // re-applied (Copilot fix) and padding NOT inset (P3 approximation).
+        // The inline-only content fragment is at the item's border-box origin —
+        // margin NOT re-applied (Copilot fix) and the fragment ORIGIN is not inset
+        // (TextPainter insets the glyphs by the item's own border + padding).
         Assert.Equal(geometry!.Value.BlockOffset, content!.Value.BlockOffset, precision: 3);
         Assert.Equal(geometry.Value.InlineOffset, content.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_box_sizing_content_box_item_grows_border_box_by_chrome()
+    {
+        // Flex box-sizing cycle — a row item with an explicit width + height + border +
+        // padding under `box-sizing: content-box` (the initial): the declared sizes are
+        // the CONTENT box, so the emitted geometry fragment's border box adds the item's
+        // border + padding (width 200 + 30 = 230; height 100 + 30 = 130). Pre-cycle the
+        // declared size WAS the border box (chrome ignored).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(0)); // row
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 200);
+        SetLengthPx(itemStyle, PropertyId.Height, 100);
+        SetPaddingAllSides(itemStyle, 10);
+        SetSolidBorderAllSides(itemStyle, 5);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        item.AppendChild(Box.TextRun("x", MakeStyle()));
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var geometry = FindItemGeometry(sink, item);
+        Assert.Equal(230, geometry.InlineSize, precision: 3); // 200 content + 2×(5+10) chrome
+        Assert.Equal(130, geometry.BlockSize, precision: 3);  // 100 content + 2×(5+10) chrome
+    }
+
+    [Fact]
+    public void Flex_box_sizing_border_box_item_declared_size_is_the_border_box()
+    {
+        // Flex box-sizing cycle — the same item under `box-sizing: border-box`: the
+        // declared width/height ARE the border box (the border + padding come out of the
+        // content area), so the geometry fragment is exactly 200 × 100 (≥ the 30px chrome).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(0)); // row
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 200);
+        SetLengthPx(itemStyle, PropertyId.Height, 100);
+        SetPaddingAllSides(itemStyle, 10);
+        SetSolidBorderAllSides(itemStyle, 5);
+        itemStyle.Set(PropertyId.BoxSizing, ComputedSlot.FromKeyword(1)); // border-box
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        item.AppendChild(Box.TextRun("x", MakeStyle()));
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var geometry = FindItemGeometry(sink, item);
+        Assert.Equal(200, geometry.InlineSize, precision: 3);
+        Assert.Equal(100, geometry.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_block_child_content_inset_by_item_border_and_padding()
+    {
+        // Flex content-inset cycle — a column item with a BLOCK child + border + padding
+        // (auto height, content-box): the child fragment is inset to the item's
+        // CONTENT-box origin (= geometry origin + border 5 + padding 10 = 15 each axis),
+        // and the item's auto-height border box = the child's content + the item's block
+        // chrome (30). Pre-cycle the child anchored at the border-box origin (overlapping
+        // the border/padding) + the border box omitted the chrome.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        SetPaddingAllSides(itemStyle, 10);
+        SetSolidBorderAllSides(itemStyle, 5);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        var child = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        child.AppendChild(Box.TextRun("AB", MakeStyle()));
+        item.AppendChild(child);
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var geometry = FindItemGeometry(sink, item);
+        BoxFragment? childFrag = null;
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, child)) childFrag = f;
+        Assert.NotNull(childFrag);
+
+        // Child inset to the content-box origin (15 = border 5 + padding 10).
+        Assert.Equal(geometry.InlineOffset + 15, childFrag!.Value.InlineOffset, precision: 3);
+        Assert.Equal(geometry.BlockOffset + 15, childFrag.Value.BlockOffset, precision: 3);
+        // Item auto-height border box = child content block size + the item's block chrome.
+        Assert.Equal(childFrag.Value.BlockSize + 30, geometry.BlockSize, precision: 3);
+    }
+
+    /// <summary>The flex GEOMETRY fragment for <paramref name="item"/> (box == item with
+    /// NO inline layout — the box-decoration fragment, distinct from an inline-only item's
+    /// own text fragment which carries an InlineLayout).</summary>
+    private static BoxFragment FindItemGeometry(RecordingFragmentSink sink, Box item)
+    {
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, item) && f.InlineLayout is null) return f;
+        throw new Xunit.Sdk.XunitException("No flex geometry fragment found for the item.");
     }
 
     [Fact]
@@ -10451,6 +10586,34 @@ public sealed class FlexLayouterTests
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>
         style.Set(id, ComputedSlot.FromLengthPx(px));
+
+    /// <summary>Flex box-sizing cycle tests — set a uniform SOLID border (width px,
+    /// style solid) on all four sides. The width is §4.3-gated by the style
+    /// (<c>ReadLengthPxOrZero</c> returns 0 when the style is none/hidden), so the
+    /// style MUST be set for the width to count as chrome.</summary>
+    private static void SetSolidBorderAllSides(ComputedStyle style, double px)
+    {
+        (PropertyId Width, PropertyId Style)[] edges =
+        [
+            (PropertyId.BorderTopWidth, PropertyId.BorderTopStyle),
+            (PropertyId.BorderRightWidth, PropertyId.BorderRightStyle),
+            (PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle),
+            (PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle),
+        ];
+        foreach (var (w, s) in edges)
+        {
+            style.Set(w, ComputedSlot.FromLengthPx(px));
+            style.Set(s, ComputedSlot.FromKeyword(4)); // 4 = solid
+        }
+    }
+
+    /// <summary>Flex box-sizing cycle tests — uniform padding on all four sides.</summary>
+    private static void SetPaddingAllSides(ComputedStyle style, double px)
+    {
+        foreach (var p in new[]
+            { PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft })
+            style.Set(p, ComputedSlot.FromLengthPx(px));
+    }
 
     private static AngleSharp.Dom.IElement MakeElement()
     {

@@ -1241,14 +1241,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // property; cross-axis flexibility (= L8 align-self
                 // stretch + cross-axis intrinsic sizing) is L9+ scope.
                 var itemMainSize = resolvedItemMainSizes[itemIdx];
-                var itemCrossSize = item.Style.ReadLengthPxOrZero(crossSizeProperty);
                 // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 +
                 // L4 — the stretch branch needs to distinguish `auto`
                 // (Unset / Keyword slot) from explicit `0` (LengthPx
                 // slot with value 0). The cross-axis property is
                 // direction-dependent — IsCrossSizeAuto receives the
-                // resolved direction.
+                // resolved direction. (Read BEFORE the cross size so the
+                // box-sizing map below can skip the auto case.)
                 var itemIsCrossSizeAuto = IsCrossSizeAuto(item, flexDirection);
+                // Flex box-sizing cycle — a DEFINITE cross size is the item's BORDER box
+                // honoring `box-sizing` (the shared BoxSizingHelper adds the cross-axis
+                // border + padding for `content-box`; the declared size IS the border box
+                // for `border-box`). `auto` stays 0 — the stretch / align path uses the
+                // line cross extent instead (ComputeAlignItemsPlacement reads
+                // itemIsCrossSizeAuto). This makes the emitted cross border box account for
+                // the item's own border/padding (with the content-inset below).
+                var itemCrossSize = itemIsCrossSizeAuto
+                    ? 0
+                    : BoxSizingHelper.DeclaredToBorderBox(
+                        item.Style, item.Style.ReadLengthPxOrZero(crossSizeProperty),
+                        item.Style.AxisBorderPaddingPx(crossSizeProperty));
 
                 // Per Phase 3 Task 15 L6 — pass the line's cross
                 // extent (= max(item cross-size on this line) for
@@ -1402,13 +1414,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     blockSize = itemEffectiveCrossSize;
                 }
 
+                // Flex content-inset cycle — BLOCK-CHILD content is inset from the item's
+                // border-box origin (inlineOffset, blockOffset) to its CONTENT-box origin by
+                // the item's own inline-start / block-start border + padding (LTR
+                // horizontal-tb; NestedContentMeasurer lays block children at the content
+                // box's (0,0) WITHOUT the item's own chrome). An INLINE-ONLY-root buffer
+                // (box == item) is NOT inset — it sits at the border-box origin and
+                // TextPainter insets its glyphs by the same chrome (insetting it again would
+                // double-inset). The applied inset is gated per buffer below. The emitted box
+                // border box (inlineSize / blockSize) already includes the chrome via the
+                // box-sizing-mapped cross size + the §9.7-resolved main size.
+                var contentInsetInline = item.Style.InlineStartBorderPaddingPx();
+                var contentInsetBlock = item.Style.BlockStartBorderPaddingPx();
+
                 if (emitThisItem && isRowNowrapContentPagination)
                 {
                     // Row-nowrap intra-item content split — slice this item's box
                     // decoration + buffered content to the page's SHARED cross
                     // window [windowFrom, windowTo) (content-cross coords), so all
                     // items continue at the same cross position (the page top) on
-                    // the next page. `blockOffset` is the item content-box
+                    // the next page. `blockOffset` is the item BORDER-box
                     // cross-start (abs); `contentCrossOffset` is the container
                     // content-box cross-start (abs).
                     var windowFrom = rowNowrapResumeCut;
@@ -1441,8 +1466,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     }
                     if (itemContentBuffers[itemIdx] is { } buf)
                     {
+                        // Inset BLOCK-CHILD content to the item's content box (skip an
+                        // inline-only-root buffer — TextPainter insets its glyphs): the main
+                        // (inline) axis shifts by the inline-start chrome; the cross-start
+                        // chrome shifts the content's cross origin within the shared window math.
+                        var insetI = buf.ContainsDecorationOwnerFragment ? 0 : contentInsetInline;
+                        var insetB = buf.ContainsDecorationOwnerFragment ? 0 : contentInsetBlock;
                         var (emitted, anyRem) = buf.FlushRangeTo(
-                            _sink, inlineOffset, blockOffset, contentCrossOffset,
+                            _sink, inlineOffset + insetI,
+                            blockOffset + insetB, contentCrossOffset,
                             windowFrom, windowTo);
                         if (emitted > rowNowrapEmittedExtent)
                         {
@@ -1462,16 +1494,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                         InlineSize: inlineSize,
                         BlockSize: blockSize));
 
-                    // Non-block-pagination arc (flex item CONTENT layout) —
-                    // re-emit the item's measured inner content at its FINAL
-                    // (re-anchored) content-box origin. Like grid's
-                    // DispatchGridItemContents, the content anchors at the
-                    // item's BORDER-box origin (item border / padding is not
-                    // inset — a documented box-model approximation shared with
-                    // grid). Only COMMITTED items flush; the column-split skips
-                    // deferred items, so their buffers are simply discarded (a
-                    // resumed page re-measures them). FlushTo clears the buffer.
-                    itemContentBuffers[itemIdx]?.FlushTo(_sink, inlineOffset, blockOffset);
+                    // Non-block-pagination arc (flex item CONTENT layout) — re-emit the
+                    // item's measured inner content at its FINAL (re-anchored) position.
+                    // BLOCK-CHILD content is inset to the item's CONTENT-box origin (=
+                    // border-box origin + the item's inline-/block-start border + padding,
+                    // flex content-inset cycle — content now sits INSIDE the item's
+                    // border/padding); an INLINE-ONLY-root buffer stays at the border-box
+                    // origin (TextPainter insets its glyphs by the item's chrome). Only
+                    // COMMITTED items flush; the column-split skips deferred items, so their
+                    // buffers are simply discarded (a resumed page re-measures them). FlushTo
+                    // clears the buffer.
+                    if (itemContentBuffers[itemIdx] is { } contentBuf)
+                    {
+                        var insetI = contentBuf.ContainsDecorationOwnerFragment ? 0 : contentInsetInline;
+                        var insetB = contentBuf.ContainsDecorationOwnerFragment ? 0 : contentInsetBlock;
+                        contentBuf.FlushTo(_sink, inlineOffset + insetI, blockOffset + insetB);
+                    }
                     // PR-#182 review P2 — surface this committed item's buffered
                     // content diagnostics now (deferred items' diagnostics stay
                     // buffered + are discarded, re-generated when they commit).
@@ -2711,23 +2749,30 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 var item = _rootBox.Children[itemIdx];
                 if (item.Children.Count == 0) continue; // no inner content
 
-                // The item's used INLINE (content) size. For column the inline
-                // axis is the cross axis (stretch → line cross extent, else the
-                // declared cross-size); for row the inline axis is the main axis
-                // (the flex-resolved width). A non-positive size falls back to
-                // the container's content inline size so text still renders +
-                // overflows, mirroring grid's zero-area-cell fallback.
-                double usedInline;
+                // The item's used INLINE (content) size for measuring inner content. For
+                // column the inline axis is the cross axis (stretch → the line cross extent,
+                // else the box-sizing-mapped declared cross size); for row it's the main axis
+                // (the §9.7-resolved main size). Both are BORDER-box sizes, so subtract the
+                // item's inline border + padding to get the CONTENT inline size content is
+                // laid out at (flex box-sizing / content-inset cycle — was the border-box size,
+                // measuring content too wide). A non-positive size falls back to the
+                // container's content inline size so text still renders + overflows, mirroring
+                // grid's zero-area-cell fallback.
+                var inlineChrome = item.Style.InlineBorderPaddingPx();
+                double borderBoxInline;
                 if (isColumn)
                 {
-                    usedInline = IsCrossSizeAuto(item, flexDirection)
+                    borderBoxInline = IsCrossSizeAuto(item, flexDirection)
                         ? lineCrossExtent
-                        : item.Style.ReadLengthPxOrZero(crossSizeProperty);
+                        : BoxSizingHelper.DeclaredToBorderBox(
+                            item.Style, item.Style.ReadLengthPxOrZero(crossSizeProperty),
+                            item.Style.AxisBorderPaddingPx(crossSizeProperty));
                 }
                 else
                 {
-                    usedInline = resolvedItemMainSizes[itemIdx];
+                    borderBoxInline = resolvedItemMainSizes[itemIdx];
                 }
+                var usedInline = borderBoxInline - inlineChrome;
                 if (!(usedInline > 0)) usedInline = _contentInlineSize;
 
                 // PR-#182 review P2 — buffer this item's content diagnostics
@@ -2740,15 +2785,21 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     itemDiag, cancellationToken);
                 buffers[itemIdx] = buffer;
 
-                // Column content-sizing: grow an auto-height item to its
-                // content. Math.Max keeps any flex-grown size; explicit-height
-                // items (not content-determined) are untouched (byte-identical
-                // to the pre-content-layout behavior).
-                if (isColumn
-                    && IsMainSizeContentDetermined(item, mainSizeProperty)
-                    && buffer.ContentBlockExtent > resolvedItemMainSizes[itemIdx])
+                // Column content-sizing: grow an auto-height item to its content BORDER
+                // box (flex box-sizing cycle). The block chrome is added ONLY for
+                // block-CHILD content — an inline-only-root buffer's ContentBlockExtent is
+                // ALREADY the item's border box (the nested layout folded the item's own
+                // border + padding into the own-box fragment + TextPainter insets its
+                // glyphs), so adding chrome again would double-count. Math.Max keeps any
+                // flex-grown size; explicit-height items (not content-determined) are
+                // untouched (their §9.7 size already box-sizing-mapped).
+                if (isColumn && IsMainSizeContentDetermined(item, mainSizeProperty))
                 {
-                    resolvedItemMainSizes[itemIdx] = buffer.ContentBlockExtent;
+                    var contentMainBorderBox = buffer.ContainsDecorationOwnerFragment
+                        ? buffer.ContentBlockExtent
+                        : buffer.ContentBlockExtent + item.Style.BlockBorderPaddingPx();
+                    if (contentMainBorderBox > resolvedItemMainSizes[itemIdx])
+                        resolvedItemMainSizes[itemIdx] = contentMainBorderBox;
                 }
             }
         }

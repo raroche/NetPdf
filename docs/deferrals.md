@@ -1680,42 +1680,56 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `approximated` (GRID + BLOCK + TABLE ship; the shared helper now exists; only FLEX remains).
-  The cross-cutting audit (box-sizing cycle) extracted a shared `BoxSizingHelper` and applied it to the
-  block + table declared-size readers; the grid intrinsic contribution keeps its own richer
-  `ItemBorderBoxExtent`. The remaining gap is FLEX.
+- **Status** — `resolved` (the cross-cutting audit is COMPLETE: GRID + BLOCK + TABLE + **FLEX** all honor
+  `box-sizing` on their declared sizes via the shared `BoxSizingHelper`). The flex box-sizing / content-inset
+  cycle closed the last layouter — only minor residual APPROXIMATIONS remain (below), tracked here.
 - **Behavior** — the shared `BoxSizingHelper.DeclaredToBorderBox(style, declared, chrome)` maps a declared
   size to the used BORDER box honoring `box-sizing` (CSS Basic UI 4 §10): `border-box` → the declared size
   IS the border box (floored at the chrome); `content-box` (initial) → declared + chrome (byte-identical
   to the prior `declared + chrome`). Consumers: `GridSizing.ItemOuterContribution`'s `ItemBorderBoxExtent`
   (grid box-sizing cycle); `BlockLayouter`'s `DeclaredWidthToBorderBox` (#165, now delegating) + the
   block/float explicit-HEIGHT border-box-block-size (box-sizing cycle); `TableLayouter.ReadColumnWidthPx`
-  via the new `ColumnBorderBoxWidth` (a cell's declared width feeds the column via its border box).
-- **Missing** — **FLEX item** box-sizing only. A `box-sizing: border-box` flex item's declared main/cross
-  size should be its border box, but the flex emission does NOT inset item content by the item's
-  border/padding (a documented box-model approximation) — so a box-sizing fix is ENTANGLED with that inset
-  + must move with it. (A `%` width/height/min still reads 0 in the grid contribution — the chicken-and-egg
-  gap — so box-sizing on a PERCENTAGE size is moot there.)
-- **Trigger** — FLEX item box-sizing, to be done in lockstep with the flex content-inset fix (the
-  declared main/cross size honors `box-sizing` once item content is inset by the item's border/padding).
+  via the new `ColumnBorderBoxWidth` (a cell's declared width feeds the column via its border box); and the
+  FLEX item main/cross readers — `ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize` +
+  `ResolveFlexItemMinMaxMainSize` (main), the emission cross-size read + `FlexLinePacker.CrossBorderBoxSize`
+  (cross). The flex emission ALSO now insets a BLOCK-child item's content to the item's content box (=
+  border-box origin + the new `InlineStartBorderPaddingPx`/`BlockStartBorderPaddingPx`); an INLINE-ONLY-root
+  item's content fragment is left at the border-box origin (the nested `BufferingMeasureSink` flags it via
+  `ContainsDecorationOwnerFragment` — `TextPainter` insets its glyphs + its measured extent already folds in
+  the item's chrome, so re-insetting / re-adding chrome would double-count).
+- **Missing (residual flex approximations only)** —
+  - **Percentage padding** reads 0 in the flex chrome (`InlineBorderPaddingPx` uses `ReadLengthPxOrZero`,
+    matching the row-flex pre-measure convention) — so a flex item with a `%` padding under-counts chrome.
+  - The content inset uses the **LTR horizontal-tb** physical mapping (inline-start = left, block-start =
+    top), consistent with the rest of the flex emission's writing-mode / RTL approximation.
+  - The flex MAIN-axis flex (grow/shrink) distributes in **border-box space** (the hypothetical + the
+    resolved size are border boxes) rather than the spec's content-box-size + outer-margin model — an
+    approximation consistent with the engine's border-box-throughout convention; visible only when an item
+    with non-zero chrome both has a definite basis AND flexes.
+  - A `%` width/height/min still reads 0 in the GRID intrinsic contribution (the chicken-and-egg gap), so
+    box-sizing on a PERCENTAGE grid-item size is moot there.
+- **Trigger** — a flex item with `%` padding, RTL/vertical writing mode, or a chrome'd flexing item where
+  the border-box-space distribution visibly diverges from the spec.
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/BoxSizingHelper.cs` — the shared declared→border-box mapping (box-sizing cycle).
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ItemOuterContribution` (grid's richer extent).
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width (#165) + height border-box-block-size.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width (#165) + height border-box-block-size + the two
+    flex pre-measures (`PreMeasureFlexCrossExtent` / `PreMeasureFlexMainExtent`).
   - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — `ColumnBorderBoxWidth`.
-  - (Remaining) `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — flex item main/cross size.
-- **Practical impact** — items using `box-sizing: border-box`
-  (the modern norm for reset stylesheets like Bootstrap) over-
-  count chrome in intrinsic tracks, causing auto/min-content/
-  max-content tracks to size larger than the spec dictates.
-  Visible only when an author mixes intrinsic-tracked grids
-  with declared-width/height items that have non-zero borders
-  or padding.
+  - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — emission cross-size + content inset (block-child only).
+  - `src/NetPdf.Layout/Layouters/FlexLinePacker.cs` — `CrossBorderBoxSize` (wrapping line cross extent).
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` — the chrome helpers + the flex-item
+    hypothetical / min-max box-sizing.
+  - `src/NetPdf.Layout/Layouters/BufferingMeasureSink.cs` — `ContainsDecorationOwnerFragment`.
+- **Practical impact** — RESOLVED for the audit's core: items using `box-sizing: border-box` (the modern
+  norm for reset stylesheets like Bootstrap) now size correctly across all four layouters. The residuals
+  above are niche.
 - **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
   in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
-  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle.
-- **Removal condition** — FLEX item box-sizing ships (the last layouter). GRID + BLOCK + TABLE + the shared
-  `BoxSizingHelper` are DONE.
+  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle; FLEX (the last layouter)
+  + the content inset resolved in the flex box-sizing / content-inset cycle.
+- **Removal condition** — the residual flex approximations (percentage-padding chrome, writing-mode/RTL
+  inset, border-box-space main flex) + the grid `%`-size chicken-and-egg gap are all closed.
 
 ---
 

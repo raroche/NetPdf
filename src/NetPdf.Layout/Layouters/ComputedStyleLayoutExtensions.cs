@@ -108,6 +108,45 @@ internal static class ComputedStyleLayoutExtensions
         }
     }
 
+    /// <summary>Flex box-sizing / content-inset cycle — the USED border + padding on the
+    /// INLINE axis (left + right), i.e. the chrome between the border box and the content
+    /// box horizontally. Border widths are §4.3-gated by their style (an unbordered side
+    /// reads 0) because they funnel through <see cref="ReadLengthPxOrZero(ComputedStyle, PropertyId)"/>;
+    /// percentage padding reads 0 (a documented flex-item approximation, matching the
+    /// row-flex pre-measure). Assumes horizontal-tb LTR (the flex emission's physical
+    /// mapping; writing-mode / RTL is a tracked approximation).</summary>
+    public static double InlineBorderPaddingPx(this ComputedStyle s) =>
+        s.ReadLengthPxOrZero(PropertyId.BorderLeftWidth) + s.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+        + s.ReadLengthPxOrZero(PropertyId.PaddingRight) + s.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+
+    /// <summary>Flex box-sizing / content-inset cycle — the USED border + padding on the
+    /// BLOCK axis (top + bottom). See <see cref="InlineBorderPaddingPx"/>.</summary>
+    public static double BlockBorderPaddingPx(this ComputedStyle s) =>
+        s.ReadLengthPxOrZero(PropertyId.BorderTopWidth) + s.ReadLengthPxOrZero(PropertyId.PaddingTop)
+        + s.ReadLengthPxOrZero(PropertyId.PaddingBottom) + s.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+
+    /// <summary>Flex box-sizing / content-inset cycle — the inline-START border + padding
+    /// (left), the offset from a box's border-box origin to its content-box origin on the
+    /// inline axis. Used to inset a flex item's flushed content.</summary>
+    public static double InlineStartBorderPaddingPx(this ComputedStyle s) =>
+        s.ReadLengthPxOrZero(PropertyId.BorderLeftWidth) + s.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+
+    /// <summary>Flex box-sizing / content-inset cycle — the block-START border + padding
+    /// (top). See <see cref="InlineStartBorderPaddingPx"/>.</summary>
+    public static double BlockStartBorderPaddingPx(this ComputedStyle s) =>
+        s.ReadLengthPxOrZero(PropertyId.BorderTopWidth) + s.ReadLengthPxOrZero(PropertyId.PaddingTop);
+
+    /// <summary>Flex box-sizing / content-inset cycle — the USED border + padding on the
+    /// axis a direction-resolved size property measures: <see cref="PropertyId.Width"/> /
+    /// <see cref="PropertyId.MinWidth"/> / <see cref="PropertyId.MaxWidth"/> → the inline
+    /// axis; any other (the height family) → the block axis. Lets the §9.7 main-size /
+    /// min-max readers derive their own box-sizing chrome from the property id without a
+    /// signature change.</summary>
+    public static double AxisBorderPaddingPx(this ComputedStyle s, PropertyId sizeProperty) =>
+        sizeProperty is PropertyId.Width or PropertyId.MinWidth or PropertyId.MaxWidth
+            ? s.InlineBorderPaddingPx()
+            : s.BlockBorderPaddingPx();
+
     /// <summary>Maps a <c>border-*-width</c> PropertyId to its sibling
     /// <c>border-*-style</c> PropertyId for the §4.3 used-width style gate;
     /// returns <see langword="false"/> for any other property.</summary>
@@ -1214,11 +1253,24 @@ internal static class ComputedStyleLayoutExtensions
         PropertyId mainSizeProperty,
         double containerMainSize)
     {
+        // Flex box-sizing cycle — the hypothetical (= flex base) main size is returned as a
+        // BORDER box honoring `box-sizing` (CSS Basic UI 4 §10, via the shared
+        // BoxSizingHelper): for `content-box` (initial) a definite flex-basis / declared
+        // size is the CONTENT box, so the border box adds the item's main-axis border +
+        // padding; for `border-box` the declared size IS the border box. The chrome is
+        // derived from the direction-resolved main-size property (Width → inline, Height →
+        // block). An AUTO / content-determined size (no definite length) stays 0 — content
+        // sizing grows it later and adds the chrome there, so box-sizing (which only
+        // reinterprets a DECLARED length) doesn't apply. This is what makes a flex item's
+        // emitted border box account for its own border/padding (the deferred content-inset).
+        var mainChrome = item.Style.AxisBorderPaddingPx(mainSizeProperty);
         var basis = item.Style.ReadFlexBasis();
         switch (basis.Kind)
         {
             case FlexBasisKind.LengthPx:
-                return basis.Value > 0 ? basis.Value : 0;
+                return basis.Value > 0
+                    ? BoxSizingHelper.DeclaredToBorderBox(item.Style, basis.Value, mainChrome)
+                    : 0;
             case FlexBasisKind.Percentage:
                 if (!double.IsFinite(containerMainSize))
                 {
@@ -1226,16 +1278,31 @@ internal static class ComputedStyleLayoutExtensions
                     // fallback. A definite 0 IS valid (yields 0 below)
                     // per CSS Values L4 §6.5; only NaN / ±Infinity
                     // indicates a contract violation.
-                    return item.Style.ReadLengthPxOrZero(mainSizeProperty);
+                    return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
                 }
                 var fraction = basis.Value / 100.0;
                 var pct = fraction * containerMainSize;
-                return pct > 0 ? pct : 0;
+                return pct > 0
+                    ? BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome)
+                    : 0;
             case FlexBasisKind.Auto:
             case FlexBasisKind.Content:
             default:
-                return item.Style.ReadLengthPxOrZero(mainSizeProperty);
+                return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
         }
+    }
+
+    /// <summary>Flex box-sizing cycle — the item's DECLARED main size mapped to a BORDER box
+    /// (via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>) when definite, else 0 (auto /
+    /// content-determined; the chrome is added by content sizing). Shared by the auto/content
+    /// flex-basis branch + the non-finite-container fallback above.</summary>
+    private static double ResolveDeclaredMainBorderBox(
+        Boxes.Box item, PropertyId mainSizeProperty, double mainChrome)
+    {
+        var declared = item.Style.ReadLengthPxOrZero(mainSizeProperty);
+        return declared > 0
+            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, declared, mainChrome)
+            : 0;
     }
 
     /// <summary>Per Phase 3 Task 15 L12 — read the item's
@@ -1265,13 +1332,19 @@ internal static class ComputedStyleLayoutExtensions
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty)
     {
+        // Flex box-sizing cycle — an EXPLICIT min/max length is mapped to a BORDER box
+        // (honoring `box-sizing`, same chrome as the hypothetical) so it clamps the
+        // border-box-resolved main size on the same axis. An unset min (→ 0 floor) / max
+        // (→ no bound) keeps its prior value (the `auto` min-width intrinsic resolution is
+        // still L13+ scope; percentages still L13+).
+        var chrome = item.Style.AxisBorderPaddingPx(minSizeProperty);
         var minSlot = item.Style.Get(minSizeProperty);
         var maxSlot = item.Style.Get(maxSizeProperty);
         var min = minSlot.Tag == ComputedSlotTag.LengthPx
-            ? Math.Max(0, minSlot.AsLengthPx())
+            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, minSlot.AsLengthPx()), chrome)
             : 0.0;
         var max = maxSlot.Tag == ComputedSlotTag.LengthPx
-            ? Math.Max(0, maxSlot.AsLengthPx())
+            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, maxSlot.AsLengthPx()), chrome)
             : double.PositiveInfinity;
         return (min, max);
     }

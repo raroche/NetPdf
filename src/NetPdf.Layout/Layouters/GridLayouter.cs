@@ -130,18 +130,31 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
-    // Per-GridLayouter (cross-AttemptLayout) measurement caches (measurement-cache cycle). A PAGINATING
-    // grid re-runs AttemptLayout once per page attempt, each of which re-resolves the tracks + re-measures
-    // every content-determined item; persisting the measurements across attempts on this instance avoids
-    // the redundant NestedContentMeasurer passes. SAFE to share across attempts: an item's measured
-    // CONTENT block extent is deterministic for (item, available inline width) and its max-content inline
-    // extent for the item alone — both independent of the block budget (the atomic measure pass never
-    // paginates) and of the grid's writing mode (stable per grid). (Cross-COMPONENT sharing with
-    // BlockLayouter.PreMeasureGridRowExtent — a per-conversion cache threaded through the layout context —
-    // remains a follow-up; see docs/deferrals.md.)
-    private readonly System.Collections.Generic.Dictionary<(Box Item, double AvailInline), double> _blockExtentCache = new();
-    private readonly System.Collections.Generic.Dictionary<Box, double> _inlineExtentCache =
-        new(System.Collections.Generic.ReferenceEqualityComparer.Instance);
+    // Per-GridLayouter (cross-AttemptLayout) measurement caches (measurement-cache cycle). Repeated
+    // AttemptLayout calls on the SAME layouter instance re-resolve the tracks + re-measure every
+    // content-determined item; persisting the measurements on the instance lets a later attempt reuse an
+    // earlier one's NestedContentMeasurer passes. The key is the FULL set of inputs NestedContentMeasurer
+    // consumes — (item, available inline width, block budget, writing mode, RTL) — so a cached value is
+    // only ever reused when it was measured under IDENTICAL inputs. (A percent-height cell, e.g., measures
+    // a different content block extent under a different block budget because the atomic pass sizes its
+    // inner fragmentainer to that budget; keying on the budget keeps the reuse correct rather than stale.
+    // Writing mode + RTL are stable per grid instance, but are in the key for correctness-by-construction.)
+    // The max-content inline extent is width-independent, so the inline cache omits AvailInline.
+    // NOTE (scope): the production grid dispatch (BlockLayouter.DispatchGridInner) builds a FRESH
+    // GridLayouter per page and calls AttemptLayout ONCE, so these instance caches benefit same-instance
+    // retries only. The cross-page / cross-COMPONENT win — sharing with BlockLayouter.PreMeasureGridRowExtent
+    // via a per-conversion cache threaded through the layout context — is the immediate follow-up; see
+    // docs/deferrals.md.
+    private readonly System.Collections.Generic.Dictionary<
+        (Box Item, double AvailInline, double BlockBudget, WritingMode Wm, bool Rtl), double> _blockExtentCache = new();
+    private readonly System.Collections.Generic.Dictionary<
+        (Box Item, double BlockBudget, WritingMode Wm, bool Rtl), double> _inlineExtentCache = new();
+
+    // Instrumentation (measurement-cache cycle) — counts the NestedContentMeasurer.Measure passes that
+    // actually RAN (cache misses). A second AttemptLayout under identical inputs must add ZERO passes; a
+    // regression test asserts this (proving the cache is HIT, not a silent no-op) and asserts a DIFFERENT
+    // block budget DOES add passes (proving the budget is in the key — no stale cross-budget reuse).
+    internal int MeasurePassCount { get; private set; }
 
     private double _contentInlineOffset;
     private double _contentBlockOffset;
@@ -538,14 +551,15 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // ordering in GridSizing.Resolve the row pass uses the FINAL column width, so this is also
             // defensive.)
             // Measurement-cache cycle — the instance-level caches persist across this grid's AttemptLayout
-            // attempts (a paginating grid re-resolves per page). Keyed by (item, available inline width);
-            // the measured value is deterministic for that key, so reusing a prior attempt's measurement
-            // is correct.
+            // attempts. Keyed by the FULL measurement input set (item, available inline width, block budget,
+            // writing mode, RTL) so a hit only reuses a value measured under IDENTICAL inputs (a percent-
+            // height cell measures a different extent under a different budget — the key keeps that correct).
             var measureCache = _blockExtentCache;
             GridSizing.GridContentMeasurer contentMeasurer = (item, availInline) =>
             {
-                var key = (item, availInline);
+                var key = (item, availInline, measureBlockBudget, measureWritingMode, measureIsRtl);
                 if (measureCache.TryGetValue(key, out var cached)) return cached;
+                MeasurePassCount++;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline, measureBlockBudget, _shaperResolver,
                     measureWritingMode, measureIsRtl, cancellationToken)
@@ -556,16 +570,19 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // Grid content-width cycle — a SECOND measurer reporting the cell's MAX-CONTENT inline extent
             // (ContentInlineExtent) at the caller's unconstrained probe width, so auto / min-content /
             // max-content COLUMNS size to their content width. Separate cache (different measured value —
-            // width, not height).
+            // width, not height). Max-content is width-INDEPENDENT, so the key omits AvailInline but carries
+            // (block budget, writing mode, RTL) for the same cross-attempt correctness as the block cache.
             var widthMeasureCache = _inlineExtentCache;
             GridSizing.GridContentMeasurer widthMeasurer = (item, availInline) =>
             {
-                if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;
+                var key = (item, measureBlockBudget, measureWritingMode, measureIsRtl);
+                if (widthMeasureCache.TryGetValue(key, out var cached)) return cached;
+                MeasurePassCount++;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline, measureBlockBudget, _shaperResolver,
                     measureWritingMode, measureIsRtl, cancellationToken)
                     .ContentInlineExtent;
-                widthMeasureCache[item] = extent;
+                widthMeasureCache[key] = extent;
                 return extent;
             };
             var sizing = GridSizing.Resolve(

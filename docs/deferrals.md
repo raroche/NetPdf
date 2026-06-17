@@ -2996,15 +2996,20 @@ flags the categories):
           (a row-spanning intrinsic item would otherwise re-measure per track). Grid items also opt into
           `layoutRootInlineContent` so inline-text cells render. STILL DEFERRED: content-WIDTH (max-content)
           COLUMN sizing (columns stay declared-width-only); the `min-height` floor isn't honored in the
-          content-determined branch; fr-under-indefinite interplay unchanged. **Measurement caching (partial):** the
-          `GridLayouter`'s content-extent + max-content-width caches now persist ACROSS its `AttemptLayout`
-          attempts (instance-level — a PAGINATING grid re-resolves per page and re-measured every item each
-          attempt; measurement-cache cycle, safe because a cell's measured extent is deterministic for
-          `(item, available inline width)`, independent of the block budget + writing mode). STILL DEFERRED:
-          the CROSS-COMPONENT per-conversion cache — the pre-measure Resolve (`BlockLayouter.
-          PreMeasureGridRowExtent`) + the emission Resolve (`GridLayouter`) still shape a cell once EACH (2×)
-          because they don't share a cache; a per-conversion cache threaded through the ~15 `LayoutContext`
-          creation sites is the remaining follow-up.
+          content-determined branch; fr-under-indefinite interplay unchanged. **Measurement caching (partial,
+          same-instance only):** the `GridLayouter`'s content-extent + max-content-width caches are now INSTANCE
+          fields that persist across that instance's `AttemptLayout` attempts (measurement-cache cycle). The key
+          is the FULL set of inputs `NestedContentMeasurer.Measure` consumes — `(item, available inline width,
+          block budget, writing mode, RTL)` — so a hit only reuses a value measured under identical inputs (PR
+          #187 review [P1] #2: a percent-height cell measures a different extent under a different budget, so the
+          budget is in the key — no stale cross-budget reuse). SCOPE (PR #187 review [P1] #1): the production
+          dispatch (`BlockLayouter.DispatchGridInner`) builds a FRESH `GridLayouter` per page and calls
+          `AttemptLayout` ONCE, so these instance caches benefit same-instance retries only (a regression test
+          asserts a second identical attempt adds ZERO measurement passes). STILL DEFERRED — the real production
+          win: the CROSS-COMPONENT per-conversion cache — the pre-measure Resolve (`BlockLayouter.PreMeasureGridRowExtent`)
+          + the emission Resolve (`GridLayouter`) still shape a cell once EACH (2×) because they don't share a
+          cache, and successive page dispatches build fresh layouters; a per-conversion cache threaded through the
+          ~15 `LayoutContext` creation sites is the immediate follow-up.
        3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001` — DONE** (same PR). The
           subtree-extent measure (`MeasureSubtreeVisualBlockExtentRecursive`) now PROJECTS a paginatable flex
           descendant to `min(authored, pageBlockSize)` — EXACTLY like the existing paginatable-grid projection —

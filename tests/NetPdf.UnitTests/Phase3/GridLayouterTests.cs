@@ -5575,50 +5575,110 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Cross_attempt_measure_cache_keeps_repeated_layout_identical()
+    public void Cross_attempt_measure_cache_is_hit_and_keeps_geometry_identical()
     {
         // Measurement-cache cycle — the GridLayouter's instance-level measure caches persist across
-        // AttemptLayout attempts (a paginating grid re-resolves per page). A second attempt on the SAME
-        // layouter produces IDENTICAL geometry from the cached (deterministic, not stale) measurements.
+        // AttemptLayout attempts. A second attempt under IDENTICAL inputs serves every measurement from the
+        // cache (MeasurePassCount adds ZERO — proves the cache is HIT, not a silent no-op; PR #187 review
+        // [P3]) and produces byte-identical geometry. Per Copilot #187: snapshot the first attempt + roll the
+        // sink back before the second, then compare 1:1 instead of relying on the sink accumulating.
         using var shaper = new SyntheticShaperResolver();
-        var diag = new RecordingDiagnosticsSink();
-        var grid = BuildGridContainerWithTemplates(
-            rows: Tracks(TrackEntry.ForAuto()),
-            cols: Tracks(TrackEntry.ForLength(100)));
-        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
-        var inner = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
-        SetExplicitHeight(inner, 60);   // content-determined auto row → exercises the content measurer
-        item.AppendChild(inner);
-        grid.AppendChild(item);
+        var grid = BuildAutoRowGridWithExplicitHeightCell();
 
         var sink = new RecordingFragmentSink();
         using var layouter = new GridLayouter(
-            rootBox: grid, sink: sink, incomingContinuation: null, diagnostics: diag, shaperResolver: shaper);
+            rootBox: grid, sink: sink, incomingContinuation: null,
+            diagnostics: new RecordingDiagnosticsSink(), shaperResolver: shaper);
         layouter.ConfigureEmission(
             contentInlineOffset: 0, contentBlockOffset: 0,
             contentInlineSize: 400, contentBlockSize: 400, allowPagination: false);
         var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
 
+        // Attempt 1 — populates the caches; snapshot its fragments + the pass count.
         var layoutCtx1 = new LayoutContext(ctx);
         using (var resolver1 = new BreakResolver())
             layouter.AttemptLayout(ctx, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
-        var afterFirst = sink.Fragments.Count;
-        Assert.True(afterFirst > 0);
+        var firstAttempt = sink.Fragments.ToList();
+        var passesAfterFirst = layouter.MeasurePassCount;
+        Assert.True(firstAttempt.Count > 0);
+        Assert.True(passesAfterFirst > 0, "the content measurer must have run on the first attempt");
 
-        // Second attempt on the SAME layouter — reuses the cross-attempt measure cache.
+        // Roll the sink back so the second attempt's output stands alone (Copilot #187).
+        sink.RollbackTo(0);
+        Assert.Empty(sink.Fragments);
+
+        // Attempt 2 — identical inputs → every measurement is served from the cache (zero new passes).
         var layoutCtx2 = new LayoutContext(ctx);
         using (var resolver2 = new BreakResolver())
             layouter.AttemptLayout(ctx, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
-        Assert.Equal(2 * afterFirst, sink.Fragments.Count);
-        for (var i = 0; i < afterFirst; i++)
+        Assert.Equal(passesAfterFirst, layouter.MeasurePassCount);   // cache HIT — no re-measure
+
+        Assert.Equal(firstAttempt.Count, sink.Fragments.Count);
+        for (var i = 0; i < firstAttempt.Count; i++)
         {
-            var a = sink.Fragments[i];
-            var b = sink.Fragments[afterFirst + i];
+            var a = firstAttempt[i];
+            var b = sink.Fragments[i];
             Assert.Equal(a.InlineOffset, b.InlineOffset, precision: 3);
             Assert.Equal(a.BlockOffset, b.BlockOffset, precision: 3);
             Assert.Equal(a.InlineSize, b.InlineSize, precision: 3);
             Assert.Equal(a.BlockSize, b.BlockSize, precision: 3);
         }
+    }
+
+    [Fact]
+    public void Cross_attempt_measure_cache_key_includes_block_budget()
+    {
+        // PR #187 review [P1] #2 — NestedContentMeasurer.Measure sizes the inner fragmentainer to the block
+        // budget, so the measured extent can depend on it (a percent-height cell resolves against the
+        // budget). The cache key carries the budget: a second attempt under a DIFFERENT budget must
+        // re-measure (MeasurePassCount grows) rather than return a stale value cached under the first budget.
+        using var shaper = new SyntheticShaperResolver();
+        var grid = BuildAutoRowGridWithExplicitHeightCell();
+
+        var sink = new RecordingFragmentSink();
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink, incomingContinuation: null,
+            diagnostics: new RecordingDiagnosticsSink(), shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 400, contentBlockSize: 400, allowPagination: false);
+
+        // Attempt 1 — block budget 400.
+        var ctx1 = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using (var resolver1 = new BreakResolver())
+            layouter.AttemptLayout(ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+        var passesAfterFirst = layouter.MeasurePassCount;
+        Assert.True(passesAfterFirst > 0);
+
+        sink.RollbackTo(0);
+
+        // Attempt 2 — DIFFERENT block budget 200 → the budget-keyed cache misses → re-measures (no stale
+        // cross-budget reuse). With the old (item, availInline)-only key this attempt would hit the cache
+        // and MeasurePassCount would stay put.
+        var ctx2 = new FragmentainerContext(contentInlineSize: 400, blockSize: 200);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using (var resolver2 = new BreakResolver())
+            layouter.AttemptLayout(ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+        Assert.True(layouter.MeasurePassCount > passesAfterFirst,
+            "a different block budget must re-measure (the budget is part of the cache key), not reuse a stale value");
+        Assert.NotEmpty(sink.Fragments);
+    }
+
+    /// <summary>Measurement-cache cycle — a 1×1 grid with an `auto` row + a fixed 100px column holding a
+    /// cell whose inner block is an explicit 60px height. The auto row is content-determined, so resolving
+    /// the grid runs the content (block-extent) measurer — the path the cross-attempt caches memoize.</summary>
+    private static Box BuildAutoRowGridWithExplicitHeightCell()
+    {
+        var grid = BuildGridContainerWithTemplates(
+            rows: Tracks(TrackEntry.ForAuto()),
+            cols: Tracks(TrackEntry.ForLength(100)));
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var inner = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetExplicitHeight(inner, 60);
+        item.AppendChild(inner);
+        grid.AppendChild(item);
+        return grid;
     }
 
     // =====================================================================

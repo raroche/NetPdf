@@ -85,6 +85,39 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
+    public async Task Table_cell_declared_width_honors_box_sizing()
+    {
+        // Box-sizing audit (table column) — a cell's declared width feeds the column
+        // via its BORDER box: under content-box (the initial) the cell's inline
+        // padding is ADDED to the declared width, so the column's preferred width is
+        // larger than under border-box (where the declared width IS the border box).
+        // The auto table layout then distributes the surplus, but the content-box
+        // column stays observably WIDER (pre-fix the two were identical — the padding
+        // was dropped from the content-box column's contribution).
+        async Task<double> FixedColumnWidthAsync(string boxSizing)
+        {
+            var html = $$"""
+                <!DOCTYPE html><html><head><style>
+                    td.fixed { width: 100px; padding-left: 40px; padding-right: 40px; box-sizing: {{boxSizing}}; }
+                </style></head><body>
+                <table><tr><td class="fixed">A</td><td>B</td></tr></table>
+                </body></html>
+                """;
+            var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+            var fixedCell = sink.Fragments.First(f =>
+                f.Box.Kind == BoxKind.TableCell
+                && f.Box.SourceElement?.GetAttribute("class") == "fixed");
+            return fixedCell.InlineSize;
+        }
+
+        var contentBox = await FixedColumnWidthAsync("content-box");
+        var borderBox = await FixedColumnWidthAsync("border-box");
+        Assert.True(contentBox > borderBox + 1.0,
+            $"box-sizing should widen the content-box column (its 80px padding adds to the declared "
+            + $"100): content-box={contentBox}, border-box={borderBox}");
+    }
+
+    [Fact]
     public async Task Table_followed_by_paragraph_does_not_overlap()
     {
         // Per Finding 1 regression — the paragraph after a table must

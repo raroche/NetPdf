@@ -529,6 +529,163 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_block_definite_width_measures_content_at_its_own_width()
+    {
+        // Post-PR-#190 Copilot review — a DEFINITE-width inline-block measures its content at its
+        // OWN content width (not the whole remaining line), so multi-word content WRAPS + the auto
+        // height reflects it. A narrow 12px inline-block with several words + auto height is several
+        // ~19.2px lines tall (≫ a single line); pre-fix it measured at the 600px line → one line.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(12)); // narrow definite width, auto height
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A A A A A A", MakeStyle()));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        BoxFragment? decoration = null;
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) decoration = f;
+        Assert.NotNull(decoration);
+        // Wrapped to multiple ~19.2px lines (≫ one line). Pre-fix (measured at the 600px line) the
+        // words fit on one line → ~19.2px.
+        Assert.True(decoration!.Value.BlockSize > 30,
+            $"definite narrow width should wrap content + grow tall; got {decoration.Value.BlockSize}");
+    }
+
+    [Theory]
+    [InlineData(0, 0.0)]   // start  → no shift (the initial)
+    [InlineData(2, 0.0)]   // left   → no shift (LTR)
+    [InlineData(4, 0.5)]   // center → half the free space
+    [InlineData(3, 1.0)]   // right  → all the free space
+    [InlineData(1, 1.0)]   // end    → right (LTR)
+    [InlineData(5, 0.0)]   // justify → start (inter-word distribution deferred)
+    public void Body_text_align_sets_inline_line_align_factor(int textAlignKeyword, double expectedFactor)
+    {
+        // Body text-align cycle — text-align on an inline-only block sets the emitted fragment's
+        // LineAlignFactor, which TextPainter consumes to shift each glyph line by
+        // (content width − line advance) × factor. (Was always 0 — text-align unimplemented.)
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var blockStyle = MakeStyle();
+        blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        var fragment = Assert.Single(sink.Fragments);
+        Assert.Equal(expectedFactor, fragment.LineAlignFactor, precision: 3);
+    }
+
+    [Fact]
+    public void Inline_atomic_shifts_with_centered_text_align()
+    {
+        // Body text-align cycle — an inline atomic moves WITH its line under text-align: center.
+        // A 50px-wide inline-block alone on a 600px centred line shifts to (600 − 50) / 2 = 275;
+        // under start it stays at 0.
+        static double DecorationX(int textAlignKeyword)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(50));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(30));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.InlineOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        Assert.Equal(0, DecorationX(0), precision: 1);     // start
+        Assert.Equal(275, DecorationX(4), precision: 1);   // center: (600 − 50) / 2
+    }
+
+    [Fact]
+    public void Inline_atomic_with_preceding_text_shifts_by_line_align_plus_text_advance()
+    {
+        // Post-PR-#191 review P3 — when an inline atomic SHARES its line with preceding text, its
+        // offset must be (line-align shift) + (preceding text advance): the alignment shift LAYERS ON
+        // TOP of the sliceStartXPx cursor, it doesn't replace it. The prior coverage put the atomic
+        // ALONE on the line (sliceStartXPx = 0), so a bug that dropped sliceStartXPx — or applied the
+        // shift to the wrong cursor — would have passed. Layout: block > ["A", inline-block 50×30, "B"]
+        // with the synthetic font (12px, 'A'/'B' advance = 500/1000em = 6px), on a 600px line.
+        static double AtomicX(int textAlignKeyword)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(50));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(30));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));   // preceding text → sliceStartX = 6px
+            block.AppendChild(inlineBlock);
+            block.AppendChild(Box.TextRun("B", MakeStyle()));   // trailing text → grows TotalAdvance
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.InlineOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        var start = AtomicX(0);     // start  → preceding text advance only
+        var center = AtomicX(4);    // center → preceding advance + half the free space
+        var right = AtomicX(3);     // right  → preceding advance + all the free space
+
+        // sliceStartXPx is carried: the atomic sits AFTER the "A" glyph (≈6px), not at x = 0.
+        Assert.True(start > 1.0, $"the preceding text advance should offset the atomic; got {start}");
+        // The shift LAYERS on top, and is the line-align geometry (free space × factor via TotalAdvance):
+        // center = start + free/2, right = start + free ⇒ center − start is exactly half of right − start.
+        Assert.True(center > start && right > center,
+            $"the atomic should shift right with its line; got {start}/{center}/{right}");
+        Assert.Equal(start + (right - start) / 2.0, center, precision: 1);
+        // Exact derived geometry: "A"(6) + atomic(50) + "B"(6) = TotalAdvance 62 on a 600px line ⇒
+        // free 538; start = 6, center = 6 + 269 = 275, right = 6 + 538 = 544.
+        Assert.Equal(6, start, precision: 1);
+        Assert.Equal(275, center, precision: 1);
+        Assert.Equal(544, right, precision: 1);
+    }
+
+    [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {
         // Per Finding #5 — margin/border/padding/width applied to the

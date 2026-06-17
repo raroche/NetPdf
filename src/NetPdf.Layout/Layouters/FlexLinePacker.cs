@@ -299,22 +299,14 @@ internal static class FlexLinePacker
         return sumLineCross;
     }
 
-    /// <summary>Flex box-sizing cycle — the item's BORDER-box cross size for line packing.
-    /// A DEFINITE cross length is mapped via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>
-    /// (so a wrapping line's cross extent — which positions the next line + the wrapper
-    /// height + align-content — accounts for the item's cross border + padding, matching the
-    /// border-box cross size the emission lays out). An <c>auto</c> / percentage / unset cross
-    /// reads 0 (content / stretch sizes it later — byte-identical to the prior
-    /// <c>ReadLengthPxOrZero</c>).</summary>
-    private static double CrossBorderBoxSize(Box item, PropertyId crossProp)
-    {
-        var slot = item.Style.Get(crossProp);
-        return slot.Tag == ComputedSlotTag.LengthPx
-            ? BoxSizingHelper.DeclaredToBorderBox(
-                item.Style, System.Math.Max(0, slot.AsLengthPx()),
-                item.Style.AxisBorderPaddingPx(crossProp))
-            : 0.0;
-    }
+    /// <summary>Flex box-sizing cycle — the item's BORDER-box cross size for line packing,
+    /// delegating to the shared <see cref="ComputedStyleLayoutExtensions.CrossBorderBoxSizePx"/>
+    /// so the wrapping line's cross extent (which positions the next line + the wrapper height +
+    /// align-content) uses the SAME border-box mapping as the emission (post-PR-#190 Copilot
+    /// review consolidated the two copies). A DEFINITE cross length maps through box-sizing; an
+    /// <c>auto</c> / percentage / unset cross reads 0 (content / stretch sizes it later).</summary>
+    private static double CrossBorderBoxSize(Box item, PropertyId crossProp) =>
+        item.Style.CrossBorderBoxSizePx(crossProp);
 }
 
 /// <summary>Per Phase 3 Task 15 L6 → cycle 4c — packed flex line as

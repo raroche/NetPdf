@@ -740,6 +740,49 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_align_center_and_right_shift_inline_content()
+    {
+        // Body text-align cycle — center / right shift the glyph line right of the default
+        // (left/start), so the rendered PDF differs from a left-aligned one. Pre-cycle text-align
+        // had no effect on inline content (the line-align factor was never set).
+        static byte[] Render(string align) => HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"text-align:" + align + "\">A</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        var left = Latin1(Render("left"));
+        var center = Latin1(Render("center"));
+        var right = Latin1(Render("right"));
+
+        Assert.NotEqual(left, center);   // center shifts the line
+        Assert.NotEqual(left, right);    // right shifts the line further
+        Assert.NotEqual(center, right);
+    }
+
+    [Fact]
+    public void Body_text_align_inherits_to_child_div_and_shifts_line_by_exact_geometry()
+    {
+        // Post-PR-#191 review P3 — text-align is an INHERITED property, so declaring it on <body> must
+        // reach the child <div> that actually emits the line (prior coverage set TextAlign directly on
+        // the block, proving nothing about inheritance). And the shift must be the EXACT line-align
+        // geometry, not just "different bytes": center shifts the line by HALF the free space, right by
+        // ALL of it — so off the same start (left) baseline, the right shift is EXACTLY twice the center
+        // shift. That identity holds without hard-coding the page content width or the glyph advance.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string bodyStyle) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body style=\"" + bodyStyle + "\"><div>A</div></body></html>", opts))).X;
+
+        var start = LineX("");                       // no text-align anywhere → start (control)
+        var center = LineX("text-align:center");     // body center, inherited by the div
+        var right = LineX("text-align:right");        // body right, inherited by the div
+
+        // Inheritance reached the div: both align values shift the line right of the start baseline.
+        Assert.True(center > start + 1.0, $"inherited center should shift right of start: {start} → {center}");
+        Assert.True(right > center + 1.0, $"inherited right should shift further than center: {center} → {right}");
+        // Exact line-align geometry: center = start + free/2, right = start + free ⇒ right−start = 2·(center−start).
+        Assert.Equal(2.0 * (center - start), right - start, precision: 1);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border
@@ -3446,6 +3489,69 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_font_or_viewport_relative_border_radius_rounds_the_band()
+    {
+        // Margin-box relative-radius cycle — a font-/viewport-relative border-radius now RESOLVES
+        // (was square): `0.5em` against `font-size: 20px` = 10px, and `2vw` against the page width,
+        // each fill the band as a rounded (Bézier) path. No invalid diagnostic.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var em = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; font-size: 20px; " +
+            "background-color: #3366cc; border-radius: 0.5em } }</style></head><body></body></html>", opts);
+        var vw = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 2vw } }</style></head><body></body></html>", opts);
+
+        Assert.DoesNotContain(em.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.Contains(" c ", BlueFillRegion(Latin1(em.Pdf)));   // em resolved → rounded
+        Assert.Contains(" c ", BlueFillRegion(Latin1(vw.Pdf)));   // vw resolved → rounded
+
+        static string BlueFillRegion(string pdf)
+        {
+            var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+            Assert.True(i >= 0, "expected the blue band fill");
+            var end = pdf.IndexOf('Q', i);
+            return pdf[i..(end < 0 ? pdf.Length : end)];
+        }
+    }
+
+    [Fact]
+    public void Page_margin_box_relative_border_radius_overflowing_in_context_is_diagnosed_not_silently_squared()
+    {
+        // Post-PR-#191 review P2 — a SYNTACTICALLY supported relative radius that overflows IN CONTEXT
+        // (`1e308em` × the 16px default font = non-finite) must be SURFACED, not silently squared: the
+        // RelativeLengthResolver.IsSupported contract requires the caller to diagnose a kept value's
+        // contextual failure (mirrors the explicit-size + padding paths). The `2em` control resolves
+        // cleanly (no diagnostic, rounded band) so the test can't pass from an unrelated regression.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var overflow = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 1e308em } }</style></head><body></body></html>", opts);
+        var control = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>", opts);
+
+        // The overflowing radius is diagnosed AND falls back to a square band (no Bézier in the fill).
+        Assert.Contains(overflow.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        Assert.DoesNotContain(" c ", BlueFill(Latin1(overflow.Pdf)));
+
+        // The control: no diagnostic, rounded band — so the diagnostic above is the overflow's, not noise.
+        Assert.DoesNotContain(control.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.Contains(" c ", BlueFill(Latin1(control.Pdf)));
+
+        static string BlueFill(string pdf)
+        {
+            var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+            Assert.True(i >= 0, "expected the blue band fill");
+            var end = pdf.IndexOf('Q', i);
+            return pdf[i..(end < 0 ? pdf.Length : end)];
+        }
+    }
+
+    [Fact]
     public void Body_border_radius_slash_form_rounds_the_background_elliptically()
     {
         // border-radius-elliptical cycle — `border-radius: <h> / <v>` (dropped by AngleSharp) is
@@ -3517,26 +3623,22 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_border_radius_em_is_deferred_to_a_square()
+    public void Page_margin_box_border_radius_em_now_resolves_and_rounds()
     {
-        // margin-box-border-radius cycle — the radius now cascades through the corner longhands. A
-        // font-relative `em` defers (no font context in the margin-box cascade) → the band reads it as
-        // 0 → SQUARE, SILENTLY (matching the body; relative margin-box radii are a documented deferral).
+        // margin-box-relative-radius cycle — a font-relative `em` radius now RESOLVES (was deferred →
+        // square): `2em` against the box's default 16px font = 32px (clamped to half the band) → a
+        // rounded (Bézier) band, with NO diagnostic.
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
             "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
-        // `em` is a valid-but-DEFERRED length (the resolver returns Deferred, not Invalid), so it
-        // expands + silently squares — NO diagnostic (post-PR-#174 review P3 — pin the silent contract
-        // so a future resolver/diagnostic change can't regress it unnoticed; contrast the malformed +
-        // negative cases below, which ARE diagnosed).
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
             && d.Message.Contains("border-radius"));
         var pdf = Latin1(result.Pdf);
         var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
         Assert.True(i >= 0);
-        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square band (em deferred)
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // em resolved → rounded band
     }
 
     [Fact]

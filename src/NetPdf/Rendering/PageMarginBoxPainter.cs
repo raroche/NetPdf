@@ -281,6 +281,15 @@ internal static class PageMarginBoxPainter
                     contentStyle, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx,
                     $"page margin box @{mb.Name}", diagnostics);
 
+            // A font-/viewport-relative `border-radius` (`0.5em` / `2vw` / `1rem`, margin-box
+            // relative-radius cycle) resolves HERE — after the box font-size is used px (the `em`
+            // base) + before ReadCornerRadii reads the band/border/clip radii below. An absolute
+            // length / `%` is already an honored slot (ReadCornerRadii resolves `%` against the box
+            // dims); a `calc()`/container-unit radius stays deferred → square (documented).
+            ResolveDeferredBorderRadiusInPlace(
+                style, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16),
+                rootEmPx, pageWidthPx, pageHeightPx, mb.Name, diagnostics);
+
             // SEGMENT RUNS (Task 23, segment-style cycle): a standalone element()'s stacked lines
             // each shape as their own TextRun in the LEAF block's own (ancestor-walked) font/colour
             // — an h1 title line over a styled subtitle renders heterogeneously ("real nested block
@@ -1456,6 +1465,59 @@ internal static class PageMarginBoxPainter
                 out px)
             : RelativeLengthResolver.TryResolve(
                 raw, bases.EmPx, bases.RootEmPx, bases.PageWidthPx, bases.PageHeightPx, out px);
+    }
+
+    /// <summary>The eight <c>border-*-radius</c> longhands — the four horizontal corners + the four
+    /// internal vertical (<c>-y</c>) corners (the elliptical slash form). Horizontal radii resolve a
+    /// <c>%</c> against the box WIDTH, vertical against the HEIGHT (CSS B&amp;B §4.1) — but a DEFERRED
+    /// font-/viewport-relative raw (the only kind this resolves) doesn't use a <c>%</c> base, so the
+    /// split doesn't matter here.</summary>
+    private static readonly PropertyId[] BorderRadiusLonghands =
+    [
+        PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
+        PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius,
+        PropertyId.BorderTopLeftRadiusY, PropertyId.BorderTopRightRadiusY,
+        PropertyId.BorderBottomRightRadiusY, PropertyId.BorderBottomLeftRadiusY,
+    ];
+
+    /// <summary>Margin-box relative-radius cycle — resolve a DEFERRED font-/viewport-relative
+    /// <c>border-radius</c> corner longhand (<c>em</c>/<c>ex</c>/<c>ch</c>/<c>rem</c>/<c>vw</c>/<c>vh</c>/
+    /// <c>vmin</c>/<c>vmax</c>) to used px IN PLACE via <see cref="RelativeLengthResolver"/>, so
+    /// <see cref="FragmentPainter.ReadCornerRadii"/> (the band fill, the rounded border, the image clip)
+    /// reads a <c>LengthPx</c> instead of 0 (square). An absolute length / <c>%</c> is already an honored
+    /// slot (untouched). A <c>calc()</c> or container-unit radius can't resolve here (its <c>%</c> base
+    /// is the box dimension, not yet final) — it stays deferred → square (a documented gap, like the
+    /// body's). A SYNTACTICALLY supported raw that fails IN CONTEXT (e.g. <c>1e308em</c> overflowing the
+    /// font-size product to non-finite) is SURFACED, not silently squared — the
+    /// <see cref="RelativeLengthResolver.IsSupported"/> contract requires the caller to diagnose a kept
+    /// value's contextual failure (post-PR-#191 review P2; mirrors the explicit-size + padding paths).
+    /// Runs after the box font-size is used px (the <c>em</c> base) — post-PR.</summary>
+    private static void ResolveDeferredBorderRadiusInPlace(
+        ComputedStyle style, double emPx, double rootEmPx, double pageWidthPx, double pageHeightPx,
+        string boxName, IDiagnosticsSink diagnostics)
+    {
+        HashSet<string>? diagnosed = null;   // de-dupe: a uniform `border-radius: 1e308em` sets 4 corners.
+        foreach (var id in BorderRadiusLonghands)
+        {
+            if (!style.TryGetDeferred(id, out var raw) || raw is null) continue;
+            if (RelativeLengthResolver.TryResolve(raw, emPx, rootEmPx, pageWidthPx, pageHeightPx, out var px))
+            {
+                style.Set(id, ComputedSlot.FromLengthPx(Math.Max(0, px)));
+                continue;
+            }
+            // Supported-syntactically but unresolvable-in-context (overflow → non-finite): surface it.
+            // A NON-supported raw (`calc()` / container unit) stays deferred → square (documented gap).
+            if (RelativeLengthResolver.IsSupported(raw) && (diagnosed ??= new()).Add(raw))
+            {
+                diagnostics.Emit(new Diagnostic(
+                    DiagnosticCodes.CssPropertyValueInvalid001,
+                    $"The page margin box @{boxName} border-radius " +
+                    $"'{DiagnosticTextSanitizer.Sanitize(raw)}' could not be resolved against its context — " +
+                    "the result is not a finite non-negative length (e.g. an extreme multiplier overflowing " +
+                    "the font-size/viewport product). The corner falls back to square (unrounded).",
+                    DiagnosticSeverity.Warning));
+            }
+        }
     }
 
     /// <summary>The four <c>padding-*</c> longhands, paired with the side name for diagnostics.</summary>

@@ -1680,29 +1680,30 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `approximated` (GRID side ships — grid box-sizing cycle; the BROADER cross-cutting audit
-  remains). The grid-item intrinsic contribution now honors `box-sizing`; the remaining gap is the other
-  layouters + a shared helper.
-- **Behavior** — `GridSizing.ItemOuterContribution` now honors `box-sizing` (grid box-sizing cycle, CSS
-  Basic UI 4 §10) via the new `ItemBorderBoxExtent`: a `box-sizing: border-box` item's declared
-  width/height IS its border box (border + padding inside), so the chrome is NOT added again; the initial
-  `content-box` is byte-identical to the pre-cycle `max(declared, content, min) + chrome`. A
-  CONTENT-measured `auto` size is always a content box, so its chrome is added regardless of box-sizing;
-  the `min-*` floor is border- or content-box per box-sizing.
-- **Missing** — the BROADER `box-sizing: border-box` support is still cross-cutting — BlockLayouter +
-  FlexLayouter + TableLayouter have similar declared-vs-rendered-size readers that should be addressed
-  symmetrically with a shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)` helper. (A `%`
-  width/height/min still reads 0 in the grid contribution — the chicken-and-egg gap — so box-sizing on a
-  PERCENTAGE size is moot there.)
-- **Trigger** — a dedicated `box-sizing` pass that audits every
-  declared-dimension reader across all layouters + introduces a
-  shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)`
-  helper.
+- **Status** — `approximated` (GRID + BLOCK + TABLE ship; the shared helper now exists; only FLEX remains).
+  The cross-cutting audit (box-sizing cycle) extracted a shared `BoxSizingHelper` and applied it to the
+  block + table declared-size readers; the grid intrinsic contribution keeps its own richer
+  `ItemBorderBoxExtent`. The remaining gap is FLEX.
+- **Behavior** — the shared `BoxSizingHelper.DeclaredToBorderBox(style, declared, chrome)` maps a declared
+  size to the used BORDER box honoring `box-sizing` (CSS Basic UI 4 §10): `border-box` → the declared size
+  IS the border box (floored at the chrome); `content-box` (initial) → declared + chrome (byte-identical
+  to the prior `declared + chrome`). Consumers: `GridSizing.ItemOuterContribution`'s `ItemBorderBoxExtent`
+  (grid box-sizing cycle); `BlockLayouter`'s `DeclaredWidthToBorderBox` (#165, now delegating) + the
+  block/float explicit-HEIGHT border-box-block-size (box-sizing cycle); `TableLayouter.ReadColumnWidthPx`
+  via the new `ColumnBorderBoxWidth` (a cell's declared width feeds the column via its border box).
+- **Missing** — **FLEX item** box-sizing only. A `box-sizing: border-box` flex item's declared main/cross
+  size should be its border box, but the flex emission does NOT inset item content by the item's
+  border/padding (a documented box-model approximation) — so a box-sizing fix is ENTANGLED with that inset
+  + must move with it. (A `%` width/height/min still reads 0 in the grid contribution — the chicken-and-egg
+  gap — so box-sizing on a PERCENTAGE size is moot there.)
+- **Trigger** — FLEX item box-sizing, to be done in lockstep with the flex content-inset fix (the
+  declared main/cross size honors `box-sizing` once item content is inset by the item's border/padding).
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
-    `ItemOuterContribution`.
-  - (Eventually) `src/NetPdf.Layout/Boxes/Box.cs` or a new
-    `BoxSizingHelper.cs` for the shared used-size logic.
+  - `src/NetPdf.Layout/Layouters/BoxSizingHelper.cs` — the shared declared→border-box mapping (box-sizing cycle).
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ItemOuterContribution` (grid's richer extent).
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width (#165) + height border-box-block-size.
+  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — `ColumnBorderBoxWidth`.
+  - (Remaining) `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — flex item main/cross size.
 - **Practical impact** — items using `box-sizing: border-box`
   (the modern norm for reset stylesheets like Bootstrap) over-
   count chrome in intrinsic tracks, causing auto/min-content/
@@ -1713,9 +1714,8 @@ flags the categories):
 - **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
   in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
   formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle.
-- **Removal condition** — the cross-cutting box-sizing audit ships (BlockLayouter / FlexLayouter /
-  TableLayouter symmetric handling + a shared used-size helper). The GRID intrinsic-contribution side is
-  DONE.
+- **Removal condition** — FLEX item box-sizing ships (the last layouter). GRID + BLOCK + TABLE + the shared
+  `BoxSizingHelper` are DONE.
 
 ---
 
@@ -3043,8 +3043,11 @@ flags the categories):
           cut, `BufferingMeasureSink.FlushRangeTo` slices each item's buffer to `[cut, cut + budget)`
           (partition-by-top, force-overflow straddlers — no loss / no double), and the dual-input pagination flag
           (renamed `outerFlexDualInputPaginating` / `nestedFlexDualInputPaginating`) extends from column to
-          row-nowrap. STILL DEFERRED: **auto-height** row items (need a content-aware row pre-measure — mirrors
-          the column auto-height work; the first cut covers EXPLICIT-height items taller than the page);
+          row-nowrap. **Auto-height row items — DONE** (a later PR): `PreMeasureFlexCrossExtent` is now
+          CONTENT-AWARE (mirrors the column `PreMeasureFlexMainExtent`) — an auto-height row item contributes its
+          measured content block extent (UNBOUNDED budget, so the overflow it's detecting isn't clipped), so the
+          auto-height wrapper overflows + the split engages; the emission content-measure budget is likewise
+          unbounded for row-nowrap. STILL DEFERRED:
           intra-fragment splitting (an over-tall single line force-overflows); `box-decoration-break: clone`
           approximation (the box repeats per page); `flex-wrap: wrap-reverse` (cross-swap origin from the
           unfragmented size); **column-wrap** flex pagination (lines stack on the inline axis — not a fragment

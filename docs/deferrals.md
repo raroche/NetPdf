@@ -3525,7 +3525,8 @@ flags the categories):
          shares it (the expander runs in `CssParserAdapter.ParseRawDeclarations`; the four `-y` ids JOINED
          `MarginBoxStyle.CascadedStyleIds`; a malformed slash that fails to expand is diagnosed
          `CSS-PROPERTY-VALUE-INVALID-001` as before). STILL DEFERRED: font-/viewport-relative margin-box radii
-         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders.
+         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders (the OUTER
+         corners now round via a clip — rounded-nonuniform-borders cycle; per-corner arc segments stay deferred).
        - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
          image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
@@ -3548,8 +3549,10 @@ flags the categories):
          DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped;
          a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). DEFERRED (still
          render square, SILENTLY): font-/viewport-relative margin-box radii (`em`/`vw` defer in the
-         margin-box cascade, like the body). Rounded NON-uniform borders. (The elliptical `Rx / Ry` slash
-         SHIPPED later — border-radius-elliptical cycle, see that entry above.)
+         margin-box cascade, like the body). Rounded NON-uniform borders FIRST CUT (the outer corners round
+         via a clip — rounded-nonuniform-borders cycle; per-corner arc segments / inner corners stay
+         deferred). (The elliptical `Rx / Ry` slash SHIPPED later — border-radius-elliptical cycle, see that
+         entry above.)
        - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
@@ -3597,9 +3600,16 @@ flags the categories):
          per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
          rectangular clip (byte-identical). The explicit two-radii `Rx / Ry` slash spelling SHIPPED later
          (border-radius-elliptical cycle — recovered into 4 internal `-netpdf-…-radius-y` longhands; see that
-         entry above). STILL DEFERRED: rounded NON-uniform borders (per-corner arc segments transitioning
-         between edge widths/colours). (The MARGIN-box border-radius reached parity in the
-         margin-box-border-radius cycle — see the entry above.)
+         entry above). **Rounded NON-uniform borders — FIRST CUT DONE (rounded-nonuniform-borders cycle):**
+         a border-radius with per-side-differing border widths / styles / colours can't use the uniform
+         ring, so `FragmentPainter.PaintBorders` now CLIPS the four square edge rects to the rounded
+         border-box outline (`PdfPage.BeginRoundedRectangleClip` … `RestoreGraphicsState`) — the box's OUTER
+         corners follow the radius (matching the already-rounded background band + image clip) instead of
+         poking out square. Applies to a body block AND a margin box. STILL DEFERRED (approximations): the
+         per-corner ARC SEGMENTS that transition between two edges' widths/colours (the INNER corners stay
+         square + a corner where two differently-coloured edges meet shows a hard split, not a diagonal
+         miter). (The MARGIN-box border-radius reached parity in the margin-box-border-radius cycle — see
+         the entry above.)
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
          cycles):** a UNIFORM absolute `border-radius` rounds a BODY block's background COLOR band
@@ -3620,8 +3630,10 @@ flags the categories):
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
          negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
          border-radius-completion cycle — see the entry above; the `Rx / Ry` elliptical slash SHIPPED in the
-         border-radius-elliptical cycle): rounded NON-uniform border strokes (the margin-box per-corner
-         radius + rounded border + image clip reached parity in the margin-box-border-radius cycle);
+         border-radius-elliptical cycle): rounded NON-uniform border strokes — FIRST CUT in the
+         rounded-nonuniform-borders cycle (the outer corners round via a clip; per-corner arc segments
+         transitioning between edges stay deferred). The margin-box per-corner radius + rounded border +
+         image clip reached parity in the margin-box-border-radius cycle.
          `background-attachment: fixed` PAGE-relative positioning; gradients (Phase 4).
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
          (edge-offset / bg-origin / bg-clip cycles):** the shared

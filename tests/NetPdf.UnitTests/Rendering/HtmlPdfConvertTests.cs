@@ -739,6 +739,35 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains("re f", Latin1(result.Pdf));
     }
 
+    [Fact]
+    public void Nonuniform_border_with_radius_rounds_corners_via_clip()
+    {
+        // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border
+        // widths/colours can't use the single uniform ring, so the four square edge rects are
+        // CLIPPED to the rounded BORDER-box outline: the OUTER corners follow the radius (matching
+        // the rounded background band). The clip surfaces as a `W n` path-clip operator. The
+        // background band still rounds (a Bézier path fill).
+        const string nonUniform =
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"width:50px;height:30px;border-radius:10px;"
+            + "border-top:5px solid #ff0000;border-bottom:10px solid #0000ff;"
+            + "border-left:5px solid #ff0000;border-right:5px solid #ff0000;"
+            + "background-color:#33cc33\"></div></body></html>";
+        var nonUniformText = Latin1(HtmlPdf.Convert(nonUniform));
+        // A clip path is set (the rounded border-box outline) — the edges round, not poke out square.
+        Assert.Contains("W n", nonUniformText);
+
+        // Differential — the SAME box with a UNIFORM border (one width/colour on all sides) + radius
+        // paints the single even-odd RING (`f*`) and needs NO per-edge clip.
+        const string uniform =
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"width:50px;height:30px;border-radius:10px;"
+            + "border:5px solid #ff0000;background-color:#33cc33\"></div></body></html>";
+        var uniformText = Latin1(HtmlPdf.Convert(uniform));
+        Assert.Contains("f*", uniformText);          // the uniform rounded ring
+        Assert.DoesNotContain("W n", uniformText);   // no per-edge clip needed
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var n = 0;

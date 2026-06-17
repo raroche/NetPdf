@@ -7069,7 +7069,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // block has no atomic, keeping the uniform text path byte-identical), the atomics' placements
         // relative to the content box, and the resulting content block size.
         var (perLineHeightsPx, atomicPlacements, contentBlockSize) =
-            ComputeInlineAtomicLayout(inlineResult, lineHeight, inlineOnlyBlock.Style);
+            ComputeInlineAtomicLayout(inlineResult, lineHeight, inlineOnlyBlock.Style, contentInlineSize);
         var borderBoxBlockSize = contentBlockSize
             + metrics.BorderBlockStart + metrics.PaddingBlockStart
             + metrics.PaddingBlockEnd + metrics.BorderBlockEnd;
@@ -7095,17 +7095,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <para><b>Approximations (first cut).</b> The baseline uses an approximate font ascent/descent
     /// (0.8 / −0.2 em — the layout layer has no font-metric access; the painter uses the REAL font
     /// metrics for glyphs, so an atomic's bottom aligns to the text baseline within typical-font
-    /// tolerance); the inline offset is start-relative (a centred / right / justified line, and RTL,
-    /// shift the atomic with the text in a later cut); and only <c>vertical-align: baseline</c> is
-    /// honoured.</para></summary>
+    /// tolerance); the line's <c>text-align</c> offset shifts the atomic WITH its text (body
+    /// text-align cycle — center / right / end; <c>justify</c> + RTL still leave it start-relative);
+    /// and only <c>vertical-align: baseline</c> is honoured.</para></summary>
     private (IReadOnlyList<double>? PerLineHeightsPx,
              IReadOnlyList<InlineAtomicPlacement> Placements,
              double ContentBlockSize)
         ComputeInlineAtomicLayout(
-            InlineLayoutResult inlineResult, double textLineHeightPx, ComputedStyle blockStyle)
+            InlineLayoutResult inlineResult, double textLineHeightPx, ComputedStyle blockStyle,
+            double contentInlineSize)
     {
         var lines = inlineResult.Lines;
         var shapedRuns = inlineResult.ShapedRuns;
+        // Body text-align cycle — each line shifts by (content width − line advance) × factor, the
+        // SAME shift TextPainter applies to the glyph lines (so an inline atomic moves WITH its
+        // text under text-align: center / right). 0 (start) leaves the start-relative placement
+        // byte-identical to the pre-cycle output.
+        var alignFactor = blockStyle.ReadInlineAlignFactor();
         var perLineHeights = new double[lines.Length];
         var anyAtomic = false;
         for (var li = 0; li < lines.Length; li++)
@@ -7145,6 +7151,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the baseline by the ascent.
             var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
             var baselineTopPx = lineTopPx + halfLeadingPx + ascentPx;
+            // The line's text-align shift (matching TextPainter's glyph shift): the free space
+            // times the factor, clamped ≥ 0 (an overflowing line stays start-aligned).
+            var lineAlignOffsetPx = alignFactor != 0.0
+                ? Math.Max(0.0, (contentInlineSize - lines[li].TotalAdvance) * alignFactor)
+                : 0.0;
             var xCursorPx = 0.0;
             foreach (var slice in lines[li].Slices)
             {
@@ -7155,10 +7166,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // `vertical-align: baseline` — the atomic's MARGIN-box bottom sits on the baseline; the
                     // emitted BORDER-box fragment is inset by the bottom margin (block) + the leading
                     // inline margin (so ImagePainter's content box, after it removes the img's own
-                    // padding/border, lands correctly — post-PR-#186 review P1).
+                    // padding/border, lands correctly — post-PR-#186 review P1). The line's text-align
+                    // offset shifts the atomic WITH its text (body text-align cycle).
                     var borderBoxTopPx = baselineTopPx - a.MarginBlockEndPx - a.BorderBoxHeightPx;
                     placements.Add(new InlineAtomicPlacement(
-                        a.Box, sliceStartXPx + a.MarginInlineStartPx, borderBoxTopPx,
+                        a.Box, lineAlignOffsetPx + sliceStartXPx + a.MarginInlineStartPx, borderBoxTopPx,
                         a.BorderBoxWidthPx, a.BorderBoxHeightPx));
                 }
             }
@@ -7491,7 +7503,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Inline-atomic-boxes cycle — a line carrying a tall inline `<img>` grew; the painter walks
             // these per-line heights so glyph baselines match the grown lines. Null for text-only
             // blocks → the uniform-pitch path, byte-identical.
-            PerLineHeightsPx: comp.PerLineHeightsPx));
+            PerLineHeightsPx: comp.PerLineHeightsPx,
+            // Body text-align cycle — center / right shifts each glyph line by
+            // (content width − line advance) × factor (TextPainter consumes it). 0 (start, the
+            // initial) is byte-identical to the pre-cycle no-shift output.
+            LineAlignFactor: inlineOnlyBlock.Style.ReadInlineAlignFactor()));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the

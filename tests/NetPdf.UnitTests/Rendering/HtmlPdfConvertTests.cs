@@ -740,6 +740,25 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_align_center_and_right_shift_inline_content()
+    {
+        // Body text-align cycle — center / right shift the glyph line right of the default
+        // (left/start), so the rendered PDF differs from a left-aligned one. Pre-cycle text-align
+        // had no effect on inline content (the line-align factor was never set).
+        static byte[] Render(string align) => HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"text-align:" + align + "\">A</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        var left = Latin1(Render("left"));
+        var center = Latin1(Render("center"));
+        var right = Latin1(Render("right"));
+
+        Assert.NotEqual(left, center);   // center shifts the line
+        Assert.NotEqual(left, right);    // right shifts the line further
+        Assert.NotEqual(center, right);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border

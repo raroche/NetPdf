@@ -564,6 +564,73 @@ public sealed class BlockInlineIntegrationTests
             $"definite narrow width should wrap content + grow tall; got {decoration.Value.BlockSize}");
     }
 
+    [Theory]
+    [InlineData(0, 0.0)]   // start  → no shift (the initial)
+    [InlineData(2, 0.0)]   // left   → no shift (LTR)
+    [InlineData(4, 0.5)]   // center → half the free space
+    [InlineData(3, 1.0)]   // right  → all the free space
+    [InlineData(1, 1.0)]   // end    → right (LTR)
+    [InlineData(5, 0.0)]   // justify → start (inter-word distribution deferred)
+    public void Body_text_align_sets_inline_line_align_factor(int textAlignKeyword, double expectedFactor)
+    {
+        // Body text-align cycle — text-align on an inline-only block sets the emitted fragment's
+        // LineAlignFactor, which TextPainter consumes to shift each glyph line by
+        // (content width − line advance) × factor. (Was always 0 — text-align unimplemented.)
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var blockStyle = MakeStyle();
+        blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        var fragment = Assert.Single(sink.Fragments);
+        Assert.Equal(expectedFactor, fragment.LineAlignFactor, precision: 3);
+    }
+
+    [Fact]
+    public void Inline_atomic_shifts_with_centered_text_align()
+    {
+        // Body text-align cycle — an inline atomic moves WITH its line under text-align: center.
+        // A 50px-wide inline-block alone on a 600px centred line shifts to (600 − 50) / 2 = 275;
+        // under start it stays at 0.
+        static double DecorationX(int textAlignKeyword)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(50));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(30));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.InlineOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        Assert.Equal(0, DecorationX(0), precision: 1);     // start
+        Assert.Equal(275, DecorationX(4), precision: 1);   // center: (600 − 50) / 2
+    }
+
     [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {

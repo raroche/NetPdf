@@ -7259,37 +7259,61 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             3 => (ascentPx, mbH - ascentPx),                                       // text-top
             4 => (mbH + descentPx, -descentPx),                                    // text-bottom (descent < 0)
             6 or 7 => (0.0, 0.0),                                                   // top / bottom — line-edge
-            _ => (a.AscentAbovePx, a.DescentBelowPx),                              // baseline / sub / super
+            // super / sub — the baseline split shifted UP / DOWN by the raise / drop.
+            2 => (a.AscentAbovePx + SuperRiseEm * fontSizePx, a.DescentBelowPx - SuperRiseEm * fontSizePx),
+            1 => (a.AscentAbovePx - SubDropEm * fontSizePx, a.DescentBelowPx + SubDropEm * fontSizePx),
+            _ => (a.AscentAbovePx, a.DescentBelowPx),                              // baseline
         };
     }
+
+    /// <summary>vertical-align <c>sub</c> / <c>super</c> raise / drop, as a fraction of the parent
+    /// font-size (CSS 2.2 §10.8.1 leaves the exact amount to the UA — these approximate typical
+    /// superscript / subscript offsets; the layout layer has no font OS/2 super/subscript metrics).</summary>
+    private const double SuperRiseEm = 0.3;
+    private const double SubDropEm = 0.2;
 
     /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — the atomic's BORDER-box top within the line box
     /// for its <paramref name="valign"/> keyword index (see <see cref="IsBaselineValign"/> for the
     /// mapping). <paramref name="ascentPx"/> / <paramref name="descentPx"/> are the parent text's
     /// approximate ascent / descent (descent is negative); <paramref name="fontSizePx"/> feeds the
-    /// <c>middle</c> half-x-height (≈ 0.25em) offset. A numeric <c>&lt;length&gt;</c> / <c>&lt;%&gt;</c>
-    /// reads back as index 0 (baseline) — its non-baseline consumption is deferred.</summary>
+    /// <c>middle</c> half-x-height (≈ 0.25em) offset + the <c>sub</c> / <c>super</c> shift. A numeric
+    /// <c>&lt;length&gt;</c> / <c>&lt;%&gt;</c> reads back as index 0 (baseline) here — the numeric
+    /// shift is applied by the caller (vertical-align length cycle) before this runs.</summary>
     private static double ComputeAtomicBorderBoxTop(
         in NetPdf.Layout.Inline.InlineAtomic a, int valign,
         double lineTopPx, double lineHeightPx, double baselineTopPx,
-        double ascentPx, double descentPx, double fontSizePx) => valign switch
+        double ascentPx, double descentPx, double fontSizePx)
     {
-        // top — the margin box's TOP edge meets the line-box top.
-        6 => lineTopPx + a.MarginBlockStartPx,
-        // bottom — the margin box's BOTTOM edge meets the line-box bottom.
-        7 => lineTopPx + lineHeightPx - a.MarginBlockEndPx - a.BorderBoxHeightPx,
-        // middle — the margin box's vertical centre meets the baseline minus half the x-height (≈0.25em).
-        5 => baselineTopPx - 0.25 * fontSizePx - a.MarginBoxHeightPx / 2.0 + a.MarginBlockStartPx,
-        // text-top — the margin box's TOP edge meets the parent text's content-area top (baseline−ascent).
-        3 => baselineTopPx - ascentPx + a.MarginBlockStartPx,
-        // text-bottom — the margin box's BOTTOM edge meets the text content-area bottom (baseline−descent).
-        4 => baselineTopPx - descentPx - a.MarginBlockEndPx - a.BorderBoxHeightPx,
-        // baseline (0) + sub(1)/super(2)/numeric (→0) — an inline-block aligns its OWN baseline with the
-        // line baseline; an img-ish atomic keeps its margin-box bottom on the baseline.
-        _ => a.BaselineFromBorderTopPx is { } b
-            ? baselineTopPx - b
-            : baselineTopPx - a.MarginBlockEndPx - a.BorderBoxHeightPx,
-    };
+        // Place the border box so the atomic's OWN baseline (an inline-block's last-line baseline) — or
+        // its margin-box bottom (an img-ish atomic) — sits on `atBaseline`. Fields hoisted to locals so
+        // the local function doesn't capture the `in` parameter (CS1628).
+        var baselineFromTop = a.BaselineFromBorderTopPx;
+        var marginEndPx = a.MarginBlockEndPx;
+        var borderBoxHeightPx = a.BorderBoxHeightPx;
+        double OnBaseline(double atBaseline) => baselineFromTop is { } b
+            ? atBaseline - b
+            : atBaseline - marginEndPx - borderBoxHeightPx;
+
+        return valign switch
+        {
+            // top — the margin box's TOP edge meets the line-box top.
+            6 => lineTopPx + a.MarginBlockStartPx,
+            // bottom — the margin box's BOTTOM edge meets the line-box bottom.
+            7 => lineTopPx + lineHeightPx - a.MarginBlockEndPx - a.BorderBoxHeightPx,
+            // middle — the margin box's vertical centre meets the baseline minus half the x-height.
+            5 => baselineTopPx - 0.25 * fontSizePx - a.MarginBoxHeightPx / 2.0 + a.MarginBlockStartPx,
+            // text-top — the margin box's TOP edge meets the parent text's content-area top.
+            3 => baselineTopPx - ascentPx + a.MarginBlockStartPx,
+            // text-bottom — the margin box's BOTTOM edge meets the text content-area bottom.
+            4 => baselineTopPx - descentPx - a.MarginBlockEndPx - a.BorderBoxHeightPx,
+            // super / sub — the atomic's baseline RAISED / LOWERED off the line baseline (the shifted
+            // baseline carries the inline-block's own-baseline or img margin-box-bottom alignment).
+            2 => OnBaseline(baselineTopPx - SuperRiseEm * fontSizePx),
+            1 => OnBaseline(baselineTopPx + SubDropEm * fontSizePx),
+            // baseline (0) / numeric (→0) — the atomic's own baseline / margin-box bottom on the baseline.
+            _ => OnBaseline(baselineTopPx),
+        };
+    }
 
     /// <summary>Inline-atomic-boxes cycle — an inline-atomic box (inline <c>&lt;img&gt;</c>) positioned
     /// relative to its inline-only block's CONTENT box. <see cref="EmitInlineOnlyBlockFragment"/> adds

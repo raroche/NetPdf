@@ -648,6 +648,45 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(top <= 0.01, $"top-aligned box should sit at the line top; got {top}");
     }
 
+    // Lays out [text "A", inline-block(20×10, given vertical-align)] and returns the atomic's block offset.
+    private static double ValignAtomicTop(int valignKeyword)
+    {
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+        ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));
+        ibStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(valignKeyword));
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());   // no line box
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.BlockOffset;
+        throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+    }
+
+    [Fact]
+    public void Inline_atomic_vertical_align_super_raises_and_sub_lowers_off_the_baseline()
+    {
+        // vertical-align sub/super cycle (CSS 2.2 §10.8.1) — `super` raises the atomic off the line
+        // baseline, `sub` lowers it (both shift the baseline placement by a fraction of the parent
+        // font-size). So super sits ABOVE the baseline placement (smaller top offset), sub BELOW it.
+        var baseline = ValignAtomicTop(0);   // baseline
+        var super = ValignAtomicTop(2);      // super
+        var sub = ValignAtomicTop(1);        // sub
+
+        Assert.True(super < baseline - 0.5, $"super should raise the atomic above baseline: super={super} baseline={baseline}");
+        Assert.True(sub > baseline + 0.5, $"sub should lower the atomic below baseline: sub={sub} baseline={baseline}");
+    }
+
     // The line baseline (where the surrounding text sits) for the inline-block on the outer line.
     private static double OuterLineBaseline(Box outerInlineOnlyBlock, RecordingFragmentSink sink)
     {

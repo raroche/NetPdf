@@ -759,6 +759,30 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_text_align_inherits_to_child_div_and_shifts_line_by_exact_geometry()
+    {
+        // Post-PR-#191 review P3 — text-align is an INHERITED property, so declaring it on <body> must
+        // reach the child <div> that actually emits the line (prior coverage set TextAlign directly on
+        // the block, proving nothing about inheritance). And the shift must be the EXACT line-align
+        // geometry, not just "different bytes": center shifts the line by HALF the free space, right by
+        // ALL of it — so off the same start (left) baseline, the right shift is EXACTLY twice the center
+        // shift. That identity holds without hard-coding the page content width or the glyph advance.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string bodyStyle) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body style=\"" + bodyStyle + "\"><div>A</div></body></html>", opts))).X;
+
+        var start = LineX("");                       // no text-align anywhere → start (control)
+        var center = LineX("text-align:center");     // body center, inherited by the div
+        var right = LineX("text-align:right");        // body right, inherited by the div
+
+        // Inheritance reached the div: both align values shift the line right of the start baseline.
+        Assert.True(center > start + 1.0, $"inherited center should shift right of start: {start} → {center}");
+        Assert.True(right > center + 1.0, $"inherited right should shift further than center: {center} → {right}");
+        // Exact line-align geometry: center = start + free/2, right = start + free ⇒ right−start = 2·(center−start).
+        Assert.Equal(2.0 * (center - start), right - start, precision: 1);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border
@@ -3484,6 +3508,41 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains(" c ", BlueFillRegion(Latin1(vw.Pdf)));   // vw resolved → rounded
 
         static string BlueFillRegion(string pdf)
+        {
+            var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+            Assert.True(i >= 0, "expected the blue band fill");
+            var end = pdf.IndexOf('Q', i);
+            return pdf[i..(end < 0 ? pdf.Length : end)];
+        }
+    }
+
+    [Fact]
+    public void Page_margin_box_relative_border_radius_overflowing_in_context_is_diagnosed_not_silently_squared()
+    {
+        // Post-PR-#191 review P2 — a SYNTACTICALLY supported relative radius that overflows IN CONTEXT
+        // (`1e308em` × the 16px default font = non-finite) must be SURFACED, not silently squared: the
+        // RelativeLengthResolver.IsSupported contract requires the caller to diagnose a kept value's
+        // contextual failure (mirrors the explicit-size + padding paths). The `2em` control resolves
+        // cleanly (no diagnostic, rounded band) so the test can't pass from an unrelated regression.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var overflow = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 1e308em } }</style></head><body></body></html>", opts);
+        var control = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>", opts);
+
+        // The overflowing radius is diagnosed AND falls back to a square band (no Bézier in the fill).
+        Assert.Contains(overflow.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        Assert.DoesNotContain(" c ", BlueFill(Latin1(overflow.Pdf)));
+
+        // The control: no diagnostic, rounded band — so the diagnostic above is the overflow's, not noise.
+        Assert.DoesNotContain(control.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.Contains(" c ", BlueFill(Latin1(control.Pdf)));
+
+        static string BlueFill(string pdf)
         {
             var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
             Assert.True(i >= 0, "expected the blue band fill");

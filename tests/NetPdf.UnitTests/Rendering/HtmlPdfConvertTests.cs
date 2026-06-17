@@ -3465,6 +3465,34 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_font_or_viewport_relative_border_radius_rounds_the_band()
+    {
+        // Margin-box relative-radius cycle — a font-/viewport-relative border-radius now RESOLVES
+        // (was square): `0.5em` against `font-size: 20px` = 10px, and `2vw` against the page width,
+        // each fill the band as a rounded (Bézier) path. No invalid diagnostic.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var em = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; font-size: 20px; " +
+            "background-color: #3366cc; border-radius: 0.5em } }</style></head><body></body></html>", opts);
+        var vw = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 2vw } }</style></head><body></body></html>", opts);
+
+        Assert.DoesNotContain(em.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.Contains(" c ", BlueFillRegion(Latin1(em.Pdf)));   // em resolved → rounded
+        Assert.Contains(" c ", BlueFillRegion(Latin1(vw.Pdf)));   // vw resolved → rounded
+
+        static string BlueFillRegion(string pdf)
+        {
+            var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+            Assert.True(i >= 0, "expected the blue band fill");
+            var end = pdf.IndexOf('Q', i);
+            return pdf[i..(end < 0 ? pdf.Length : end)];
+        }
+    }
+
+    [Fact]
     public void Body_border_radius_slash_form_rounds_the_background_elliptically()
     {
         // border-radius-elliptical cycle — `border-radius: <h> / <v>` (dropped by AngleSharp) is
@@ -3536,26 +3564,22 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_border_radius_em_is_deferred_to_a_square()
+    public void Page_margin_box_border_radius_em_now_resolves_and_rounds()
     {
-        // margin-box-border-radius cycle — the radius now cascades through the corner longhands. A
-        // font-relative `em` defers (no font context in the margin-box cascade) → the band reads it as
-        // 0 → SQUARE, SILENTLY (matching the body; relative margin-box radii are a documented deferral).
+        // margin-box-relative-radius cycle — a font-relative `em` radius now RESOLVES (was deferred →
+        // square): `2em` against the box's default 16px font = 32px (clamped to half the band) → a
+        // rounded (Bézier) band, with NO diagnostic.
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
             "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
-        // `em` is a valid-but-DEFERRED length (the resolver returns Deferred, not Invalid), so it
-        // expands + silently squares — NO diagnostic (post-PR-#174 review P3 — pin the silent contract
-        // so a future resolver/diagnostic change can't regress it unnoticed; contrast the malformed +
-        // negative cases below, which ARE diagnosed).
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
             && d.Message.Contains("border-radius"));
         var pdf = Latin1(result.Pdf);
         var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
         Assert.True(i >= 0);
-        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square band (em deferred)
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // em resolved → rounded band
     }
 
     [Fact]

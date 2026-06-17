@@ -3524,9 +3524,14 @@ flags the categories):
          against the box HEIGHT when unset — the circular / `%`-ellipse pre-cycle behavior). The margin box
          shares it (the expander runs in `CssParserAdapter.ParseRawDeclarations`; the four `-y` ids JOINED
          `MarginBoxStyle.CascadedStyleIds`; a malformed slash that fails to expand is diagnosed
-         `CSS-PROPERTY-VALUE-INVALID-001` as before). STILL DEFERRED: font-/viewport-relative margin-box radii
-         (`em`/`vw` defer in the margin-box cascade, like the body); rounded NON-uniform borders (the OUTER
-         corners now round via a clip — rounded-nonuniform-borders cycle; per-corner arc segments stay deferred).
+         `CSS-PROPERTY-VALUE-INVALID-001` as before). FONT-/VIEWPORT-relative margin-box radii (`em`/`ex`/`ch`/
+         `rem`/`vw`/`vh`/`vmin`/`vmax`) now RESOLVE (margin-box-relative-radius cycle —
+         `PageMarginBoxPainter.ResolveDeferredBorderRadiusInPlace` rewrites the deferred corner longhands to
+         used px via `RelativeLengthResolver` after the box font-size resolves, before `ReadCornerRadii`); a
+         `calc()` / container-unit margin-box radius STILL defers → square (its `%` base is the box dim, not
+         final at resolve time — a documented gap, like the body's calc radii). STILL DEFERRED: rounded
+         NON-uniform borders (the OUTER corners now round via a clip — rounded-nonuniform-borders cycle;
+         per-corner arc segments stay deferred).
        - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
          image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
@@ -3547,9 +3552,10 @@ flags the categories):
          tiler). Post-PR-#174 review: an INVALID/malformed margin-box `border-radius` (`8px bogus`, an
          unbalanced function, or a NEGATIVE radius — `border-*-radius` joined `NonNegativeProperties`) is
          DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped;
-         a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). DEFERRED (still
-         render square, SILENTLY): font-/viewport-relative margin-box radii (`em`/`vw` defer in the
-         margin-box cascade, like the body). Rounded NON-uniform borders FIRST CUT (the outer corners round
+         a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). Font-/viewport-
+         relative margin-box radii (`em`/`vw`/`rem`/…) now RESOLVE (margin-box-relative-radius cycle); a
+         `calc()` / container-unit margin-box radius still renders square (documented). Rounded NON-uniform
+         borders FIRST CUT (the outer corners round
          via a clip — rounded-nonuniform-borders cycle; per-corner arc segments / inner corners stay
          deferred). (The elliptical `Rx / Ry` slash SHIPPED later — border-radius-elliptical cycle, see that
          entry above.)

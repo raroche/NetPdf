@@ -32,6 +32,12 @@ namespace NetPdf.Layout.Inline;
 /// <param name="MarginBlockStartPx">The top margin — part of the margin-box height the line accommodates.</param>
 /// <param name="MarginBlockEndPx">The bottom margin — the margin-box bottom (border box + this) sits on
 /// the text baseline.</param>
+/// <param name="BaselineFromBorderTopPx">Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — the
+/// distance from the atomic's BORDER-box top to its OWN baseline (an inline-block's last in-flow line
+/// box's baseline). When set, the atomic is aligned by this baseline (it sits ON the surrounding text
+/// baseline), and the line box is sized by max-ascent-above / max-descent-below. <see langword="null"/>
+/// (the default — an <c>&lt;img&gt;</c>, or an inline-block with NO in-flow line box / non-visible
+/// overflow) keeps the img-ish placement: the MARGIN-box bottom sits on the baseline.</param>
 internal readonly record struct InlineAtomic(
     Box Box,
     double AdvancePx,
@@ -39,8 +45,23 @@ internal readonly record struct InlineAtomic(
     double BorderBoxHeightPx,
     double MarginInlineStartPx,
     double MarginBlockStartPx,
-    double MarginBlockEndPx)
+    double MarginBlockEndPx,
+    double? BaselineFromBorderTopPx = null)
 {
     /// <summary>The MARGIN-box block size (CSS px) — the atomic's contribution to the line-box height.</summary>
     public double MarginBoxHeightPx => MarginBlockStartPx + BorderBoxHeightPx + MarginBlockEndPx;
+
+    /// <summary>The atomic's extent ABOVE the line baseline (CSS px) — the margin-box top down to the
+    /// baseline. A baseline-aligned atomic: its top margin + the border-top-to-baseline distance; an
+    /// img-ish atomic (no own baseline): the WHOLE margin box (its bottom is on the baseline).</summary>
+    public double AscentAbovePx => BaselineFromBorderTopPx is { } b
+        ? MarginBlockStartPx + b
+        : MarginBoxHeightPx;
+
+    /// <summary>The atomic's extent BELOW the line baseline (CSS px). A baseline-aligned atomic: the
+    /// border-box below its baseline + the bottom margin; an img-ish atomic: nothing (it sits ON the
+    /// baseline).</summary>
+    public double DescentBelowPx => BaselineFromBorderTopPx is { } b
+        ? BorderBoxHeightPx - b + MarginBlockEndPx
+        : 0.0;
 }

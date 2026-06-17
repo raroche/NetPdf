@@ -271,6 +271,19 @@ internal static class TextPainter
             + blockStyle.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
             + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingTop);
 
+        // text-align / justify is distributed within the CONTENT box, not the border box: the glyph
+        // origin already starts at contentLeftPx (border + padding added), so the available inline size
+        // for alignment must subtract the SAME inline border + padding from the border-box InlineSize.
+        // Otherwise center / right / justify treat the box's border+padding as extra free space AND
+        // desync from the inline-atomic placement, which aligns against the CONTENT inline size
+        // (post-PR-#192 Copilot review). With no border/padding (the common body block) it equals
+        // InlineSize, byte-identical.
+        var contentInlineSizePx = fragment.InlineSize
+            - blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+            - blockStyle.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+            - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingRight);
+
         // line-height: mirror BlockLayouter's inline-only block rule EXACTLY (declared
         // line-height when > 0, else 1.2 × the block's font-size) so painted lines stack at
         // the same pitch the layouter reserved. The line METRICS follow the fragment's
@@ -287,6 +300,19 @@ internal static class TextPainter
         var lines = inline.Lines;
         var shapedRuns = inline.ShapedRuns;
         var preRuns = inline.PreprocessedRuns;
+
+        // text-align: justify cycle — when the fragment justifies, reconstruct the shaping
+        // CONCATENATED text (the source runs' preprocessed text in document order — the same
+        // concatenation the line builder shaped, so a glyph's Cluster indexes straight into it).
+        // The justify pass below reads it to identify word-separator spaces. Built once per fragment,
+        // only when justifying (null otherwise → the byte-identical non-justify path).
+        string? concatText = null;
+        if (fragment.JustifyLines)
+        {
+            var ct = new System.Text.StringBuilder();
+            foreach (var pr in preRuns) ct.Append(pr.Text);
+            concatText = ct.ToString();
+        }
 
         // The fragment's opt-in clip rect (margin-box overflow clip-path cycle) → page-pt once per
         // fragment; every draw command this fragment queues carries it (replay groups them under one
@@ -334,8 +360,42 @@ internal static class TextPainter
             // arrays keep the pre-cycle arithmetic byte-identical.
             var insetLeftPx = fragment.PerLineInsetLeftPx is { } iLs && li < iLs.Count ? iLs[li] : 0.0;
             var insetRightPx = fragment.PerLineInsetRightPx is { } iRs && li < iRs.Count ? iRs[li] : 0.0;
+
+            // Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1): when a line carries a baseline-
+            // aligned inline-block the layout supplies its baseline (§10.8.1 max-ascent line box) so the
+            // line's TEXT sits on the SAME baseline as the box. A per-line NaN — and the null default —
+            // leaves the per-slice real-metric baseline below, byte-identical.
+            double? explicitBaselineTopPx =
+                fragment.PerLineBaselineTopPx is { } bls && li < bls.Count && !double.IsNaN(bls[li])
+                    ? lineTopPx + bls[li]
+                    : null;
+
+            // text-align: justify (CSS Text 3 §7.3) — a NON-LAST line that is NOT terminated by a
+            // forced break distributes its free space across inter-word gaps. The LAST line + any
+            // forced-break-terminated line stay start-aligned (the §7.3 exceptions; LineAlignFactor is
+            // 0 for justify, so they paint left). `gapCount` is the interior word-separator-space count
+            // (trailing spaces sort last → excluded); an overflowing line (free ≤ 0) is not squeezed.
+            var justifyExtraPerGapPx = 0.0;
+            var justifyGapCount = 0;
+            if (fragment.JustifyLines && concatText is not null
+                && !line.EndsWithMandatoryBreak && li < lines.Length - 1
+                && TryPlanJustification(line, shapedRuns, concatText, out justifyGapCount) && justifyGapCount > 0)
+            {
+                var freePx = contentInlineSizePx - insetLeftPx - insetRightPx - line.TotalAdvance;
+                if (freePx > 0) justifyExtraPerGapPx = freePx / justifyGapCount;
+            }
+
+            if (justifyExtraPerGapPx > 0.0)
+            {
+                EmitJustifiedLine(
+                    line, shapedRuns, preRuns, concatText!, justifyGapCount, justifyExtraPerGapPx,
+                    insetLeftPx, contentLeftPx, lineTopPx, thisLineHeightPx, pageHeightPt, clipPt,
+                    shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws);
+                continue;
+            }
+
             var xCursorPx = insetLeftPx + (lineAlignFactor != 0.0
-                ? Math.Max(0.0, (fragment.InlineSize - insetLeftPx - insetRightPx - line.TotalAdvance) * lineAlignFactor)
+                ? Math.Max(0.0, (contentInlineSizePx - insetLeftPx - insetRightPx - line.TotalAdvance) * lineAlignFactor)
                 : 0.0);
 
             foreach (var slice in line.Slices)
@@ -374,12 +434,14 @@ internal static class TextPainter
                 }
 
                 // Baseline: centre the run font's em box in the line box (half-leading), then
-                // drop to the baseline by the ascent. Metrics from the run's parsed font.
+                // drop to the baseline by the ascent. Metrics from the run's parsed font. When the line
+                // carries a baseline-aligned inline-block, the layout pins the baseline instead (so text
+                // and box share it — CSS 2.2 §10.8.1); otherwise the real-metric centred baseline holds.
                 var unitsPerEm = fc.Font.Head.UnitsPerEm;
                 var ascentPx = fc.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = fc.Font.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
                 var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
-                var baselineTopPx = lineTopPx + halfLeadingPx + ascentPx;
+                var baselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).
@@ -395,6 +457,144 @@ internal static class TextPainter
                     ClipPt: clipPt));
             }
         }
+    }
+
+    /// <summary>text-align: justify cycle — count a line's interior word-separator spaces (the
+    /// justification opportunities, CSS Text 3 §7.3). Returns <see langword="false"/> when the line
+    /// carries an inline ATOMIC (atomic + justify is deferred to the first cut → the line stays
+    /// start-aligned). <paramref name="gapCount"/> excludes a TRAILING run of spaces (they sort last
+    /// and get no gap — a word must follow). A glyph's <c>Cluster</c> indexes into
+    /// <paramref name="concatText"/> (the shaping concatenation), matching the line builder's
+    /// convention.</summary>
+    private static bool TryPlanJustification(
+        LineFragment line, IReadOnlyList<ShapedRun> shapedRuns, string concatText, out int gapCount)
+    {
+        gapCount = 0;
+        var totalSpaces = 0;
+        var trailingSpaces = 0;
+        foreach (var slice in line.Slices)
+        {
+            if (slice.GlyphLength <= 0) continue;
+            var run = shapedRuns[slice.ShapedRunIndex];
+            if (run.Atomic is not null) return false;   // atomic on the line → not justified (deferred).
+            for (var g = 0; g < slice.GlyphLength; g++)
+            {
+                if (IsJustifySpace(concatText, run.Glyphs[slice.GlyphStart + g].Cluster))
+                {
+                    totalSpaces++;
+                    trailingSpaces++;
+                }
+                else
+                {
+                    trailingSpaces = 0;
+                }
+            }
+        }
+        gapCount = totalSpaces - trailingSpaces;   // interior (word-followed) spaces only.
+        return true;
+    }
+
+    /// <summary>Whether the cluster at <paramref name="cluster"/> in <paramref name="concatText"/> is a
+    /// word-separator space — an ASCII space (U+0020) or tab (U+0009), the justification opportunities
+    /// (CSS Text 3 §7.3; a NO-BREAK space U+00A0 is deliberately NOT one). Bounds-guarded (an
+    /// out-of-range cluster is not a space — safe degradation), mirroring the line builder.</summary>
+    private static bool IsJustifySpace(string concatText, int cluster) =>
+        (uint)cluster < (uint)concatText.Length
+        && (concatText[cluster] == ' ' || concatText[cluster] == '\t');
+
+    /// <summary>text-align: justify cycle — paint one JUSTIFIED line. Walks the line's glyphs at an
+    /// EXPANDING pen (advancing by each glyph's own <c>XAdvance</c> — the same /W the Tj uses — plus
+    /// <paramref name="extraPerGapPx"/> after each of the first <paramref name="gapCount"/> word-
+    /// separator spaces), splitting the run into per-word <see cref="DrawCommand"/> segments at those
+    /// spaces. A font-fail / transparent / size-0 run still advances the pen + consumes its
+    /// opportunities (so visible later words stay positioned) but paints nothing.</summary>
+    private static void EmitJustifiedLine(
+        LineFragment line, IReadOnlyList<ShapedRun> shapedRuns, IReadOnlyList<TextRun> preRuns,
+        string concatText, int gapCount, double extraPerGapPx,
+        double insetLeftPx, double contentLeftPx, double lineTopPx, double thisLineHeightPx,
+        double pageHeightPt, (double X, double Y, double W, double H)? clipPt,
+        HarfBuzzShaperResolver shaper, Dictionary<string, FontCollect> collects, List<string> fontOrder,
+        HashSet<string> failed, HashSet<string> diagnosed, IDiagnosticsSink? diagnostics,
+        List<DrawCommand> draws)
+    {
+        var penXPx = insetLeftPx;         // painted x cursor (natural advances + gaps added so far).
+        var opportunitiesUsed = 0;
+        foreach (var slice in line.Slices)
+        {
+            if (slice.GlyphLength <= 0) continue;
+            var run = shapedRuns[slice.ShapedRunIndex];   // no atomic here — TryPlanJustification bailed.
+            var runStyle = preRuns[run.Source.SourceTextRunIndex].Style;
+            var fontSizePx = runStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+            if (!FragmentPainter.TryResolveColor(runStyle.Get(PropertyId.Color), DefaultColorArgb, out var argb))
+                argb = DefaultColorArgb;
+
+            // Resolve the run's font + baseline once; a failure leaves fc null (pen still advances).
+            string? key = null;
+            FontCollect? fc = null;
+            var baselineTopPx = 0.0;
+            if (fontSizePx > 0 && FragmentPainter.Alpha(argb) != 0
+                && TryGetFontCollect(shaper, runStyle, collects, fontOrder, failed, diagnosed, diagnostics,
+                    out var k, out var f))
+            {
+                key = k;
+                fc = f;
+                var unitsPerEm = f.Font.Head.UnitsPerEm;
+                var ascentPx = f.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
+                var descentPx = f.Font.Hhea.Descender * fontSizePx / unitsPerEm;
+                baselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
+            }
+
+            var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.
+            var segPenXPx = penXPx;       // painted x of the current segment's first glyph.
+            for (var g = 0; g < slice.GlyphLength; g++)
+            {
+                var glyph = run.Glyphs[slice.GlyphStart + g];
+                penXPx += glyph.XAdvance;
+                if (opportunitiesUsed >= gapCount
+                    || !IsJustifySpace(concatText, glyph.Cluster))
+                    continue;
+                // Word boundary — flush [segStartG, g] (incl. the space) then open a gap after it.
+                opportunitiesUsed++;
+                if (fc is not null)
+                    EmitGlyphSegment(run, slice.GlyphStart + segStartG, g - segStartG + 1, fc, key!,
+                        fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
+                        baselineTopPx, argb, pageHeightPt, clipPt, draws);
+                penXPx += extraPerGapPx;
+                segStartG = g + 1;
+                segPenXPx = penXPx;
+            }
+            // Trailing segment after the slice's last opportunity (or the whole slice if none).
+            if (fc is not null && segStartG < slice.GlyphLength)
+                EmitGlyphSegment(run, slice.GlyphStart + segStartG, slice.GlyphLength - segStartG, fc, key!,
+                    fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
+                    baselineTopPx, argb, pageHeightPt, clipPt, draws);
+        }
+    }
+
+    /// <summary>Emit one <see cref="DrawCommand"/> for a contiguous glyph segment
+    /// <c>[glyphStart, glyphStart+glyphCount)</c> of <paramref name="run"/> at the (already
+    /// content-relative) baseline origin <paramref name="xStartPx"/> / <paramref name="baselineTopPx"/>,
+    /// seeding the font's used-glyph set. Shared by the justify pass's per-word segments.</summary>
+    private static void EmitGlyphSegment(
+        ShapedRun run, int glyphStart, int glyphCount, FontCollect fc, string fontKey,
+        double fontSizePx, double xStartPx, double baselineTopPx, uint argb, double pageHeightPt,
+        (double X, double Y, double W, double H)? clipPt, List<DrawCommand> draws)
+    {
+        var ids = new ushort[glyphCount];
+        for (var i = 0; i < glyphCount; i++)
+        {
+            var gid = run.Glyphs[glyphStart + i].GlyphId;
+            ids[i] = gid;
+            fc.Used.Add(gid);
+        }
+        draws.Add(new DrawCommand(
+            FontKey: fontKey,
+            OriginalGlyphIds: ids,
+            XPt: PdfUnits.PxToPt(xStartPx),
+            YPt: pageHeightPt - PdfUnits.PxToPt(baselineTopPx),
+            SizePt: PdfUnits.PxToPt(fontSizePx),
+            ColorArgb: argb,
+            ClipPt: clipPt));
     }
 
     /// <summary>Resolve a run's font program to a parsed-font collector, caching by program

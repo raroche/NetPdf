@@ -138,6 +138,11 @@ namespace NetPdf.Layout.Layouters;
 /// unclipped — every other fragment is byte-identical. The page-margin box sets it (to its padding box)
 /// when its content overflows, so protruding glyphs clip at the box edge instead of spilling over the
 /// page; an explicit <c>overflow: visible</c> on the box leaves it unset.</param>
+/// <param name="PerLineBaselineTopPx">Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — when a
+/// line carries a baseline-aligned inline-block, the line is sized by max-ascent / max-descent and this
+/// gives the baseline's offset from the line top; the painter places that line's text on it (so text and
+/// box share a baseline). A per-line <c>NaN</c> (and the null default) → the painter's real-metric
+/// baseline, byte-identical.</param>
 /// <param name="PerLineHeightsPx">Per-line PITCH (segment-pitch cycle) — line i advances by
 /// its own height (a 32px h1 line over a 16px subtitle). Null = the uniform
 /// <paramref name="TextMetricsStyle"/> pitch, byte-identical.</param>
@@ -154,6 +159,10 @@ namespace NetPdf.Layout.Layouters;
 /// fragment's BOX DECORATION (background, borders, outline) and paints only its text; set on the
 /// inline-only-root content fragment a flex / grid item emits (box == the item) so the decoration the
 /// item's GEOMETRY fragment already painted isn't painted twice. Default false = byte-identical.</param>
+/// <param name="JustifyLines">text-align: justify cycle — when true the painter JUSTIFIES each line
+/// except the last and any forced-break-terminated line (CSS Text 3 §7.3 inter-word distribution):
+/// it splits the line's glyphs at word-separator spaces and spreads the free space across the gaps.
+/// Default false leaves every non-justified fragment byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -168,6 +177,11 @@ internal readonly record struct BoxFragment(
     // uniform TextMetricsStyle pitch — a 32px h1 line over a 16px subtitle each gets its own
     // height. Null (the default) = the uniform pitch, byte-identical.
     System.Collections.Generic.IReadOnlyList<double>? PerLineHeightsPx = null,
+    // Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1): line i's text baseline is at
+    // PerLineBaselineTopPx[i] from the line top (when a baseline-aligned inline-block forced the
+    // max-ascent line-box on it). A per-line NaN — and the null default — keeps the painter's
+    // real-metric centred baseline, byte-identical.
+    System.Collections.Generic.IReadOnlyList<double>? PerLineBaselineTopPx = null,
     // Per-line ALIGNMENT (segment-align cycle): line i aligns by PerLineAlignFactors[i] instead of
     // the fragment-wide LineAlignFactor. Null = the uniform factor, byte-identical.
     System.Collections.Generic.IReadOnlyList<double>? PerLineAlignFactors = null,
@@ -186,7 +200,13 @@ internal readonly record struct BoxFragment(
     // fragment already paints the decoration, so without this the background / border would
     // paint TWICE (benign for an opaque background, visibly doubled for a translucent one).
     // DEFAULT false leaves every other fragment byte-identical.
-    bool SuppressBoxDecoration = false);
+    bool SuppressBoxDecoration = false,
+    // text-align: justify cycle — when true the painter JUSTIFIES each line (except the last + any
+    // line ending at a forced break): it splits the line's glyphs at word-separator spaces and
+    // distributes the free space (InlineSize − line advance) across the inter-word gaps. The
+    // per-line LineAlignFactor still applies to the non-justified last line (justify → factor 0 =
+    // start). DEFAULT false leaves every non-justified fragment byte-identical.
+    bool JustifyLines = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

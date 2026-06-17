@@ -157,6 +157,12 @@ internal static class PropertyResolverDispatch
             PropertyType.PageName => PageNameResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
+            // Inline-atomic vertical-align cycle (CSS 2.2 §10.8.1) — keywords (baseline / sub / super /
+            // text-top / text-bottom / middle / top / bottom) → a Keyword slot; <length> / <percentage>
+            // → a LengthPercentage slot (may be negative). Consumed by the inline-atomic placement.
+            PropertyType.VerticalAlign => VerticalAlignResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
+
             // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)
             // because the dispatch hasn't validated the value text against the
             // property's grammar; a typo would silently pass through. Distinguishing

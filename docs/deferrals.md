@@ -221,8 +221,8 @@ grepping the ID).
 ## inline-atomic-boxes
 
 - **ID** — `inline-atomic-boxes`
-- **Status** — `approximated` (inline `<img>` SHIPS first-cut — inline-atomic-boxes cycle; inline-block /
-  -flex / -grid / -table still skip + diagnose).
+- **Status** — `approximated` (inline `<img>` + **inline-block** SHIP first-cut — inline-atomic-boxes
+  cycle; inline-flex / -grid / -table still skip + diagnose).
 - **Behavior** — An inline `<img>` (`BoxKind.InlineReplacedElement`) with a resolved used size now
   participates in line layout as an ATOMIC box: `BlockLayouter.CollectInlineTextRuns` converts it into a
   one-char `U+FFFC` `TextRun` carrying an `InlineAtomic` (box + used border-box width/height); the
@@ -231,39 +231,56 @@ grepping the ID).
   the white-space preprocessor passes the atomic through verbatim (preserving the payload), the line box
   grows to fit a tall atomic (`BlockLayouter.ComputeInlineAtomicLayout` → per-line heights), and
   `BlockLayouter` emits a positioned `BoxFragment` for the box (so `ImagePainter` paints it from the image
-  cache). `TextPainter` skips the synthetic glyph. The OTHER atomic kinds
-  (`InlineBlockContainer` / `InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized
-  inline-replaced) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
+  cache). `TextPainter` skips the synthetic glyph. **Inline-block (first cut)** — a `display: inline-block`
+  box is laid out the same way: `CollectInlineTextRuns.TryBuildInlineBlockAtomic` measures its content via
+  `NestedContentMeasurer` (at the available content width), computes its used border-box size (a definite
+  `width`/`height` honors `box-sizing`; `auto` width shrink-to-fits to the measured content width + the
+  inline chrome; `auto` height = the measured content block extent + the block chrome [block children] or
+  the already-chrome-folded extent [inline-only-root]), and records the buffer so
+  `EmitInlineOnlyBlockFragment` flushes the content at the atomic's content-box origin (gated by the
+  `BufferingMeasureSink.ContainsDecorationOwnerFragment` two-shape rule, like the flex content-inset). The
+  placed `BoxFragment` is the inline-block's BORDER box (painted by `FragmentPainter`). The OTHER atomic
+  kinds (`InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized inline-replaced /
+  a failed inline-block layout) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
 - **Box model (post-PR-#186 review P1)** — the img's own padding + border + margin are honored: the line
   reserves the MARGIN-box advance, the emitted fragment is the BORDER box (so `ImagePainter`, which
   subtracts the img's padding/border to recover the content box, paints correctly), and the margin-box
-  bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut.
+  bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut. The
+  inline-block atomic carries the same margin-box advance + border-box fragment.
 - **Missing (first-cut approximations)** —
   - Only `vertical-align: baseline` is honoured (the atomic's margin-box bottom sits on the line's text
-    baseline); other `vertical-align` values are not yet read.
+    baseline); other `vertical-align` values are not yet read. For an inline-block this means the spec's
+    last-in-flow-line-box baseline (CSS 2.2 §10.8.1) is approximated as the margin-box bottom (like an img).
   - The baseline uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no
     font-metric access; the painter uses the REAL metrics for glyphs, so an atomic's bottom aligns to the
     text baseline within typical-font tolerance).
   - The inline offset is start-relative — a centred / right / justified line, and RTL paragraphs, don't
     yet shift the atomic with the text.
-  - `inline-block` / `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out
-    sub-box, not just an intrinsic size) remain deferred.
-- **Trigger** — a centred/justified/RTL inline `<img>`, a non-baseline `vertical-align`, or a styled
-  `display: inline-block` span in the corpus.
+  - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
+    separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
+    by document depth, not a dedicated cap); LTR horizontal-tb.
+  - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
+    formatting context) remain deferred.
+- **Trigger** — a centred/justified/RTL inline `<img>` or inline-block, a non-baseline `vertical-align`, or
+  an `inline-flex`/`-grid`/`-table` span in the corpus.
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
   - `src/NetPdf.Layout/Inline/LineBuilder.cs` — `Shape` (synthetic glyph) + the white-space
     preprocessors (atomic pass-through). Wrap treats the 1-glyph run as a non-breakable unit.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert),
-    `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit the
-    atomic's own fragment). The remaining vertical-align / alignment / inline-block work extends here.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert) +
+    `TryBuildInlineBlockAtomic` (inline-block layout) + `IsInlineOnlyRootContainer` (the inline-block-root
+    gate), `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit
+    the atomic's fragment + flush inline-block content). The remaining vertical-align / alignment /
+    inline-flex/-grid/-table work extends here.
+  - `src/NetPdf.Layout/Layouters/BufferingMeasureSink.cs` — `ContainsDecorationOwnerFragment` (the
+    inline-only-root vs block-children two-shape flag, shared with the flex content-inset).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
-- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; first cut shipped in the inline-atomic-boxes
-  cycle (this branch).
+- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
+  inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
 - **Removal condition** — `vertical-align` (incl. non-baseline) + centred / RTL alignment honoured for
-  inline `<img>`, and inline-block / -flex / -grid / -table atomics laid out (no longer
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+  inline atomics, the inline-block's true last-line baseline + min-content shrink-to-fit, and
+  inline-flex / -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 
@@ -1680,9 +1697,9 @@ flags the categories):
 ## grid-box-sizing-border-box-deferred
 
 - **ID** — `grid-box-sizing-border-box-deferred`
-- **Status** — `resolved` (the cross-cutting audit is COMPLETE: GRID + BLOCK + TABLE + **FLEX** all honor
-  `box-sizing` on their declared sizes via the shared `BoxSizingHelper`). The flex box-sizing / content-inset
-  cycle closed the last layouter — only minor residual APPROXIMATIONS remain (below), tracked here.
+- **Status** — `approximated` (the cross-cutting audit's CORE is COMPLETE: GRID + BLOCK + TABLE + **FLEX**
+  all honor `box-sizing` on their declared sizes via the shared `BoxSizingHelper`; the flex box-sizing /
+  content-inset cycle closed the last layouter). Only minor residual APPROXIMATIONS remain (below).
 - **Behavior** — the shared `BoxSizingHelper.DeclaredToBorderBox(style, declared, chrome)` maps a declared
   size to the used BORDER box honoring `box-sizing` (CSS Basic UI 4 §10): `border-box` → the declared size
   IS the border box (floored at the chrome); `content-box` (initial) → declared + chrome (byte-identical

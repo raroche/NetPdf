@@ -703,18 +703,40 @@ public sealed class HtmlPdfConvertTests
     {
         // PR-#182 review P2 — flex item content diagnostics are no longer
         // suppressed (they were measured with a null sink). A flex item with an
-        // atomic inline (inline-block) inside it surfaces
+        // unsupported atomic inline inside it surfaces
         // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 once (buffered during item
-        // measurement, flushed when the item commits).
+        // measurement, flushed when the item commits). Uses `inline-flex` — an atomic
+        // kind that STILL skips (inline-block now lays out, inline-atomic-boxes cycle).
         const string html =
             "<!DOCTYPE html><html><body><div style=\"display:flex;flex-direction:column\">"
-            + "<div>text <span style=\"display:inline-block\">X</span></div>"
+            + "<div>text <span style=\"display:inline-flex\">X</span></div>"
             + "</div></body></html>";
 
         var result = HtmlPdf.ConvertDetailed(
             html, new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
+    [Fact]
+    public void Inline_block_lays_out_and_paints_its_decoration()
+    {
+        // Inline-atomic-boxes cycle (inline-block first cut) — a `display: inline-block`
+        // span in a paragraph lays out end-to-end: it does NOT surface
+        // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 (it's no longer skipped) and its
+        // background decoration band paints a filled rectangle.
+        const string html =
+            "<!DOCTYPE html><html><body><p>before "
+            + "<span style=\"display:inline-block;width:30px;height:20px;"
+            + "background-color:#3366cc\">X</span> after</p></body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(
+            html, new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings,
+            d => d.Code == DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+        // The inline-block's background band paints one filled rectangle.
+        Assert.Contains("re f", Latin1(result.Pdf));
     }
 
     private static int CountOccurrences(string haystack, string needle)

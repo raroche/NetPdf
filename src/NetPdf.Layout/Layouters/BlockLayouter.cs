@@ -7876,17 +7876,39 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var marginInlineStart = s.ReadLengthPxOrZero(PropertyId.MarginLeft);
         var marginInlineEnd = s.ReadLengthPxOrZero(PropertyId.MarginRight);
 
-        // Available CONTENT width for the inline-block = the line's available content width minus
-        // this box's own margins + border + padding (clamped > 0). Shrink-to-fit clamps to this
-        // (content wider than it wraps), so the measured ContentInlineExtent ≤ this.
+        // The MEASURE content width + the used inline border box depend on the `width` slot
+        // (post-PR-#190 Copilot review — a definite-width box must be measured at its OWN content
+        // width, not the whole line, else multi-word content under-counts its height / wrong wrap):
+        //  • a DEFINITE width (LengthPx) → its used border box honors box-sizing; content is laid
+        //    out at the box's content width (border box minus inline chrome);
+        //  • `auto` → measured at the available content width (the line minus this box's margins +
+        //    chrome, clamped > 0), then SHRINK-TO-FITs to the measured content width
+        //    (ContentInlineExtent — the widest LINE advance, ≤ the available width by wrapping)
+        //    plus the inline chrome.
+        var widthSlot = s.Get(PropertyId.Width);
+        var definiteWidth = widthSlot.Tag == ComputedSlotTag.LengthPx;
         var availContent = availInlineContentSize - marginInlineStart - marginInlineEnd - inlineChrome;
         if (!(availContent > 0)) availContent = 1;
+
+        double borderBoxW;
+        double measureContentWidth;
+        if (definiteWidth)
+        {
+            borderBoxW = BoxSizingHelper.DeclaredToBorderBox(s, Math.Max(0, widthSlot.AsLengthPx()), inlineChrome);
+            measureContentWidth = borderBoxW - inlineChrome;          // the box's OWN content width
+            if (!(measureContentWidth > 0)) measureContentWidth = 1;  // degenerate (chrome ≥ width)
+        }
+        else
+        {
+            measureContentWidth = availContent;
+            borderBoxW = 0;                                           // set after measuring (shrink-to-fit)
+        }
 
         BufferingMeasureSink buffer;
         try
         {
             buffer = NestedContentMeasurer.Measure(
-                inlineBlock, availContent,
+                inlineBlock, measureContentWidth,
                 blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
                 shaperResolver: _shaperResolver,
                 writingMode: WritingMode.HorizontalTb, isRtl: false,
@@ -7897,13 +7919,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return null;   // an inline-pass mismatch in the sub-box → skip + diagnose (no crash)
         }
 
-        // Used INLINE (border-box) size: a definite `width` honors box-sizing; `auto` shrink-to-fits
-        // to the measured content width (ContentInlineExtent — the widest LINE advance, already
-        // clamped to availContent by wrapping) plus the inline chrome.
-        var widthSlot = s.Get(PropertyId.Width);
-        var borderBoxW = widthSlot.Tag == ComputedSlotTag.LengthPx
-            ? BoxSizingHelper.DeclaredToBorderBox(s, Math.Max(0, widthSlot.AsLengthPx()), inlineChrome)
-            : buffer.ContentInlineExtent + inlineChrome;
+        if (!definiteWidth) borderBoxW = buffer.ContentInlineExtent + inlineChrome;   // shrink-to-fit
 
         // Used BLOCK (border-box) size: a definite `height` honors box-sizing; `auto` = the measured
         // content block extent + the block chrome for BLOCK-child content (an inline-only-root

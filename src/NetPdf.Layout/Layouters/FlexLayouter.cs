@@ -1249,18 +1249,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // resolved direction. (Read BEFORE the cross size so the
                 // box-sizing map below can skip the auto case.)
                 var itemIsCrossSizeAuto = IsCrossSizeAuto(item, flexDirection);
-                // Flex box-sizing cycle — a DEFINITE cross size is the item's BORDER box
-                // honoring `box-sizing` (the shared BoxSizingHelper adds the cross-axis
-                // border + padding for `content-box`; the declared size IS the border box
-                // for `border-box`). `auto` stays 0 — the stretch / align path uses the
-                // line cross extent instead (ComputeAlignItemsPlacement reads
-                // itemIsCrossSizeAuto). This makes the emitted cross border box account for
-                // the item's own border/padding (with the content-inset below).
-                var itemCrossSize = itemIsCrossSizeAuto
-                    ? 0
-                    : BoxSizingHelper.DeclaredToBorderBox(
-                        item.Style, item.Style.ReadLengthPxOrZero(crossSizeProperty),
-                        item.Style.AxisBorderPaddingPx(crossSizeProperty));
+                // Flex box-sizing cycle — a DEFINITE (LengthPx) cross size is the item's BORDER
+                // box honoring `box-sizing`, via the shared `CrossBorderBoxSizePx`; `auto` /
+                // an unresolved percentage → 0 (the stretch / align path uses the line cross
+                // extent instead — ComputeAlignItemsPlacement reads itemIsCrossSizeAuto). The
+                // shared helper keeps this in lockstep with FlexLinePacker's line-cross packing
+                // (post-PR-#190 Copilot review — a percentage cross no longer floors to chrome).
+                var itemCrossSize = item.Style.CrossBorderBoxSizePx(crossSizeProperty);
 
                 // Per Phase 3 Task 15 L6 — pass the line's cross
                 // extent (= max(item cross-size on this line) for
@@ -2764,9 +2759,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 {
                     borderBoxInline = IsCrossSizeAuto(item, flexDirection)
                         ? lineCrossExtent
-                        : BoxSizingHelper.DeclaredToBorderBox(
-                            item.Style, item.Style.ReadLengthPxOrZero(crossSizeProperty),
-                            item.Style.AxisBorderPaddingPx(crossSizeProperty));
+                        : item.Style.CrossBorderBoxSizePx(crossSizeProperty);
                 }
                 else
                 {

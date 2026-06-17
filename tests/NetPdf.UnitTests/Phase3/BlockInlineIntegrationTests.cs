@@ -529,6 +529,42 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_block_definite_width_measures_content_at_its_own_width()
+    {
+        // Post-PR-#190 Copilot review — a DEFINITE-width inline-block measures its content at its
+        // OWN content width (not the whole remaining line), so multi-word content WRAPS + the auto
+        // height reflects it. A narrow 12px inline-block with several words + auto height is several
+        // ~19.2px lines tall (≫ a single line); pre-fix it measured at the 600px line → one line.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(12)); // narrow definite width, auto height
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A A A A A A", MakeStyle()));
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        BoxFragment? decoration = null;
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) decoration = f;
+        Assert.NotNull(decoration);
+        // Wrapped to multiple ~19.2px lines (≫ one line). Pre-fix (measured at the 600px line) the
+        // words fit on one line → ~19.2px.
+        Assert.True(decoration!.Value.BlockSize > 30,
+            $"definite narrow width should wrap content + grow tall; got {decoration.Value.BlockSize}");
+    }
+
+    [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {
         // Per Finding #5 — margin/border/padding/width applied to the

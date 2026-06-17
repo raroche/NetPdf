@@ -10340,6 +10340,79 @@ public sealed class FlexLayouterTests
         Assert.Equal(childFrag.Value.BlockSize + 30, geometry.BlockSize, precision: 3);
     }
 
+    [Fact]
+    public void Flex_definite_zero_main_size_floors_at_chrome_under_box_sizing()
+    {
+        // Post-PR-#190 Copilot review — a DEFINITE 0 main size (`width: 0`) with border +
+        // padding must map through BoxSizingHelper: content-box border box = 0 + chrome (was
+        // dropped to 0 by the `value > 0` gate). A row item `width: 0` + padding 10 + border 5
+        // → main border box = the 30px chrome, not 0.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(0)); // row
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 0);   // explicit definite 0
+        SetLengthPx(itemStyle, PropertyId.Height, 40);
+        SetPaddingAllSides(itemStyle, 10);
+        SetSolidBorderAllSides(itemStyle, 5);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var geometry = FindItemGeometry(sink, item);
+        Assert.Equal(30, geometry.InlineSize, precision: 3); // 0 content + 2×(5+10) chrome
+    }
+
+    [Fact]
+    public void Flex_percentage_cross_size_does_not_floor_to_chrome()
+    {
+        // Post-PR-#190 Copilot review — an UNRESOLVED percentage cross-size (`height: 50%`,
+        // cycle-1 reads it as 0) must NOT floor to the item's chrome under box-sizing (which
+        // would make a padded item spuriously `chrome` tall); it stays 0, consistent with
+        // FlexLinePacker's line-cross packing. A row item `height: 50%` + padding/border →
+        // emitted block size 0 (not 30).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(0)); // row
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+        // align-items: flex-start so a non-auto cross size is used as-is (no stretch).
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        itemStyle.Set(PropertyId.Height, ComputedSlot.FromPercentage(50)); // unresolved %
+        SetPaddingAllSides(itemStyle, 10);
+        SetSolidBorderAllSides(itemStyle, 5);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var geometry = FindItemGeometry(sink, item);
+        Assert.Equal(0, geometry.BlockSize, precision: 3); // unresolved %, NOT the 30px chrome
+    }
+
     /// <summary>The flex GEOMETRY fragment for <paramref name="item"/> (box == item with
     /// NO inline layout — the box-decoration fragment, distinct from an inline-only item's
     /// own text fragment which carries an InlineLayout).</summary>

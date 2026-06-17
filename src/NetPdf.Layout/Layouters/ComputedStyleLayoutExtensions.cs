@@ -147,6 +147,22 @@ internal static class ComputedStyleLayoutExtensions
             ? s.InlineBorderPaddingPx()
             : s.BlockBorderPaddingPx();
 
+    /// <summary>Flex box-sizing cycle — a flex item's BORDER-box CROSS size for a
+    /// direction-resolved cross-size property: a DEFINITE <c>LengthPx</c> (incl. an explicit 0)
+    /// mapped through <see cref="BoxSizingHelper.DeclaredToBorderBox"/> (honoring box-sizing);
+    /// <c>auto</c> / percentage / unset → 0 (stretch or content sizes it). Gating on the slot
+    /// TAG (post-PR-#190 Copilot review) keeps an UNRESOLVED percentage cross-size at 0 rather
+    /// than flooring it to the chrome — so the emission cross-size read AND
+    /// <c>FlexLinePacker.CrossBorderBoxSize</c> (line packing) AGREE.</summary>
+    public static double CrossBorderBoxSizePx(this ComputedStyle s, PropertyId crossSizeProperty)
+    {
+        var slot = s.Get(crossSizeProperty);
+        return slot.Tag == ComputedSlotTag.LengthPx
+            ? BoxSizingHelper.DeclaredToBorderBox(
+                s, Math.Max(0, slot.AsLengthPx()), s.AxisBorderPaddingPx(crossSizeProperty))
+            : 0.0;
+    }
+
     /// <summary>Maps a <c>border-*-width</c> PropertyId to its sibling
     /// <c>border-*-style</c> PropertyId for the §4.3 used-width style gate;
     /// returns <see langword="false"/> for any other property.</summary>
@@ -1259,32 +1275,30 @@ internal static class ComputedStyleLayoutExtensions
         // size is the CONTENT box, so the border box adds the item's main-axis border +
         // padding; for `border-box` the declared size IS the border box. The chrome is
         // derived from the direction-resolved main-size property (Width → inline, Height →
-        // block). An AUTO / content-determined size (no definite length) stays 0 — content
-        // sizing grows it later and adds the chrome there, so box-sizing (which only
-        // reinterprets a DECLARED length) doesn't apply. This is what makes a flex item's
-        // emitted border box account for its own border/padding (the deferred content-inset).
+        // block). A DEFINITE size (a flex-basis length / percentage, or a declared LengthPx —
+        // INCLUDING an explicit 0) maps through BoxSizingHelper, so a 0-size box with chrome
+        // floors at its chrome (post-PR-#190 Copilot review — a definite 0 must not drop
+        // chrome). Only an AUTO / content-determined size (or an unresolved percentage declared
+        // size) stays 0 — content sizing grows it later + adds the chrome there. This is what
+        // makes a flex item's emitted border box account for its own border/padding.
         var mainChrome = item.Style.AxisBorderPaddingPx(mainSizeProperty);
         var basis = item.Style.ReadFlexBasis();
         switch (basis.Kind)
         {
             case FlexBasisKind.LengthPx:
-                return basis.Value > 0
-                    ? BoxSizingHelper.DeclaredToBorderBox(item.Style, basis.Value, mainChrome)
-                    : 0;
+                // A definite length (incl. 0) → border box (0 → chrome). flex-basis is
+                // non-negative (rejected at cascade); Math.Max is defensive.
+                return BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, basis.Value), mainChrome);
             case FlexBasisKind.Percentage:
                 if (!double.IsFinite(containerMainSize))
                 {
                     // Non-finite container size — the only defensive
-                    // fallback. A definite 0 IS valid (yields 0 below)
-                    // per CSS Values L4 §6.5; only NaN / ±Infinity
-                    // indicates a contract violation.
+                    // fallback. A definite 0 IS valid per CSS Values L4 §6.5;
+                    // only NaN / ±Infinity indicates a contract violation.
                     return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
                 }
-                var fraction = basis.Value / 100.0;
-                var pct = fraction * containerMainSize;
-                return pct > 0
-                    ? BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome)
-                    : 0;
+                var pct = Math.Max(0, basis.Value / 100.0 * containerMainSize);
+                return BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome);
             case FlexBasisKind.Auto:
             case FlexBasisKind.Content:
             default:
@@ -1293,15 +1307,18 @@ internal static class ComputedStyleLayoutExtensions
     }
 
     /// <summary>Flex box-sizing cycle — the item's DECLARED main size mapped to a BORDER box
-    /// (via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>) when definite, else 0 (auto /
-    /// content-determined; the chrome is added by content sizing). Shared by the auto/content
-    /// flex-basis branch + the non-finite-container fallback above.</summary>
+    /// (via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>) when DEFINITE (a <c>LengthPx</c>
+    /// slot, INCLUDING an explicit 0 — which floors at the chrome), else 0 (auto / unresolved
+    /// percentage / content-determined; the chrome is added by content sizing). Gating on the
+    /// slot TAG (not <c>value &gt; 0</c>) keeps an explicit <c>0</c> definite — post-PR-#190
+    /// Copilot review. Shared by the auto/content flex-basis branch + the non-finite-container
+    /// fallback above.</summary>
     private static double ResolveDeclaredMainBorderBox(
         Boxes.Box item, PropertyId mainSizeProperty, double mainChrome)
     {
-        var declared = item.Style.ReadLengthPxOrZero(mainSizeProperty);
-        return declared > 0
-            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, declared, mainChrome)
+        var slot = item.Style.Get(mainSizeProperty);
+        return slot.Tag == ComputedSlotTag.LengthPx
+            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, slot.AsLengthPx()), mainChrome)
             : 0;
     }
 

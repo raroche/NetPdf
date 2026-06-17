@@ -897,6 +897,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // return path — cycle-2c-style continuations would be needed).
         _capturedFragmentainer = fragmentainer;
         _capturedDiagSink = layout.Diagnostics ?? _diagnostics;
+        // Cross-COMPONENT per-conversion grid measure cache (measurement-cache
+        // cycle) — capture the shared cache the root pipeline wired through the
+        // layout context into an instance field, so PreMeasureGridRowExtent + the
+        // nested-context creations (which have no direct LayoutContext) can reach
+        // it. Re-captured each AttemptLayout (idempotent — the same per-conversion
+        // object). Null when no shared cache is wired (the per-instance fallback).
+        _gridMeasureCache = layout.GridMeasureCache as GridMeasurementCache;
 
         // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2) —
         // clear the per-AttemptLayout nested-table content-height
@@ -1681,7 +1688,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the page) while the wrapper paints + cuts at the clamped page budget.
             // Capture the pre-clamp authored border-box block size + a flag.
             double outerFlexAuthoredBorderBoxBlockSize = 0;
-            bool outerFlexColumnPaginating = false;
+            // Dual-input (natural sizing + clamped page budget) paginating flex —
+            // set for COLUMN nowrap (main-axis item split) AND ROW nowrap
+            // (intra-item content split). Both size content against the natural
+            // extent + cut at the page budget; row-WRAP keeps single-input.
+            bool outerFlexDualInputPaginating = false;
             // Per Phase 3 Task 17 cycle 5b — outer-site paginatable-grid
             // gate. Flipped ON by the IsPaginatableGrid clamp below
             // (mirrors paginateFlexForOuterChild). When true, the
@@ -1892,14 +1903,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         && pageRemainingForOuterFlex < borderBoxBlockSize
                         && pageRemainingForOuterFlex > flexBorderPaddingBlock)
                     {
-                        // Column: remember the natural (pre-clamp) border-box block
-                        // size so the dispatch sizes items against it + splits
-                        // against the clamped page budget. Row-wrap keeps the
-                        // single-input clamp (content size == budget).
-                        if (childFlexDirection.IsFlexColumnDirection())
+                        // Column nowrap (main-axis item split) AND row nowrap
+                        // (intra-item content split): remember the natural
+                        // (pre-clamp) border-box block size so the dispatch sizes
+                        // content against it + cuts against the clamped page
+                        // budget. Row-WRAP keeps the single-input clamp (the
+                        // line-split fits lines to the budget directly).
+                        var childIsColumnDir = childFlexDirection.IsFlexColumnDirection();
+                        if (childIsColumnDir || !childIsWrapping)
                         {
                             outerFlexAuthoredBorderBoxBlockSize = borderBoxBlockSize;
-                            outerFlexColumnPaginating = true;
+                            outerFlexDualInputPaginating = true;
                         }
                         borderBoxBlockSize = pageRemainingForOuterFlex;
                         paginateFlexForOuterChild = true;
@@ -3232,16 +3246,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var flexContentBlockSize = flexGeom.ContentBlockSize;
                 var flexContentInlineOffset = flexGeom.ContentInlineOffset;
                 var flexContentBlockOffset = flexGeom.ContentBlockOffset;
-                // Column dual-input (P1 fix — mirrors the recursive site): the
-                // wrapper geometry above used the CLAMPED borderBoxBlockSize (so
-                // the wrapper paints clamped). For a paginating COLUMN flex,
-                // recompute the AUTHORED content-block-size as the flex sizing
-                // input + use the clamped content-block-size as the page budget,
-                // so items are sized naturally + the cut honors the page. Without
-                // this a root/body-level column flex would shrink items to the
+                // Dual-input (P1 fix — mirrors the recursive site): the wrapper
+                // geometry above used the CLAMPED borderBoxBlockSize (so the
+                // wrapper paints clamped). For a paginating COLUMN flex (item
+                // split) OR ROW-nowrap flex (intra-item content split), recompute
+                // the AUTHORED content-block-size as the flex/line sizing input +
+                // use the clamped content-block-size as the page budget, so
+                // content is sized naturally + the cut honors the page. Without
+                // this a root/body-level dual-input flex would shrink to the
                 // budget + return AllDone instead of splitting. Row-wrap → null.
                 double? outerFlexPageBudget = null;
-                if (outerFlexColumnPaginating)
+                if (outerFlexDualInputPaginating)
                 {
                     var authoredFlexGeom = FlexGeometryHelper.ComputeContentGeometry(
                         flexBox: child,
@@ -3307,17 +3322,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     lastEmittedBlockExtent: out var outerFlexLastEmittedExtent,
                     pageBlockBudget: outerFlexPageBudget);
 
-                // PR-#180 review P2 — resize a paginating COLUMN flex wrapper to
-                // the ACTUAL emitted item extent instead of the clamped page
-                // budget (mirrors the grid F2 resize). Without this the wrapper
-                // paints blank trailing space + the cursor over-advances when the
-                // committed items occupy less than the budget (e.g. the final
-                // resume page). Gated to column pagination — row-wrap wrapper
-                // resize stays the cycle-4f deferral. Uses `wrapperCursor` (the
-                // sink index of this child's wrapper fragment, captured before
-                // the wrapper emit) + UpdateFragmentBlockSize, preserving z-order.
+                // PR-#180 review P2 — resize a paginating dual-input flex wrapper
+                // to the ACTUAL emitted extent instead of the clamped page budget
+                // (mirrors the grid F2 resize). Without this the wrapper paints
+                // blank trailing space + the cursor over-advances when the
+                // committed content occupies less than the budget (e.g. the final
+                // resume page). Gated to dual-input pagination (column item split
+                // OR row-nowrap content split); row-WRAP wrapper resize stays the
+                // cycle-4f deferral. Uses `wrapperCursor` (the sink index of this
+                // child's wrapper fragment, captured before the wrapper emit) +
+                // UpdateFragmentBlockSize, preserving z-order.
                 var cursorAdvanceForFlex = marginBoxBlockSizeForCursor;
-                if (outerFlexColumnPaginating)
+                if (outerFlexDualInputPaginating)
                 {
                     var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
                     var resizedFlexWrapperBlockSize = flexChromeBlock + outerFlexLastEmittedExtent;
@@ -4276,6 +4292,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             Diagnostics = outerLayout.Diagnostics,
             WritingMode = outerLayout.WritingMode,
             IsRtl = outerLayout.IsRtl,
+            GridMeasureCache = outerLayout.GridMeasureCache,   // measurement-cache cycle
         };
         using var innerLayouter = new BlockLayouter(
             rootBox: box,
@@ -5016,14 +5033,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // separate <c>if (IsFlexContainer(child))</c> sibling at
             // the same loop-iteration scope.
             bool paginateFlexForChild = false;
-            // Flex-column pagination dual-input (mirrors the grid page-budget):
-            // for a paginating COLUMN flex the wrapper paints at the clamped
-            // page-remaining size, but the FlexLayouter must SIZE items against
-            // the NATURAL main extent (else flex-shrink fights the page). Capture
+            // Dual-input pagination (mirrors the grid page-budget): for a
+            // paginating COLUMN flex (item split) OR ROW-nowrap flex (intra-item
+            // content split) the wrapper paints at the clamped page-remaining
+            // size, but the FlexLayouter must SIZE content against the NATURAL
+            // extent (else flex-shrink / line cross-size fights the page). Capture
             // the pre-clamp authored border-box block size + a flag so the
             // dispatch passes natural-as-contentBlockSize + clamped-as-budget.
             double nestedFlexAuthoredBorderBoxBlockSize = 0;
-            bool nestedFlexColumnPaginating = false;
+            bool nestedFlexDualInputPaginating = false;
 
             // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — nested
             // flex container wrapper pre-measure. Mirrors the outer
@@ -5181,10 +5199,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // dispatches the FlexContinuation back via the cycle-3
                 // propagation chain.
                 //
-                // <para><b>Column dual-input.</b> A paginating COLUMN flex
-                // sets <c>nestedFlexColumnPaginating</c> here (capturing the
+                // <para><b>Dual-input.</b> A paginating COLUMN flex (item split)
+                // OR ROW-nowrap flex (intra-item content split) sets
+                // <c>nestedFlexDualInputPaginating</c> here (capturing the
                 // pre-clamp authored block size) so the dispatch below sizes
-                // items against the NATURAL main extent + cuts against the
+                // content against the NATURAL extent + cuts against the
                 // clamped page budget — without that split, flex-shrink would
                 // collapse items to the clamped main-size instead of
                 // paginating. STILL EXCLUDED (atomic, documented in
@@ -5222,14 +5241,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         && pageRemainingForFlex < childBorderBoxBlockSize
                         && pageRemainingForFlex > nFlexBorderPaddingBlock)
                     {
-                        // Column: remember the natural (pre-clamp) border-box
-                        // block size so the dispatch sizes items against it +
-                        // splits against the clamped page budget. Row-wrap keeps
-                        // the single-input clamp (content size == budget).
-                        if (childFlexDirection.IsFlexColumnDirection())
+                        // Column nowrap (item split) AND row nowrap (intra-item
+                        // content split): remember the natural (pre-clamp)
+                        // border-box block size so the dispatch sizes content
+                        // against it + cuts against the clamped page budget.
+                        // Row-WRAP keeps the single-input clamp (the line-split
+                        // fits lines to the budget directly).
+                        var childIsColumnDir = childFlexDirection.IsFlexColumnDirection();
+                        if (childIsColumnDir || !childIsWrapping)
                         {
                             nestedFlexAuthoredBorderBoxBlockSize = childBorderBoxBlockSize;
-                            nestedFlexColumnPaginating = true;
+                            nestedFlexDualInputPaginating = true;
                         }
                         childBorderBoxBlockSize = pageRemainingForFlex;
                         childEffectiveBlockSize = pageRemainingForFlex;
@@ -5535,6 +5557,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     var nestedMulticolLayoutCtx = new LayoutContext(_capturedFragmentainer)
                     {
                         Diagnostics = _diagnostics,
+                        GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
                     };
                     nestedMulticolResult = nestedMulticolLayouter.AttemptLayout(
                         _capturedFragmentainer,
@@ -5615,7 +5638,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // block size for the flex sizing input + use the clamped content
                 // block size as the page budget. Row-wrap leaves budget null.
                 double? nestedFlexPageBudget = null;
-                if (nestedFlexColumnPaginating)
+                if (nestedFlexDualInputPaginating)
                 {
                     var authoredFlexGeom = FlexGeometryHelper.ComputeContentGeometry(
                         flexBox: child,
@@ -5668,6 +5691,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     var nestedFlexLayoutCtx = new LayoutContext(_capturedFragmentainer)
                     {
                         Diagnostics = _diagnostics,
+                        GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
                     };
                     nestedFlexResult = DispatchFlexInner(
                         flexBox: child,
@@ -5694,14 +5718,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         pageBlockBudget: nestedFlexPageBudget);
                 }
 
-                // PR-#180 review P2 — resize a paginating COLUMN flex wrapper to
-                // its ACTUAL emitted item extent (mirrors the outer site + the
-                // grid recursion F2 resize). Recompute childEffectiveBlockSize so
-                // the cursor advance below (which DOES run on a final AllDone
-                // resume page where siblings follow) uses the emitted content,
-                // not the clamped budget — otherwise siblings sit too low + the
-                // wrapper paints blank trailing space.
-                if (nestedFlexColumnPaginating)
+                // PR-#180 review P2 — resize a paginating dual-input flex wrapper
+                // to its ACTUAL emitted extent (column item split OR row-nowrap
+                // content split; mirrors the outer site + the grid recursion F2
+                // resize). Recompute childEffectiveBlockSize so the cursor advance
+                // below (which DOES run on a final AllDone resume page where
+                // siblings follow) uses the emitted content, not the clamped
+                // budget — otherwise siblings sit too low + the wrapper paints
+                // blank trailing space.
+                if (nestedFlexDualInputPaginating)
                 {
                     var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
                     var resizedFlexWrapperBlockSize = flexChromeBlock + nestedFlexLastEmittedExtent;
@@ -5807,6 +5832,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nestedGridLayoutCtx = new LayoutContext(_capturedFragmentainer)
                 {
                     Diagnostics = _diagnostics,
+                    // Measurement-cache cycle — propagate the per-conversion cache so a
+                    // nested (html→body-nested) grid's emission shares with its pre-measure.
+                    GridMeasureCache = _gridMeasureCache,
                 };
 
                 // Per cycle 5c.2d — resume contract: extract any
@@ -6259,6 +6287,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// AttemptLayout entry; the ambient diagnostic sink for nested-
     /// float overflow emission.</summary>
     private IPaginateDiagnosticsSink? _capturedDiagSink;
+
+    /// <summary>Measurement-cache cycle — the per-conversion grid measure cache
+    /// captured from the layout context at AttemptLayout entry. Used by
+    /// <see cref="PreMeasureGridRowExtent"/> (which has no LayoutContext) +
+    /// propagated onto the nested-dispatch contexts so a nested grid's emission
+    /// shares it. Null ⇒ no shared cache wired (per-instance fallback).</summary>
+    private GridMeasurementCache? _gridMeasureCache;
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2)
     /// — per-AttemptLayout cache of nested-table CONTENT HEIGHT
@@ -8941,6 +8976,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private double PreMeasureGridRowExtent(
         Box gridBox, double contentInlineSize, CancellationToken cancellationToken)
     {
+        // Cross-component cache (measurement-cache cycle) — captured at AttemptLayout
+        // entry; reaches both the outer + recursive pre-grow sites without a
+        // LayoutContext param (EmitBlockSubtreeRecursive has none).
+        var sharedCache = _gridMeasureCache;
         // Non-block-pagination arc (grid CONTENT-sized rows) — wire the SAME
         // content measurer the real emission uses so an auto-row grid's
         // pre-measured extent reflects its cells' content. Without it a
@@ -8955,16 +8994,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // re-measured per intersected row track in ResolveIntrinsicTracks).
         // Keyed by (item, availInline) — post-PR-#184 review F1: the block-extent measurement depends on
         // the available (column) width, so the cache must not return a height measured at a stale width.
+        // Cross-COMPONENT per-conversion cache (measurement-cache cycle) — PREFER
+        // the shared cache when the root pipeline wired one, so this pre-measure +
+        // the GridLayouter emission Resolve of the SAME grid shape each cell ONCE
+        // (the cross-component win). The budget (the captured fragmentainer's block
+        // size) + the horizontal-tb / LTR dry-run defaults match the emission for the
+        // common case (the cache key carries them, so a writing-mode mismatch just
+        // misses + re-measures — correct, never stale). Null → the local caches.
+        var measureBudget = _capturedFragmentainer?.BlockSize ?? 1_000_000;
         var measureCache = new Dictionary<(Box Item, double AvailInline), double>();
         GridSizing.GridContentMeasurer? measurer = _shaperResolver is null
             ? null
             : (item, availInline) =>
             {
+                if (sharedCache is not null)
+                {
+                    return sharedCache.BlockExtent(
+                        item, availInline, measureBudget, _shaperResolver,
+                        WritingMode.HorizontalTb, isRtl: false, cancellationToken);
+                }
                 var key = (item, availInline);
                 if (measureCache.TryGetValue(key, out var cached)) return cached;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline,
-                    blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                    blockBudget: measureBudget,
                     shaperResolver: _shaperResolver,
                     writingMode: WritingMode.HorizontalTb, isRtl: false,
                     cancellationToken: cancellationToken).ContentBlockExtent;
@@ -8979,10 +9032,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             ? null
             : (item, availInline) =>
             {
+                if (sharedCache is not null)
+                {
+                    return sharedCache.InlineExtent(
+                        item, availInline, measureBudget, _shaperResolver,
+                        WritingMode.HorizontalTb, isRtl: false, cancellationToken);
+                }
                 if (widthMeasureCache.TryGetValue(item, out var cached)) return cached;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline,
-                    blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
+                    blockBudget: measureBudget,
                     shaperResolver: _shaperResolver,
                     writingMode: WritingMode.HorizontalTb, isRtl: false,
                     cancellationToken: cancellationToken).ContentInlineExtent;

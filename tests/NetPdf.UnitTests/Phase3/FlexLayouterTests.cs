@@ -10314,6 +10314,84 @@ public sealed class FlexLayouterTests
         Assert.Equal(0.0, firstItemFrag!.Value.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public void IsPaginatablePerStyle_row_nowrap_is_now_eligible_for_intra_item_content_split()
+    {
+        // Task 1 — a `row` + `nowrap` flex container is now paginatable (intra-item
+        // content split). The defaults are flex-direction: row + flex-wrap: nowrap,
+        // so a bare flex container qualifies (pre-Task-1 this returned false).
+        var flex = BuildFlexContainer();
+        Assert.True(FlexLayouter.IsPaginatablePerStyle(flex));
+    }
+
+    [Fact]
+    public void IsPaginatablePerStyle_row_wrap_reverse_is_not_eligible()
+    {
+        // Row + wrap-reverse stays ineligible — its cross-axis swap origin derives
+        // from the UNFRAGMENTED size, so partial content would land at the wrong
+        // offset (deferred).
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        Assert.False(FlexLayouter.IsPaginatablePerStyle(flex));
+    }
+
+    [Fact]
+    public void IsPaginatablePerStyle_non_flex_box_is_not_eligible()
+    {
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        Assert.False(FlexLayouter.IsPaginatablePerStyle(block));
+    }
+
+    [Fact]
+    public void FlushRangeTo_slices_buffer_to_cross_window_and_reports_remaining()
+    {
+        // Task 1 — the row-nowrap content slice primitive. Buffer 4 fragments at
+        // cross offsets 0/30/60/90 (height 30); flush the window [30, 90) → only
+        // the fragments STARTING in the window emit (30, 60), re-anchored so the
+        // window top maps to the content cross origin (→ 0, 30); AnyRemaining is
+        // true (the 90-offset fragment starts on a later page).
+        var sink = new BufferingMeasureSink();
+        var box = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        for (var i = 0; i < 4; i++)
+        {
+            sink.Emit(new BoxFragment(
+                Box: box, InlineOffset: 0, BlockOffset: i * 30, InlineSize: 100, BlockSize: 30));
+        }
+
+        var target = new RecordingFragmentSink();
+        var (extent, anyRemaining) = sink.FlushRangeTo(
+            target, inlineTranslation: 5, itemCrossOffsetAbs: 0, contentCrossOriginAbs: 0,
+            windowFrom: 30, windowTo: 90);
+
+        Assert.True(anyRemaining);                          // the 90-offset fragment defers
+        Assert.Equal(60.0, extent, precision: 3);           // deepest emitted bottom (30→0..30, 60→30..60)
+        Assert.Equal(2, target.Fragments.Count);
+        Assert.Equal(0.0, target.Fragments[0].BlockOffset, precision: 3);   // 30 → page top
+        Assert.Equal(30.0, target.Fragments[1].BlockOffset, precision: 3);  // 60 → 30
+        Assert.Equal(5.0, target.Fragments[0].InlineOffset, precision: 3);  // inline translation applied
+    }
+
+    [Fact]
+    public void FlushRangeTo_window_covering_all_content_emits_all_with_no_remaining()
+    {
+        // A window covering all content → every fragment emits, AnyRemaining false
+        // (= the last page of a split, or a fits-in-one-page degenerate case).
+        var sink = new BufferingMeasureSink();
+        var box = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        for (var i = 0; i < 3; i++)
+        {
+            sink.Emit(new BoxFragment(
+                Box: box, InlineOffset: 0, BlockOffset: i * 20, InlineSize: 100, BlockSize: 20));
+        }
+        var target = new RecordingFragmentSink();
+        var (extent, anyRemaining) = sink.FlushRangeTo(
+            target, inlineTranslation: 0, itemCrossOffsetAbs: 0, contentCrossOriginAbs: 0,
+            windowFrom: 0, windowTo: 1000);
+        Assert.False(anyRemaining);
+        Assert.Equal(3, target.Fragments.Count);
+        Assert.Equal(60.0, extent, precision: 3);           // last fragment bottom (40 + 20)
+    }
+
     // ====================================================================
     //  Helpers
     // ====================================================================

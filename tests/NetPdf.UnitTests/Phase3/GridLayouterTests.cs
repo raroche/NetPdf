@@ -5665,6 +5665,39 @@ public sealed class GridLayouterTests
         Assert.NotEmpty(sink.Fragments);
     }
 
+    [Fact]
+    public void GridMeasurementCache_hits_on_identical_inputs_and_misses_on_different_budget()
+    {
+        // Task 3 — the shared per-conversion cache memoizes on the FULL input set
+        // (item, available inline width, block budget, writing mode, RTL): identical
+        // inputs hit (one measure shared across consumers); a different budget misses
+        // (the budget is in the key — no stale cross-budget reuse).
+        using var shaper = new SyntheticShaperResolver();
+        var item = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var inner = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetExplicitHeight(inner, 60);
+        item.AppendChild(inner);
+
+        var cache = new GridMeasurementCache();
+        var e1 = cache.BlockExtent(
+            item, availInline: 100, blockBudget: 400, shaper,
+            WritingMode.HorizontalTb, isRtl: false, System.Threading.CancellationToken.None);
+        Assert.Equal(1, cache.MeasurePassCount);
+
+        // Identical inputs → HIT (no new pass, same value).
+        var e2 = cache.BlockExtent(
+            item, 100, 400, shaper, WritingMode.HorizontalTb, false,
+            System.Threading.CancellationToken.None);
+        Assert.Equal(1, cache.MeasurePassCount);
+        Assert.Equal(e1, e2, precision: 3);
+
+        // Different block budget → MISS (budget is part of the key) → re-measures.
+        cache.BlockExtent(
+            item, 100, 200, shaper, WritingMode.HorizontalTb, false,
+            System.Threading.CancellationToken.None);
+        Assert.Equal(2, cache.MeasurePassCount);
+    }
+
     /// <summary>Measurement-cache cycle — a 1×1 grid with an `auto` row + a fixed 100px column holding a
     /// cell whose inner block is an explicit 60px height. The auto row is content-determined, so resolving
     /// the grid runs the content (block-extent) measurer — the path the cross-attempt caches memoize.</summary>

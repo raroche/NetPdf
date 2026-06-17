@@ -167,4 +167,75 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         }
         _buffered.Clear();
     }
+
+    /// <summary>Row-nowrap intra-item content pagination — flush only the
+    /// buffered fragments whose CROSS-AXIS (block) top falls within the page
+    /// window <c>[<paramref name="windowFrom"/>, <paramref name="windowTo"/>)</c>
+    /// (in the flex container's content-cross coordinate space), re-anchored so
+    /// the window top maps to the container content-box cross-start
+    /// (<paramref name="contentCrossOriginAbs"/>) on this page. A
+    /// <c>flex-direction: row</c> / <c>nowrap</c> line taller than the page
+    /// splits at this SHARED cross cut: every item re-emits its fragments that
+    /// fall in this page's window, so all items continue at the same cross
+    /// position (the page top) on the next page.
+    ///
+    /// <para>Partition-by-top (child-boundary granularity): a fragment whose top
+    /// is in the window emits HERE — even if it overruns <paramref name="windowTo"/>
+    /// (force-overflow, like the block layouter's over-tall child); a fragment
+    /// whose top is &gt;= <paramref name="windowTo"/> defers (sets the returned
+    /// <c>AnyRemaining</c>). This guarantees each fragment emits on exactly one
+    /// page — no loss, no double — with a single accumulated cut. Intra-fragment
+    /// splitting (a single line / block taller than the page) is deferred.</para>
+    ///
+    /// <para>Does NOT clear the buffer: the row-nowrap path builds a FRESH
+    /// measure sink per page (the layouter re-measures), so each page slices its
+    /// own buffer. Returns the emitted cross extent RELATIVE to the window top
+    /// (for the wrapper resize + <c>LastEmittedBlockExtent</c>) and whether any
+    /// fragment remains beyond this page.</para>
+    ///
+    /// <para><c>itemCrossOffsetAbs</c> is the item content-box cross-start in
+    /// fragmentainer coordinates (= the item's <c>blockOffset</c> for row);
+    /// <c>contentCrossOriginAbs</c> is the flex container's content-box
+    /// cross-start in fragmentainer coordinates.</para></summary>
+    public (double EmittedCrossExtent, bool AnyRemaining) FlushRangeTo(
+        IBlockFragmentSink target,
+        double inlineTranslation,
+        double itemCrossOffsetAbs,
+        double contentCrossOriginAbs,
+        double windowFrom,
+        double windowTo)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        // The item content-box cross-start expressed in the container's
+        // content-cross coordinate space (where the shared cut accumulates).
+        var crossBase = itemCrossOffsetAbs - contentCrossOriginAbs;
+        var emittedExtent = 0.0;
+        var anyRemaining = false;
+        for (var i = 0; i < _buffered.Count; i++)
+        {
+            var f = _buffered[i];
+            var lineCrossTop = crossBase + f.BlockOffset;
+            if (lineCrossTop >= windowTo)
+            {
+                anyRemaining = true;
+                continue;       // starts on a later page
+            }
+            if (lineCrossTop < windowFrom)
+            {
+                continue;       // already emitted on a prior page
+            }
+            var relTop = lineCrossTop - windowFrom;
+            target.Emit(f with
+            {
+                InlineOffset = f.InlineOffset + inlineTranslation,
+                BlockOffset = contentCrossOriginAbs + relTop,
+            });
+            var bottom = relTop + f.BlockSize;
+            if (bottom > emittedExtent)
+            {
+                emittedExtent = bottom;
+            }
+        }
+        return (emittedExtent, anyRemaining);
+    }
 }

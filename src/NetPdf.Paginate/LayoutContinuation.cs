@@ -129,6 +129,18 @@ internal sealed record FlexContinuation : LayoutContinuation
     public double EmittedBlockExtent { get; }
     public int ItemIndex { get; }
 
+    /// <summary>Row-nowrap intra-item content pagination — the ACCUMULATED
+    /// cross-axis (block) cut, in the flex container's content-cross
+    /// coordinate space (0 = the content-box cross-start), already emitted on
+    /// prior pages. A <c>flex-direction: row</c> / <c>nowrap</c> line whose
+    /// items' CONTENT is taller than the page splits at a SHARED cross cut: all
+    /// items continue at the same cross position (the page top) on the next
+    /// page. Each page re-measures every item's content (a fresh layouter) and
+    /// slices it to the window <c>[ConsumedCrossExtent, ConsumedCrossExtent +
+    /// pageBudget)</c>. The line-split (<see cref="LineIndex"/>) + column
+    /// item-split (<see cref="ItemIndex"/>) paths leave this at 0.</summary>
+    public double ConsumedCrossExtent { get; }
+
     /// <summary>Per Phase 3 Task 16 cycle 4e post-PR-#86 review P2 #2
     /// — defensive validation. <c>LineIndex</c> validation lives on
     /// the FlexLayouter resume path (= it must fall within the
@@ -144,7 +156,8 @@ internal sealed record FlexContinuation : LayoutContinuation
         int LineIndex,
         object? BaselineState = null,
         double EmittedBlockExtent = 0.0,
-        int ItemIndex = 0)
+        int ItemIndex = 0,
+        double ConsumedCrossExtent = 0.0)
     {
         if (!double.IsFinite(EmittedBlockExtent) || EmittedBlockExtent < 0)
         {
@@ -161,10 +174,20 @@ internal sealed record FlexContinuation : LayoutContinuation
                 nameof(ItemIndex),
                 $"FlexContinuation.ItemIndex must be non-negative; got {ItemIndex}.");
         }
+        if (!double.IsFinite(ConsumedCrossExtent) || ConsumedCrossExtent < 0)
+        {
+            throw new System.ArgumentOutOfRangeException(
+                nameof(ConsumedCrossExtent),
+                $"FlexContinuation.ConsumedCrossExtent must be finite + "
+                + $"non-negative; got {ConsumedCrossExtent}. It accumulates the "
+                + "row-nowrap cross cut across pages; a negative / non-finite "
+                + "value would re-emit or drop sliced content.");
+        }
         this.LineIndex = LineIndex;
         this.BaselineState = BaselineState;
         this.EmittedBlockExtent = EmittedBlockExtent;
         this.ItemIndex = ItemIndex;
+        this.ConsumedCrossExtent = ConsumedCrossExtent;
     }
 }
 

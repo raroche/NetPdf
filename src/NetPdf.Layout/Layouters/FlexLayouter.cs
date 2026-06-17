@@ -473,10 +473,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// <list type="bullet">
     ///   <item><b>ROW + wrap + NOT wrap-reverse → LINE split.</b> The
     ///   cross axis is the block axis, so wrapped lines stack along a
-    ///   fragment boundary + split between LINES. nowrap (single line)
-    ///   has no line boundary; wrap-reverse derives its cross-axis SWAP
-    ///   origin from the UNFRAGMENTED size, so partial content would land
-    ///   at the wrong offset (sub-cycle 2+).</item>
+    ///   fragment boundary + split between LINES.</item>
+    ///   <item><b>ROW + nowrap → intra-item CONTENT split.</b> The single
+    ///   line's items share the cross (block) axis; a line whose items'
+    ///   CONTENT is taller than the page splits every item's content at a
+    ///   SHARED cross cut, so all items continue at the same cross position
+    ///   (the page top) on the next page (<see cref="FlexContinuation.ConsumedCrossExtent"/>,
+    ///   child-boundary granularity). wrap-reverse derives its cross-axis
+    ///   SWAP origin from the UNFRAGMENTED size, so partial content would
+    ///   land at the wrong offset (deferred).</item>
     ///   <item><b>COLUMN + nowrap (non-reverse) → ITEM split</b>
     ///   (non-block-pagination arc). The MAIN axis IS the block axis, so
     ///   the single line's items stack along a fragment boundary + split
@@ -514,11 +519,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             //     NON-paginating column-reverse keeps its bottom-packed flip.
             return !wrap.IsFlexWrapping();
         }
-        // Row direction (= cross axis is the block axis): line-split path.
-        if (!wrap.IsFlexWrapping())
-        {
-            return false;
-        }
+        // Row direction (= cross axis is the block axis). TWO paths qualify:
+        //   * wrap (non-reverse) → LINE split (lines stack down the block axis).
+        //   * nowrap → intra-item CONTENT split — the single line's items share
+        //     the cross/block axis, so a line taller than the page splits every
+        //     item's CONTENT at a SHARED cross cut (all items continue at the
+        //     same cross position on the next page; child-boundary granularity).
+        // wrap-reverse derives its cross-axis SWAP origin from the UNFRAGMENTED
+        // size, so partial content would land at the wrong offset — deferred.
         if (wrap == FlexWrapValue.WrapReverse)
         {
             return false;
@@ -690,7 +698,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         //     are mutually exclusive (IsPaginatablePerStyle accepts one form
         //     per direction), so a single _allowPagination flag drives both.
         var paginationEligible = _allowPagination && IsPaginatablePerStyle(_rootBox);
-        var isRowNormalWrapPaginationSupported = paginationEligible && !isColumn;
+        var isRowPaginationEligible = paginationEligible && !isColumn;
+        // Row + wrap → LINE split (cumulative cross-extent overflow, fragmentEndIndex
+        // slicing below); row + nowrap → intra-item CONTENT split (the single line's
+        // items share the cross/block axis; a line taller than the page slices every
+        // item's buffered content at a SHARED cross cut — see the emission loop +
+        // FlexContinuation.ConsumedCrossExtent). Mutually exclusive.
+        var isRowNormalWrapPaginationSupported = isRowPaginationEligible && isWrapping;
+        var isRowNowrapContentPagination = isRowPaginationEligible && !isWrapping;
         var isColumnItemPagination = paginationEligible && isColumn;
 
         // Backlog #4 (column-reverse pagination, first cut) — a PAGINATING
@@ -749,6 +764,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 + "corrupted the column resume index — surface immediately "
                 + "rather than silently dropping the remaining flex items.");
         }
+
+        // Row-nowrap intra-item content-split resume cut + page budget. The cut
+        // (ConsumedCrossExtent) accumulates the cross extent emitted on prior
+        // pages (content-cross coords, 0 = content-box cross-start); the budget
+        // is the dual-input page-remaining block extent (like columnBudget). The
+        // window for THIS page is [rowNowrapResumeCut, rowNowrapResumeCut +
+        // rowNowrapBudget). The actual slicing happens per item in the emission
+        // loop (FlushRangeTo); these locals drive the window + the continuation.
+        var rowNowrapResumeCut = isRowNowrapContentPagination
+            ? (_incomingFlexContinuation?.ConsumedCrossExtent ?? 0.0)
+            : 0.0;
+        var rowNowrapBudget = _pageBlockBudget ?? _contentBlockSize;
+        // Accumulated across the emission loop: the deepest emitted content
+        // bottom (relative to the page window top) + whether any item still has
+        // content beyond this page's window (→ emit a continuation).
+        var rowNowrapEmittedExtent = 0.0;
+        var rowNowrapAnyRemaining = false;
 
         // Determine the fragment's end-of-range (exclusive). Default:
         // emit every remaining line. Pagination: emit lines up to
@@ -967,11 +999,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // buffer is discarded + re-generated on its page), so a paginating
         // column doesn't duplicate per-item diagnostics across pages.
         var effectiveDiagnostics = layout.Diagnostics ?? _diagnostics;
+        // Row-nowrap intra-item content split — the content is taller than the
+        // page, so measuring it into a page-sized inner fragmentainer would CLIP
+        // the part beyond the page (the nested LastResort pass clips past its
+        // budget). Measure into a buffer as tall as the NATURAL cross extent
+        // (_contentBlockSize, the dual-input natural sizing input) so the whole
+        // item content is buffered + can be sliced per page. Other cases keep the
+        // page-sized budget (byte-identical). Content exceeding the natural extent
+        // (box overflow) is still clipped — a documented first-cut limitation.
+        var contentMeasureBudget = isRowNowrapContentPagination
+            ? System.Math.Max(_contentBlockSize, fragmentainer.BlockSize)
+            : fragmentainer.BlockSize;
         var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,
             mainSizeProperty, crossSizeProperty, containerCrossSize, isWrapping,
             fragmentainer, layout.WritingMode, layout.IsRtl,
-            effectiveDiagnostics, cancellationToken);
+            effectiveDiagnostics, contentMeasureBudget, cancellationToken);
 
         // After flexibility resolution, each line's LineMainSize must
         // be updated to the sum of RESOLVED item main-sizes (NOT the
@@ -1332,7 +1375,58 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     blockSize = itemEffectiveCrossSize;
                 }
 
-                if (emitThisItem)
+                if (emitThisItem && isRowNowrapContentPagination)
+                {
+                    // Row-nowrap intra-item content split — slice this item's box
+                    // decoration + buffered content to the page's SHARED cross
+                    // window [windowFrom, windowTo) (content-cross coords), so all
+                    // items continue at the same cross position (the page top) on
+                    // the next page. `blockOffset` is the item content-box
+                    // cross-start (abs); `contentCrossOffset` is the container
+                    // content-box cross-start (abs).
+                    var windowFrom = rowNowrapResumeCut;
+                    var windowTo = rowNowrapResumeCut + rowNowrapBudget;
+                    var itemCrossTop = blockOffset - contentCrossOffset;
+                    var itemCrossBottom = itemCrossTop + blockSize;
+                    // Box decoration slice, clamped to the window (a per-page
+                    // slice of the box — box-decoration-break: clone, a documented
+                    // first-cut approximation; the spec-default `slice` would omit
+                    // the border at the break edges).
+                    var boxSliceTop = System.Math.Max(itemCrossTop, windowFrom);
+                    var boxSliceBottom = System.Math.Min(itemCrossBottom, windowTo);
+                    if (boxSliceBottom > boxSliceTop)
+                    {
+                        _sink.Emit(new BoxFragment(
+                            Box: item,
+                            InlineOffset: inlineOffset,
+                            BlockOffset: contentCrossOffset + (boxSliceTop - windowFrom),
+                            InlineSize: inlineSize,
+                            BlockSize: boxSliceBottom - boxSliceTop));
+                        var boxExtentRel = boxSliceBottom - windowFrom;
+                        if (boxExtentRel > rowNowrapEmittedExtent)
+                        {
+                            rowNowrapEmittedExtent = boxExtentRel;
+                        }
+                    }
+                    if (itemCrossBottom > windowTo)
+                    {
+                        rowNowrapAnyRemaining = true;       // box continues past this page
+                    }
+                    if (itemContentBuffers[itemIdx] is { } buf)
+                    {
+                        var (emitted, anyRem) = buf.FlushRangeTo(
+                            _sink, inlineOffset, blockOffset, contentCrossOffset,
+                            windowFrom, windowTo);
+                        if (emitted > rowNowrapEmittedExtent)
+                        {
+                            rowNowrapEmittedExtent = emitted;
+                        }
+                        rowNowrapAnyRemaining |= anyRem;
+                    }
+                    // Surface this committed item's buffered diagnostics now.
+                    itemDiagnosticBuffers[itemIdx]?.FlushTo(effectiveDiagnostics);
+                }
+                else if (emitThisItem)
                 {
                     _sink.Emit(new BoxFragment(
                         Box: item,
@@ -1437,7 +1531,29 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // item bottom; row-wrap → deepest emitted line bottom.
         LastEmittedBlockExtent = isColumnItemPagination
             ? maxEmittedColumnBottom
-            : maxEmittedCrossBottom;
+            : isRowNowrapContentPagination
+                ? (rowNowrapAnyRemaining
+                    ? System.Math.Min(rowNowrapEmittedExtent, rowNowrapBudget)
+                    : rowNowrapEmittedExtent)
+                : maxEmittedCrossBottom;
+
+        // Row-nowrap intra-item content split — if ANY item still has content (or
+        // box) below this page's cross window, resume on the next page at the
+        // accumulated cut (windowFrom + budget). All items continue at the same
+        // cross position (the page top), so LineIndex + ItemIndex stay 0 and the
+        // resume rides ConsumedCrossExtent. A fresh per-page layouter re-measures
+        // every item, so no per-item resume state is needed beyond the cut.
+        if (isRowNowrapContentPagination && rowNowrapAnyRemaining)
+        {
+            return LayoutAttemptResult.PageComplete(
+                new FlexContinuation(
+                    LineIndex: 0,
+                    BaselineState: null,
+                    EmittedBlockExtent: System.Math.Min(rowNowrapEmittedExtent, rowNowrapBudget),
+                    ItemIndex: 0,
+                    ConsumedCrossExtent: rowNowrapResumeCut + rowNowrapBudget),
+                cost: 0);
+        }
 
         // Flex-column item split — the emission loop set outgoingItemIndex to
         // the first sorted-position that didn't fit this page's block budget.
@@ -2525,6 +2641,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         WritingMode writingMode,
         bool isRtl,
         IPaginateDiagnosticsSink? effectiveDiagnostics,
+        double contentMeasureBlockBudget,
         CancellationToken cancellationToken)
     {
         var buffers = new BufferingMeasureSink?[_rootBox.Children.Count];
@@ -2569,7 +2686,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 diagBuffers[itemIdx] = itemDiag;
 
                 var buffer = LayoutItemContentIntoBuffer(
-                    item, usedInline, fragmentainer, writingMode, isRtl, itemDiag, cancellationToken);
+                    item, usedInline, contentMeasureBlockBudget, writingMode, isRtl,
+                    itemDiag, cancellationToken);
                 buffers[itemIdx] = buffer;
 
                 // Column content-sizing: grow an auto-height item to its
@@ -2598,14 +2716,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private BufferingMeasureSink LayoutItemContentIntoBuffer(
         Box item,
         double availInlineContentSize,
-        FragmentainerContext outerFragmentainer,
+        double blockBudget,
         WritingMode writingMode,
         bool isRtl,
         IPaginateDiagnosticsSink? itemDiagnostics,
         CancellationToken cancellationToken)
         => NestedContentMeasurer.Measure(
             item, availInlineContentSize,
-            blockBudget: outerFragmentainer.BlockSize,
+            blockBudget: blockBudget,
             shaperResolver: _shaperResolver,
             writingMode: writingMode, isRtl: isRtl,
             cancellationToken: cancellationToken,

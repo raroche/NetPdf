@@ -174,6 +174,13 @@ internal static class PdfRenderPipeline
         // force-overflowing a single page.
         var pageFragments = new List<IReadOnlyList<BoxFragment>>();
         LayoutContinuation? continuation = null;
+        // Cross-COMPONENT per-conversion grid measure cache (measurement-cache cycle) —
+        // allocated ONCE here + wired onto every page's root layout context, so a grid's
+        // PreMeasureGridRowExtent pre-grow + its GridLayouter emission Resolve (and
+        // successive page dispatches) shape each content-determined cell ONCE rather than
+        // re-shaping per site + per page. A measured CONTENT extent is deterministic for its
+        // keyed inputs, so output is byte-identical.
+        var gridMeasureCache = new GridMeasurementCache();
         try
         {
             for (var pageIndex = 0; ; pageIndex++)
@@ -193,7 +200,10 @@ internal static class PdfRenderPipeline
                     {
                         PageIndex = pageIndex,
                     };
-                    var layout = new LayoutContext(fragmentainer);
+                    var layout = new LayoutContext(fragmentainer)
+                    {
+                        GridMeasureCache = gridMeasureCache,
+                    };
                     using var breaks = new BreakResolver();
                     // Drive each page through the retry coordinator: Strict (clean breaks)
                     // first, only escalating (DropAvoidInside → LastResort) when a constraint

@@ -190,6 +190,33 @@ public class LineBuilderShapingTests
     }
 
     [Fact]
+    public void InlineAtomic_baseline_metrics_split_ascent_and_descent()
+    {
+        // Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — a BASELINE-ALIGNED atomic (an
+        // inline-block, BaselineFromBorderTopPx set) splits its margin box about its OWN baseline:
+        // ascent ABOVE = top margin + the border-top-to-baseline distance; descent BELOW = the border
+        // box under the baseline + the bottom margin. An IMG-ish atomic (null baseline) is ALL ascent
+        // (its margin-box bottom sits ON the baseline), zero descent. Both split sums = the margin box.
+        var box = Box.CreateRoot(MakeStyle());
+
+        var inlineBlock = new InlineAtomic(
+            box, AdvancePx: 30, BorderBoxWidthPx: 30, BorderBoxHeightPx: 20,
+            MarginInlineStartPx: 0, MarginBlockStartPx: 4, MarginBlockEndPx: 6,
+            BaselineFromBorderTopPx: 15);
+        Assert.Equal(30.0, inlineBlock.MarginBoxHeightPx, precision: 4);   // 4 + 20 + 6
+        Assert.Equal(19.0, inlineBlock.AscentAbovePx, precision: 4);       // 4 (margin-top) + 15 (baseline)
+        Assert.Equal(11.0, inlineBlock.DescentBelowPx, precision: 4);      // (20 − 15) + 6 (margin-bottom)
+        Assert.Equal(inlineBlock.MarginBoxHeightPx,
+            inlineBlock.AscentAbovePx + inlineBlock.DescentBelowPx, precision: 4);
+
+        var img = new InlineAtomic(
+            box, AdvancePx: 30, BorderBoxWidthPx: 30, BorderBoxHeightPx: 20,
+            MarginInlineStartPx: 0, MarginBlockStartPx: 4, MarginBlockEndPx: 6);   // null baseline
+        Assert.Equal(30.0, img.AscentAbovePx, precision: 4);   // the whole margin box sits above the baseline
+        Assert.Equal(0.0, img.DescentBelowPx, precision: 4);   // bottom-on-baseline → nothing below
+    }
+
+    [Fact]
     public void Preprocess_preserves_the_atomic_payload_through_whitespace_collapse()
     {
         // inline-atomic-boxes cycle — white-space collapsing must NOT drop an atomic run's payload (a

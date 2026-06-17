@@ -138,6 +138,11 @@ namespace NetPdf.Layout.Layouters;
 /// unclipped — every other fragment is byte-identical. The page-margin box sets it (to its padding box)
 /// when its content overflows, so protruding glyphs clip at the box edge instead of spilling over the
 /// page; an explicit <c>overflow: visible</c> on the box leaves it unset.</param>
+/// <param name="PerLineBaselineTopPx">Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — when a
+/// line carries a baseline-aligned inline-block, the line is sized by max-ascent / max-descent and this
+/// gives the baseline's offset from the line top; the painter places that line's text on it (so text and
+/// box share a baseline). A per-line <c>NaN</c> (and the null default) → the painter's real-metric
+/// baseline, byte-identical.</param>
 /// <param name="PerLineHeightsPx">Per-line PITCH (segment-pitch cycle) — line i advances by
 /// its own height (a 32px h1 line over a 16px subtitle). Null = the uniform
 /// <paramref name="TextMetricsStyle"/> pitch, byte-identical.</param>
@@ -172,6 +177,11 @@ internal readonly record struct BoxFragment(
     // uniform TextMetricsStyle pitch — a 32px h1 line over a 16px subtitle each gets its own
     // height. Null (the default) = the uniform pitch, byte-identical.
     System.Collections.Generic.IReadOnlyList<double>? PerLineHeightsPx = null,
+    // Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1): line i's text baseline is at
+    // PerLineBaselineTopPx[i] from the line top (when a baseline-aligned inline-block forced the
+    // max-ascent line-box on it). A per-line NaN — and the null default — keeps the painter's
+    // real-metric centred baseline, byte-identical.
+    System.Collections.Generic.IReadOnlyList<double>? PerLineBaselineTopPx = null,
     // Per-line ALIGNMENT (segment-align cycle): line i aligns by PerLineAlignFactors[i] instead of
     // the fragment-wide LineAlignFactor. Null = the uniform factor, byte-identical.
     System.Collections.Generic.IReadOnlyList<double>? PerLineAlignFactors = null,

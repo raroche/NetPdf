@@ -78,6 +78,12 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
     /// in anonymous blocks, so no own-box fragment).</summary>
     public bool ContainsDecorationOwnerFragment { get; private set; }
 
+    /// <summary>Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — whether any buffered fragment
+    /// carries an in-flow LINE BOX (an <see cref="BoxFragment.InlineLayout"/> with ≥ 1 line). An
+    /// inline-block with a line box takes its baseline from its last line; with NONE (e.g. only empty
+    /// blocks), the baseline is the bottom margin edge (the img-ish placement).</summary>
+    public bool HasInFlowLineBox { get; private set; }
+
     public void Emit(BoxFragment fragment)
     {
         // Out-of-flow (position: absolute / fixed) descendants of a flex / grid
@@ -113,6 +119,7 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         // inline right edge. Mirrors the table cell sink's two-path tracker.
         if (fragment.InlineLayout is { } inlineLayout && inlineLayout.Lines.Length > 0)
         {
+            HasInFlowLineBox = true;   // §10.8.1 — an inline-block with a line box has a baseline.
             var lines = inlineLayout.Lines;
             for (var i = 0; i < lines.Length; i++)
             {

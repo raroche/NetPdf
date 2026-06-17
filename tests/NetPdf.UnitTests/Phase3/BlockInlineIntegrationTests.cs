@@ -564,6 +564,49 @@ public sealed class BlockInlineIntegrationTests
             $"definite narrow width should wrap content + grow tall; got {decoration.Value.BlockSize}");
     }
 
+    [Fact]
+    public void Inline_block_with_text_aligns_by_last_line_baseline_without_overflowing_line_top()
+    {
+        // Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — an inline-block WITH an in-flow line
+        // box aligns by its LAST line's baseline (it sits ON the surrounding text baseline), and the line
+        // box is sized by max-ascent / max-descent so the box fits. Previously the box was placed margin-
+        // box-bottom-on-baseline (an img-ish approximation), which pushed a full-height box ABOVE the line
+        // top (a NEGATIVE block offset — overflow). The box now fits within its (grown) line box.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var ibStyle = MakeStyle();   // auto size → a single line of "A"
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        BoxFragment? decoration = null;
+        BoxFragment? outer = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) decoration = f;
+            else if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null) outer = f;
+        }
+        Assert.NotNull(decoration);
+        Assert.NotNull(outer);
+        // Baseline-aligned → no overflow above the line top (≥ 0; the old bottom-on-baseline was negative).
+        Assert.True(decoration!.Value.BlockOffset >= -0.01,
+            $"baseline-aligned inline-block should not overflow the line top; got {decoration.Value.BlockOffset}");
+        // And it fits inside the line box the §10.8.1 max-ascent model grew for it.
+        Assert.True(decoration.Value.BlockOffset + decoration.Value.BlockSize <= outer!.Value.BlockSize + 0.01,
+            $"inline-block should fit its line: box bottom {decoration.Value.BlockOffset + decoration.Value.BlockSize}" +
+            $" vs line {outer.Value.BlockSize}");
+    }
+
     [Theory]
     [InlineData(0, 0.0)]   // start  → no shift (the initial)
     [InlineData(2, 0.0)]   // left   → no shift (LTR)

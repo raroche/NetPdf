@@ -348,6 +348,15 @@ internal static class TextPainter
             var insetLeftPx = fragment.PerLineInsetLeftPx is { } iLs && li < iLs.Count ? iLs[li] : 0.0;
             var insetRightPx = fragment.PerLineInsetRightPx is { } iRs && li < iRs.Count ? iRs[li] : 0.0;
 
+            // Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1): when a line carries a baseline-
+            // aligned inline-block the layout supplies its baseline (§10.8.1 max-ascent line box) so the
+            // line's TEXT sits on the SAME baseline as the box. A per-line NaN — and the null default —
+            // leaves the per-slice real-metric baseline below, byte-identical.
+            double? explicitBaselineTopPx =
+                fragment.PerLineBaselineTopPx is { } bls && li < bls.Count && !double.IsNaN(bls[li])
+                    ? lineTopPx + bls[li]
+                    : null;
+
             // text-align: justify (CSS Text 3 §7.3) — a NON-LAST line that is NOT terminated by a
             // forced break distributes its free space across inter-word gaps. The LAST line + any
             // forced-break-terminated line stay start-aligned (the §7.3 exceptions; LineAlignFactor is
@@ -412,12 +421,14 @@ internal static class TextPainter
                 }
 
                 // Baseline: centre the run font's em box in the line box (half-leading), then
-                // drop to the baseline by the ascent. Metrics from the run's parsed font.
+                // drop to the baseline by the ascent. Metrics from the run's parsed font. When the line
+                // carries a baseline-aligned inline-block, the layout pins the baseline instead (so text
+                // and box share it — CSS 2.2 §10.8.1); otherwise the real-metric centred baseline holds.
                 var unitsPerEm = fc.Font.Head.UnitsPerEm;
                 var ascentPx = fc.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = fc.Font.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
                 var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
-                var baselineTopPx = lineTopPx + halfLeadingPx + ascentPx;
+                var baselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).

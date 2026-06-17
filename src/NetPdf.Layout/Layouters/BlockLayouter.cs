@@ -7068,7 +7068,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // are emitted as positioned child fragments. The walk returns per-line heights (null when the
         // block has no atomic, keeping the uniform text path byte-identical), the atomics' placements
         // relative to the content box, and the resulting content block size.
-        var (perLineHeightsPx, atomicPlacements, contentBlockSize) =
+        var (perLineHeightsPx, perLineBaselineTopPx, atomicPlacements, contentBlockSize) =
             ComputeInlineAtomicLayout(inlineResult, lineHeight, inlineOnlyBlock.Style, contentInlineSize);
         var borderBoxBlockSize = contentBlockSize
             + metrics.BorderBlockStart + metrics.PaddingBlockStart
@@ -7080,6 +7080,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             BorderBoxBlockSize: borderBoxBlockSize,
             ContentBlockSize: contentBlockSize,
             PerLineHeightsPx: perLineHeightsPx,
+            PerLineBaselineTopPx: perLineBaselineTopPx,
             AtomicPlacements: atomicPlacements,
             InlineBlockContents: atomicContents);
     }
@@ -7099,6 +7100,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// text-align cycle — center / right / end; <c>justify</c> + RTL still leave it start-relative);
     /// and only <c>vertical-align: baseline</c> is honoured.</para></summary>
     private (IReadOnlyList<double>? PerLineHeightsPx,
+             IReadOnlyList<double>? PerLineBaselineTopPx,
              IReadOnlyList<InlineAtomicPlacement> Placements,
              double ContentBlockSize)
         ComputeInlineAtomicLayout(
@@ -7112,34 +7114,66 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // text under text-align: center / right). 0 (start) leaves the start-relative placement
         // byte-identical to the pre-cycle output.
         var alignFactor = blockStyle.ReadInlineAlignFactor();
-        var perLineHeights = new double[lines.Length];
-        var anyAtomic = false;
-        for (var li = 0; li < lines.Length; li++)
-        {
-            double maxAtomicHeight = 0;
-            foreach (var slice in lines[li].Slices)
-            {
-                if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
-                {
-                    anyAtomic = true;
-                    // The line box grows to fit the atomic's MARGIN box (border box + block margins).
-                    if (a.MarginBoxHeightPx > maxAtomicHeight) maxAtomicHeight = a.MarginBoxHeightPx;
-                }
-            }
-            perLineHeights[li] = Math.Max(textLineHeightPx, maxAtomicHeight);
-        }
-
-        if (!anyAtomic)
-        {
-            return (null, System.Array.Empty<InlineAtomicPlacement>(),
-                lines.Length * textLineHeightPx);
-        }
 
         // Approximate Latin font ascent/descent as a fraction of font-size (consistent with the
         // codebase's 1.2 line-height factor: ascent 0.8em + |descent| 0.2em + 0.2em leading).
         var fontSizePx = blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
         var ascentPx = fontSizePx * 0.8;
         var descentPx = fontSizePx * -0.2;
+        // The text strut's ascent ABOVE / descent BELOW its baseline, arranged so a strut-only line
+        // reproduces TextPainter's centred baseline EXACTLY (ascentAbove = lineHeight/2 + 0.3em, the
+        // two summing to the line height) — the §10.8.1 max-ascent line-box model (Plan C: used ONLY
+        // on a line carrying a baseline-aligned inline-block; img/text lines keep the current model).
+        var textAscentAbovePx = textLineHeightPx / 2.0 + 0.3 * fontSizePx;
+        var textDescentBelowPx = textLineHeightPx - textAscentAbovePx;
+
+        var perLineHeights = new double[lines.Length];
+        var perLineBaselines = new double[lines.Length];   // offset from line top; NaN = painter default.
+        var anyAtomic = false;
+        var anyBaselineAligned = false;
+        for (var li = 0; li < lines.Length; li++)
+        {
+            double maxAtomicMarginBoxHeight = 0;
+            var ascentAbove = textAscentAbovePx;
+            var descentBelow = textDescentBelowPx;
+            var lineHasBaselineAligned = false;
+            foreach (var slice in lines[li].Slices)
+            {
+                if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
+                {
+                    anyAtomic = true;
+                    if (a.MarginBoxHeightPx > maxAtomicMarginBoxHeight)
+                        maxAtomicMarginBoxHeight = a.MarginBoxHeightPx;
+                    if (a.BaselineFromBorderTopPx is not null)
+                    {
+                        lineHasBaselineAligned = true;
+                        anyBaselineAligned = true;
+                    }
+                    if (a.AscentAbovePx > ascentAbove) ascentAbove = a.AscentAbovePx;
+                    if (a.DescentBelowPx > descentBelow) descentBelow = a.DescentBelowPx;
+                }
+            }
+            if (lineHasBaselineAligned)
+            {
+                // §10.8.1 max-ascent model — the line is the sum, the baseline at max-ascent-above, so a
+                // baseline-aligned inline-block sits ON the text baseline without overflowing the line top.
+                perLineHeights[li] = ascentAbove + descentBelow;
+                perLineBaselines[li] = ascentAbove;
+            }
+            else
+            {
+                // Current model (byte-identical) — the line grows to the tallest atomic MARGIN box; the
+                // baseline stays centred (NaN → the painter computes it from real font metrics).
+                perLineHeights[li] = Math.Max(textLineHeightPx, maxAtomicMarginBoxHeight);
+                perLineBaselines[li] = double.NaN;
+            }
+        }
+
+        if (!anyAtomic)
+        {
+            return (null, null, System.Array.Empty<InlineAtomicPlacement>(),
+                lines.Length * textLineHeightPx);
+        }
 
         var placements = new List<InlineAtomicPlacement>();
         var cumulativeTopPx = 0.0;
@@ -7147,10 +7181,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             var lineTopPx = cumulativeTopPx;
             var thisLineHeightPx = perLineHeights[li];
-            // Mirror TextPainter's baseline: centre the em box in the line box (half-leading), drop to
-            // the baseline by the ascent.
+            // The line baseline: the §10.8.1 max-ascent offset for a baseline-aligned line, else the
+            // centred em-box baseline (mirrors TextPainter's centred formula for img/text lines).
             var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
-            var baselineTopPx = lineTopPx + halfLeadingPx + ascentPx;
+            var baselineTopPx = double.IsNaN(perLineBaselines[li])
+                ? lineTopPx + halfLeadingPx + ascentPx
+                : lineTopPx + perLineBaselines[li];
             // The line's text-align shift (matching TextPainter's glyph shift): the free space
             // times the factor, clamped ≥ 0 (an overflowing line stays start-aligned).
             var lineAlignOffsetPx = alignFactor != 0.0
@@ -7163,12 +7199,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 xCursorPx += slice.SliceAdvance;
                 if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
                 {
-                    // `vertical-align: baseline` — the atomic's MARGIN-box bottom sits on the baseline; the
-                    // emitted BORDER-box fragment is inset by the bottom margin (block) + the leading
-                    // inline margin (so ImagePainter's content box, after it removes the img's own
-                    // padding/border, lands correctly — post-PR-#186 review P1). The line's text-align
-                    // offset shifts the atomic WITH its text (body text-align cycle).
-                    var borderBoxTopPx = baselineTopPx - a.MarginBlockEndPx - a.BorderBoxHeightPx;
+                    // An inline-block aligns its OWN (last-line) baseline with the line baseline (CSS 2.2
+                    // §10.8.1); an img-ish atomic (no own baseline) keeps its MARGIN-box bottom on the
+                    // baseline. The emitted BORDER-box fragment is the placed border box (ImagePainter /
+                    // the inline-block content flush remove the box's own padding/border — post-PR-#186
+                    // review P1). The line's text-align offset shifts the atomic WITH its text.
+                    var borderBoxTopPx = a.BaselineFromBorderTopPx is { } b
+                        ? baselineTopPx - b
+                        : baselineTopPx - a.MarginBlockEndPx - a.BorderBoxHeightPx;
                     placements.Add(new InlineAtomicPlacement(
                         a.Box, lineAlignOffsetPx + sliceStartXPx + a.MarginInlineStartPx, borderBoxTopPx,
                         a.BorderBoxWidthPx, a.BorderBoxHeightPx));
@@ -7176,7 +7214,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
             cumulativeTopPx += thisLineHeightPx;
         }
-        return (perLineHeights, placements, cumulativeTopPx);
+        // PerLineBaselines is meaningful only when a baseline-aligned inline-block forced the max-ascent
+        // model on some line; otherwise return null so the painter keeps its real-metric baseline for
+        // every line (img/text fragments stay byte-identical).
+        return (perLineHeights, anyBaselineAligned ? perLineBaselines : null, placements, cumulativeTopPx);
     }
 
     /// <summary>Inline-atomic-boxes cycle — an inline-atomic box (inline <c>&lt;img&gt;</c>) positioned
@@ -7218,6 +7259,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // (a tall atomic grows its line); null for a text-only block, so the painter's uniform-pitch
         // path is byte-identical. The inline-atomic boxes' own positioned fragments.
         IReadOnlyList<double>? PerLineHeightsPx = null,
+        // Inline-block last-line-baseline cycle — per-line baseline offset (from the line top) when a
+        // line carries a baseline-aligned inline-block (§10.8.1 max-ascent model); NaN per line = the
+        // painter's real-metric baseline. Null for img/text-only blocks → byte-identical.
+        IReadOnlyList<double>? PerLineBaselineTopPx = null,
         IReadOnlyList<InlineAtomicPlacement>? AtomicPlacements = null,
         // Inline-block first cut — the laid-out content per inline-block atomic box, flushed at the
         // atomic's content-box origin. Null/empty for a block with no inline-block atomic.
@@ -7504,6 +7549,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // these per-line heights so glyph baselines match the grown lines. Null for text-only
             // blocks → the uniform-pitch path, byte-identical.
             PerLineHeightsPx: comp.PerLineHeightsPx,
+            // Inline-block last-line-baseline cycle — a line carrying a baseline-aligned inline-block
+            // sizes by §10.8.1 max-ascent + supplies its baseline so the painter places the line's text
+            // on the SAME baseline as the box. Null (img/text) → the painter's real-metric baseline.
+            PerLineBaselineTopPx: comp.PerLineBaselineTopPx,
             // Body text-align cycle — center / right shifts each glyph line by
             // (content width − line advance) × factor (TextPainter consumes it). 0 (start, the
             // initial) is byte-identical to the pre-cycle no-shift output.
@@ -7958,6 +8007,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             s.InlineStartBorderPaddingPx(),
             s.BlockStartBorderPaddingPx());
 
+        // Inline-block last-line baseline (CSS 2.2 §10.8.1) — the box aligns by its LAST in-flow line
+        // box's baseline, so it sits ON the surrounding text baseline (not by its bottom margin edge,
+        // the img-ish first cut). Approximate the last line's descent below its baseline from the box's
+        // OWN font + line-height (the layout layer has no per-line metrics — the same 0.8/0.2-em
+        // approximation TextPainter tolerates): baseline = the content's last line bottom minus that
+        // descent, mapped from the border-box top (the buffer's ContentBlockExtent folds the box chrome
+        // in for an inline-only root, but is content-only for block children — the two-shape rule).
+        // With NO in-flow line box (e.g. only empty blocks), the baseline is the bottom margin edge
+        // (null → the bottom-on-baseline placement). DEFERRED: the §10.8.1 overflow≠visible exception
+        // (overflow isn't consumed in the layout layer yet) + true per-line content metrics.
+        double? baselineFromBorderTopPx = null;
+        if (buffer.HasInFlowLineBox)
+        {
+            var contentFontSizePx = s.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+            var declaredLineHeightPx = s.ReadLengthPxOrZero(PropertyId.LineHeight);
+            var contentLineHeightPx = declaredLineHeightPx > 0 ? declaredLineHeightPx : contentFontSizePx * 1.2;
+            var descentBelowLastLinePx = Math.Max(0.0, contentLineHeightPx / 2.0 - 0.3 * contentFontSizePx);
+            var blockStartChrome = s.BlockStartBorderPaddingPx();
+            var rawBaseline = buffer.ContainsDecorationOwnerFragment
+                ? buffer.ContentBlockExtent - (blockChrome - blockStartChrome) - descentBelowLastLinePx
+                : blockStartChrome + buffer.ContentBlockExtent - descentBelowLastLinePx;
+            baselineFromBorderTopPx = Math.Clamp(rawBaseline, 0.0, borderBoxH);
+        }
+
         return new NetPdf.Layout.Inline.InlineAtomic(
             inlineBlock,
             AdvancePx: borderBoxW + marginInlineStart + marginInlineEnd,
@@ -7965,7 +8038,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             BorderBoxHeightPx: borderBoxH,
             MarginInlineStartPx: marginInlineStart,
             MarginBlockStartPx: s.ReadLengthPxOrZero(PropertyId.MarginTop),
-            MarginBlockEndPx: s.ReadLengthPxOrZero(PropertyId.MarginBottom));
+            MarginBlockEndPx: s.ReadLengthPxOrZero(PropertyId.MarginBottom),
+            BaselineFromBorderTopPx: baselineFromBorderTopPx);
     }
 
     /// <summary>Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS

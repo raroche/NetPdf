@@ -841,6 +841,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Vertical_align_sub_super_and_length_shift_an_inline_block_end_to_end()
+    {
+        // vertical-align sub/super + length cycles — end-to-end through the cascade: `super` / `sub` and
+        // a numeric `<length>` (a raise / lower off the baseline) each place the inline-block at a
+        // DIFFERENT vertical position than `baseline`, so the painted background band differs.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string valign) =>
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block;width:20px;height:8px;" +
+            "background-color:#3366cc;vertical-align:" + valign + "\"></span>A</div></body></html>";
+
+        var baseline = Latin1(HtmlPdf.Convert(Doc("baseline"), opts));
+        var super = Latin1(HtmlPdf.Convert(Doc("super"), opts));
+        var sub = Latin1(HtmlPdf.Convert(Doc("sub"), opts));
+        var length = Latin1(HtmlPdf.Convert(Doc("6px"), opts));
+
+        Assert.NotEqual(baseline, super);   // super raises
+        Assert.NotEqual(baseline, sub);     // sub lowers
+        Assert.NotEqual(baseline, length);  // a positive length raises
+        Assert.NotEqual(super, sub);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border

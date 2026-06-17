@@ -687,6 +687,48 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(sub > baseline + 0.5, $"sub should lower the atomic below baseline: sub={sub} baseline={baseline}");
     }
 
+    [Fact]
+    public void Inline_atomic_vertical_align_length_raises_by_the_distance_and_percentage_of_line_height()
+    {
+        // vertical-align length cycle (CSS 2.2 §10.8.1) — a positive <length> RAISES the atomic off the
+        // baseline by that distance, a negative one LOWERS it; a <percentage> raises by that fraction of
+        // the line-height. The resolver produces a LengthPx / Percentage slot; the placement reads it.
+        double AtomicTop(ComputedSlot valignSlot)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));
+            ibStyle.Set(PropertyId.VerticalAlign, valignSlot);
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.BlockOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        var baseline = AtomicTop(ComputedSlot.FromKeyword(0));
+        var raised = AtomicTop(ComputedSlot.FromLengthPx(10));     // +10px → raise
+        var lowered = AtomicTop(ComputedSlot.FromLengthPx(-10));   // −10px → lower
+        var pct = AtomicTop(ComputedSlot.FromPercentage(50));      // 50% of the 19.2px line-height ≈ 9.6px
+
+        // The shift magnitude equals the length (raise = up = smaller top offset).
+        Assert.Equal(10.0, baseline - raised, precision: 1);
+        Assert.Equal(10.0, lowered - baseline, precision: 1);
+        // 50% of the default 19.2px line-height ≈ 9.6px raise.
+        Assert.Equal(9.6, baseline - pct, precision: 1);
+    }
+
     // The line baseline (where the surrounding text sits) for the inline-block on the outer line.
     private static double OuterLineBaseline(Box outerInlineOnlyBlock, RecordingFragmentSink sink)
     {

@@ -3203,6 +3203,205 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Row_nowrap_flex_item_content_splits_across_pages_at_shared_cross_cut()
+    {
+        // Task 1 (row-nowrap intra-item content fragmentation) — a `row` +
+        // `nowrap` flex whose single line's item CONTENT is taller than the page
+        // splits the content across pages at a SHARED cross cut. Each block child
+        // (line) must appear on EXACTLY one page, in DOM order; the page-1
+        // continuation must carry a non-zero ConsumedCrossExtent (proving the
+        // row-nowrap content-split path fired, not row-wrap line-split or
+        // column item-split).
+        // An EXPLICIT-height item (180px) taller than the page (80px) so the
+        // paginatable-flex clamp fires (auto-height row items need a content-aware
+        // pre-measure — a documented follow-up). Its content is 6 × 30px lines.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .item { width: 300px; height: 180px; }
+                .line { height: 30px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item">
+                <div class="line l0">A</div>
+                <div class="line l1">B</div>
+                <div class="line l2">C</div>
+                <div class="line l3">D</div>
+                <div class="line l4">E</div>
+                <div class="line l5">F</div>
+              </div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var emittedLines = new List<string>();
+        var sawNonZeroCrossCut = false;
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 12;
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            var diagSink = new RecordingDiagnosticsSink();
+            using var shaper = new SyntheticShaperResolver();
+            using var layouter = new BlockLayouter(
+                rootBox: box, sink: sink, incomingContinuation: incoming,
+                diagnostics: diagSink, shaperResolver: shaper);
+
+            var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 80);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            foreach (var f in sink.Fragments)
+            {
+                var cls = f.Box.SourceElement?.GetAttribute("class");
+                if (cls != null && cls.StartsWith("line ", StringComparison.Ordinal))
+                {
+                    emittedLines.Add(cls.Substring("line ".Length));   // l0..l5
+                }
+            }
+
+            // Walk the continuation chain to the FlexContinuation leaf; a non-zero
+            // ConsumedCrossExtent identifies the row-nowrap shared-cut path.
+            if (result.Continuation is BlockContinuation bc)
+            {
+                object? walker = bc.LayouterState;
+                var depth = 0;
+                while (walker is BlockContinuation deeper && depth < 32)
+                {
+                    walker = deeper.LayouterState;
+                    depth++;
+                }
+                if (walker is FlexContinuation fc && fc.ConsumedCrossExtent > 0)
+                {
+                    sawNonZeroCrossCut = true;
+                }
+            }
+
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                break;
+            }
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        Assert.True(pageCount < maxPages,
+            $"Pagination loop exceeded {maxPages} pages — runaway continuation?");
+        Assert.True(pageCount >= 2,
+            $"Expected ≥ 2 pages to exercise the intra-item split; got {pageCount}");
+        Assert.True(sawNonZeroCrossCut,
+            "Expected a FlexContinuation with ConsumedCrossExtent > 0 (the row-nowrap "
+            + "shared cross cut). Did the intra-item content split fire?");
+
+        // Every line appears EXACTLY ONCE, in DOM order, across all pages — no
+        // drop (clamp too strict), no duplicate (resume restarted from the top).
+        Assert.Equal(
+            new[] { "l0", "l1", "l2", "l3", "l4", "l5" },
+            emittedLines.ToArray());
+    }
+
+    [Fact]
+    public async Task Row_nowrap_flex_two_items_share_one_cross_cut_across_pages()
+    {
+        // Task 1 — the SHARED cross cut: two side-by-side items in a row-nowrap
+        // flex split at the SAME cross position, so each item's content lines
+        // appear once and BOTH items contribute content beyond page 1 (proving
+        // the cut is shared, not per-item). Item A has 8 lines, item B has 7 —
+        // both clearly taller than the 80px page (lines flow at the ~19px text
+        // line-height; an explicit 200px box height keeps both paginating).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 400px; }
+                .item { width: 200px; height: 200px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a">
+                <div class="line a0">A0</div><div class="line a1">A1</div>
+                <div class="line a2">A2</div><div class="line a3">A3</div>
+                <div class="line a4">A4</div><div class="line a5">A5</div>
+                <div class="line a6">A6</div><div class="line a7">A7</div>
+              </div>
+              <div class="item b">
+                <div class="line b0">B0</div><div class="line b1">B1</div>
+                <div class="line b2">B2</div><div class="line b3">B3</div>
+                <div class="line b4">B4</div><div class="line b5">B5</div>
+                <div class="line b6">B6</div>
+              </div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var linesA = new List<string>();
+        var linesB = new List<string>();
+        var pagesWithA = 0;
+        var pagesWithB = 0;
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 12;
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            using var shaper = new SyntheticShaperResolver();
+            using var layouter = new BlockLayouter(
+                rootBox: box, sink: sink, incomingContinuation: incoming,
+                diagnostics: new RecordingDiagnosticsSink(), shaperResolver: shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 80);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            var hadA = false;
+            var hadB = false;
+            foreach (var f in sink.Fragments)
+            {
+                var cls = f.Box.SourceElement?.GetAttribute("class");
+                if (cls == null || !cls.StartsWith("line ", StringComparison.Ordinal)) continue;
+                var l = cls.Substring("line ".Length);   // a0..a5 / b0..b4
+                if (l.StartsWith("a", StringComparison.Ordinal)) { linesA.Add(l); hadA = true; }
+                else if (l.StartsWith("b", StringComparison.Ordinal)) { linesB.Add(l); hadB = true; }
+            }
+            if (hadA) pagesWithA++;
+            if (hadB) pagesWithB++;
+
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        Assert.True(pageCount >= 2, $"expected ≥ 2 pages; got {pageCount}");
+        // Each item's lines appear once, in order.
+        Assert.Equal(new[] { "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7" }, linesA.ToArray());
+        Assert.Equal(new[] { "b0", "b1", "b2", "b3", "b4", "b5", "b6" }, linesB.ToArray());
+        // BOTH items spread their content across ≥ 2 pages (the shared cut means
+        // neither item fits on one page).
+        Assert.True(pagesWithA >= 2, $"item A content should span ≥ 2 pages; got {pagesWithA}");
+        Assert.True(pagesWithB >= 2, $"item B content should span ≥ 2 pages; got {pagesWithB}");
+    }
+
+    [Fact]
     public async Task Task16_cycle4b_paginated_flex_emits_first_page_items_in_dom_order()
     {
         // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P2 #4 —

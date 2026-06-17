@@ -442,6 +442,11 @@ internal static class TextPainter
                 var descentPx = fc.Font.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
                 var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
                 var baselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
+                // text vertical-align cycle (CSS 2.2 §10.8.1) — a run's own vertical-align RAISES / lowers
+                // its glyph baseline off the line baseline (super / sub / a <length> / <percentage>).
+                // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box is NOT
+                // grown for the shift (first cut — a large raise may spill into the leading).
+                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, thisLineHeightPx);
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).
@@ -502,6 +507,39 @@ internal static class TextPainter
         (uint)cluster < (uint)concatText.Length
         && (concatText[cluster] == ' ' || concatText[cluster] == '\t');
 
+    /// <summary>text vertical-align cycle (CSS 2.2 §10.8.1) — a text run's baseline RAISE in px
+    /// (positive = up): <c>super</c> = +0.3em, <c>sub</c> = −0.2em (matching the inline-atomic shift —
+    /// the UA-approximate offsets; the painter has the real font but not its OS/2 super/subscript
+    /// metrics), a <c>&lt;length&gt;</c> = the length, a <c>&lt;percentage&gt;</c> = that fraction of
+    /// the line-height. <c>baseline</c> (the default — and plain unstyled text) is 0 (byte-identical).
+    /// <para><b>Scope (first cut):</b> only <c>sub</c> / <c>super</c> / a numeric value shift a text
+    /// run — the line box is NOT grown for the shift (a large raise may spill into the leading), and
+    /// <c>top</c> / <c>bottom</c> / <c>middle</c> / <c>text-top</c> / <c>text-bottom</c> are deferred (0,
+    /// they need the line-box model the painter doesn't run for text). Because those map to 0, a TABLE
+    /// CELL's <c>vertical-align: top/middle/bottom</c> (cell-content alignment, not a baseline shift) is
+    /// naturally unaffected. The shift reads the run's OWN computed <c>vertical-align</c>; a non-inline
+    /// element (a block / cell) with <c>super</c> / <c>sub</c> / a length would ALSO shift its text — an
+    /// approximation, since the run doesn't carry inline-level context (the robust gate is the
+    /// follow-up). vertical-align is not inherited, so the common cases (an inline <c>&lt;sub&gt;</c> /
+    /// <c>&lt;sup&gt;</c> / styled <c>&lt;span&gt;</c>) are correct.</para></summary>
+    private static double TextVerticalAlignRaisePx(
+        ComputedStyle runStyle, double fontSizePx, double lineHeightPx)
+    {
+        var slot = runStyle.Get(PropertyId.VerticalAlign);
+        return slot.Tag switch
+        {
+            ComputedSlotTag.LengthPx => slot.AsLengthPx(),
+            ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * lineHeightPx,
+            ComputedSlotTag.Keyword => slot.AsKeyword() switch
+            {
+                2 => 0.3 * fontSizePx,    // super — raised
+                1 => -0.2 * fontSizePx,   // sub — lowered
+                _ => 0.0,                 // baseline + top/bottom/middle/text-* (deferred for text)
+            },
+            _ => 0.0,
+        };
+    }
+
     /// <summary>text-align: justify cycle — paint one JUSTIFIED line. Walks the line's glyphs at an
     /// EXPANDING pen (advancing by each glyph's own <c>XAdvance</c> — the same /W the Tj uses — plus
     /// <paramref name="extraPerGapPx"/> after each of the first <paramref name="gapCount"/> word-
@@ -542,6 +580,9 @@ internal static class TextPainter
                 var ascentPx = f.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = f.Font.Hhea.Descender * fontSizePx / unitsPerEm;
                 baselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
+                // text vertical-align (CSS 2.2 §10.8.1) — a sub/super/numeric run on a justified line
+                // raises / lowers its glyph baseline too (baseline → 0, byte-identical).
+                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, thisLineHeightPx);
             }
 
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.

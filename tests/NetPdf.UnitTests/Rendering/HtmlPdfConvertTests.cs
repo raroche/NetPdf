@@ -863,6 +863,40 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_vertical_align_super_raises_and_sub_lowers_the_glyph_baseline()
+    {
+        // text vertical-align cycle (CSS 2.2 §10.8.1) — an inline run's OWN vertical-align raises
+        // (super) / lowers (sub) its glyph baseline. A super/sub span shifts its glyph's Td y off the
+        // baseline run's. PDF user space is y-up (page-bottom origin), so a RAISED baseline → LARGER y.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div><span style=\"vertical-align:" + valign + "\">A</span></div></body></html>",
+            opts))).Y;
+
+        var baseline = GlyphY("baseline");
+        var super = GlyphY("super");
+        var sub = GlyphY("sub");
+
+        Assert.True(super > baseline + 1, $"super should raise the glyph (larger PDF y): super={super} baseline={baseline}");
+        Assert.True(sub < baseline - 1, $"sub should lower the glyph (smaller PDF y): sub={sub} baseline={baseline}");
+    }
+
+    [Fact]
+    public void Text_vertical_align_top_does_not_baseline_shift_text_first_cut()
+    {
+        // text vertical-align cycle — `top` / `bottom` / `middle` / `text-*` for a TEXT run are deferred
+        // (they need the line-box model the painter doesn't run for text), so they map to NO baseline
+        // shift — a span's `vertical-align: top` glyph renders at the same y as `baseline`. (This is also
+        // why a TABLE CELL's `vertical-align: top/middle/bottom` cell-content alignment is unaffected.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div><span style=\"vertical-align:" + valign + "\">A</span></div></body></html>",
+            opts))).Y;
+
+        Assert.Equal(GlyphY("baseline"), GlyphY("top"), precision: 2);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border

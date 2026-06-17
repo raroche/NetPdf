@@ -3045,9 +3045,17 @@ flags the categories):
           (renamed `outerFlexDualInputPaginating` / `nestedFlexDualInputPaginating`) extends from column to
           row-nowrap. **Auto-height row items — DONE** (a later PR): `PreMeasureFlexCrossExtent` is now
           CONTENT-AWARE (mirrors the column `PreMeasureFlexMainExtent`) — an auto-height row item contributes its
-          measured content block extent (UNBOUNDED budget, so the overflow it's detecting isn't clipped), so the
-          auto-height wrapper overflows + the split engages; the emission content-measure budget is likewise
-          unbounded for row-nowrap. STILL DEFERRED:
+          measured content block extent, so the auto-height wrapper overflows + the split engages. **PR #189
+          review (P1) — flex-RESOLVED width:** the pre-measure resolves each item's main (inline) width through the
+          SAME §9.7 path FlexLayouter emits at (the extracted `FlexLayouter.ResolveFlexLineMainSizes`), so a
+          `flex: 0 0 150px` / `flex-basis: 50%` item is measured at its resolved width — not the raw declared /
+          container width (which under-counted wrapped height → skipped pagination → clipped). **PR #189 review
+          (P2) — measurement cap:** the pre-measure + emission measure into
+          `NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx` (a NAMED practical cap, ~10,400 inches — was a
+          magic `1_000_000`); a measured extent that REACHES it surfaces `LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001`
+          (Warning) so the truncation isn't silent. STILL DEFERRED: a TRULY-unbounded measure that consumes nested
+          continuations / streams the slice page-by-page (the cap is unreachable for real documents, so this is a
+          robustness follow-up, not a correctness gap);
           intra-fragment splitting (an over-tall single line force-overflows); `box-decoration-break: clone`
           approximation (the box repeats per page); `flex-wrap: wrap-reverse` (cross-swap origin from the
           unfragmented size); **column-wrap** flex pagination (lines stack on the inline axis — not a fragment

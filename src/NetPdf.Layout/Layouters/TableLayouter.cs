@@ -4598,7 +4598,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // ReadLengthPxOrZero's contract — that's the documented sub-
         // cycle-4 simplification.
         var cssWidth = box.Style.ReadLengthPxOrZero(PropertyId.Width);
-        if (cssWidth > 0) return ColumnBorderBoxWidth(box.Style, cssWidth);
+        if (cssWidth > 0) return ColumnBorderBoxWidth(box, cssWidth);
 
         // Sub-cycle 4 hardening (Finding 3) — KNOWN LIMITATION:
         // ideally per CSS 2.1 §17.5 the HTML `width` attribute is a
@@ -4643,19 +4643,24 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return 0;
         }
         if (n < 0) return 0;
-        return ColumnBorderBoxWidth(box.Style, n);
+        return ColumnBorderBoxWidth(box, n);
     }
 
-    /// <summary>Box-sizing audit (CSS Basic UI 4 §10) — map a cell / column's
-    /// DECLARED width to the used BORDER-box width the column should allocate
-    /// (separated-borders model): under <c>box-sizing: border-box</c> the declared
-    /// width IS the cell's border box; under <c>content-box</c> (the initial) the
-    /// cell's inline border + padding are added. A <c>&lt;col&gt;</c> has no inline
-    /// chrome, so its column width is unchanged. Content-box without inline
-    /// border/padding is byte-identical.</summary>
-    private static double ColumnBorderBoxWidth(
-        NetPdf.Css.ComputedValues.ComputedStyle style, double declaredWidth)
+    /// <summary>Box-sizing audit (CSS Basic UI 4 §10) — map a cell's DECLARED width to
+    /// the used BORDER-box width the column should allocate (separated-borders model):
+    /// under <c>box-sizing: border-box</c> the declared width IS the cell's border box;
+    /// under <c>content-box</c> (the initial) the cell's inline border + padding are
+    /// added. Content-box without inline border/padding is byte-identical.
+    ///
+    /// <para>PR #189 review P2 — applies ONLY to a <c>&lt;td&gt;/&lt;th&gt;</c> cell. A
+    /// <c>&lt;col&gt;/&lt;colgroup&gt;</c> has no inline chrome in the table model (CSS
+    /// 2.1 §17.5.3 — padding + margin do not apply to columns), so its declared
+    /// <c>width</c> IS the column width regardless of <c>box-sizing</c> + any (invalid)
+    /// declared column padding must not inflate the track.</para></summary>
+    private static double ColumnBorderBoxWidth(Box box, double declaredWidth)
     {
+        if (box.Kind != BoxKind.TableCell) return declaredWidth;
+        var style = box.Style;
         var inlineChrome = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
             + style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
             + style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)

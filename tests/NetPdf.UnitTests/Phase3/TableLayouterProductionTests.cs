@@ -118,6 +118,35 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
+    public async Task Table_col_padding_does_not_widen_the_column()
+    {
+        // PR #189 review P2 (table) — padding on a `<col>` must NOT inflate the column
+        // (CSS 2.1 §17.5.3 — padding does not apply to columns). The box-sizing chrome
+        // mapping is CELL-only, so a padded <col> resolves to the same column width as an
+        // unpadded one (pre-fix, the helper unconditionally added the col's padding).
+        async Task<double> FirstCellWidthAsync(string colExtra)
+        {
+            var html = $$"""
+                <!DOCTYPE html><html><head><style>
+                    col.fixed { width: 100px; {{colExtra}} }
+                </style></head><body>
+                <table>
+                  <col class="fixed"><col>
+                  <tr><td>A</td><td>B</td></tr>
+                </table>
+                </body></html>
+                """;
+            var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+            var cell = sink.Fragments.First(f => f.Box.Kind == BoxKind.TableCell);
+            return cell.InlineSize;
+        }
+
+        var padded = await FirstCellWidthAsync("padding-left: 40px; padding-right: 40px;");
+        var plain = await FirstCellWidthAsync("");
+        Assert.Equal(plain, padded, precision: 3);
+    }
+
+    [Fact]
     public async Task Table_followed_by_paragraph_does_not_overlap()
     {
         // Per Finding 1 regression — the paragraph after a table must

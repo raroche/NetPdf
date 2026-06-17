@@ -5066,6 +5066,46 @@ public sealed class FlexLayouterTests
     // ====================================================================
 
     [Fact]
+    public void ResolveFlexLineMainSizes_resolves_flex_basis_grow_for_the_pre_measure()
+    {
+        // PR #189 review P1 — the row-flex pre-measure (BlockLayouter.PreMeasureFlexCrossExtent)
+        // resolves item widths through THIS shared §9.7 helper — the same one FlexLayouter emits
+        // at — so an auto-height row item is measured at its FLEX-RESOLVED width, not the raw
+        // declared/container width.
+        // (a) a rigid `Width: 100; flex: 0 0` item + a `Width: 0; flex-grow: 1` item in a 300px
+        //     row → 100 (the rigid item keeps its size, NOT the 300 container) + 200 (grows).
+        var rigid = MakeStyle();
+        SetLengthPx(rigid, PropertyId.Width, 100);
+        rigid.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+        rigid.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        var growing = MakeStyle();
+        SetLengthPx(growing, PropertyId.Width, 0);
+        growing.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+        var itemsAB = new[]
+        {
+            Box.ForElement(BoxKind.BlockContainer, rigid, MakeElement()),
+            Box.ForElement(BoxKind.BlockContainer, growing, MakeElement()),
+        };
+        var resolvedAB = FlexLayouter.ResolveFlexLineMainSizes(
+            itemsAB, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, default);
+        Assert.Equal(100.0, resolvedAB[0], precision: 3);
+        Assert.Equal(200.0, resolvedAB[1], precision: 3);
+
+        // (b) three `Width: 0; flex-grow: 1` items in 300px → 100 each (even split).
+        var thirds = new Box[3];
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Width, 0);
+            s.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            thirds[i] = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+        }
+        var resolvedThirds = FlexLayouter.ResolveFlexLineMainSizes(
+            thirds, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, default);
+        Assert.All(resolvedThirds, w => Assert.Equal(100.0, w, precision: 3));
+    }
+
+    [Fact]
     public void L8_flex_grow_distributes_positive_free_space_proportionally()
     {
         // Per Phase 3 Task 15 L8 — §9.7 positive-free-space distribution.

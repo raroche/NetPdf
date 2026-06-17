@@ -3481,6 +3481,74 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Row_nowrap_flex_basis_item_content_splits_at_resolved_width()
+    {
+        // PR #189 review P1 — a `flex: 0 0 150px` item in a 300px row is sized at its
+        // flex-RESOLVED 150px width (NOT the 300px container; the resolved-width math is
+        // pinned directly by ResolveFlexLineMainSizes_resolves_flex_basis_grow_for_the_pre_measure).
+        // The pre-measure now resolves item widths through that same §9.7 path, so the
+        // flex-basis item's auto-height content paginates + every line is preserved
+        // across pages (pre-fix it was pre-measured at 300px → undercount → clipped).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .item { flex: 0 0 150px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item">
+                <div class="line l0">A</div><div class="line l1">B</div>
+                <div class="line l2">C</div><div class="line l3">D</div>
+                <div class="line l4">E</div><div class="line l5">F</div>
+                <div class="line l6">G</div><div class="line l7">H</div>
+              </div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var emittedLines = new List<string>();
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 12;
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            using var shaper = new SyntheticShaperResolver();
+            using var layouter = new BlockLayouter(
+                rootBox: box, sink: sink, incomingContinuation: incoming,
+                diagnostics: new RecordingDiagnosticsSink(), shaperResolver: shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 80);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            foreach (var f in sink.Fragments)
+            {
+                var cls = f.Box.SourceElement?.GetAttribute("class");
+                if (cls != null && cls.StartsWith("line ", StringComparison.Ordinal))
+                    emittedLines.Add(cls.Substring("line ".Length));
+            }
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        Assert.True(pageCount >= 2, $"flex-basis item content should paginate; got {pageCount} page(s)");
+        Assert.Equal(
+            new[] { "l0", "l1", "l2", "l3", "l4", "l5", "l6", "l7" },
+            emittedLines.ToArray());
+    }
+
+    [Fact]
     public async Task Task16_cycle4b_paginated_flex_emits_first_page_items_in_dom_order()
     {
         // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P2 #4 —

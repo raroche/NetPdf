@@ -25,6 +25,20 @@ namespace NetPdf.Layout.Layouters;
 /// item / cell has DIRECT inline children) — lives in ONE place.</para></summary>
 internal static class NestedContentMeasurer
 {
+    /// <summary>Row-flex intra-item content-measurement block budget (CSS px). The
+    /// row-nowrap pre-measure (<c>BlockLayouter.PreMeasureFlexCrossExtent</c>) + the
+    /// emission measure (<c>FlexLayouter</c>) size the inner fragmentainer to this so the
+    /// item's FULL natural extent is captured — the atomic <c>LastResort</c> pass does NOT
+    /// paginate, so a page-sized budget would CLIP the very overflow being detected.
+    ///
+    /// <para><b>Not truly unbounded.</b> <see cref="Measure"/> runs ONE atomic pass and
+    /// ignores continuations, so content TALLER than this budget is still clipped. At
+    /// ~10,400 inches no real document reaches it, and <c>FlexLayouter</c> surfaces
+    /// <c>LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001</c> if a measured extent does — so the
+    /// truncation is never SILENT. Streaming the measure/slice page-by-page (consuming
+    /// nested continuations) is the documented follow-up; see <c>docs/deferrals.md</c>.</para></summary>
+    public const double EffectivelyUnboundedBlockBudgetPx = 1_000_000.0;
+
     /// <summary>Lay out <paramref name="box"/>'s content at
     /// <paramref name="availInlineContentSize"/> available inline size into a
     /// new buffer. <paramref name="blockBudget"/> sizes the inner

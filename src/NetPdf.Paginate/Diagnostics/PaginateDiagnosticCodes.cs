@@ -297,6 +297,19 @@ internal static class PaginateDiagnosticCodes
     public const string LayoutFlexWrapReverseApproximated001 =
         "LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001";
 
+    /// <summary>Row-nowrap intra-item content fragmentation (PR #189 review P2) —
+    /// emitted when a row-nowrap flex item's measured content block extent reaches the
+    /// practical intra-item measurement budget cap
+    /// (<c>NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx</c>). The atomic
+    /// measure pass does not paginate, so content TALLER than the cap is clipped; this
+    /// surfaces that so the truncation is not silent (the budget is huge —
+    /// ~10,400 inches — so this is unreachable for any real document; the page-by-page
+    /// streaming measure is the documented follow-up). Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutFlexItemContentTruncated001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutFlexItemContentTruncated001 =
+        "LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001";
+
     /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — emitted when
     /// the <c>GridLayouter</c> encounters a track-list entry that cycle 1
     /// doesn't yet support (= anything other than <c>&lt;length&gt;</c>

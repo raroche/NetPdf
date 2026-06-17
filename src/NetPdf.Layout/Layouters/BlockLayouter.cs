@@ -8561,12 +8561,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             - flexContainer.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
             - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
             - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingRight));
+        // PR #189 review P1 — resolve each block-level item's MAIN (inline) width
+        // through the SAME CSS Flexbox §9.7 path FlexLayouter emits at, so an
+        // auto-height item is measured at its flex-resolved width (flex-basis /
+        // grow / shrink / min-max), not the raw declared/container width. A
+        // `flex: 0 0 150px` item in a 300px row pre-measured at 300 would
+        // under-count its wrapped height, skip the pagination gate, then emit at
+        // 150 + clip. Row-nowrap is a single line; the resolved main size is
+        // order-independent, so DOM order is fine.
+        var lineItems = new List<Box>();
+        foreach (var child in flexContainer.Children)
+            if (child.IsBlockLevel) lineItems.Add(child);
+        var resolvedMain = lineItems.Count > 0
+            ? FlexLayouter.ResolveFlexLineMainSizes(
+                lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
+                flexContentInlineSize, cancellationToken)
+            : System.Array.Empty<double>();
+
         Dictionary<Box, double>? measureCache = null;
         var maxCross = 0.0;
+        var itemPos = 0;
         foreach (var item in flexContainer.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
+            var resolvedItemMain = resolvedMain[itemPos++];
             var itemCross = item.Style.ReadLengthPxOrZero(PropertyId.Height);
             // An AUTO-HEIGHT (content-determined cross-size) row item contributes its
             // measured content BLOCK extent instead of 0, so an auto-height row whose
@@ -8578,23 +8597,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 && item.Children.Count > 0
                 && IsRowCrossSizeContentDetermined(item))
             {
-                var widthAuto = item.Style.Get(PropertyId.Width).Tag
-                    is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
-                var itemInline = widthAuto
-                    ? flexContentInlineSize
-                    : item.Style.ReadLengthPxOrZero(PropertyId.Width);
-                if (!(itemInline > 0)) itemInline = flexContentInlineSize;
+                // Measure at the flex-RESOLVED main (inline) width; a non-positive
+                // resolution falls back to the container content inline size.
+                var itemInline = resolvedItemMain > 0 ? resolvedItemMain : flexContentInlineSize;
                 measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
                 if (!measureCache.TryGetValue(item, out var measured))
                 {
-                    // UNBOUNDED block budget (not the page size) — the point of this
-                    // pre-measure is to detect a row item TALLER than the page so the
-                    // intra-item split engages; a page-sized inner fragmentainer would
-                    // CLIP the content at the page edge + under-report the natural cross
-                    // extent (so the wrapper wouldn't overflow + never paginate).
+                    // Effectively-unbounded block budget (not the page size) — the point
+                    // of this pre-measure is to detect a row item TALLER than the page so
+                    // the intra-item split engages; a page-sized inner fragmentainer would
+                    // CLIP the content + under-report the natural cross extent (so the
+                    // wrapper wouldn't overflow + never paginate). See the budget const doc
+                    // for the (no-real-document) cap.
                     measured = NestedContentMeasurer.Measure(
                         item, itemInline,
-                        blockBudget: 1_000_000,
+                        blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
                         shaperResolver: _shaperResolver,
                         writingMode: WritingMode.HorizontalTb, isRtl: false,
                         cancellationToken: cancellationToken).ContentBlockExtent;

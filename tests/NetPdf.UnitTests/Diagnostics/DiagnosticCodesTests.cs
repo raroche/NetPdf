@@ -787,6 +787,37 @@ public sealed class DiagnosticCodesTests
     }
 
     // ============================================================
+    // PR #189 review P2 — LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001 parity
+    // (row-nowrap intra-item measurement budget cap).
+    // ============================================================
+
+    [Fact]
+    public void Layout_flex_item_content_truncated_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutFlexItemContentTruncated001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_flex_item_content_truncated_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001",
+            DiagnosticCodes.LayoutFlexItemContentTruncated001);
+    }
+
+    [Fact]
+    public void Layout_flex_item_content_truncated_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutFlexItemContentTruncated001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutFlexItemContentTruncated001);
+    }
+
+    // ============================================================
     // Phase 3 Task 17 cycle 1 (Hello World) + post-PR-#92 review F7 —
     // LAYOUT-GRID-* parity across facade + Paginate constants + docs.
     // ============================================================

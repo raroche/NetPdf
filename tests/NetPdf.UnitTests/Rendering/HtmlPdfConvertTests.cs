@@ -820,6 +820,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Vertical_align_top_places_an_inline_block_differently_than_baseline()
+    {
+        // vertical-align cycle (CSS 2.2 §10.8.1) — end-to-end: a `vertical-align` keyword now resolves
+        // through the cascade (was a silent raw passthrough) and the inline-atomic placement consumes it.
+        // A short inline-block between two glyphs paints its background band at a DIFFERENT vertical
+        // position under `top` (margin-box top at the line top) than under `baseline` → different bytes.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string valign) =>
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block;width:20px;height:8px;" +
+            "background-color:#3366cc;vertical-align:" + valign + "\"></span>A</div></body></html>";
+
+        var baseline = Latin1(HtmlPdf.Convert(Doc("baseline"), opts));
+        var top = Latin1(HtmlPdf.Convert(Doc("top"), opts));
+        var bottom = Latin1(HtmlPdf.Convert(Doc("bottom"), opts));
+
+        Assert.NotEqual(baseline, top);     // top raises the box to the line top
+        Assert.NotEqual(baseline, bottom);  // bottom drops it to the line bottom
+        Assert.NotEqual(top, bottom);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border

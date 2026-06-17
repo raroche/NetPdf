@@ -29,9 +29,10 @@ namespace NetPdf.UnitTests.Css.ComputedValues.PropertyResolvers;
 ///   <item>For PropertyTypes wired in cycle 1 (Color / Length / Number / Integer /
 ///     Keyword + the dimension family), the default must be <b>Resolved</b> — the
 ///     resolver succeeded and the slot carries the typed initial value.</item>
-///   <item>For PropertyTypes deferred to cycle 2 (FontFamilyList, FontWeight, FontSize,
-///     LineHeight, LineWidth, FlexBasis, VerticalAlign, Content), the default must be
-///     <b>Deferred</b> with the original text present — the cascade carries it forward
+///   <item>For PropertyTypes still deferred to cycle 2 (e.g. <c>LineHeight</c>,
+///     <c>Content</c> — FontFamilyList / FontWeight / FontSize / LineWidth / FlexBasis /
+///     VerticalAlign have since been wired), the default must be <b>Deferred</b> /
+///     UnsupportedUnvalidated with the original text present — the cascade carries it forward
 ///     for cycle-2 re-resolution.</item>
 /// </list>
 /// <para>
@@ -164,6 +165,11 @@ public sealed class PropertyDefaultsParityTests
             PropertyType.FontSize,
             PropertyType.FontWeight,
             PropertyType.FontFamilyList,
+            // vertical-align cycle — VerticalAlign joined the resolved family via
+            // VerticalAlignResolver (keywords → a Keyword slot; <length>/<percentage> → a
+            // LengthPercentage slot). The default `baseline` resolves to Keyword(0); pre-cycle it
+            // returned UnsupportedUnvalidated.
+            PropertyType.VerticalAlign,
         };
 
         var failures = new List<string>();
@@ -251,6 +257,9 @@ public sealed class PropertyDefaultsParityTests
             // UnsupportedUnvalidated — exclude them from the cycle-2 check.
             PropertyType.Position,
             PropertyType.PageName,
+            // vertical-align cycle — VerticalAlign is now wired (VerticalAlignResolver); its default
+            // `baseline` resolves to Keyword(0), so it is NOT UnsupportedUnvalidated — exclude it.
+            PropertyType.VerticalAlign,
         };
 
         var failures = new List<string>();

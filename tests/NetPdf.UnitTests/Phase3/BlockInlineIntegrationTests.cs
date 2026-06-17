@@ -607,6 +607,47 @@ public sealed class BlockInlineIntegrationTests
             $" vs line {outer.Value.BlockSize}");
     }
 
+    [Fact]
+    public void Inline_atomic_vertical_align_top_bottom_order_a_short_box_within_the_line()
+    {
+        // vertical-align cycle (CSS 2.2 §10.8.1) — a SHORT inline atomic (10px) sharing a ~19.2px line
+        // with text is placed by its vertical-align: `top` puts its margin-box top at the LINE-BOX top
+        // (offset ≈ 0); `bottom` puts its bottom at the line bottom (the lowest top offset); `baseline`
+        // (the default — here an img-ish atomic, no own line box) sits margin-bottom-on-baseline, in
+        // between. So the block offsets strictly increase top < baseline < bottom.
+        static double AtomicTop(int valignKeyword)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));   // short → fits with room to move
+            ibStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(valignKeyword));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());  // no line box
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));   // establishes the line baseline
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.BlockOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        var top = AtomicTop(6);        // top
+        var baseline = AtomicTop(0);   // baseline (the default)
+        var bottom = AtomicTop(7);     // bottom
+
+        Assert.True(top < baseline - 0.5, $"top-aligned should sit above baseline: top={top} baseline={baseline}");
+        Assert.True(baseline < bottom - 0.5, $"baseline should sit above bottom-aligned: baseline={baseline} bottom={bottom}");
+        Assert.True(top <= 0.01, $"top-aligned box should sit at the line top; got {top}");
+    }
+
     [Theory]
     [InlineData(0, 0.0)]   // start  → no shift (the initial)
     [InlineData(2, 0.0)]   // left   → no shift (LTR)

@@ -815,6 +815,38 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Text_vertical_align_super_grows_the_line_box_to_contain_the_shift()
+    {
+        // text vertical-align line-growth cycle — an inline-level TEXT run with `vertical-align: super`
+        // grows its line box so the raised glyph is CONTAINED (doesn't spill into the line above). A
+        // block whose run is super is TALLER than the same block with a baseline run, by the raise.
+        double BlockHeight(int valign)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var textStyle = MakeStyle();   // a DISTINCT style (an inline element's) → the gate lets it shift
+            textStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(valign));
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", textStyle));
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null) return f.BlockSize;
+            throw new Xunit.Sdk.XunitException("no block line fragment");
+        }
+
+        var baseline = BlockHeight(0);   // vertical-align: baseline → no shift, no growth
+        var super = BlockHeight(2);      // vertical-align: super → +0.3em raise grows the line
+
+        Assert.True(super > baseline + 1, $"super should grow the line box: super={super} baseline={baseline}");
+    }
+
+    [Fact]
     public void Inline_block_with_non_visible_overflow_uses_the_bottom_margin_edge_baseline()
     {
         // CSS 2.2 §10.8.1 exception — an inline-block whose computed `overflow` is NOT `visible` takes

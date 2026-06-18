@@ -863,22 +863,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Text_vertical_align_super_raises_and_sub_lowers_the_glyph_baseline()
+    public void Text_vertical_align_super_sits_above_and_sub_below_same_line_text()
     {
-        // text vertical-align cycle (CSS 2.2 §10.8.1) — an inline run's OWN vertical-align raises
-        // (super) / lowers (sub) its glyph baseline. A super/sub span shifts its glyph's Td y off the
-        // baseline run's. PDF user space is y-up (page-bottom origin), so a RAISED baseline → LARGER y.
+        // text vertical-align cycle (CSS 2.2 §10.8.1) — an inline run's `super` sits ABOVE the normal
+        // text ON ITS LINE, `sub` BELOW (the line box grows to contain the shift). Compare the shifted
+        // run's glyph Td y to the baseline run's on the SAME line (PDF user space is y-up, so higher → a
+        // LARGER y). A lone shifted run can't show the raise — the line grows around it — so compare to
+        // same-line baseline text.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div><span style=\"vertical-align:" + valign + "\">A</span></div></body></html>",
-            opts))).Y;
+        (double Normal, double Shifted) Line(string valign)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div><span>X</span>" +
+                "<span style=\"vertical-align:" + valign + "\">A</span></div></body></html>", opts)));
+            return (ys[0], ys[1]);   // X (baseline) then A (shifted), in document order.
+        }
 
-        var baseline = GlyphY("baseline");
-        var super = GlyphY("super");
-        var sub = GlyphY("sub");
+        var sup = Line("super");
+        var sub = Line("sub");
 
-        Assert.True(super > baseline + 1, $"super should raise the glyph (larger PDF y): super={super} baseline={baseline}");
-        Assert.True(sub < baseline - 1, $"sub should lower the glyph (smaller PDF y): sub={sub} baseline={baseline}");
+        Assert.True(sup.Shifted > sup.Normal + 1, $"super should sit above same-line text: {sup.Shifted} vs {sup.Normal}");
+        Assert.True(sub.Shifted < sub.Normal - 1, $"sub should sit below same-line text: {sub.Shifted} vs {sub.Normal}");
     }
 
     [Fact]
@@ -915,21 +920,17 @@ public sealed class HtmlPdfConvertTests
     public void Text_vertical_align_percentage_uses_the_runs_own_line_height()
     {
         // Post-PR-#193 review P2 — a text run's `vertical-align: %` resolves against the run's OWN
-        // line-height (CSS 2.2 §10.8.1), not the current line box. The first span (`line-height:20px`)
-        // sits on a line whose box is 40px (the second span's `line-height:40px` dominates). `50%` of the
-        // first span's OWN 20px is a 10px (= 7.5pt) raise — NOT 50% of the 40px line box (which would be
-        // 20px = 15pt). Both renders share the same 40px line box (same baseline), so the "A" glyph's y
-        // difference isolates the raise.
+        // line-height (CSS 2.2 §10.8.1), not the parent / line box. The "A" span's OWN `font-size:32px`
+        // gives a line-height of 32×1.2 = 38.4px, so `50%` is a 19.2px (= 14.4pt) raise above the
+        // same-line normal "X"; the block's default 19.2px line-height would give only ~9.6px (= 7.2pt).
+        // The relative A−X y isolates A's own raise (both runs share the line baseline).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double FirstGlyphY(string firstSpanStyle) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div><span style=\"" + firstSpanStyle + "\">A</span>" +
-            "<span style=\"line-height:40px\">B</span></div></body></html>", opts))).Y;
+        var ys = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div><span>X</span>" +
+            "<span style=\"vertical-align:50%;font-size:32px\">A</span></div></body></html>", opts)));
 
-        var baseline = FirstGlyphY("line-height:20px");
-        var raised = FirstGlyphY("vertical-align:50%;line-height:20px");
-
-        // ~7.5pt (own 20px) raise, NOT ~15pt (the 40px line box) — proving the own-line-height base.
-        Assert.InRange(raised - baseline, 6.0, 9.0);
+        // ~14.4pt (50% of A's OWN 38.4px line-height), NOT ~7.2pt (50% of the block's default line-height).
+        Assert.InRange(ys[1] - ys[0], 11.0, 18.0);
     }
 
     [Fact]
@@ -7459,6 +7460,7 @@ public sealed class HtmlPdfConvertTests
         return (double.Parse(nums[^2], CultureInfo.InvariantCulture),
             double.Parse(nums[^1], CultureInfo.InvariantCulture));
     }
+
 
     /// <summary>Count of <c>Td</c> text-position operators. <c>TextPainter</c> emits one <c>Td</c> per
     /// painted SLICE (per line, per run-slice), so a multi-run line can yield several — but for the

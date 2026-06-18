@@ -446,7 +446,7 @@ internal static class TextPainter
                 // its glyph baseline off the line baseline (super / sub / a <length> / <percentage>).
                 // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box is NOT
                 // grown for the shift (first cut — a large raise may spill into the leading).
-                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, blockStyle);
+                baselineTopPx -= InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).
@@ -507,52 +507,9 @@ internal static class TextPainter
         (uint)cluster < (uint)concatText.Length
         && (concatText[cluster] == ' ' || concatText[cluster] == '\t');
 
-    /// <summary>text vertical-align cycle (CSS 2.2 §10.8.1) — a text run's baseline RAISE in px
-    /// (positive = up): <c>super</c> = +0.3em, <c>sub</c> = −0.2em (matching the inline-atomic shift —
-    /// the UA-approximate offsets; the painter has the real font but not its OS/2 super/subscript
-    /// metrics), a <c>&lt;length&gt;</c> = the length, a <c>&lt;percentage&gt;</c> = that fraction of
-    /// the line-height. <c>baseline</c> (the default — and plain unstyled text) is 0 (byte-identical).
-    /// <para><b>Scope:</b> only <c>sub</c> / <c>super</c> / a numeric value shift a text run — the line
-    /// box is NOT grown for the shift (a large raise may spill into the leading), and <c>top</c> /
-    /// <c>bottom</c> / <c>middle</c> / <c>text-top</c> / <c>text-bottom</c> are deferred (0, they need a
-    /// line-box model the painter doesn't run for text). Only INLINE-LEVEL runs shift (the reference-
-    /// equality gate below): a block's / table cell's own vertical-align doesn't apply to its own
-    /// text.</para></summary>
-    private static double TextVerticalAlignRaisePx(
-        ComputedStyle runStyle, double fontSizePx, ComputedStyle blockStyle)
-    {
-        // Inline-level gate — a run whose style IS the inline-formatting-context block's own style is
-        // BLOCK-DIRECT text (not inside a nested inline element), so its vertical-align is the block's /
-        // cell's, which does NOT apply to the text (CSS 2.2 §10.8.1 applies vertical-align to inline-level
-        // boxes). A nested `<sub>`/`<sup>`/`<span>` run carries the inline element's OWN (distinct) style,
-        // so it shifts. This keeps a `<div style="vertical-align:super">` / a table cell from shifting
-        // its own text, while the common inline cases work (vertical-align is non-inherited).
-        if (ReferenceEquals(runStyle, blockStyle)) return 0.0;
-        var slot = runStyle.Get(PropertyId.VerticalAlign);
-        return slot.Tag switch
-        {
-            ComputedSlotTag.LengthPx => slot.AsLengthPx(),
-            // CSS 2.2 §10.8.1 — a % refers to the run's OWN line-height (a declared length, else
-            // font-size × 1.2), NOT the grown line box (post-PR-#193 review P2).
-            ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * OwnLineHeightPx(runStyle, fontSizePx),
-            ComputedSlotTag.Keyword => slot.AsKeyword() switch
-            {
-                2 => 0.3 * fontSizePx,    // super — raised
-                1 => -0.2 * fontSizePx,   // sub — lowered
-                _ => 0.0,                 // baseline + top/bottom/middle/text-* (deferred for text)
-            },
-            _ => 0.0,
-        };
-    }
-
-    /// <summary>A run's OWN computed line-height (px) — a declared length, else
-    /// <paramref name="fontSizePx"/> × 1.2 (the normal-line-height factor). The base for a text
-    /// vertical-align <c>%</c> (CSS 2.2 §10.8.1).</summary>
-    private static double OwnLineHeightPx(ComputedStyle runStyle, double fontSizePx)
-    {
-        var declared = runStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
-        return declared > 0 ? declared : fontSizePx * 1.2;
-    }
+    // Text vertical-align raise is computed by the shared NetPdf.Layout.Inline.InlineVerticalAlign
+    // helper (the layout line-box sizing uses the SAME helper, so the line it reserves and the baseline
+    // the painter draws on can't disagree).
 
     /// <summary>text-align: justify cycle — paint one JUSTIFIED line. Walks the line's glyphs at an
     /// EXPANDING pen (advancing by each glyph's own <c>XAdvance</c> — the same /W the Tj uses — plus
@@ -596,7 +553,7 @@ internal static class TextPainter
                 baselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
                 // text vertical-align (CSS 2.2 §10.8.1) — a sub/super/numeric run on a justified line
                 // raises / lowers its glyph baseline too (baseline → 0, byte-identical).
-                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, blockStyle);
+                baselineTopPx -= InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
             }
 
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.

@@ -7127,16 +7127,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var textAscentAbovePx = textLineHeightPx / 2.0 + 0.3 * fontSizePx;
         var textDescentBelowPx = textLineHeightPx - textAscentAbovePx;
 
+        var preRuns = inlineResult.PreprocessedRuns;
         var perLineHeights = new double[lines.Length];
         var perLineBaselines = new double[lines.Length];   // offset from line top; NaN = painter default.
         var anyAtomic = false;
-        var anyBaselineAligned = false;
+        var anyMaxAscent = false;                           // any line uses the max-ascent model (→ baselines).
+        var anyTextShift = false;                           // any inline-level text run has a vertical-align shift.
         for (var li = 0; li < lines.Length; li++)
         {
             double maxAtomicMarginBoxHeight = 0;
             var ascentAbove = textAscentAbovePx;
             var descentBelow = textDescentBelowPx;
-            var lineHasBaselineAligned = false;
+            var lineNeedsMaxAscent = false;
             foreach (var slice in lines[li].Slices)
             {
                 if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
@@ -7156,8 +7158,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if ((a.BaselineFromBorderTopPx is not null && IsBaselineValign(valign))
                         || IsBaselineRelativeShifted(valign, numericRaisePx))
                     {
-                        lineHasBaselineAligned = true;
-                        anyBaselineAligned = true;
+                        lineNeedsMaxAscent = true;
+                        anyMaxAscent = true;
                     }
                     // Grow the baseline-relative extents from EVERY atomic per its vertical-align — so a
                     // tall middle / text-top / text-bottom (or baseline / img) sibling is CONTAINED by the
@@ -7172,8 +7174,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (extentAbove > ascentAbove) ascentAbove = extentAbove;
                     if (extentBelow > descentBelow) descentBelow = extentBelow;
                 }
+                else
+                {
+                    // text vertical-align line-growth cycle — an inline-level TEXT run with a sub/super/
+                    // numeric vertical-align shifts its glyph baseline (TextPainter applies the SAME shift
+                    // via the shared InlineVerticalAlign helper). Grow the line so the shifted text is
+                    // CONTAINED (a super run's top no longer spills into the line above): the strut shifts
+                    // UP by the raise (ascent += raise, descent −= raise). raise 0 (baseline / plain /
+                    // block-direct text — the gate) leaves the line byte-identical.
+                    var run = shapedRuns[slice.ShapedRunIndex];
+                    var runStyle = preRuns[run.Source.SourceTextRunIndex].Style;
+                    var runFontSizePx = runStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                    var raisePx = NetPdf.Layout.Inline.InlineVerticalAlign.TextRaisePx(
+                        runStyle, blockStyle, runFontSizePx);
+                    if (raisePx != 0.0)
+                    {
+                        lineNeedsMaxAscent = true;
+                        anyMaxAscent = true;
+                        anyTextShift = true;
+                        if (textAscentAbovePx + raisePx > ascentAbove) ascentAbove = textAscentAbovePx + raisePx;
+                        if (textDescentBelowPx - raisePx > descentBelow) descentBelow = textDescentBelowPx - raisePx;
+                    }
+                }
             }
-            if (lineHasBaselineAligned)
+            if (lineNeedsMaxAscent)
             {
                 // §10.8.1 max-ascent model — the baseline at max-ascent-above so a baseline-aligned
                 // inline-block sits ON the text baseline without overflowing the line top; the line is
@@ -7190,7 +7214,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
         }
 
-        if (!anyAtomic)
+        if (!anyAtomic && !anyTextShift)
         {
             return (null, null, System.Array.Empty<InlineAtomicPlacement>(),
                 lines.Length * textLineHeightPx);
@@ -7237,10 +7261,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
             cumulativeTopPx += thisLineHeightPx;
         }
-        // PerLineBaselines is meaningful only when a baseline-aligned inline-block forced the max-ascent
-        // model on some line; otherwise return null so the painter keeps its real-metric baseline for
-        // every line (img/text fragments stay byte-identical).
-        return (perLineHeights, anyBaselineAligned ? perLineBaselines : null, placements, cumulativeTopPx);
+        // PerLineBaselines is meaningful only when a baseline-aligned inline-block OR a shifted text run
+        // forced the max-ascent model on some line; otherwise return null so the painter keeps its
+        // real-metric baseline for every line (plain img/text fragments stay byte-identical).
+        return (perLineHeights, anyMaxAscent ? perLineBaselines : null, placements, cumulativeTopPx);
     }
 
     /// <summary>vertical-align cycle — whether a keyword aligns by the BASELINE (so a baseline-owning

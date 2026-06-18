@@ -52,6 +52,22 @@ public sealed class KeywordResolverTests
     [Fact] public void BoxSizing_border_box_resolves()    => AssertResolves("border-box", PropertyId.BoxSizing);
     [Fact] public void TextAlign_center_resolves()        => AssertResolves("center", PropertyId.TextAlign);
     [Fact] public void TextAlign_justify_resolves()       => AssertResolves("justify", PropertyId.TextAlign);
+    // direction — CSS Writing Modes 4 §2.1 (direction pipeline).
+    [Fact] public void Direction_ltr_resolves()           => AssertResolves("ltr", PropertyId.Direction);
+    [Fact] public void Direction_rtl_resolves()           => AssertResolves("rtl", PropertyId.Direction);
+    [Fact] public void Direction_RTL_resolves_case_insensitive() => AssertResolves("RTL", PropertyId.Direction);
+    [Fact] public void Direction_bogus_emits_diagnostic() => AssertInvalid("ttb", PropertyId.Direction);
+
+    [Fact]
+    public void Direction_keyword_ids_are_ltr0_rtl1()
+    {
+        // The id contract the layout-side ReadDirection() / ReadParagraphDirection() readers
+        // switch on (rtl → bidi base level 1). Reordering would silently flip RTL detection.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Direction, "ltr", out var ltr));
+        Assert.Equal(0, ltr);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Direction, "rtl", out var rtl));
+        Assert.Equal(1, rtl);
+    }
     [Fact] public void FlexDirection_row_reverse_resolves() => AssertResolves("row-reverse", PropertyId.FlexDirection);
     [Fact] public void BorderTopStyle_solid_resolves()    => AssertResolves("solid", PropertyId.BorderTopStyle);
     [Fact] public void BorderTopStyle_dotted_resolves()   => AssertResolves("dotted", PropertyId.BorderTopStyle);

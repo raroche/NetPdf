@@ -90,7 +90,9 @@ public sealed class PropertyCoverageCorpusTests
         "orphans", "widows",
         "z-index", "visibility",
         "opacity",
-        "direction", "unicode-bidi",
+        // `direction` REMOVED from this allowlist (PR 2 task 4 — the direction pipeline) — it's now
+        // registered in properties.json + resolved by KeywordResolver; `unicode-bidi` stays deferred.
+        "unicode-bidi",
         "text-indent", "text-overflow", "text-wrap",
         // Per Phase 3 Task 10 cycle 2 + post-cycle-2 review (User #4):
         // word-break / overflow-wrap / hyphens REMOVED from this

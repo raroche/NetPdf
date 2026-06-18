@@ -783,6 +783,29 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Direction_rtl_inherits_and_right_aligns_default_start_text()
+    {
+        // Direction pipeline (PR 2 tasks 4+5) end-to-end through the REAL cascade: `direction` is an
+        // INHERITED property (CSS Writing Modes 4 §2.1), so declaring `direction:rtl` on <body> reaches
+        // the child <div> that emits the line, and the initial `text-align:start` then RIGHT-aligns it.
+        // Off the LTR-start control (left edge), RTL-start shifts right — landing at the SAME right edge
+        // as physical `text-align:right` (start resolves to the end/right edge in RTL; both factor 1.0).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string bodyStyle) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body style=\"" + bodyStyle + "\"><div>A</div></body></html>", opts))).X;
+
+        var ltrStart = LineX("");                  // LTR + start (control) → left edge
+        var ltrRight = LineX("text-align:right");  // LTR + right → right edge (the geometry reference)
+        var rtlStart = LineX("direction:rtl");     // RTL + INHERITED start → right edge
+
+        // Inheritance reached the div AND start swapped: the RTL line shifts right of the LTR-start control.
+        Assert.True(rtlStart > ltrStart + 1.0, $"rtl start should right-align: {ltrStart} → {rtlStart}");
+        // start-in-RTL lands at the same right edge as physical right (both align factor 1.0).
+        Assert.True(System.Math.Abs(rtlStart - ltrRight) < 1.0,
+            $"rtl start should match physical right: rtlStart={rtlStart} ltrRight={ltrRight}");
+    }
+
+    [Fact]
     public void Text_align_justify_spreads_words_and_pushes_the_last_word_right()
     {
         // text-align: justify cycle (CSS Text 3 §7.3) — a wrapping paragraph distributes each NON-LAST

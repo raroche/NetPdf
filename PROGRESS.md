@@ -2,7 +2,7 @@
 
 > **Current state (2026-06-18):** Phase 3's layout + pagination **engine is feature-complete and multi-page rendering is live**. What's left to *finish* Phase 3 is (a) wiring W3C conformance **measurement**, (b) a curated **feature/polish backlog**, (c) **confirming** the perf/memory gates, and (d) the **`0.7.0-beta` release**. The recommended next step is **PR 1 — Conformance measurement** (see the roadmap).
 >
-> Active branch: PR [#195](https://github.com/raroche/NetPdf/pull/195) (inline-level alignment finish) in review. `git log --oneline -1` shows the exact commit.
+> Active branch: `phase3-direction-pipeline-rtl-textalign` — PR 2 tasks 4–5 (the `direction` resolution pipeline + RTL `text-align`/atomic swap). PR 1 (conformance) awaits Roland's approach decision; task 6 (RTL flex flip) is the remaining PR-2 task. `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-18):** 7043 unit / 5 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-18):** 7078 unit / 5 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -58,9 +58,9 @@ Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order.
 3. **Flexbox + Grid pass-rates** — wire those subsets, gate ≥ 85% / ≥ 70%, publish the four numbers in the README.
 
 ### PR 2 — Direction / bidi pipeline  [feature; several deferrals block on this]
-4. A shared `direction` / writing-mode resolution pipeline (the missing infra many deferrals cite).
-5. RTL `text-align` (start/end swap) + RTL inline-atomic alignment.
-6. RTL flex main-axis flip (`flex-direction: row` under `direction: rtl`).
+4. ✅ A shared `direction` resolution pipeline — `DirectionStyleExtensions` (`ReadDirection`/`IsRtl`/`ReadParagraphDirection`); `direction` registered (inherited, `ltr`/`rtl`); bidi base direction now CSS-driven at the inline-layout seam. Writing-mode stays horizontal-tb (the seam composes vertical modes later).
+5. ✅ RTL `text-align` start/end swap (`ReadInlineAlignFactor` direction-aware — `start`→right in RTL) + RTL inline-atomic alignment (atomic shifts to the right edge). LTR output byte-identical.
+6. RTL flex main-axis flip (`flex-direction: row` under `direction: rtl`) — **remaining**; FlexLayouter adopts the now-existing pipeline (skip'd test `…pending_flex_direction_adoption`). *Residual direction gaps* (see `rtl-fragment-reversal`): UAX #9 L2 slice reversal, `dir` HTML attribute → `direction`, margin-box base direction.
 
 ### PR 3 — Inline-text polish  [feature]
 7. Line-edge `vertical-align` line growth — contain a tall `top/bottom/middle/text-*` run (the PR #195 deferral).

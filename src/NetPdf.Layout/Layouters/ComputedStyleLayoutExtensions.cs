@@ -165,20 +165,34 @@ internal static class ComputedStyleLayoutExtensions
 
     /// <summary>Body text-align cycle — the horizontal line-alignment FACTOR (CSS Text 3 §7.1)
     /// for inline content: the fraction of a line's free space (content width − line advance) the
-    /// line shifts by. <c>center</c> → 0.5; <c>end</c> / <c>right</c> → 1.0 (right-align);
-    /// <c>start</c> / <c>left</c> → 0 (no shift, the initial). <c>justify</c> / <c>justify-all</c>
-    /// return 0 HERE — they distribute inter-word (not a whole-line shift) via
-    /// <see cref="ReadInlineJustify"/>, falling back to start (0) for the non-justified last line.
-    /// <c>match-parent</c> stays approximated as <c>start</c>. LTR horizontal-tb (RTL would swap
-    /// start/end — deferred). Consumed by <c>TextPainter</c> (the glyph lines, via
-    /// <c>BoxFragment.LineAlignFactor</c>) + the inline-atomic placement, so both shift together.</summary>
-    public static double ReadInlineAlignFactor(this ComputedStyle s) =>
-        s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) switch
+    /// line shifts by. <c>center</c> → 0.5; physical <c>right</c> → 1.0, physical <c>left</c> → 0.
+    /// <c>justify</c> / <c>justify-all</c> return 0 HERE — they distribute inter-word (not a
+    /// whole-line shift) via <see cref="ReadInlineJustify"/>, falling back to start for the
+    /// non-justified last line.
+    ///
+    /// <para><b>Direction-relative start/end (direction pipeline).</b> <c>start</c> / <c>end</c>
+    /// resolve against the box's computed <c>direction</c> (<see cref="DirectionStyleExtensions.IsRtl"/>):
+    /// in LTR <c>start</c> → 0 (left), <c>end</c> → 1 (right); in RTL the start edge is the RIGHT
+    /// edge, so <c>start</c> → 1 and <c>end</c> → 0. The initial <c>text-align: start</c> therefore
+    /// RIGHT-aligns an RTL block. <c>match-parent</c> stays approximated as <c>start</c>. An LTR box
+    /// is byte-identical to the pre-pipeline mapping.</para>
+    ///
+    /// <para>Consumed by <c>TextPainter</c> (the glyph lines, via <c>BoxFragment.LineAlignFactor</c>)
+    /// + the inline-atomic placement, so the glyphs AND any inline atomic shift together — including
+    /// to the right under an RTL <c>start</c>.</para></summary>
+    public static double ReadInlineAlignFactor(this ComputedStyle s)
+    {
+        var rtl = s.IsRtl();
+        return s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) switch
         {
-            4 => 0.5,        // center
-            1 or 3 => 1.0,   // end / right
-            _ => 0.0,        // start(0) / left(2) / justify(5) / match-parent(6) / justify-all(7)
+            2 => 0.0,              // left  (physical)
+            3 => 1.0,              // right (physical)
+            4 => 0.5,              // center
+            5 or 7 => 0.0,         // justify / justify-all — distributed, not a whole-line shift
+            1 => rtl ? 0.0 : 1.0,  // end   → left in RTL, right in LTR
+            _ => rtl ? 1.0 : 0.0,  // start(0) / match-parent(6) → right in RTL, left in LTR
         };
+    }
 
     /// <summary>text-align: justify cycle — whether inline content should be JUSTIFIED (CSS Text 3
     /// §7.3 inter-word distribution): the line's free space (content width − line advance) is spread

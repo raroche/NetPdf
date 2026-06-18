@@ -7019,7 +7019,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 resolver: _shaperResolver!,
                 scriptIso15924: "Latn",
                 language: "en",
-                paragraphDirection: ParagraphDirection.LeftToRight,
+                // Direction pipeline — the paragraph base direction is the block's
+                // computed `direction` (CSS Writing Modes 4 §2.1), not a hardcoded
+                // LTR. An RTL block (`direction: rtl`) lays its inline formatting
+                // context out right-to-left (bidi base level 1); a default/LTR block
+                // is byte-identical to the pre-pipeline output.
+                paragraphDirection: inlineOnlyBlock.Style.ReadParagraphDirection(),
                 hyphenator: null,
                 cancellationToken: cancellationToken,
                 // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5
@@ -7097,8 +7102,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// (0.8 / −0.2 em — the layout layer has no font-metric access; the painter uses the REAL font
     /// metrics for glyphs, so an atomic's bottom aligns to the text baseline within typical-font
     /// tolerance); the line's <c>text-align</c> offset shifts the atomic WITH its text (body
-    /// text-align cycle — center / right / end; <c>justify</c> + RTL still leave it start-relative);
-    /// and only <c>vertical-align: baseline</c> is honoured.</para></summary>
+    /// text-align cycle — center / right / end, plus the direction-relative <c>start</c>/<c>end</c>
+    /// so an RTL block's atomic shifts to the RIGHT edge; <c>justify</c> still leaves it
+    /// start-relative); and only <c>vertical-align: baseline</c> is honoured.</para></summary>
     private (IReadOnlyList<double>? PerLineHeightsPx,
              IReadOnlyList<double>? PerLineBaselineTopPx,
              IReadOnlyList<InlineAtomicPlacement> Placements,
@@ -7111,8 +7117,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var shapedRuns = inlineResult.ShapedRuns;
         // Body text-align cycle — each line shifts by (content width − line advance) × factor, the
         // SAME shift TextPainter applies to the glyph lines (so an inline atomic moves WITH its
-        // text under text-align: center / right). 0 (start) leaves the start-relative placement
-        // byte-identical to the pre-cycle output.
+        // text under text-align: center / right, and to the RIGHT edge under an RTL `start` —
+        // ReadInlineAlignFactor resolves start/end against `direction`). A factor of 0 leaves the
+        // start-relative placement byte-identical to the pre-cycle output.
         var alignFactor = blockStyle.ReadInlineAlignFactor();
 
         // Approximate Latin font ascent/descent as a fraction of font-size (consistent with the

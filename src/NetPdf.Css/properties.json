@@ -44,6 +44,7 @@
     { "name": "column-width", "id": "ColumnWidth", "type": "Length", "default": "auto", "inherit": false, "applies_to": "BlockOnly", "computed": "Specified" },
     { "name": "content", "id": "Content", "type": "Content", "default": "normal", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "cursor", "id": "Cursor", "type": "Keyword", "default": "auto", "inherit": true, "applies_to": "All", "computed": "Specified" },
+    { "name": "direction", "id": "Direction", "type": "Keyword", "default": "ltr", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "display", "id": "Display", "type": "Keyword", "default": "inline", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "flex-basis", "id": "FlexBasis", "type": "FlexBasis", "default": "auto", "inherit": false, "applies_to": "FlexItems", "computed": "Specified" },
     { "name": "flex-direction", "id": "FlexDirection", "type": "Keyword", "default": "row", "inherit": false, "applies_to": "FlexContainers", "computed": "Specified" },

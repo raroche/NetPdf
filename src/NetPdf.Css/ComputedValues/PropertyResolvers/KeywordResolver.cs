@@ -209,6 +209,11 @@ internal static class KeywordResolver
             "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize",
             "nwse-resize", "zoom-in", "zoom-out");
 
+        // direction — CSS Writing Modes 4 §2.1. Sets the inline base direction of
+        // the box's content. ids ltr=0, rtl=1 — the contract the layout-side
+        // ComputedStyle.ReadDirection() / ReadParagraphDirection() readers switch on.
+        b[PropertyId.Direction] = T("ltr", "rtl");
+
         // display — CSS Display 3 §2 (the common single-keyword forms; multi-keyword
         // syntax `inline flex` etc. is out-of-scope for cycle 1).
         b[PropertyId.Display] = T("block", "inline", "inline-block", "list-item", "flex",

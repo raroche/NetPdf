@@ -1285,6 +1285,75 @@ public sealed class BlockInlineIntegrationTests
         Assert.Equal(544, right, precision: 1);
     }
 
+    [Theory]
+    [InlineData(0, 1.0)]   // start → RIGHT edge in RTL (the swap)
+    [InlineData(1, 0.0)]   // end   → LEFT edge in RTL (the swap)
+    [InlineData(2, 0.0)]   // left  stays physical-left
+    [InlineData(3, 1.0)]   // right stays physical-right
+    [InlineData(4, 0.5)]   // center symmetric
+    public void Rtl_text_align_swaps_inline_line_align_factor(int textAlignKeyword, double expectedFactor)
+    {
+        // Direction pipeline + task 5 — `direction: rtl` makes `text-align: start/end` direction-
+        // relative end-to-end: the cascade resolves direction, BlockLayouter reads it (the emitted
+        // fragment's LineAlignFactor = ReadInlineAlignFactor), and start/end swap (start → right edge).
+        // Physical left/right and center are unchanged, mirroring the LTR theory above.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var blockStyle = MakeStyle();
+        blockStyle.Set(PropertyId.Direction, ComputedSlot.FromKeyword(1));   // rtl
+        blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlignKeyword));
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        var fragment = Assert.Single(sink.Fragments);
+        Assert.Equal(expectedFactor, fragment.LineAlignFactor, precision: 3);
+    }
+
+    [Fact]
+    public void Rtl_inline_atomic_shifts_to_right_edge_under_default_start()
+    {
+        // RTL inline-atomic alignment — a `direction: rtl` block with the initial `text-align: start`
+        // right-aligns, so a 50px inline-block alone on a 600px line shifts to the RIGHT edge
+        // (600 − 50 = 550); the same default in LTR leaves it at 0. The atomic moves WITH its line
+        // because the placement reads the SAME ReadInlineAlignFactor the glyph painter does.
+        static double DecorationX(int direction)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.Direction, ComputedSlot.FromKeyword(direction));
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(50));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(30));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.InlineOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        Assert.Equal(550, DecorationX(1), precision: 1);   // rtl: 600 − 50, the right edge
+        Assert.Equal(0, DecorationX(0), precision: 1);     // ltr: start = left
+    }
+
     [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {

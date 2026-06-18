@@ -2720,22 +2720,25 @@ public sealed class FlexLayouterTests
 
     // -- F#1 (P2) — direction/writing-mode pipeline known gap -----------
 
-    [Fact(Skip = "L6+ — direction/writing-mode pipeline not implemented; tracked in flex-layouter-features deferral")]
-    public void L5_known_gap_rtl_row_should_flip_main_axis_but_no_direction_pipeline_yet()
+    [Fact(Skip = "PR 2 task 6 — FlexLayouter has not yet ADOPTED the direction pipeline; the shared reader " +
+        "(DirectionStyleExtensions.ReadDirection, added in task 4) exists, but the RTL row → main-axis flip is the " +
+        "remaining work. Tracked in flex-layouter-features deferral.")]
+    public void L5_known_gap_rtl_row_should_flip_main_axis_pending_flex_direction_adoption()
     {
         // Per CSS Flexbox §3.1 axis-mapping: `row` in RTL writing mode
         // means right-to-left (= same physical layout as `row-reverse`
         // in LTR). With L5's LTR-only main-axis mapping, an RTL
         // container with `flex-direction: row` would still emit items
-        // left-to-right (= InlineOffsets 0/50/100). When L6+ adds the
-        // direction pipeline, this test will pin the spec-correct
-        // behavior: items emitted in physical right-to-left order so
-        // DOM 0 lands at the right edge (= InlineOffset 350 for 3×50
-        // items in 400px), DOM 1 at 300, DOM 2 at 250 — matching the
+        // left-to-right (= InlineOffsets 0/50/100). When task 6 wires
+        // FlexLayouter to the direction pipeline, this test will pin the
+        // spec-correct behavior: items emitted in physical right-to-left
+        // order so DOM 0 lands at the right edge (= InlineOffset 350 for
+        // 3×50 items in 400px), DOM 1 at 300, DOM 2 at 250 — matching the
         // current `row-reverse` LTR output for the same fixture.
         //
-        // When the L6+ pipeline lands:
-        //   1. Plumb `direction` (cascaded) into FlexLayouter.
+        // When task 6 lands (the pipeline ALREADY exists post-task-4):
+        //   1. Read the cascaded `direction` via DirectionStyleExtensions.
+        //      ReadDirection / IsRtl inside FlexLayouter.
         //   2. The axis mapping switches from "row → inline left-to-
         //      right" to "row → inline right-to-left" under RTL.
         //   3. Drop this test's [Skip] + assert spec-correct offsets.

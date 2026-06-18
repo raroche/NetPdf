@@ -159,19 +159,33 @@ grepping the ID).
 
 - **ID** — `rtl-fragment-reversal`
 - **Status** — `approximated`.
-- **Behavior** — HarfBuzz shapes RTL runs in visual (reversed) order
-  internally; `LineFragment.Slices` stays in document order. Painters
-  walk per-shaped-run glyph arrays as-is. Single-direction LTR
-  paragraphs paint correctly. Single-direction RTL paragraphs walk in
-  the wrong visual order at the fragment level.
-- **Missing** — Fragment-level slice reversal for RTL paragraph base
-  direction so the painter consumes slices visually right-to-left.
+- **Behavior** — The paragraph BASE direction is now CSS-driven (PR 2
+  task 4 — a `direction: rtl` block resolves to bidi base level 1 and
+  RIGHT-aligns via the `text-align` start/end swap, task 5). HarfBuzz
+  shapes RTL runs in visual (reversed) order internally; but
+  `LineFragment.Slices` stays in DOCUMENT order. Painters walk
+  per-shaped-run glyph arrays as-is. Single-direction LTR paragraphs
+  paint correctly. Single-direction RTL paragraphs are right-aligned
+  but walk in the wrong visual order at the fragment level (the levels
+  are correct; only the slice ORDER is wrong).
+- **Missing** — Fragment-level slice reversal (UAX #9 L2) for RTL
+  paragraph base direction so the painter consumes slices visually
+  right-to-left. Plus two residual direction-pipeline gaps: the `dir`
+  HTML attribute is NOT mapped to the `direction` property (only CSS
+  `direction` works), and `PageMarginBoxPainter` inline text still
+  hardcodes LTR base direction.
 - **Trigger** — RTL primary direction (Arabic / Hebrew) enters the
-  corpus, OR a user reports right-to-left mis-rendering.
+  corpus, OR a user reports right-to-left mis-rendering / a `dir="rtl"`
+  attribute having no effect.
 - **Owner files** — `src/NetPdf.Layout/Inline/LineBuilder.cs::Wrap`
   emission site (`EmitDrawableRange`) — reverse slice order when the
-  paragraph base direction is `ParagraphDirection.RightToLeft`.
-- **Added** — Phase 3 Task 10 cycle 1 documented the deferral.
+  paragraph base direction is `ParagraphDirection.RightToLeft`. The
+  base direction itself is resolved by
+  `DirectionStyleExtensions.ReadParagraphDirection` (PR 2 task 4).
+- **Added** — Phase 3 Task 10 cycle 1 documented the deferral; PR 2
+  task 4 wired CSS-driven base direction (levels + alignment are now
+  correct; the visual slice reversal + `dir` attribute + margin-box
+  base direction remain).
 - **Removal condition** — Wrap reverses slice order for RTL paragraphs
   AND the painter consumes them visually.
 
@@ -274,15 +288,19 @@ grepping the ID).
   - A `text-align: justify` line carrying an inline ATOMIC now DISTRIBUTES inter-word gaps AND shifts the
     atomic right by the gaps before it (the shared `InlineJustify` helper — the painter + the inline-atomic
     placement can't disagree); `justify-all` justifies the LAST line too. Deferred: an internal
-    `<br>`-terminated line stays start-aligned even under justify-all; RTL paragraphs don't shift the atomic
-    with the text. (center / right / end also shift the atomic — body text-align cycle.)
+    `<br>`-terminated line stays start-aligned even under justify-all. (center / right / end shift the atomic
+    — body text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL
+    block — direction pipeline, PR 2 task 5. What remains: the atomic's bidi VISUAL ORDER within a
+    mixed-direction line is still document-order — see `rtl-fragment-reversal`.)
   - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
     separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
     by document depth, not a dedicated cap); LTR horizontal-tb.
   - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
     formatting context) remain deferred.
-- **Trigger** — an RTL inline `<img>` or inline-block, a line-edge text `vertical-align` (`top`/`bottom`/
-  `middle`/`text-*`) on a run TALLER than its line (overflow), or an `inline-flex`/`-grid`/`-table` span.
+- **Trigger** — a mixed-direction line needing bidi VISUAL reordering of an inline `<img>` / inline-block
+  (the RTL text-align alignment is already honoured — PR 2 task 5), a line-edge text `vertical-align`
+  (`top`/`bottom`/`middle`/`text-*`) on a run TALLER than its line (overflow), or an
+  `inline-flex`/`-grid`/`-table` span.
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
@@ -299,9 +317,9 @@ grepping the ID).
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
   inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
 - **Removal condition** — line-edge text `vertical-align` GROWS its line (no overflow for a tall run), RTL
-  alignment honoured for inline atomics, the inline-block's last-line baseline using true per-RUN content
-  metrics + min-content shrink-to-fit, and inline-flex / -grid / -table atomics laid out (no longer
-  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+  bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is already honoured — PR 2 task 5),
+  the inline-block's last-line baseline using true per-RUN content metrics + min-content shrink-to-fit, and
+  inline-flex / -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 
@@ -1066,14 +1084,15 @@ grepping the ID).
     to-left along the inline axis (physically equivalent to LTR
     `row-reverse`); `row` in vertical-rl swaps the main + cross
     axes onto the block + inline directions of the rotated writing
-    mode. L7+ scope — requires plumbing `direction` +
-    `writing-mode` properties through the layout pipeline (L6
-    shipped `flex-wrap: wrap` without addressing this gap). Pinned
-    by the Skip'd
-    `L5_known_gap_rtl_row_should_flip_main_axis_but_no_direction_pipeline_yet`
-    test — when L7+ adds the direction pipeline, that test should
-    flip to spec-correct expectations + this bullet should be
-    removed.
+    mode. The shared direction pipeline now EXISTS
+    (`DirectionStyleExtensions.ReadDirection` / `IsRtl`, PR 2 task 4);
+    the remaining work (PR 2 task 6) is FlexLayouter ADOPTING it — read
+    the cascaded `direction` and flip the `row` main-axis mapping to
+    right-to-left under RTL (`writing-mode` vertical modes stay out of
+    scope). Pinned by the Skip'd
+    `L5_known_gap_rtl_row_should_flip_main_axis_pending_flex_direction_adoption`
+    test — when task 6 wires the adoption, that test should flip to
+    spec-correct expectations + this bullet should be removed.
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
     declared `width`, ignoring item margins / padding / borders /

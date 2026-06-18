@@ -7230,6 +7230,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 lines.Length * textLineHeightPx);
         }
 
+        // text-align: justify cycle — an inline atomic on a JUSTIFIED line shifts RIGHT by the inter-word
+        // gaps accumulated BEFORE it, mirroring TextPainter's EmitJustifiedLine pen EXACTLY (the shared
+        // InlineJustify helper counts the same opportunities) so the atomic stays glued to its justified
+        // text. justifyConcatText is the same source-run concatenation the painter rebuilds (the
+        // preprocessed runs' text in document order — a glyph's Cluster indexes straight into it).
+        var justifies = blockStyle.ReadInlineJustify();
+        var justifyLastLine = justifies && blockStyle.ReadInlineJustifyAll();
+        string? justifyConcatText = null;
+        if (justifies)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var pr in preRuns) sb.Append(pr.Text);
+            justifyConcatText = sb.ToString();
+        }
+
         var placements = new List<InlineAtomicPlacement>();
         var cumulativeTopPx = 0.0;
         for (var li = 0; li < lines.Length; li++)
@@ -7247,12 +7262,35 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var lineAlignOffsetPx = alignFactor != 0.0
                 ? Math.Max(0.0, (contentInlineSize - lines[li].TotalAdvance) * alignFactor)
                 : 0.0;
+            // Per-line justify plan (the SAME gate + math as TextPainter): the LAST line justifies only
+            // under justify-all; a non-last line justifies unless it's forced-break-terminated (an
+            // internal <br> stays start-aligned even under justify-all — a documented approximation).
+            // The last line of a block carries EndsWithMandatoryBreak (content end), so it's gated on
+            // justifyLastLine, NOT the break flag. justify and center/right are mutually exclusive
+            // (alignFactor is 0 for justify), so lineAlignOffsetPx is 0 and justifyAccumPx shifts the atomic.
+            var isLastLine = li == lines.Length - 1;
+            var justifyExtraPerGapPx = 0.0;
+            var justifyGapCount = 0;
+            if (justifies && justifyConcatText is not null
+                && (isLastLine ? justifyLastLine : !lines[li].EndsWithMandatoryBreak))
+            {
+                justifyGapCount = NetPdf.Layout.Inline.InlineJustify.InteriorGapCount(
+                    lines[li], shapedRuns, justifyConcatText);
+                if (justifyGapCount > 0)
+                {
+                    var freePx = contentInlineSize - lines[li].TotalAdvance;
+                    if (freePx > 0) justifyExtraPerGapPx = freePx / justifyGapCount;
+                }
+            }
             var xCursorPx = 0.0;
+            var justifyAccumPx = 0.0;        // gaps added so far on this line (mirrors the painter's pen).
+            var justifyOpportunitiesUsed = 0;
             foreach (var slice in lines[li].Slices)
             {
                 var sliceStartXPx = xCursorPx;
                 xCursorPx += slice.SliceAdvance;
-                if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
+                var sliceRun = shapedRuns[slice.ShapedRunIndex];
+                if (sliceRun.Atomic is { } a)
                 {
                     // vertical-align (CSS 2.2 §10.8.1) places the atomic's border box within the line box:
                     // baseline (the default) aligns the inline-block's own baseline / an img's margin-box
@@ -7265,8 +7303,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         a, valign, lineTopPx, thisLineHeightPx, baselineTopPx - numericRaisePx,
                         ascentPx, descentPx, fontSizePx);
                     placements.Add(new InlineAtomicPlacement(
-                        a.Box, lineAlignOffsetPx + sliceStartXPx + a.MarginInlineStartPx, borderBoxTopPx,
-                        a.BorderBoxWidthPx, a.BorderBoxHeightPx));
+                        a.Box, lineAlignOffsetPx + justifyAccumPx + sliceStartXPx + a.MarginInlineStartPx,
+                        borderBoxTopPx, a.BorderBoxWidthPx, a.BorderBoxHeightPx));
+                }
+                // Accumulate THIS slice's interior word-gaps AFTER placing any atomic in it (an atomic is
+                // its own slice, so its shift comes from PRIOR slices' gaps) — exactly the painter's pen.
+                else if (justifyExtraPerGapPx > 0.0)
+                {
+                    for (var g = 0; g < slice.GlyphLength && justifyOpportunitiesUsed < justifyGapCount; g++)
+                    {
+                        if (NetPdf.Layout.Inline.InlineJustify.IsJustifySpace(
+                                justifyConcatText!, sliceRun.Glyphs[slice.GlyphStart + g].Cluster))
+                        {
+                            justifyAccumPx += justifyExtraPerGapPx;
+                            justifyOpportunitiesUsed++;
+                        }
+                    }
                 }
             }
             cumulativeTopPx += thisLineHeightPx;
@@ -7747,7 +7799,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             LineAlignFactor: inlineOnlyBlock.Style.ReadInlineAlignFactor(),
             // text-align: justify cycle — distribute each non-last line's free space across its
             // inter-word gaps (TextPainter splits at spaces). False (the default) byte-identical.
-            JustifyLines: inlineOnlyBlock.Style.ReadInlineJustify()));
+            JustifyLines: inlineOnlyBlock.Style.ReadInlineJustify(),
+            // text-align: justify-all — the LAST line justifies too (lifts the painter's last-line gate).
+            JustifyLastLine: inlineOnlyBlock.Style.ReadInlineJustifyAll()));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the

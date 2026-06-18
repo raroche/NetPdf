@@ -820,6 +820,47 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_align_justify_all_justifies_the_single_last_line()
+    {
+        // text-align: justify-all (CSS Text 3 §7.3, post-PR-#194 task 1) — unlike plain justify (which
+        // leaves the LAST line start-aligned, the §7.3 exception), justify-all justifies EVERY line
+        // including the last. A one-line paragraph therefore spreads its words to fill the width: more
+        // per-word Td segments AND a larger max Td x than left — exactly where plain justify == left.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">A A A</div></body></html>";
+
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+        var justify = Latin1(HtmlPdf.Convert(Doc("justify"), opts));        // single line = last → start-aligned
+        var justifyAll = Latin1(HtmlPdf.Convert(Doc("justify-all"), opts)); // last line justifies too
+
+        Assert.Equal(left, justify);   // control: plain justify leaves the single (last) line alone.
+        Assert.True(TdCount(justifyAll) > TdCount(left),
+            $"justify-all should split the last line into per-word segments: all={TdCount(justifyAll)} left={TdCount(left)}");
+        Assert.True(MaxTdX(justifyAll) > MaxTdX(left) + 5.0,
+            $"justify-all should push the last line's words right: all={MaxTdX(justifyAll)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
+    public void Text_align_justify_distributes_on_a_line_carrying_an_inline_atomic()
+    {
+        // text-align: justify on an atomic-bearing line (post-PR-#194 task 1) — pre-fix a line carrying an
+        // inline atomic stayed START-aligned (the painter bailed). Now the text justifies AROUND the
+        // atomic: a one-line paragraph with an (empty) inline-block + inter-word gaps, under justify-all,
+        // pushes its last word toward the right edge (vs left), proving the atomic no longer suppresses it.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">"
+            + "A <span style=\"display:inline-block;width:12px;height:8px\"></span> B C</div></body></html>";
+
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+        var justifyAll = Latin1(HtmlPdf.Convert(Doc("justify-all"), opts));
+
+        Assert.True(MaxTdX(justifyAll) > MaxTdX(left) + 5.0,
+            $"justify should distribute on a line with an inline atomic: all={MaxTdX(justifyAll)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
     public void Vertical_align_top_places_an_inline_block_differently_than_baseline()
     {
         // vertical-align cycle (CSS 2.2 §10.8.1) — end-to-end: a `vertical-align` keyword now resolves

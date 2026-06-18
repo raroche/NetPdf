@@ -183,13 +183,21 @@ internal static class ComputedStyleLayoutExtensions
     /// <summary>text-align: justify cycle — whether inline content should be JUSTIFIED (CSS Text 3
     /// §7.3 inter-word distribution): the line's free space (content width − line advance) is spread
     /// across its inter-word gaps. True for <c>justify</c>(5) and <c>justify-all</c>(7) — both share the
-    /// inter-word distribution; the <c>justify-all</c> distinction (justifying the LAST line too) is a
-    /// documented approximation (treated as <c>justify</c>, so the last line stays start-aligned).
-    /// Consumed by <c>TextPainter</c>, which splits each justified line's glyphs at word-separator
-    /// spaces and adds per-gap advance. Mutually exclusive with <see cref="ReadInlineAlignFactor"/>
-    /// (which returns 0 for justify, so a non-justified line — the last one — falls back to start).</summary>
+    /// inter-word distribution; <see cref="ReadInlineJustifyAll"/> adds the <c>justify-all</c> distinction
+    /// (the LAST line justifies too). Consumed by <c>TextPainter</c> (splits each justified line's glyphs
+    /// at word-separator spaces and adds per-gap advance) + the inline-atomic placement (shifts an atomic
+    /// by the gaps before it). Mutually exclusive with <see cref="ReadInlineAlignFactor"/> (which returns
+    /// 0 for justify, so a non-justified line — e.g. the plain-justify last line — falls back to start).</summary>
     public static bool ReadInlineJustify(this ComputedStyle s) =>
         s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) is 5 or 7;
+
+    /// <summary>text-align: justify cycle — whether the LAST line justifies too (CSS Text 3 §7.3) —
+    /// i.e. <c>text-align: justify-all</c>(7). <c>justify</c>(5) leaves the last line start-aligned (the
+    /// §7.3 exception); <c>justify-all</c> justifies every line including the last. Lets <c>TextPainter</c>
+    /// (and the inline-atomic placement) lift the last-line gate. A forced-break-terminated line stays
+    /// start-aligned even under justify-all (a documented first-cut approximation).</summary>
+    public static bool ReadInlineJustifyAll(this ComputedStyle s) =>
+        s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) is 7;
 
     /// <summary>Maps a <c>border-*-width</c> PropertyId to its sibling
     /// <c>border-*-style</c> PropertyId for the §4.3 used-width style gate;

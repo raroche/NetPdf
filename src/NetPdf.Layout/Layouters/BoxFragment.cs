@@ -163,6 +163,9 @@ namespace NetPdf.Layout.Layouters;
 /// except the last and any forced-break-terminated line (CSS Text 3 §7.3 inter-word distribution):
 /// it splits the line's glyphs at word-separator spaces and spreads the free space across the gaps.
 /// Default false leaves every non-justified fragment byte-identical.</param>
+/// <param name="JustifyLastLine">text-align: justify-all cycle — when true the LAST line justifies too
+/// (CSS Text 3 §7.3), lifting the painter's last-line gate. Only meaningful with
+/// <paramref name="JustifyLines"/>. Default false = plain justify, byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -206,7 +209,11 @@ internal readonly record struct BoxFragment(
     // distributes the free space (InlineSize − line advance) across the inter-word gaps. The
     // per-line LineAlignFactor still applies to the non-justified last line (justify → factor 0 =
     // start). DEFAULT false leaves every non-justified fragment byte-identical.
-    bool JustifyLines = false);
+    bool JustifyLines = false,
+    // text-align: justify-all cycle — when true the LAST line justifies too (CSS Text 3 §7.3), lifting
+    // the painter's last-line gate. Only meaningful with JustifyLines. DEFAULT false = plain justify
+    // (last line start-aligned), byte-identical.
+    bool JustifyLastLine = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

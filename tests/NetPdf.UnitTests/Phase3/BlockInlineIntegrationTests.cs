@@ -687,6 +687,45 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(sub > baseline + 0.5, $"sub should lower the atomic below baseline: sub={sub} baseline={baseline}");
     }
 
+    [Fact]
+    public void Justify_shifts_an_inline_atomic_by_the_gaps_before_it()
+    {
+        // text-align: justify on an atomic-bearing line (post-PR-#194 task 1) — an inline atomic shifts
+        // RIGHT by the inter-word gaps accumulated BEFORE it, so it stays glued to its justified text
+        // (pre-fix the line stayed start-aligned). justify-all justifies the single (last) line; with
+        // free space on the line, the atomic's inline offset must exceed the un-justified (start) one.
+        double AtomicInlineOffset(int textAlign)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlign));
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(Box.TextRun("A A", MakeStyle()));   // one interior space → one gap before the atomic
+            block.AppendChild(inlineBlock);
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.InlineOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        var start = AtomicInlineOffset(0);       // text-align: start — no justify
+        var justifyAll = AtomicInlineOffset(7);  // text-align: justify-all — the single line justifies
+
+        Assert.True(justifyAll > start + 1,
+            $"justify should shift the atomic right by the gap(s) before it: justifyAll={justifyAll} start={start}");
+    }
+
     // Lays out [text "A", inline-block(20×10, given vertical-align + optional line-height)] and returns
     // the atomic's (top, bottom) plus the outer line-box height — for containment + own-line-height checks.
     private static (double Top, double Bottom, double LineHeight) ValignAtomicGeometry(

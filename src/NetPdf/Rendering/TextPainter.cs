@@ -370,16 +370,20 @@ internal static class TextPainter
                     ? lineTopPx + bls[li]
                     : null;
 
-            // text-align: justify (CSS Text 3 §7.3) — a NON-LAST line that is NOT terminated by a
-            // forced break distributes its free space across inter-word gaps. The LAST line + any
-            // forced-break-terminated line stay start-aligned (the §7.3 exceptions; LineAlignFactor is
-            // 0 for justify, so they paint left). `gapCount` is the interior word-separator-space count
-            // (trailing spaces sort last → excluded); an overflowing line (free ≤ 0) is not squeezed.
+            // text-align: justify (CSS Text 3 §7.3) — the LAST line justifies only under justify-all
+            // (JustifyLastLine); a non-last line justifies unless it's forced-break-terminated (an
+            // internal <br> stays start-aligned even under justify-all — a documented approximation). The
+            // LAST line of a block carries EndsWithMandatoryBreak (content end), so it's gated on
+            // JustifyLastLine, NOT the break flag. `gapCount` is the interior word-separator-space count
+            // (trailing spaces sort last → excluded; an inline ATOMIC is advance-only, not an opportunity —
+            // EmitJustifiedLine just advances past it, and the layout shifts the atomic by the same gaps);
+            // an overflowing line (free ≤ 0) isn't squeezed.
+            var isLastLine = li == lines.Length - 1;
             var justifyExtraPerGapPx = 0.0;
             var justifyGapCount = 0;
             if (fragment.JustifyLines && concatText is not null
-                && !line.EndsWithMandatoryBreak && li < lines.Length - 1
-                && TryPlanJustification(line, shapedRuns, concatText, out justifyGapCount) && justifyGapCount > 0)
+                && (isLastLine ? fragment.JustifyLastLine : !line.EndsWithMandatoryBreak)
+                && (justifyGapCount = InlineJustify.InteriorGapCount(line, shapedRuns, concatText)) > 0)
             {
                 var freePx = contentInlineSizePx - insetLeftPx - insetRightPx - line.TotalAdvance;
                 if (freePx > 0) justifyExtraPerGapPx = freePx / justifyGapCount;
@@ -466,48 +470,10 @@ internal static class TextPainter
         }
     }
 
-    /// <summary>text-align: justify cycle — count a line's interior word-separator spaces (the
-    /// justification opportunities, CSS Text 3 §7.3). Returns <see langword="false"/> when the line
-    /// carries an inline ATOMIC (atomic + justify is deferred to the first cut → the line stays
-    /// start-aligned). <paramref name="gapCount"/> excludes a TRAILING run of spaces (they sort last
-    /// and get no gap — a word must follow). A glyph's <c>Cluster</c> indexes into
-    /// <paramref name="concatText"/> (the shaping concatenation), matching the line builder's
-    /// convention.</summary>
-    private static bool TryPlanJustification(
-        LineFragment line, IReadOnlyList<ShapedRun> shapedRuns, string concatText, out int gapCount)
-    {
-        gapCount = 0;
-        var totalSpaces = 0;
-        var trailingSpaces = 0;
-        foreach (var slice in line.Slices)
-        {
-            if (slice.GlyphLength <= 0) continue;
-            var run = shapedRuns[slice.ShapedRunIndex];
-            if (run.Atomic is not null) return false;   // atomic on the line → not justified (deferred).
-            for (var g = 0; g < slice.GlyphLength; g++)
-            {
-                if (IsJustifySpace(concatText, run.Glyphs[slice.GlyphStart + g].Cluster))
-                {
-                    totalSpaces++;
-                    trailingSpaces++;
-                }
-                else
-                {
-                    trailingSpaces = 0;
-                }
-            }
-        }
-        gapCount = totalSpaces - trailingSpaces;   // interior (word-followed) spaces only.
-        return true;
-    }
-
-    /// <summary>Whether the cluster at <paramref name="cluster"/> in <paramref name="concatText"/> is a
-    /// word-separator space — an ASCII space (U+0020) or tab (U+0009), the justification opportunities
-    /// (CSS Text 3 §7.3; a NO-BREAK space U+00A0 is deliberately NOT one). Bounds-guarded (an
-    /// out-of-range cluster is not a space — safe degradation), mirroring the line builder.</summary>
-    private static bool IsJustifySpace(string concatText, int cluster) =>
-        (uint)cluster < (uint)concatText.Length
-        && (concatText[cluster] == ' ' || concatText[cluster] == '\t');
+    // text-align: justify — the line's interior word-separator-space count (InteriorGapCount) and the
+    // space test (IsJustifySpace) live on the shared NetPdf.Layout.Inline.InlineJustify helper, so the
+    // gaps the painter distributes here and the offset the layout gives an inline atomic on the SAME
+    // line are computed from one source and can't disagree.
 
     // Text vertical-align raise is computed by the shared NetPdf.Layout.Inline.InlineVerticalAlign
     // helper (the layout line-box sizing uses the SAME helper, so the line it reserves and the baseline
@@ -533,7 +499,15 @@ internal static class TextPainter
         foreach (var slice in line.Slices)
         {
             if (slice.GlyphLength <= 0) continue;
-            var run = shapedRuns[slice.ShapedRunIndex];   // no atomic here — TryPlanJustification bailed.
+            var run = shapedRuns[slice.ShapedRunIndex];
+            if (run.Atomic is not null)
+            {
+                // An inline atomic paints from its OWN fragment (layout placed it, shifted by the same
+                // justify gaps via InlineJustify); here just advance the pen so following words stay put.
+                for (var g = 0; g < slice.GlyphLength; g++)
+                    penXPx += run.Glyphs[slice.GlyphStart + g].XAdvance;
+                continue;
+            }
             var runStyle = preRuns[run.Source.SourceTextRunIndex].Style;
             var fontSizePx = runStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
             if (!FragmentPainter.TryResolveColor(runStyle.Get(PropertyId.Color), DefaultColorArgb, out var argb))
@@ -565,7 +539,7 @@ internal static class TextPainter
                 var glyph = run.Glyphs[slice.GlyphStart + g];
                 penXPx += glyph.XAdvance;
                 if (opportunitiesUsed >= gapCount
-                    || !IsJustifySpace(concatText, glyph.Cluster))
+                    || !InlineJustify.IsJustifySpace(concatText, glyph.Cluster))
                     continue;
                 // Word boundary — flush [segStartG, g] (incl. the space) then open a gap after it.
                 opportunitiesUsed++;

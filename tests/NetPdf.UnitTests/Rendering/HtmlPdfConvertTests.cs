@@ -863,22 +863,29 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Text_vertical_align_super_raises_and_sub_lowers_the_glyph_baseline()
+    public void Text_vertical_align_super_sits_above_and_sub_below_same_line_text()
     {
-        // text vertical-align cycle (CSS 2.2 §10.8.1) — an inline run's OWN vertical-align raises
-        // (super) / lowers (sub) its glyph baseline. A super/sub span shifts its glyph's Td y off the
-        // baseline run's. PDF user space is y-up (page-bottom origin), so a RAISED baseline → LARGER y.
+        // text vertical-align cycle (CSS 2.2 §10.8.1) — an inline run's `super` sits ABOVE the normal
+        // text ON ITS LINE, `sub` BELOW (the line box grows to contain the shift). Compare the shifted
+        // run's glyph Td y to the baseline run's on the SAME line (PDF user space is y-up, so higher → a
+        // LARGER y). A lone shifted run can't show the raise — the line grows around it — so compare to
+        // same-line baseline text.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div><span style=\"vertical-align:" + valign + "\">A</span></div></body></html>",
-            opts))).Y;
+        (double Normal, double Shifted) Line(string valign)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div><span>X</span>" +
+                "<span style=\"vertical-align:" + valign + "\">A</span></div></body></html>", opts)));
+            Assert.True(ys.Length >= 2,
+                $"expected two Td glyph slices (X then A); got {ys.Length} for vertical-align:{valign}");
+            return (ys[0], ys[1]);   // X (baseline) then A (shifted), in document order.
+        }
 
-        var baseline = GlyphY("baseline");
-        var super = GlyphY("super");
-        var sub = GlyphY("sub");
+        var sup = Line("super");
+        var sub = Line("sub");
 
-        Assert.True(super > baseline + 1, $"super should raise the glyph (larger PDF y): super={super} baseline={baseline}");
-        Assert.True(sub < baseline - 1, $"sub should lower the glyph (smaller PDF y): sub={sub} baseline={baseline}");
+        Assert.True(sup.Shifted > sup.Normal + 1, $"super should sit above same-line text: {sup.Shifted} vs {sup.Normal}");
+        Assert.True(sub.Shifted < sub.Normal - 1, $"sub should sit below same-line text: {sub.Shifted} vs {sub.Normal}");
     }
 
     [Fact]
@@ -897,24 +904,66 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Vertical_align_on_a_block_or_cell_does_not_shift_its_own_text()
+    {
+        // text vertical-align inline-level gate — vertical-align applies to INLINE-LEVEL boxes. A
+        // BLOCK's own `vertical-align: super` (a CSS no-op) — and a TABLE CELL's — must NOT shift its
+        // own text: `<div style="vertical-align:super">A</div>` renders identically to a plain div
+        // (the run's style IS the block's, so the painter's inline-level gate skips the shift).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var plain = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A</div></body></html>", opts));
+        var blockValign = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"vertical-align:super\">A</div></body></html>", opts));
+        Assert.Equal(plain, blockValign);
+    }
+
+    [Fact]
+    public void Vertical_align_on_a_table_cell_does_not_shift_its_direct_text_but_an_inline_span_does()
+    {
+        // text vertical-align inline-level gate, TABLE-CELL coverage (post-PR-#194 review P3). A cell's
+        // inline content is wrapped in an anonymous block that REUSES the cell's style ref (BoxBuilder
+        // FixupAnonymousBlocks), so the painter's ReferenceEquals(runStyle, blockStyle) gate fires for
+        // the cell's DIRECT text — the cell's own `vertical-align: super` doesn't baseline-shift it. A
+        // NESTED <span> carries a DISTINCT style, so its vertical-align STILL shifts. (TableLayouter
+        // ignores cell vertical-align entirely, so the painter's gate is the ONLY thing that could
+        // wrongly move the cell's text — making this the brittle path worth proving directly.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        // (1) The cell's OWN vertical-align:super must NOT leak into its direct text "Y": it stays on the
+        //     baseline with the nested span's "X" (same line). A leak would raise "Y" above "X".
+        var ownValign = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><table><tr>" +
+            "<td style=\"vertical-align:super\"><span>X</span>Y</td></tr></table></body></html>", opts)));
+        Assert.True(ownValign.Length >= 2, $"expected the span 'X' + the direct 'Y' Td; got {ownValign.Length}");
+        Assert.Equal(ownValign[0], ownValign[1], precision: 2);   // X and Y share the baseline — no leak.
+
+        // (2) A nested inline <span style="vertical-align:super"> in a PLAIN cell STILL shifts above its
+        //     same-line baseline text — the gate is inline-level, not a blanket cell suppression.
+        var nestedSpan = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><table><tr><td><span>X</span>" +
+            "<span style=\"vertical-align:super\">A</span></td></tr></table></body></html>", opts)));
+        Assert.True(nestedSpan.Length >= 2, $"expected the baseline 'X' + the super 'A' Td; got {nestedSpan.Length}");
+        Assert.True(nestedSpan[1] > nestedSpan[0] + 1,
+            $"a nested span's super should sit above same-line cell text: {nestedSpan[1]} vs {nestedSpan[0]}");
+    }
+
+    [Fact]
     public void Text_vertical_align_percentage_uses_the_runs_own_line_height()
     {
         // Post-PR-#193 review P2 — a text run's `vertical-align: %` resolves against the run's OWN
-        // line-height (CSS 2.2 §10.8.1), not the current line box. The first span (`line-height:20px`)
-        // sits on a line whose box is 40px (the second span's `line-height:40px` dominates). `50%` of the
-        // first span's OWN 20px is a 10px (= 7.5pt) raise — NOT 50% of the 40px line box (which would be
-        // 20px = 15pt). Both renders share the same 40px line box (same baseline), so the "A" glyph's y
-        // difference isolates the raise.
+        // line-height (CSS 2.2 §10.8.1), not the parent / line box. The "A" span's OWN `font-size:32px`
+        // gives a line-height of 32×1.2 = 38.4px, so `50%` is a 19.2px (= 14.4pt) raise above the
+        // same-line normal "X"; the block's default 19.2px line-height would give only ~9.6px (= 7.2pt).
+        // The relative A−X y isolates A's own raise (both runs share the line baseline).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double FirstGlyphY(string firstSpanStyle) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div><span style=\"" + firstSpanStyle + "\">A</span>" +
-            "<span style=\"line-height:40px\">B</span></div></body></html>", opts))).Y;
+        var ys = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div><span>X</span>" +
+            "<span style=\"vertical-align:50%;font-size:32px\">A</span></div></body></html>", opts)));
 
-        var baseline = FirstGlyphY("line-height:20px");
-        var raised = FirstGlyphY("vertical-align:50%;line-height:20px");
-
-        // ~7.5pt (own 20px) raise, NOT ~15pt (the 40px line box) — proving the own-line-height base.
-        Assert.InRange(raised - baseline, 6.0, 9.0);
+        // ~14.4pt (50% of A's OWN 38.4px line-height), NOT ~7.2pt (50% of the block's default line-height).
+        Assert.True(ys.Length >= 2, $"expected two Td glyph slices (X then A); got {ys.Length}");
+        Assert.InRange(ys[1] - ys[0], 11.0, 18.0);
     }
 
     [Fact]
@@ -7444,6 +7493,7 @@ public sealed class HtmlPdfConvertTests
         return (double.Parse(nums[^2], CultureInfo.InvariantCulture),
             double.Parse(nums[^1], CultureInfo.InvariantCulture));
     }
+
 
     /// <summary>Count of <c>Td</c> text-position operators. <c>TextPainter</c> emits one <c>Td</c> per
     /// painted SLICE (per line, per run-slice), so a multi-run line can yield several — but for the

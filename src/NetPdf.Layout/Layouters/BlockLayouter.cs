@@ -7127,16 +7127,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var textAscentAbovePx = textLineHeightPx / 2.0 + 0.3 * fontSizePx;
         var textDescentBelowPx = textLineHeightPx - textAscentAbovePx;
 
+        var preRuns = inlineResult.PreprocessedRuns;
         var perLineHeights = new double[lines.Length];
         var perLineBaselines = new double[lines.Length];   // offset from line top; NaN = painter default.
         var anyAtomic = false;
-        var anyBaselineAligned = false;
+        var anyMaxAscent = false;                           // any line uses the max-ascent model (→ baselines).
+        var anyTextShift = false;                           // any inline-level text run has a vertical-align shift.
         for (var li = 0; li < lines.Length; li++)
         {
             double maxAtomicMarginBoxHeight = 0;
             var ascentAbove = textAscentAbovePx;
             var descentBelow = textDescentBelowPx;
-            var lineHasBaselineAligned = false;
+            var lineNeedsMaxAscent = false;
             foreach (var slice in lines[li].Slices)
             {
                 if (shapedRuns[slice.ShapedRunIndex].Atomic is { } a)
@@ -7156,8 +7158,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if ((a.BaselineFromBorderTopPx is not null && IsBaselineValign(valign))
                         || IsBaselineRelativeShifted(valign, numericRaisePx))
                     {
-                        lineHasBaselineAligned = true;
-                        anyBaselineAligned = true;
+                        lineNeedsMaxAscent = true;
+                        anyMaxAscent = true;
                     }
                     // Grow the baseline-relative extents from EVERY atomic per its vertical-align — so a
                     // tall middle / text-top / text-bottom (or baseline / img) sibling is CONTAINED by the
@@ -7172,8 +7174,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (extentAbove > ascentAbove) ascentAbove = extentAbove;
                     if (extentBelow > descentBelow) descentBelow = extentBelow;
                 }
+                else
+                {
+                    // text vertical-align line-growth cycle — an inline-level TEXT run with a sub/super/
+                    // numeric vertical-align shifts its glyph baseline (TextPainter applies the SAME shift
+                    // via the shared InlineVerticalAlign helper). Grow the line so the shifted text is
+                    // CONTAINED (a super run's top no longer spills into the line above): the strut shifts
+                    // UP by the raise (ascent += raise, descent −= raise). raise 0 (baseline / plain /
+                    // block-direct text — the gate) leaves the line byte-identical.
+                    var run = shapedRuns[slice.ShapedRunIndex];
+                    var runStyle = preRuns[run.Source.SourceTextRunIndex].Style;
+                    var runFontSizePx = runStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                    var raisePx = NetPdf.Layout.Inline.InlineVerticalAlign.TextRaisePx(
+                        runStyle, blockStyle, runFontSizePx);
+                    if (raisePx != 0.0)
+                    {
+                        lineNeedsMaxAscent = true;
+                        anyMaxAscent = true;
+                        anyTextShift = true;
+                        // Contain the shift with the SHIFTED RUN's OWN strut (its own font-size + line-
+                        // height), NOT the block's — a font-size:32px super span must grow the line by its
+                        // own ~32px extent; reusing the block's 16px strut under-grows it and the raised
+                        // glyph spills above the line top (post-PR-#194 review P2). Mirrors the block
+                        // textAscentAbovePx / textDescentBelowPx formula, scaled to the run (so a run of the
+                        // block's own size + line-height stays byte-identical to the prior block-strut math).
+                        var runLineHeightPx =
+                            NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(runStyle, runFontSizePx);
+                        var runAscentAbovePx = runLineHeightPx / 2.0 + 0.3 * runFontSizePx;
+                        var runDescentBelowPx = runLineHeightPx - runAscentAbovePx;
+                        if (runAscentAbovePx + raisePx > ascentAbove) ascentAbove = runAscentAbovePx + raisePx;
+                        if (runDescentBelowPx - raisePx > descentBelow) descentBelow = runDescentBelowPx - raisePx;
+                    }
+                }
             }
-            if (lineHasBaselineAligned)
+            if (lineNeedsMaxAscent)
             {
                 // §10.8.1 max-ascent model — the baseline at max-ascent-above so a baseline-aligned
                 // inline-block sits ON the text baseline without overflowing the line top; the line is
@@ -7190,7 +7224,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
         }
 
-        if (!anyAtomic)
+        if (!anyAtomic && !anyTextShift)
         {
             return (null, null, System.Array.Empty<InlineAtomicPlacement>(),
                 lines.Length * textLineHeightPx);
@@ -7237,10 +7271,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
             cumulativeTopPx += thisLineHeightPx;
         }
-        // PerLineBaselines is meaningful only when a baseline-aligned inline-block forced the max-ascent
-        // model on some line; otherwise return null so the painter keeps its real-metric baseline for
-        // every line (img/text fragments stay byte-identical).
-        return (perLineHeights, anyBaselineAligned ? perLineBaselines : null, placements, cumulativeTopPx);
+        // PerLineBaselines is meaningful only when a baseline-aligned inline-block OR a shifted text run
+        // forced the max-ascent model on some line; otherwise return null so the painter keeps its
+        // real-metric baseline for every line (plain img/text fragments stay byte-identical).
+        return (perLineHeights, anyMaxAscent ? perLineBaselines : null, placements, cumulativeTopPx);
     }
 
     /// <summary>vertical-align cycle — whether a keyword aligns by the BASELINE (so a baseline-owning
@@ -7250,6 +7284,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <c>top</c>(6) / <c>bottom</c>(7) are placed by line/text edges instead. Indices MUST match
     /// <c>VerticalAlignResolver</c> (NetPdf.Css).</summary>
     private static bool IsBaselineValign(int valign) => valign is 0 or 1 or 2;
+
+    /// <summary>inline-block baseline overflow exception (CSS 2.2 §10.8.1) — whether a box's computed
+    /// <c>overflow</c> is <c>visible</c> on BOTH axes (keyword 0; <c>hidden</c>/<c>clip</c>/<c>scroll</c>/
+    /// <c>auto</c> are 1–4). Only a visible-overflow inline-block takes its baseline from its last line
+    /// box; otherwise the baseline is the bottom margin edge.</summary>
+    private static bool IsOverflowVisible(ComputedStyle style) =>
+        style.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0) == 0
+        && style.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0) == 0;
 
     /// <summary>vertical-align completion — whether a vertical-align is placed BASELINE-RELATIVE AND
     /// SHIFTED off the baseline, so the line box MUST use the §10.8.1 max-ascent model to CONTAIN it
@@ -8160,11 +8202,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // approximation TextPainter tolerates): baseline = the content's last line bottom minus that
         // descent, mapped from the border-box top (the buffer's ContentBlockExtent folds the box chrome
         // in for an inline-only root, but is content-only for block children — the two-shape rule).
-        // With NO in-flow line box (e.g. only empty blocks), the baseline is the bottom margin edge
-        // (null → the bottom-on-baseline placement). DEFERRED: the §10.8.1 overflow≠visible exception
-        // (overflow isn't consumed in the layout layer yet) + true per-line content metrics.
+        // With NO in-flow line box (e.g. only empty blocks) — OR a computed `overflow` other than
+        // `visible` (CSS 2.2 §10.8.1 exception — a scroll/clip container's last line isn't the box's
+        // baseline) — the baseline is the bottom margin edge (null → the bottom-on-baseline placement).
+        // DEFERRED: true per-line content metrics.
         double? baselineFromBorderTopPx = null;
-        if (buffer.HasInFlowLineBox)
+        if (buffer.HasInFlowLineBox && IsOverflowVisible(s))
         {
             var contentFontSizePx = s.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
             var declaredLineHeightPx = s.ReadLengthPxOrZero(PropertyId.LineHeight);

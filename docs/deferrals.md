@@ -251,20 +251,20 @@ grepping the ID).
   - `vertical-align` for an inline ATOMIC honours every value: `baseline` / `top` / `bottom` / `middle` /
     `text-top` / `text-bottom` keywords, `sub` / `super` (a ±em baseline shift), and a numeric
     `<length>` / `<percentage>` (a raise off the baseline) — vertical-align completion cycle, CSS 2.2
-    §10.8.1. The §10.8.1 overflow≠visible baseline exception isn't read (overflow isn't consumed in the
-    layout layer). TEXT (non-atomic) `vertical-align` honours `sub` / `super` / a numeric value (a glyph-
-    baseline shift) — but the line box is NOT grown for it (a large raise may spill into the leading),
-    `top` / `bottom` / `middle` / `text-*` for text are deferred (→ no shift, which also leaves a table
-    cell's vertical-align cell-content alignment unaffected), and the shift reads the run's own computed
-    vertical-align, so a non-inline element (block / cell) with `super` / `sub` / a length would also
-    shift its text — an approximation (the run lacks inline-level context; the robust gate is a follow-up;
-    the common inline `<sub>`/`<sup>`/styled-`<span>` cases are correct, vertical-align being non-inherited).
+    §10.8.1. TEXT (non-atomic) `vertical-align` honours `sub` / `super` / a numeric value (a glyph-
+    baseline shift) — GATED to inline-level runs (a block / table cell's own vertical-align doesn't shift
+    its text — the reference-equality gate; non-inherited so `<sub>`/`<sup>`/`<span>` work), the line box
+    GROWS to contain the shift (a super run sits above same-line text), and a `%` uses the run's OWN
+    line-height. Deferred for text: `top` / `bottom` / `middle` / `text-*` (→ no shift — also leaving a
+    table cell's vertical-align cell-content alignment unaffected); a deferred (non-LengthPx) declared
+    line-height isn't read as the `%` base (falls back to font-size × 1.2).
   - An inline-block aligns by its LAST in-flow line box's baseline (CSS 2.2 §10.8.1 — it sits ON the
     surrounding text baseline; the line box is sized by the max-ascent model) — but the last line's descent
     is approximated from the box's OWN font / line-height (no per-line content metrics); with NO in-flow
-    line box the baseline is the bottom margin edge (the img-ish placement). The baseline still uses an
-    approximate font ascent/descent (0.8 / −0.2 em — the layout layer has no font-metric access; the
-    painter uses the REAL metrics for glyphs, so an atomic aligns within typical-font tolerance).
+    line box OR a computed `overflow` other than `visible` (the §10.8.1 exception) the baseline is the
+    bottom margin edge (the img-ish placement). The baseline still uses an approximate font ascent/descent
+    (0.8 / −0.2 em — the layout layer has no font-metric access; the painter uses the REAL metrics for
+    glyphs, so an atomic aligns within typical-font tolerance).
   - A `text-align: justify` line carrying an inline ATOMIC stays start-aligned (the atomic + inter-word-gap
     interaction is deferred); RTL paragraphs don't shift the atomic with the text. (center / right / end DO
     shift the atomic with its text — body text-align cycle.)
@@ -274,8 +274,7 @@ grepping the ID).
   - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
     formatting context) remain deferred.
 - **Trigger** — an RTL or `text-align: justify` inline `<img>` or inline-block, a `top`/`bottom`/`middle`/
-  `text-*` or a non-inline `super`/`sub`/length text `vertical-align`, a tall-shift line-box-growth case,
-  or an `inline-flex`/`-grid`/`-table` span.
+  `text-*` text `vertical-align`, or an `inline-flex`/`-grid`/`-table` span.
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
@@ -291,11 +290,10 @@ grepping the ID).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
   inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
-- **Removal condition** — text `vertical-align` for `top`/`bottom`/`middle`/`text-*` + a line box grown for
-  the shift + the inline-level gate (so a non-inline element's super/sub/length doesn't shift its text),
-  RTL + `text-align: justify` alignment honoured for inline atomics, the inline-block's last-line baseline
-  using true per-line content metrics + min-content shrink-to-fit, and inline-flex / -grid / -table atomics
-  laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+- **Removal condition** — text `vertical-align` for `top`/`bottom`/`middle`/`text-*`, RTL +
+  `text-align: justify` alignment honoured for inline atomics, the inline-block's last-line baseline using
+  true per-line content metrics + min-content shrink-to-fit, and inline-flex / -grid / -table atomics laid
+  out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 

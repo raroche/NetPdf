@@ -1,6 +1,6 @@
 # Phase 3 — Fragmentainer-Aware Layout + Pagination
 
-**Status:** ⏳ pending (after Phase 2). **The bottleneck phase.**
+**Status:** 🚧 In progress — engine feature-complete + multi-page rendering live; finishing conformance measurement, perf gates, a feature/polish backlog, and the `0.7.0-beta` release. **The bottleneck phase.** Remaining work + ordered 3-task PR groups: see the roadmap at the top of [../../PROGRESS.md](../../PROGRESS.md).
 **Time:** team estimate 16 wk → Claude Opus 4.7 high: **8–12 wk**.
 **Tagged release:** `0.7.0-beta` — most business documents render correctly. The first user-useful release.
 

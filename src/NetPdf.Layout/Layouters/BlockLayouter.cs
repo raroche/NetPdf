@@ -7230,6 +7230,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 lines.Length * textLineHeightPx);
         }
 
+        // No inline atomics to place → justification (which only SHIFTS atomics; the painter justifies the
+        // glyphs itself) is irrelevant. For a text-shift-only block (a sub/super/line-edge run grew a line)
+        // just sum the per-line heights for the content block size + return the per-line baselines; skip the
+        // justify concat + the per-line gap scan entirely (post-PR-#195 review P3).
+        if (!anyAtomic)
+        {
+            var textShiftBlockSize = 0.0;
+            foreach (var h in perLineHeights) textShiftBlockSize += h;
+            return (perLineHeights, anyMaxAscent ? perLineBaselines : null,
+                System.Array.Empty<InlineAtomicPlacement>(), textShiftBlockSize);
+        }
+
         // text-align: justify cycle — an inline atomic on a JUSTIFIED line shifts RIGHT by the inter-word
         // gaps accumulated BEFORE it, mirroring TextPainter's EmitJustifiedLine pen EXACTLY (the shared
         // InlineJustify helper counts the same opportunities) so the atomic stays glued to its justified

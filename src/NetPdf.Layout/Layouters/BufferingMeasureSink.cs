@@ -148,19 +148,24 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
             if (lineBoxBottom > LastLineBoxBottom)
             {
                 LastLineBoxBottom = lineBoxBottom;
-                // Capture THIS now-deepest line box's descent below its own baseline from the fragment's
-                // REAL metrics (its TextMetricsStyle ?? box-style font + its ACTUAL last-line height —
-                // PerLineHeightsPx[^1] when a tall atomic / shift grew it), NOT the inline-block's OUTER
-                // font — so a nested-block inline-block whose content declares a different font-size /
-                // line-height gets an exact §10.8.1 baseline. descent = lineHeight/2 − (ascent+descent)/2,
-                // with the 0.8/0.2-em approximation (ascent+descent)/2 = 0.3·fontSize.
+                // Capture THIS now-deepest line box's descent below its own baseline. When the line has a
+                // PINNED per-line baseline (a baseline-aligned inner atomic / shifted text grew + pinned it,
+                // so PerLineBaselineTopPx[^1] is finite), the descent is EXACT — the line height minus that
+                // baseline's offset from the line top (post-PR-#195 review P2). Otherwise fall back to the
+                // fragment's REAL metrics (its TextMetricsStyle ?? box-style font + its actual last-line
+                // height PerLineHeightsPx[^1]), descent = lineHeight/2 − (ascent+descent)/2 with the
+                // 0.8/0.2-em approximation (ascent+descent)/2 = 0.3·fontSize — NOT the inline-block's OUTER
+                // font, so a nested-block inline-block with a different font-size / line-height stays exact.
                 var metricsStyle = fragment.TextMetricsStyle ?? style;
                 var lastLineFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
                 var lastLineHeightPx = fragment.PerLineHeightsPx is { Count: > 0 } perLineHeights
                     ? perLineHeights[perLineHeights.Count - 1]
                     : NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(metricsStyle, lastLineFontSizePx);
                 LastLineBoxDescentBelowBaselinePx =
-                    System.Math.Max(0.0, lastLineHeightPx / 2.0 - 0.3 * lastLineFontSizePx);
+                    fragment.PerLineBaselineTopPx is { Count: > 0 } baselines
+                        && double.IsFinite(baselines[baselines.Count - 1])
+                        ? System.Math.Max(0.0, lastLineHeightPx - baselines[baselines.Count - 1])
+                        : System.Math.Max(0.0, lastLineHeightPx / 2.0 - 0.3 * lastLineFontSizePx);
             }
             var lines = inlineLayout.Lines;
             for (var i = 0; i < lines.Length; i++)

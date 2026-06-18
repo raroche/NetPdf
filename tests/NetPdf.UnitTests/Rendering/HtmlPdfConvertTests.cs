@@ -861,6 +861,48 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Justify_keeps_text_on_the_layout_pinned_baseline()
+    {
+        // text-align: justify pinned-baseline (post-PR-#195 review P1) — when a justified line carries a
+        // baseline-owning inline-block (a CONTENT-bearing one that pins the line's §10.8.1 baseline), the
+        // justified TEXT must paint on that SAME pinned baseline as the atomic, NOT a recomputed centred
+        // one. So under justify-all every glyph on the line (the body words + the inline-block's content
+        // "I") shares ONE baseline Y → a near-zero Y spread. Pre-fix the body text dropped to a centred
+        // baseline while the atomic stayed pinned, splitting the line into two distinct Ys.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var ys = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:justify-all\">L L " +
+            "<span style=\"display:inline-block;font-size:40px\">I</span> R R</div></body></html>", opts)));
+
+        Assert.True(ys.Length >= 3, $"expected the body words + the inline-block glyph; got {ys.Length}");
+        double min = ys[0], max = ys[0];
+        foreach (var y in ys) { if (y < min) min = y; if (y > max) max = y; }
+        Assert.True(max - min < 3.0,
+            $"justified text must share the inline-block's pinned baseline (spread≈0); got spread={max - min}");
+    }
+
+    [Fact]
+    public void Text_align_justify_distributes_on_a_non_last_atomic_line()
+    {
+        // text-align: justify (NOT justify-all) on a NON-LAST atomic-bearing line (post-PR-#195 review P3) —
+        // a wrapping paragraph whose first line carries an inline atomic justifies that line (the atomic +
+        // following words shift right by the distributed gaps) while the LAST line stays start-aligned. The
+        // wrapping non-last lines split into per-word segments + push their last word right vs left-aligned.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:90px;text-align:" + align + "\">"
+            + "A A <span style=\"display:inline-block;width:10px;height:8px\"></span> A A A A A A A A A A</div></body></html>";
+
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+        var justify = Latin1(HtmlPdf.Convert(Doc("justify"), opts));
+
+        Assert.True(TdCount(justify) > TdCount(left),
+            $"plain justify should split the non-last (atomic-bearing) lines into per-word segments: justify={TdCount(justify)} left={TdCount(left)}");
+        Assert.True(MaxTdX(justify) > MaxTdX(left) + 5.0,
+            $"plain justify should push words on the atomic line toward the right edge: justify={MaxTdX(justify)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
     public void Inline_block_box_line_height_does_not_shift_its_block_contents_baseline()
     {
         // inline-block last-line baseline real metrics (post-PR-#194 task 2), end-to-end — an inline-block's

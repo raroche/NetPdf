@@ -393,7 +393,7 @@ internal static class TextPainter
             {
                 EmitJustifiedLine(
                     line, shapedRuns, preRuns, blockStyle, concatText!, justifyGapCount, justifyExtraPerGapPx,
-                    insetLeftPx, contentLeftPx, lineTopPx, thisLineHeightPx, pageHeightPt, clipPt,
+                    insetLeftPx, contentLeftPx, lineTopPx, thisLineHeightPx, explicitBaselineTopPx, pageHeightPt, clipPt,
                     shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws);
                 continue;
             }
@@ -495,6 +495,7 @@ internal static class TextPainter
         LineFragment line, IReadOnlyList<ShapedRun> shapedRuns, IReadOnlyList<TextRun> preRuns,
         ComputedStyle blockStyle, string concatText, int gapCount, double extraPerGapPx,
         double insetLeftPx, double contentLeftPx, double lineTopPx, double thisLineHeightPx,
+        double? explicitBaselineTopPx,
         double pageHeightPt, (double X, double Y, double W, double H)? clipPt,
         HarfBuzzShaperResolver shaper, Dictionary<string, FontCollect> collects, List<string> fontOrder,
         HashSet<string> failed, HashSet<string> diagnosed, IDiagnosticsSink? diagnostics,
@@ -532,7 +533,11 @@ internal static class TextPainter
                 var unitsPerEm = f.Font.Head.UnitsPerEm;
                 var ascentPx = f.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = f.Font.Hhea.Descender * fontSizePx / unitsPerEm;
-                var lineBaselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
+                // Use the layout-PINNED per-line baseline when present (a baseline-aligned inline-block or a
+                // max-ascent text-shift grew + pinned the line) so justified text sits on the SAME baseline
+                // as the atomic placement — else the real-metric centred baseline (post-PR-#195 review P1).
+                var lineBaselineTopPx = explicitBaselineTopPx
+                    ?? lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
                 // text vertical-align (CSS 2.2 §10.8.1) — a run on a justified line positions its glyph
                 // baseline the same way: a line-edge keyword (top/bottom/middle/text-top/text-bottom) aligns
                 // to the line box / parent content-area, the rest RAISE off the baseline (baseline → 0,

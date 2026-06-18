@@ -892,6 +892,49 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_block_baseline_uses_the_pinned_baseline_of_its_content_line()
+    {
+        // inline-block last-line baseline, pinned-baseline refinement (post-PR-#195 review P2) — when an
+        // inline-block's deepest CONTENT line is PINNED by a tall baseline-aligned INNER inline-block, the
+        // outer's §10.8.1 baseline must use that pinned baseline's descent (= lineHeight − pinnedBaseline,
+        // EXACT), not the generic centred-font fallback. The tall (40px) inner inline-block pins the content
+        // line near its own HIGH baseline, so the descent below it is SMALL → the outer line baseline sits
+        // LOW (a large offset, ≈ the inner ascent). The centred fallback over-estimates the descent → a
+        // markedly HIGHER baseline; assert the LOW (pinned) one.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var innerStyle = MakeStyle();
+        innerStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(40));   // tall → grows + PINS the content line
+        var inner = Box.ForElement(BoxKind.InlineBlockContainer, innerStyle, MakeElement());
+        inner.AppendChild(Box.TextRun("z", innerStyle));   // a line box → baseline-aligned → pins the content line
+
+        var contentBlock = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        contentBlock.AppendChild(Box.TextRun("x", MakeStyle()));   // 16px body text on the same content line
+        contentBlock.AppendChild(inner);
+
+        var outer = Box.ForElement(BoxKind.InlineBlockContainer, MakeStyle(), MakeElement());
+        outer.AppendChild(contentBlock);   // the OUTER inline-block's content is a BLOCK (so it has no own line box)
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));   // surrounding text → the outer line baseline
+        block.AppendChild(outer);
+        root.AppendChild(block);
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        // Pinned descent ≈ the inner ascent (~32px) dominates → outer baseline LOW (≈ 28+). The centred
+        // fallback (descent ≈ lineHeight/2 − 0.3·16 ≈ 15px) would give a baseline ≈ 25 — below this floor.
+        var lineBaseline = OuterLineBaseline(block, sink);
+        Assert.True(lineBaseline > 28,
+            $"the outer baseline should use the inner inline-block's PINNED baseline (low), not the centred fallback; got {lineBaseline}");
+    }
+
+    [Fact]
     public void Text_vertical_align_super_grows_the_line_box_to_contain_the_shift()
     {
         // text vertical-align line-growth cycle — an inline-level TEXT run with `vertical-align: super`

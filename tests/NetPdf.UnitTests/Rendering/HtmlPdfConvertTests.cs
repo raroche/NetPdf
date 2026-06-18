@@ -842,12 +842,13 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Text_align_justify_distributes_on_a_line_carrying_an_inline_atomic()
+    public void Text_align_justify_all_distributes_on_a_line_carrying_an_inline_atomic()
     {
-        // text-align: justify on an atomic-bearing line (post-PR-#194 task 1) — pre-fix a line carrying an
-        // inline atomic stayed START-aligned (the painter bailed). Now the text justifies AROUND the
-        // atomic: a one-line paragraph with an (empty) inline-block + inter-word gaps, under justify-all,
-        // pushes its last word toward the right edge (vs left), proving the atomic no longer suppresses it.
+        // text-align: justify-all on an atomic-bearing line (post-PR-#194 task 1) — pre-fix a line carrying
+        // an inline atomic stayed START-aligned (the painter bailed). Now the text justifies AROUND the
+        // atomic: a one-line paragraph with an (empty) inline-block + inter-word gaps, under justify-all
+        // (a single line is the last line, so plain justify wouldn't apply — see the non-last-line test
+        // below for plain justify), pushes its last word toward the right edge (vs left).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         static string Doc(string align) =>
             "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">"
@@ -857,7 +858,7 @@ public sealed class HtmlPdfConvertTests
         var justifyAll = Latin1(HtmlPdf.Convert(Doc("justify-all"), opts));
 
         Assert.True(MaxTdX(justifyAll) > MaxTdX(left) + 5.0,
-            $"justify should distribute on a line with an inline atomic: all={MaxTdX(justifyAll)} left={MaxTdX(left)}");
+            $"justify-all should distribute on a line with an inline atomic: all={MaxTdX(justifyAll)} left={MaxTdX(left)}");
     }
 
     [Fact]

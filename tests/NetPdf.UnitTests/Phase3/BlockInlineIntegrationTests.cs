@@ -854,7 +854,7 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
-    public void Inline_block_baseline_follows_its_content_line_not_the_boxs_own_line_height()
+    public void Inline_block_baseline_follows_its_content_line_not_the_outer_box_line_height()
     {
         // inline-block last-line baseline real metrics (post-PR-#194 task 2) — an inline-block's §10.8.1
         // baseline is the descent below its CONTENT's last line box, read from the ACTUAL last line-

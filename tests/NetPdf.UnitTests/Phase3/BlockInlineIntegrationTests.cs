@@ -687,6 +687,45 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(sub > baseline + 0.5, $"sub should lower the atomic below baseline: sub={sub} baseline={baseline}");
     }
 
+    [Fact]
+    public void Justify_shifts_an_inline_atomic_by_the_gaps_before_it()
+    {
+        // text-align: justify on an atomic-bearing line (post-PR-#194 task 1) — an inline atomic shifts
+        // RIGHT by the inter-word gaps accumulated BEFORE it, so it stays glued to its justified text
+        // (pre-fix the line stayed start-aligned). justify-all justifies the single (last) line; with
+        // free space on the line, the atomic's inline offset must exceed the un-justified (start) one.
+        double AtomicInlineOffset(int textAlign)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(textAlign));
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(Box.TextRun("A A", MakeStyle()));   // one interior space → one gap before the atomic
+            block.AppendChild(inlineBlock);
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.InlineOffset;
+            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        }
+
+        var start = AtomicInlineOffset(0);       // text-align: start — no justify
+        var justifyAll = AtomicInlineOffset(7);  // text-align: justify-all — the single line justifies
+
+        Assert.True(justifyAll > start + 1,
+            $"justify should shift the atomic right by the gap(s) before it: justifyAll={justifyAll} start={start}");
+    }
+
     // Lays out [text "A", inline-block(20×10, given vertical-align + optional line-height)] and returns
     // the atomic's (top, bottom) plus the outer line-box height — for containment + own-line-height checks.
     private static (double Top, double Bottom, double LineHeight) ValignAtomicGeometry(
@@ -812,6 +851,87 @@ public sealed class BlockInlineIntegrationTests
         var lineBaseline = OuterLineBaseline(block, sink);
         Assert.True(lineBaseline < 40,
             $"the baseline should anchor to the last line box near the top, not the ~119px content bottom; got {lineBaseline}");
+    }
+
+    [Fact]
+    public void Inline_block_baseline_follows_its_content_line_not_the_outer_box_line_height()
+    {
+        // inline-block last-line baseline real metrics (post-PR-#194 task 2) — an inline-block's §10.8.1
+        // baseline is the descent below its CONTENT's last line box, read from the ACTUAL last line-
+        // bearing fragment's metrics. The inline-block's OWN `line-height` does NOT apply to its (block)
+        // content, so setting it must NOT move the baseline. Pre-fix the descent was read from the
+        // inline-block's own style, so a line-height:40px on the box wrongly shifted the baseline though
+        // the content line (a default ~19px) was unchanged.
+        double OuterBaseline(bool lineHeightOnBox)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var ibStyle = MakeStyle();
+            if (lineHeightOnBox) ibStyle.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(40));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            var contentBlock = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            contentBlock.AppendChild(Box.TextRun("x", MakeStyle()));   // the inline-block's BLOCK content
+            inlineBlock.AppendChild(contentBlock);
+
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));   // surrounding text → the outer line baseline
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            return OuterLineBaseline(block, sink);
+        }
+
+        // The box's own line-height is inert (its content is a block); the baseline tracks the content's
+        // line in both cases. Pre-fix these diverged (descent read from the box's 40px line-height).
+        Assert.Equal(OuterBaseline(lineHeightOnBox: false), OuterBaseline(lineHeightOnBox: true), precision: 2);
+    }
+
+    [Fact]
+    public void Inline_block_baseline_uses_the_pinned_baseline_of_its_content_line()
+    {
+        // inline-block last-line baseline, pinned-baseline refinement (post-PR-#195 review P2) — when an
+        // inline-block's deepest CONTENT line is PINNED by a tall baseline-aligned INNER inline-block, the
+        // outer's §10.8.1 baseline must use that pinned baseline's descent (= lineHeight − pinnedBaseline,
+        // EXACT), not the generic centred-font fallback. The tall (40px) inner inline-block pins the content
+        // line near its own HIGH baseline, so the descent below it is SMALL → the outer line baseline sits
+        // LOW (a large offset, ≈ the inner ascent). The centred fallback over-estimates the descent → a
+        // markedly HIGHER baseline; assert the LOW (pinned) one.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var innerStyle = MakeStyle();
+        innerStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(40));   // tall → grows + PINS the content line
+        var inner = Box.ForElement(BoxKind.InlineBlockContainer, innerStyle, MakeElement());
+        inner.AppendChild(Box.TextRun("z", innerStyle));   // a line box → baseline-aligned → pins the content line
+
+        var contentBlock = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        contentBlock.AppendChild(Box.TextRun("x", MakeStyle()));   // 16px body text on the same content line
+        contentBlock.AppendChild(inner);
+
+        var outer = Box.ForElement(BoxKind.InlineBlockContainer, MakeStyle(), MakeElement());
+        outer.AppendChild(contentBlock);   // the OUTER inline-block's content is a BLOCK (so it has no own line box)
+
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));   // surrounding text → the outer line baseline
+        block.AppendChild(outer);
+        root.AppendChild(block);
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+
+        // Pinned descent ≈ the inner ascent (~32px) dominates → outer baseline LOW (≈ 28+). The centred
+        // fallback (descent ≈ lineHeight/2 − 0.3·16 ≈ 15px) would give a baseline ≈ 25 — below this floor.
+        var lineBaseline = OuterLineBaseline(block, sink);
+        Assert.True(lineBaseline > 28,
+            $"the outer baseline should use the inner inline-block's PINNED baseline (low), not the centred fallback; got {lineBaseline}");
     }
 
     [Fact]

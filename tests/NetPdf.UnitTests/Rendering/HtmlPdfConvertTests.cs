@@ -820,6 +820,106 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_align_justify_all_justifies_the_single_last_line()
+    {
+        // text-align: justify-all (CSS Text 3 §7.3, post-PR-#194 task 1) — unlike plain justify (which
+        // leaves the LAST line start-aligned, the §7.3 exception), justify-all justifies EVERY line
+        // including the last. A one-line paragraph therefore spreads its words to fill the width: more
+        // per-word Td segments AND a larger max Td x than left — exactly where plain justify == left.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">A A A</div></body></html>";
+
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+        var justify = Latin1(HtmlPdf.Convert(Doc("justify"), opts));        // single line = last → start-aligned
+        var justifyAll = Latin1(HtmlPdf.Convert(Doc("justify-all"), opts)); // last line justifies too
+
+        Assert.Equal(left, justify);   // control: plain justify leaves the single (last) line alone.
+        Assert.True(TdCount(justifyAll) > TdCount(left),
+            $"justify-all should split the last line into per-word segments: all={TdCount(justifyAll)} left={TdCount(left)}");
+        Assert.True(MaxTdX(justifyAll) > MaxTdX(left) + 5.0,
+            $"justify-all should push the last line's words right: all={MaxTdX(justifyAll)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
+    public void Text_align_justify_all_distributes_on_a_line_carrying_an_inline_atomic()
+    {
+        // text-align: justify-all on an atomic-bearing line (post-PR-#194 task 1) — pre-fix a line carrying
+        // an inline atomic stayed START-aligned (the painter bailed). Now the text justifies AROUND the
+        // atomic: a one-line paragraph with an (empty) inline-block + inter-word gaps, under justify-all
+        // (a single line is the last line, so plain justify wouldn't apply — see the non-last-line test
+        // below for plain justify), pushes its last word toward the right edge (vs left).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">"
+            + "A <span style=\"display:inline-block;width:12px;height:8px\"></span> B C</div></body></html>";
+
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+        var justifyAll = Latin1(HtmlPdf.Convert(Doc("justify-all"), opts));
+
+        Assert.True(MaxTdX(justifyAll) > MaxTdX(left) + 5.0,
+            $"justify-all should distribute on a line with an inline atomic: all={MaxTdX(justifyAll)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
+    public void Justify_keeps_text_on_the_layout_pinned_baseline()
+    {
+        // text-align: justify pinned-baseline (post-PR-#195 review P1) — when a justified line carries a
+        // baseline-owning inline-block (a CONTENT-bearing one that pins the line's §10.8.1 baseline), the
+        // justified TEXT must paint on that SAME pinned baseline as the atomic, NOT a recomputed centred
+        // one. So under justify-all every glyph on the line (the body words + the inline-block's content
+        // "I") shares ONE baseline Y → a near-zero Y spread. Pre-fix the body text dropped to a centred
+        // baseline while the atomic stayed pinned, splitting the line into two distinct Ys.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var ys = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:justify-all\">L L " +
+            "<span style=\"display:inline-block;font-size:40px\">I</span> R R</div></body></html>", opts)));
+
+        Assert.True(ys.Length >= 3, $"expected the body words + the inline-block glyph; got {ys.Length}");
+        double min = ys[0], max = ys[0];
+        foreach (var y in ys) { if (y < min) min = y; if (y > max) max = y; }
+        Assert.True(max - min < 3.0,
+            $"justified text must share the inline-block's pinned baseline (spread≈0); got spread={max - min}");
+    }
+
+    [Fact]
+    public void Text_align_justify_distributes_on_a_non_last_atomic_line()
+    {
+        // text-align: justify (NOT justify-all) on a NON-LAST atomic-bearing line (post-PR-#195 review P3) —
+        // a wrapping paragraph whose first line carries an inline atomic justifies that line (the atomic +
+        // following words shift right by the distributed gaps) while the LAST line stays start-aligned. The
+        // wrapping non-last lines split into per-word segments + push their last word right vs left-aligned.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:90px;text-align:" + align + "\">"
+            + "A A <span style=\"display:inline-block;width:10px;height:8px\"></span> A A A A A A A A A A</div></body></html>";
+
+        var left = Latin1(HtmlPdf.Convert(Doc("left"), opts));
+        var justify = Latin1(HtmlPdf.Convert(Doc("justify"), opts));
+
+        Assert.True(TdCount(justify) > TdCount(left),
+            $"plain justify should split the non-last (atomic-bearing) lines into per-word segments: justify={TdCount(justify)} left={TdCount(left)}");
+        Assert.True(MaxTdX(justify) > MaxTdX(left) + 5.0,
+            $"plain justify should push words on the atomic line toward the right edge: justify={MaxTdX(justify)} left={MaxTdX(left)}");
+    }
+
+    [Fact]
+    public void Inline_block_box_line_height_does_not_shift_its_block_contents_baseline()
+    {
+        // inline-block last-line baseline real metrics (post-PR-#194 task 2), end-to-end — an inline-block's
+        // OWN line-height doesn't apply to its BLOCK content, so it must NOT move the §10.8.1 baseline. The
+        // surrounding text "A" sits at the SAME y whether or not the inline-block declares line-height.
+        // Pre-fix the descent was read from the inline-block's own style, so line-height:40px wrongly
+        // shifted the line baseline (and "A" with it) though the content line was unchanged.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double SurroundingTextY(string ibExtra) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block;" + ibExtra + "\">"
+            + "<div>x</div></span></div></body></html>", opts))).Y;
+
+        Assert.Equal(SurroundingTextY(""), SurroundingTextY("line-height:40px"), precision: 2);
+    }
+
+    [Fact]
     public void Vertical_align_top_places_an_inline_block_differently_than_baseline()
     {
         // vertical-align cycle (CSS 2.2 §10.8.1) — end-to-end: a `vertical-align` keyword now resolves
@@ -889,18 +989,49 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Text_vertical_align_top_does_not_baseline_shift_text_first_cut()
+    public void Text_vertical_align_top_and_bottom_position_at_the_line_box_edges()
     {
-        // text vertical-align cycle — `top` / `bottom` / `middle` / `text-*` for a TEXT run are deferred
-        // (they need the line-box model the painter doesn't run for text), so they map to NO baseline
-        // shift — a span's `vertical-align: top` glyph renders at the same y as `baseline`. (This is also
-        // why a TABLE CELL's `vertical-align: top/middle/bottom` cell-content alignment is unaffected.)
+        // text vertical-align line-edge cycle (CSS 2.2 §10.8.1, post-PR-#194 task 3, bounded first cut) —
+        // `top` / `bottom` position an inline TEXT run at the LINE BOX top / bottom (a NON-baseline offset,
+        // where before they mapped to no shift). A tall inline-block grows the line to ~48px, so the
+        // top-aligned "A" sits near the line TOP (high y) and the bottom-aligned one near the line BOTTOM
+        // (low y) — far apart, and top well above a baseline-aligned run (PDF user space is y-up).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div><span style=\"vertical-align:" + valign + "\">A</span></div></body></html>",
-            opts))).Y;
+            "<!DOCTYPE html><html><body><div>" +
+            "<span style=\"display:inline-block;width:4px;height:48px;vertical-align:baseline\"></span>" +
+            "<span style=\"vertical-align:" + valign + "\">A</span></div></body></html>", opts))).Y;
 
-        Assert.Equal(GlyphY("baseline"), GlyphY("top"), precision: 2);
+        var top = GlyphY("top");
+        var bottom = GlyphY("bottom");
+        var baseline = GlyphY("baseline");
+
+        Assert.True(top > bottom + 10, $"top should sit far above bottom on a tall line: top={top} bottom={bottom}");
+        Assert.True(top > baseline + 5, $"top should sit above a baseline-aligned run: top={top} baseline={baseline}");
+    }
+
+    [Fact]
+    public void Text_vertical_align_middle_text_top_text_bottom_position_relative_to_the_parent()
+    {
+        // text vertical-align line-edge cycle (post-PR-#194 task 3) — `middle` / `text-top` / `text-bottom`
+        // position a run relative to the PARENT's baseline + text content-area (the parent font's x-height
+        // / ascent / descent), so for a run whose font differs from the parent's they give DISTINCT glyph
+        // baselines, ordered (y-up) text-bottom > baseline > middle > text-top. A 40px span in a 16px
+        // block: text-bottom puts its BOTTOM at the parent descent (baseline highest), text-top its TOP at
+        // the parent ascent (baseline lowest), middle its midpoint at the parent baseline + half x-height.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"font-size:16px\">" +
+            "<span style=\"vertical-align:" + valign + ";font-size:40px\">A</span></div></body></html>", opts))).Y;
+
+        var baseline = GlyphY("baseline");
+        var middle = GlyphY("middle");
+        var textTop = GlyphY("text-top");
+        var textBottom = GlyphY("text-bottom");
+
+        Assert.True(textBottom > baseline + 2, $"text-bottom's baseline should sit above baseline's: textBottom={textBottom} baseline={baseline}");
+        Assert.True(baseline > middle + 2, $"baseline should sit above middle: baseline={baseline} middle={middle}");
+        Assert.True(middle > textTop + 2, $"middle should sit above text-top: middle={middle} textTop={textTop}");
     }
 
     [Fact]

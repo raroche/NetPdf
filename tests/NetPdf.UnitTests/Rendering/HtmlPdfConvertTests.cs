@@ -861,6 +861,22 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Inline_block_box_line_height_does_not_shift_its_block_contents_baseline()
+    {
+        // inline-block last-line baseline real metrics (post-PR-#194 task 2), end-to-end — an inline-block's
+        // OWN line-height doesn't apply to its BLOCK content, so it must NOT move the §10.8.1 baseline. The
+        // surrounding text "A" sits at the SAME y whether or not the inline-block declares line-height.
+        // Pre-fix the descent was read from the inline-block's own style, so line-height:40px wrongly
+        // shifted the line baseline (and "A" with it) though the content line was unchanged.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double SurroundingTextY(string ibExtra) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block;" + ibExtra + "\">"
+            + "<div>x</div></span></div></body></html>", opts))).Y;
+
+        Assert.Equal(SurroundingTextY(""), SurroundingTextY("line-height:40px"), precision: 2);
+    }
+
+    [Fact]
     public void Vertical_align_top_places_an_inline_block_differently_than_baseline()
     {
         // vertical-align cycle (CSS 2.2 §10.8.1) — end-to-end: a `vertical-align` keyword now resolves

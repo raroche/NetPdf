@@ -854,6 +854,44 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_block_baseline_follows_its_content_line_not_the_boxs_own_line_height()
+    {
+        // inline-block last-line baseline real metrics (post-PR-#194 task 2) — an inline-block's §10.8.1
+        // baseline is the descent below its CONTENT's last line box, read from the ACTUAL last line-
+        // bearing fragment's metrics. The inline-block's OWN `line-height` does NOT apply to its (block)
+        // content, so setting it must NOT move the baseline. Pre-fix the descent was read from the
+        // inline-block's own style, so a line-height:40px on the box wrongly shifted the baseline though
+        // the content line (a default ~19px) was unchanged.
+        double OuterBaseline(bool lineHeightOnBox)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var ibStyle = MakeStyle();
+            if (lineHeightOnBox) ibStyle.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(40));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            var contentBlock = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            contentBlock.AppendChild(Box.TextRun("x", MakeStyle()));   // the inline-block's BLOCK content
+            inlineBlock.AppendChild(contentBlock);
+
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));   // surrounding text → the outer line baseline
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            return OuterLineBaseline(block, sink);
+        }
+
+        // The box's own line-height is inert (its content is a block); the baseline tracks the content's
+        // line in both cases. Pre-fix these diverged (descent read from the box's 40px line-height).
+        Assert.Equal(OuterBaseline(lineHeightOnBox: false), OuterBaseline(lineHeightOnBox: true), precision: 2);
+    }
+
+    [Fact]
     public void Text_vertical_align_super_grows_the_line_box_to_contain_the_shift()
     {
         // text vertical-align line-growth cycle — an inline-level TEXT run with `vertical-align: super`

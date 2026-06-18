@@ -8252,21 +8252,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Inline-block last-line baseline (CSS 2.2 §10.8.1) — the box aligns by its LAST in-flow line
         // box's baseline, so it sits ON the surrounding text baseline (not by its bottom margin edge,
         // the img-ish first cut). Approximate the last line's descent below its baseline from the box's
-        // OWN font + line-height (the layout layer has no per-line metrics — the same 0.8/0.2-em
-        // approximation TextPainter tolerates): baseline = the content's last line bottom minus that
-        // descent, mapped from the border-box top (the buffer's ContentBlockExtent folds the box chrome
-        // in for an inline-only root, but is content-only for block children — the two-shape rule).
-        // With NO in-flow line box (e.g. only empty blocks) — OR a computed `overflow` other than
-        // `visible` (CSS 2.2 §10.8.1 exception — a scroll/clip container's last line isn't the box's
-        // baseline) — the baseline is the bottom margin edge (null → the bottom-on-baseline placement).
-        // DEFERRED: true per-line content metrics.
+        // ACTUAL last line-bearing fragment's metrics (post-PR-#194 task 2): the buffer captures the
+        // descent below the deepest line box's baseline from THAT fragment's own font + line-height (its
+        // TextMetricsStyle ?? box style + its real last-line height), so a nested-block inline-block whose
+        // content has a different font-size / line-height than the outer box gets an exact baseline.
+        // baseline = the content's last line bottom minus that descent, mapped from the border-box top
+        // (the buffer's ContentBlockExtent folds the box chrome in for an inline-only root, but is
+        // content-only for block children — the two-shape rule). With NO in-flow line box (e.g. only empty
+        // blocks) — OR a computed `overflow` other than `visible` (CSS 2.2 §10.8.1 exception — a scroll/clip
+        // container's last line isn't the box's baseline) — the baseline is the bottom margin edge (null →
+        // the bottom-on-baseline placement). APPROXIMATION: an inline SPAN that overrides the font on the
+        // last line (the layout layer has no per-RUN metrics); the 0.8/0.2-em ascent/descent.
         double? baselineFromBorderTopPx = null;
         if (buffer.HasInFlowLineBox && IsOverflowVisible(s))
         {
-            var contentFontSizePx = s.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
-            var declaredLineHeightPx = s.ReadLengthPxOrZero(PropertyId.LineHeight);
-            var contentLineHeightPx = declaredLineHeightPx > 0 ? declaredLineHeightPx : contentFontSizePx * 1.2;
-            var descentBelowLastLinePx = Math.Max(0.0, contentLineHeightPx / 2.0 - 0.3 * contentFontSizePx);
+            var descentBelowLastLinePx = buffer.LastLineBoxDescentBelowBaselinePx;
             var blockStartChrome = s.BlockStartBorderPaddingPx();
             // Anchor to the LAST LINE BOX's bottom (post-PR-#192 review P1) — NOT ContentBlockExtent,
             // which a trailing non-line block / padding after the last line would push down. The buffer

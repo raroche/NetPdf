@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 
 namespace NetPdf.Layout.Layouters;
@@ -92,6 +93,16 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
     /// (read only when <see cref="HasInFlowLineBox"/>).</summary>
     public double LastLineBoxBottom { get; private set; }
 
+    /// <summary>Inline-block last-line-baseline cycle (CSS 2.2 §10.8.1) — the DESCENT below the baseline
+    /// of that LAST in-flow line box (px), captured from THAT (deepest) line-bearing fragment's OWN
+    /// metrics (its <see cref="BoxFragment.TextMetricsStyle"/> ?? box-style font + its actual last-line
+    /// height), NOT the inline-block's OUTER font. So a nested-block inline-block whose content declares a
+    /// different font-size / line-height than the outer box gets an exact §10.8.1 baseline. 0 until a line
+    /// box is seen (read only when <see cref="HasInFlowLineBox"/>). APPROXIMATION: an inline SPAN that
+    /// overrides the font ON the last line still falls back to the fragment box font — the layout layer
+    /// has no per-RUN metrics.</summary>
+    public double LastLineBoxDescentBelowBaselinePx { get; private set; }
+
     public void Emit(BoxFragment fragment)
     {
         // Out-of-flow (position: absolute / fixed) descendants of a flex / grid
@@ -134,7 +145,23 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
             var style = fragment.Box.Style;
             var blockEndChrome = style.BlockBorderPaddingPx() - style.BlockStartBorderPaddingPx();
             var lineBoxBottom = innerBottom - blockEndChrome;
-            if (lineBoxBottom > LastLineBoxBottom) LastLineBoxBottom = lineBoxBottom;
+            if (lineBoxBottom > LastLineBoxBottom)
+            {
+                LastLineBoxBottom = lineBoxBottom;
+                // Capture THIS now-deepest line box's descent below its own baseline from the fragment's
+                // REAL metrics (its TextMetricsStyle ?? box-style font + its ACTUAL last-line height —
+                // PerLineHeightsPx[^1] when a tall atomic / shift grew it), NOT the inline-block's OUTER
+                // font — so a nested-block inline-block whose content declares a different font-size /
+                // line-height gets an exact §10.8.1 baseline. descent = lineHeight/2 − (ascent+descent)/2,
+                // with the 0.8/0.2-em approximation (ascent+descent)/2 = 0.3·fontSize.
+                var metricsStyle = fragment.TextMetricsStyle ?? style;
+                var lastLineFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                var lastLineHeightPx = fragment.PerLineHeightsPx is { Count: > 0 } perLineHeights
+                    ? perLineHeights[perLineHeights.Count - 1]
+                    : NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(metricsStyle, lastLineFontSizePx);
+                LastLineBoxDescentBelowBaselinePx =
+                    System.Math.Max(0.0, lastLineHeightPx / 2.0 - 0.3 * lastLineFontSizePx);
+            }
             var lines = inlineLayout.Lines;
             for (var i = 0; i < lines.Length; i++)
             {

@@ -897,6 +897,21 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Vertical_align_on_a_block_or_cell_does_not_shift_its_own_text()
+    {
+        // text vertical-align inline-level gate — vertical-align applies to INLINE-LEVEL boxes. A
+        // BLOCK's own `vertical-align: super` (a CSS no-op) — and a TABLE CELL's — must NOT shift its
+        // own text: `<div style="vertical-align:super">A</div>` renders identically to a plain div
+        // (the run's style IS the block's, so the painter's inline-level gate skips the shift).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var plain = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A</div></body></html>", opts));
+        var blockValign = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"vertical-align:super\">A</div></body></html>", opts));
+        Assert.Equal(plain, blockValign);
+    }
+
+    [Fact]
     public void Text_vertical_align_percentage_uses_the_runs_own_line_height()
     {
         // Post-PR-#193 review P2 — a text run's `vertical-align: %` resolves against the run's OWN

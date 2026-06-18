@@ -388,7 +388,7 @@ internal static class TextPainter
             if (justifyExtraPerGapPx > 0.0)
             {
                 EmitJustifiedLine(
-                    line, shapedRuns, preRuns, concatText!, justifyGapCount, justifyExtraPerGapPx,
+                    line, shapedRuns, preRuns, blockStyle, concatText!, justifyGapCount, justifyExtraPerGapPx,
                     insetLeftPx, contentLeftPx, lineTopPx, thisLineHeightPx, pageHeightPt, clipPt,
                     shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws);
                 continue;
@@ -446,7 +446,7 @@ internal static class TextPainter
                 // its glyph baseline off the line baseline (super / sub / a <length> / <percentage>).
                 // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box is NOT
                 // grown for the shift (first cut — a large raise may spill into the leading).
-                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx);
+                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, blockStyle);
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).
@@ -512,18 +512,22 @@ internal static class TextPainter
     /// the UA-approximate offsets; the painter has the real font but not its OS/2 super/subscript
     /// metrics), a <c>&lt;length&gt;</c> = the length, a <c>&lt;percentage&gt;</c> = that fraction of
     /// the line-height. <c>baseline</c> (the default — and plain unstyled text) is 0 (byte-identical).
-    /// <para><b>Scope (first cut):</b> only <c>sub</c> / <c>super</c> / a numeric value shift a text
-    /// run — the line box is NOT grown for the shift (a large raise may spill into the leading), and
-    /// <c>top</c> / <c>bottom</c> / <c>middle</c> / <c>text-top</c> / <c>text-bottom</c> are deferred (0,
-    /// they need the line-box model the painter doesn't run for text). Because those map to 0, a TABLE
-    /// CELL's <c>vertical-align: top/middle/bottom</c> (cell-content alignment, not a baseline shift) is
-    /// naturally unaffected. The shift reads the run's OWN computed <c>vertical-align</c>; a non-inline
-    /// element (a block / cell) with <c>super</c> / <c>sub</c> / a length would ALSO shift its text — an
-    /// approximation, since the run doesn't carry inline-level context (the robust gate is the
-    /// follow-up). vertical-align is not inherited, so the common cases (an inline <c>&lt;sub&gt;</c> /
-    /// <c>&lt;sup&gt;</c> / styled <c>&lt;span&gt;</c>) are correct.</para></summary>
-    private static double TextVerticalAlignRaisePx(ComputedStyle runStyle, double fontSizePx)
+    /// <para><b>Scope:</b> only <c>sub</c> / <c>super</c> / a numeric value shift a text run — the line
+    /// box is NOT grown for the shift (a large raise may spill into the leading), and <c>top</c> /
+    /// <c>bottom</c> / <c>middle</c> / <c>text-top</c> / <c>text-bottom</c> are deferred (0, they need a
+    /// line-box model the painter doesn't run for text). Only INLINE-LEVEL runs shift (the reference-
+    /// equality gate below): a block's / table cell's own vertical-align doesn't apply to its own
+    /// text.</para></summary>
+    private static double TextVerticalAlignRaisePx(
+        ComputedStyle runStyle, double fontSizePx, ComputedStyle blockStyle)
     {
+        // Inline-level gate — a run whose style IS the inline-formatting-context block's own style is
+        // BLOCK-DIRECT text (not inside a nested inline element), so its vertical-align is the block's /
+        // cell's, which does NOT apply to the text (CSS 2.2 §10.8.1 applies vertical-align to inline-level
+        // boxes). A nested `<sub>`/`<sup>`/`<span>` run carries the inline element's OWN (distinct) style,
+        // so it shifts. This keeps a `<div style="vertical-align:super">` / a table cell from shifting
+        // its own text, while the common inline cases work (vertical-align is non-inherited).
+        if (ReferenceEquals(runStyle, blockStyle)) return 0.0;
         var slot = runStyle.Get(PropertyId.VerticalAlign);
         return slot.Tag switch
         {
@@ -558,7 +562,7 @@ internal static class TextPainter
     /// opportunities (so visible later words stay positioned) but paints nothing.</summary>
     private static void EmitJustifiedLine(
         LineFragment line, IReadOnlyList<ShapedRun> shapedRuns, IReadOnlyList<TextRun> preRuns,
-        string concatText, int gapCount, double extraPerGapPx,
+        ComputedStyle blockStyle, string concatText, int gapCount, double extraPerGapPx,
         double insetLeftPx, double contentLeftPx, double lineTopPx, double thisLineHeightPx,
         double pageHeightPt, (double X, double Y, double W, double H)? clipPt,
         HarfBuzzShaperResolver shaper, Dictionary<string, FontCollect> collects, List<string> fontOrder,
@@ -592,7 +596,7 @@ internal static class TextPainter
                 baselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
                 // text vertical-align (CSS 2.2 §10.8.1) — a sub/super/numeric run on a justified line
                 // raises / lowers its glyph baseline too (baseline → 0, byte-identical).
-                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx);
+                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, blockStyle);
             }
 
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.

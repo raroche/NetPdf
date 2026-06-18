@@ -815,6 +815,42 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_block_with_non_visible_overflow_uses_the_bottom_margin_edge_baseline()
+    {
+        // CSS 2.2 §10.8.1 exception — an inline-block whose computed `overflow` is NOT `visible` takes
+        // its baseline from the BOTTOM MARGIN EDGE (the img-ish placement), not its last line box. So a
+        // visible-overflow inline-block is baseline-aligned (its outer line gets a per-line baseline),
+        // but a hidden-overflow one is img-ish (no per-line baseline on the outer line).
+        static bool OuterIsBaselineAligned(int overflowKeyword)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var ibStyle = MakeStyle();
+            ibStyle.Set(PropertyId.OverflowX, ComputedSlot.FromKeyword(overflowKeyword));
+            ibStyle.Set(PropertyId.OverflowY, ComputedSlot.FromKeyword(overflowKeyword));
+            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+            inlineBlock.AppendChild(Box.TextRun("A", MakeStyle()));   // has a line box
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));
+            block.AppendChild(inlineBlock);
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null)
+                    return f.PerLineBaselineTopPx is { Count: > 0 } b && !double.IsNaN(b[0]);
+            throw new Xunit.Sdk.XunitException("no outer line fragment");
+        }
+
+        Assert.True(OuterIsBaselineAligned(0), "overflow:visible inline-block should align by its last line baseline");
+        Assert.False(OuterIsBaselineAligned(1), "overflow:hidden inline-block should use the bottom margin edge");
+    }
+
+    [Fact]
     public void Inline_block_baseline_excludes_padding_below_the_last_line()
     {
         // Post-PR-#192 review P1 — an inline-block with bottom PADDING after its text takes its baseline

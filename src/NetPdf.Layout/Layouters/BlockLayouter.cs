@@ -7251,6 +7251,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <c>VerticalAlignResolver</c> (NetPdf.Css).</summary>
     private static bool IsBaselineValign(int valign) => valign is 0 or 1 or 2;
 
+    /// <summary>inline-block baseline overflow exception (CSS 2.2 §10.8.1) — whether a box's computed
+    /// <c>overflow</c> is <c>visible</c> on BOTH axes (keyword 0; <c>hidden</c>/<c>clip</c>/<c>scroll</c>/
+    /// <c>auto</c> are 1–4). Only a visible-overflow inline-block takes its baseline from its last line
+    /// box; otherwise the baseline is the bottom margin edge.</summary>
+    private static bool IsOverflowVisible(ComputedStyle style) =>
+        style.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0) == 0
+        && style.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0) == 0;
+
     /// <summary>vertical-align completion — whether a vertical-align is placed BASELINE-RELATIVE AND
     /// SHIFTED off the baseline, so the line box MUST use the §10.8.1 max-ascent model to CONTAIN it
     /// (even for an img-ish atomic with no own line box — post-PR-#193 review P1; the centred fallback
@@ -8160,11 +8168,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // approximation TextPainter tolerates): baseline = the content's last line bottom minus that
         // descent, mapped from the border-box top (the buffer's ContentBlockExtent folds the box chrome
         // in for an inline-only root, but is content-only for block children — the two-shape rule).
-        // With NO in-flow line box (e.g. only empty blocks), the baseline is the bottom margin edge
-        // (null → the bottom-on-baseline placement). DEFERRED: the §10.8.1 overflow≠visible exception
-        // (overflow isn't consumed in the layout layer yet) + true per-line content metrics.
+        // With NO in-flow line box (e.g. only empty blocks) — OR a computed `overflow` other than
+        // `visible` (CSS 2.2 §10.8.1 exception — a scroll/clip container's last line isn't the box's
+        // baseline) — the baseline is the bottom margin edge (null → the bottom-on-baseline placement).
+        // DEFERRED: true per-line content metrics.
         double? baselineFromBorderTopPx = null;
-        if (buffer.HasInFlowLineBox)
+        if (buffer.HasInFlowLineBox && IsOverflowVisible(s))
         {
             var contentFontSizePx = s.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
             var declaredLineHeightPx = s.ReadLengthPxOrZero(PropertyId.LineHeight);

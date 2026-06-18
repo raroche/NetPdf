@@ -445,14 +445,20 @@ internal static class TextPainter
                 var ascentPx = fc.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = fc.Font.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
                 var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
-                var baselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
-                // text vertical-align cycle (CSS 2.2 §10.8.1) — a run's own vertical-align RAISES / lowers
-                // its glyph baseline off the line baseline (super / sub / a <length> / <percentage>).
-                // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box IS grown
-                // to CONTAIN the shift in layout — BlockLayouter.ComputeInlineAtomicLayout sizes the
-                // §10.8.1 max-ascent line from each shifted run's OWN strut and pins the per-line baseline
-                // the painter draws on (explicitBaselineTopPx) — so the raised glyph stays within its line.
-                baselineTopPx -= InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
+                var lineBaselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
+                // text vertical-align cycle (CSS 2.2 §10.8.1) — a run's own vertical-align positions its
+                // glyph baseline. LINE-EDGE keywords (top / bottom / middle / text-top / text-bottom) align
+                // the run to the line box / parent content-area (a non-baseline offset); the others
+                // (baseline / sub / super / a <length> / <percentage>) RAISE off the line baseline. A
+                // sub/super/numeric shift GROWS the line in layout (ComputeInlineAtomicLayout pins the
+                // per-line baseline); a line-edge run positions WITHIN the baseline-sized line — a taller
+                // run may overflow it (line growth for it is deferred, the bounded first cut). baseline /
+                // plain text → byte-identical.
+                var blockFontSizePx = blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                var baselineTopPx = InlineVerticalAlign.TextLineEdgeBaselineTopPx(
+                        runStyle, blockStyle, lineTopPx, thisLineHeightPx, lineBaselineTopPx,
+                        ascentPx, descentPx, blockFontSizePx)
+                    ?? lineBaselineTopPx - InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).
@@ -526,10 +532,16 @@ internal static class TextPainter
                 var unitsPerEm = f.Font.Head.UnitsPerEm;
                 var ascentPx = f.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = f.Font.Hhea.Descender * fontSizePx / unitsPerEm;
-                baselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
-                // text vertical-align (CSS 2.2 §10.8.1) — a sub/super/numeric run on a justified line
-                // raises / lowers its glyph baseline too (baseline → 0, byte-identical).
-                baselineTopPx -= InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
+                var lineBaselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
+                // text vertical-align (CSS 2.2 §10.8.1) — a run on a justified line positions its glyph
+                // baseline the same way: a line-edge keyword (top/bottom/middle/text-top/text-bottom) aligns
+                // to the line box / parent content-area, the rest RAISE off the baseline (baseline → 0,
+                // byte-identical).
+                var blockFontSizePx = blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                baselineTopPx = InlineVerticalAlign.TextLineEdgeBaselineTopPx(
+                        runStyle, blockStyle, lineTopPx, thisLineHeightPx, lineBaselineTopPx,
+                        ascentPx, descentPx, blockFontSizePx)
+                    ?? lineBaselineTopPx - InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
             }
 
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.

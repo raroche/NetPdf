@@ -946,18 +946,49 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Text_vertical_align_top_does_not_baseline_shift_text_first_cut()
+    public void Text_vertical_align_top_and_bottom_position_at_the_line_box_edges()
     {
-        // text vertical-align cycle — `top` / `bottom` / `middle` / `text-*` for a TEXT run are deferred
-        // (they need the line-box model the painter doesn't run for text), so they map to NO baseline
-        // shift — a span's `vertical-align: top` glyph renders at the same y as `baseline`. (This is also
-        // why a TABLE CELL's `vertical-align: top/middle/bottom` cell-content alignment is unaffected.)
+        // text vertical-align line-edge cycle (CSS 2.2 §10.8.1, post-PR-#194 task 3, bounded first cut) —
+        // `top` / `bottom` position an inline TEXT run at the LINE BOX top / bottom (a NON-baseline offset,
+        // where before they mapped to no shift). A tall inline-block grows the line to ~48px, so the
+        // top-aligned "A" sits near the line TOP (high y) and the bottom-aligned one near the line BOTTOM
+        // (low y) — far apart, and top well above a baseline-aligned run (PDF user space is y-up).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div><span style=\"vertical-align:" + valign + "\">A</span></div></body></html>",
-            opts))).Y;
+            "<!DOCTYPE html><html><body><div>" +
+            "<span style=\"display:inline-block;width:4px;height:48px;vertical-align:baseline\"></span>" +
+            "<span style=\"vertical-align:" + valign + "\">A</span></div></body></html>", opts))).Y;
 
-        Assert.Equal(GlyphY("baseline"), GlyphY("top"), precision: 2);
+        var top = GlyphY("top");
+        var bottom = GlyphY("bottom");
+        var baseline = GlyphY("baseline");
+
+        Assert.True(top > bottom + 10, $"top should sit far above bottom on a tall line: top={top} bottom={bottom}");
+        Assert.True(top > baseline + 5, $"top should sit above a baseline-aligned run: top={top} baseline={baseline}");
+    }
+
+    [Fact]
+    public void Text_vertical_align_middle_text_top_text_bottom_position_relative_to_the_parent()
+    {
+        // text vertical-align line-edge cycle (post-PR-#194 task 3) — `middle` / `text-top` / `text-bottom`
+        // position a run relative to the PARENT's baseline + text content-area (the parent font's x-height
+        // / ascent / descent), so for a run whose font differs from the parent's they give DISTINCT glyph
+        // baselines, ordered (y-up) text-bottom > baseline > middle > text-top. A 40px span in a 16px
+        // block: text-bottom puts its BOTTOM at the parent descent (baseline highest), text-top its TOP at
+        // the parent ascent (baseline lowest), middle its midpoint at the parent baseline + half x-height.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"font-size:16px\">" +
+            "<span style=\"vertical-align:" + valign + ";font-size:40px\">A</span></div></body></html>", opts))).Y;
+
+        var baseline = GlyphY("baseline");
+        var middle = GlyphY("middle");
+        var textTop = GlyphY("text-top");
+        var textBottom = GlyphY("text-bottom");
+
+        Assert.True(textBottom > baseline + 2, $"text-bottom's baseline should sit above baseline's: textBottom={textBottom} baseline={baseline}");
+        Assert.True(baseline > middle + 2, $"baseline should sit above middle: baseline={baseline} middle={middle}");
+        Assert.True(middle > textTop + 2, $"middle should sit above text-top: middle={middle} textTop={textTop}");
     }
 
     [Fact]

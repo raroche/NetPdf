@@ -50,6 +50,46 @@ internal static class InlineVerticalAlign
         };
     }
 
+    /// <summary>The run's baseline-top-px for a LINE-EDGE-relative text <c>vertical-align</c>
+    /// (<c>top</c> / <c>bottom</c> / <c>middle</c> / <c>text-top</c> / <c>text-bottom</c>, CSS 2.2
+    /// §10.8.1), or <see langword="null"/> for a baseline-relative one (<c>baseline</c> / <c>sub</c> /
+    /// <c>super</c> / a <c>&lt;length&gt;</c> / <c>&lt;percentage&gt;</c>) — the caller positions those at
+    /// <paramref name="lineBaselineTopPx"/> − <see cref="TextRaisePx"/>. The line-edge keywords align the
+    /// run to the LINE BOX top / bottom (<c>top</c> / <c>bottom</c>), the line MIDDLE (<c>middle</c> —
+    /// the run's midpoint at the line baseline + half the parent x-height), or the PARENT text
+    /// content-area (<c>text-top</c> / <c>text-bottom</c> — the run's top / bottom at the parent font's
+    /// ascent / descent above / below the line baseline).
+    /// <para><b>Bounded first cut.</b> The run is positioned WITHIN the line box AS SIZED by its baseline
+    /// content; a run TALLER than that line OVERFLOWS it (line growth for non-baseline-aligned content is
+    /// deferred). Parent metrics use the 0.8 / 0.2-em ascent / descent + 0.5-em x-height approximation
+    /// (the same the layout uses). <paramref name="descentPx"/> is NEGATIVE (the font descender), so the
+    /// run spans [<paramref name="lineBaselineTopPx"/> result − ascent, − descent].</para>
+    /// <para><b>Inline-level gate.</b> Block-direct text (<paramref name="runStyle"/> IS
+    /// <paramref name="blockStyle"/>) returns <see langword="null"/> — a block's / cell's own
+    /// vertical-align doesn't apply to its inline content (§10.8.1), same as <see cref="TextRaisePx"/>.</para></summary>
+    public static double? TextLineEdgeBaselineTopPx(
+        ComputedStyle runStyle, ComputedStyle blockStyle,
+        double lineTopPx, double lineHeightPx, double lineBaselineTopPx,
+        double ascentPx, double descentPx, double parentFontSizePx)
+    {
+        if (ReferenceEquals(runStyle, blockStyle)) return null;   // block-direct text — inline-level gate
+        var slot = runStyle.Get(PropertyId.VerticalAlign);
+        if (slot.Tag != ComputedSlotTag.Keyword) return null;     // baseline / length / % → raise path
+        // Parent (strut) text content-area metrics for text-top / text-bottom / middle.
+        var parentAscentPx = 0.8 * parentFontSizePx;
+        var parentDescentPx = -0.2 * parentFontSizePx;            // negative
+        var parentHalfXHeightPx = 0.25 * parentFontSizePx;        // half the ≈0.5em x-height
+        return slot.AsKeyword() switch
+        {
+            6 => lineTopPx + ascentPx,                                       // top: run top at line-box top
+            7 => lineTopPx + lineHeightPx + descentPx,                       // bottom: run bottom at line-box bottom
+            3 => lineBaselineTopPx - parentAscentPx + ascentPx,              // text-top: run top at parent ascent
+            4 => lineBaselineTopPx - parentDescentPx + descentPx,            // text-bottom: run bottom at parent descent
+            5 => lineBaselineTopPx - parentHalfXHeightPx + (ascentPx + descentPx) / 2.0, // middle
+            _ => null,                                                       // baseline / sub / super → raise path
+        };
+    }
+
     /// <summary>A run's OWN computed line-height (px) — a declared length, else
     /// <paramref name="fontSizePx"/> × 1.2 (the normal-line-height factor). The base for a text
     /// vertical-align <c>%</c> (CSS 2.2 §10.8.1).</summary>

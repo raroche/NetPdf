@@ -446,7 +446,7 @@ internal static class TextPainter
                 // its glyph baseline off the line baseline (super / sub / a <length> / <percentage>).
                 // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box is NOT
                 // grown for the shift (first cut — a large raise may spill into the leading).
-                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, thisLineHeightPx);
+                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx);
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs
                 // are spaced by the font /W advances (first-cut Td + Tj).
@@ -522,14 +522,15 @@ internal static class TextPainter
     /// approximation, since the run doesn't carry inline-level context (the robust gate is the
     /// follow-up). vertical-align is not inherited, so the common cases (an inline <c>&lt;sub&gt;</c> /
     /// <c>&lt;sup&gt;</c> / styled <c>&lt;span&gt;</c>) are correct.</para></summary>
-    private static double TextVerticalAlignRaisePx(
-        ComputedStyle runStyle, double fontSizePx, double lineHeightPx)
+    private static double TextVerticalAlignRaisePx(ComputedStyle runStyle, double fontSizePx)
     {
         var slot = runStyle.Get(PropertyId.VerticalAlign);
         return slot.Tag switch
         {
             ComputedSlotTag.LengthPx => slot.AsLengthPx(),
-            ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * lineHeightPx,
+            // CSS 2.2 §10.8.1 — a % refers to the run's OWN line-height (a declared length, else
+            // font-size × 1.2), NOT the grown line box (post-PR-#193 review P2).
+            ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * OwnLineHeightPx(runStyle, fontSizePx),
             ComputedSlotTag.Keyword => slot.AsKeyword() switch
             {
                 2 => 0.3 * fontSizePx,    // super — raised
@@ -538,6 +539,15 @@ internal static class TextPainter
             },
             _ => 0.0,
         };
+    }
+
+    /// <summary>A run's OWN computed line-height (px) — a declared length, else
+    /// <paramref name="fontSizePx"/> × 1.2 (the normal-line-height factor). The base for a text
+    /// vertical-align <c>%</c> (CSS 2.2 §10.8.1).</summary>
+    private static double OwnLineHeightPx(ComputedStyle runStyle, double fontSizePx)
+    {
+        var declared = runStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
+        return declared > 0 ? declared : fontSizePx * 1.2;
     }
 
     /// <summary>text-align: justify cycle — paint one JUSTIFIED line. Walks the line's glyphs at an
@@ -582,7 +592,7 @@ internal static class TextPainter
                 baselineTopPx = lineTopPx + (thisLineHeightPx - (ascentPx - descentPx)) / 2.0 + ascentPx;
                 // text vertical-align (CSS 2.2 §10.8.1) — a sub/super/numeric run on a justified line
                 // raises / lowers its glyph baseline too (baseline → 0, byte-identical).
-                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx, thisLineHeightPx);
+                baselineTopPx -= TextVerticalAlignRaisePx(runStyle, fontSizePx);
             }
 
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.

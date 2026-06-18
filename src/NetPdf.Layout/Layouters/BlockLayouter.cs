@@ -7145,12 +7145,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (a.MarginBoxHeightPx > maxAtomicMarginBoxHeight)
                         maxAtomicMarginBoxHeight = a.MarginBoxHeightPx;
                     // vertical-align as (keyword, numeric RAISE px) — a <length>/<percentage> reads as
-                    // keyword 0 (baseline) + a raise (+ up); a keyword reads its index + 0 raise.
-                    var (valign, numericRaisePx) =
-                        ReadAtomicVerticalAlign(a.Box.Style, textLineHeightPx);
-                    // Only a BASELINE-aligned inline-block drives the §10.8.1 max-ascent MODEL (Plan C —
-                    // img/text lines stay byte-identical); sub/super/numeric still drive it (shifted).
-                    if (a.BaselineFromBorderTopPx is not null && IsBaselineValign(valign))
+                    // keyword 0 (baseline) + a raise (+ up, % of the box's OWN line-height); a keyword
+                    // reads its index + 0 raise.
+                    var (valign, numericRaisePx) = ReadAtomicVerticalAlign(a.Box.Style);
+                    // The line uses the §10.8.1 max-ascent MODEL when an atomic is either a BASELINE-owning
+                    // inline-block (baseline/sub/super) OR ANY baseline-relative SHIFTED atomic — including
+                    // an IMG-ish atomic with super/sub/numeric/middle/text-* (post-PR-#193 review P1: those
+                    // were placed but NOT sized into the line, so a raised box spilled above the line top).
+                    // A plain baseline/img + top/bottom keep the centred fallback model (byte-identical).
+                    if ((a.BaselineFromBorderTopPx is not null && IsBaselineValign(valign))
+                        || IsBaselineRelativeShifted(valign, numericRaisePx))
                     {
                         lineHasBaselineAligned = true;
                         anyBaselineAligned = true;
@@ -7220,10 +7224,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // baseline (the default) aligns the inline-block's own baseline / an img's margin-box
                     // bottom with the line baseline; top/bottom align the margin box to the line edges;
                     // middle/text-top/text-bottom to the line centre / text ascent / text descent; a
-                    // <length>/<percentage> RAISES the baseline by that distance (% of the line-height).
-                    // The emitted BORDER box is what ImagePainter / the inline-block content flush paint.
-                    var (valign, numericRaisePx) =
-                        ReadAtomicVerticalAlign(a.Box.Style, textLineHeightPx);
+                    // <length>/<percentage> RAISES the baseline by that distance (% of the box's OWN
+                    // line-height). The emitted BORDER box is what ImagePainter / the content flush paint.
+                    var (valign, numericRaisePx) = ReadAtomicVerticalAlign(a.Box.Style);
                     var borderBoxTopPx = ComputeAtomicBorderBoxTop(
                         a, valign, lineTopPx, thisLineHeightPx, baselineTopPx - numericRaisePx,
                         ascentPx, descentPx, fontSizePx);
@@ -7240,32 +7243,51 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return (perLineHeights, anyBaselineAligned ? perLineBaselines : null, placements, cumulativeTopPx);
     }
 
-    /// <summary>vertical-align cycle — whether a keyword index aligns by the BASELINE (so a baseline
-    /// inline-block drives the §10.8.1 max-ascent baseline): <c>baseline</c>(0), plus <c>sub</c>(1) /
-    /// <c>super</c>(2) which are validated but currently APPROXIMATED as baseline. The box-affecting
-    /// keywords <c>text-top</c>(3) / <c>text-bottom</c>(4) / <c>middle</c>(5) / <c>top</c>(6) /
-    /// <c>bottom</c>(7) are placed by line/text edges instead. Indices MUST match
+    /// <summary>vertical-align cycle — whether a keyword aligns by the BASELINE (so a baseline-owning
+    /// inline-block drives the §10.8.1 max-ascent baseline): <c>baseline</c>(0), <c>sub</c>(1),
+    /// <c>super</c>(2) — sub / super are now real ±em baseline shifts (vertical-align completion). The
+    /// box-affecting keywords <c>text-top</c>(3) / <c>text-bottom</c>(4) / <c>middle</c>(5) /
+    /// <c>top</c>(6) / <c>bottom</c>(7) are placed by line/text edges instead. Indices MUST match
     /// <c>VerticalAlignResolver</c> (NetPdf.Css).</summary>
     private static bool IsBaselineValign(int valign) => valign is 0 or 1 or 2;
 
+    /// <summary>vertical-align completion — whether a vertical-align is placed BASELINE-RELATIVE AND
+    /// SHIFTED off the baseline, so the line box MUST use the §10.8.1 max-ascent model to CONTAIN it
+    /// (even for an img-ish atomic with no own line box — post-PR-#193 review P1; the centred fallback
+    /// model doesn't reserve room for the shift). True for <c>sub</c>(1) / <c>super</c>(2) /
+    /// <c>text-top</c>(3) / <c>text-bottom</c>(4) / <c>middle</c>(5) and for ANY non-zero numeric raise.
+    /// False for plain <c>baseline</c>(0, no raise) — the centred model contains it, byte-identical —
+    /// and <c>top</c>(6) / <c>bottom</c>(7) — line-edge-relative, contained by the margin-box-height
+    /// floor.</summary>
+    private static bool IsBaselineRelativeShifted(int valign, double numericRaisePx) =>
+        valign is 1 or 2 or 3 or 4 or 5 || numericRaisePx != 0.0;
+
     /// <summary>vertical-align length cycle (CSS 2.2 §10.8.1) — read an atomic's <c>vertical-align</c> as
     /// (keyword index, numeric RAISE in px). A <c>&lt;length&gt;</c> raises the box by the length
-    /// (positive up, negative down); a <c>&lt;percentage&gt;</c> by that fraction of
-    /// <paramref name="lineHeightPx"/> (the element's line-height — approximated by the parent's). A
-    /// keyword returns (index, 0). Keyword 0 (baseline) + a non-zero raise = a numeric shift, placed
-    /// like a shifted baseline (so the inline-block's own-baseline / img margin-box-bottom alignment
-    /// rides the shift).</summary>
-    private static (int Keyword, double NumericRaisePx) ReadAtomicVerticalAlign(
-        ComputedStyle style, double lineHeightPx)
+    /// (positive up, negative down); a <c>&lt;percentage&gt;</c> by that fraction of the ELEMENT's OWN
+    /// line-height (§10.8.1 — not the parent's or the grown line box; post-PR-#193 review P2). A keyword
+    /// returns (index, 0). Keyword 0 (baseline) + a non-zero raise = a numeric shift, placed like a
+    /// shifted baseline (so the inline-block's own-baseline / img margin-box-bottom alignment rides
+    /// it).</summary>
+    private static (int Keyword, double NumericRaisePx) ReadAtomicVerticalAlign(ComputedStyle style)
     {
         var slot = style.Get(PropertyId.VerticalAlign);
         return slot.Tag switch
         {
             ComputedSlotTag.Keyword => (slot.AsKeyword(), 0.0),
             ComputedSlotTag.LengthPx => (0, slot.AsLengthPx()),
-            ComputedSlotTag.Percentage => (0, slot.AsPercentage() / 100.0 * lineHeightPx),
+            ComputedSlotTag.Percentage => (0, slot.AsPercentage() / 100.0 * OwnLineHeightPx(style)),
             _ => (0, 0.0),
         };
+    }
+
+    /// <summary>The element's OWN computed line-height (px) — a declared length, else font-size × 1.2
+    /// (the normal-line-height factor). The base for a vertical-align <c>%</c> (CSS 2.2 §10.8.1 — the
+    /// element's own line-height, not the parent's or the grown line box).</summary>
+    private static double OwnLineHeightPx(ComputedStyle style)
+    {
+        var declared = style.ReadLengthPxOrZero(PropertyId.LineHeight);
+        return declared > 0 ? declared : style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * 1.2;
     }
 
     /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — an atomic's extent ABOVE / BELOW the line

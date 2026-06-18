@@ -687,46 +687,82 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(sub > baseline + 0.5, $"sub should lower the atomic below baseline: sub={sub} baseline={baseline}");
     }
 
-    [Fact]
-    public void Inline_atomic_vertical_align_length_raises_by_the_distance_and_percentage_of_line_height()
+    // Lays out [text "A", inline-block(20×10, given vertical-align + optional line-height)] and returns
+    // the atomic's (top, bottom) plus the outer line-box height — for containment + own-line-height checks.
+    private static (double Top, double Bottom, double LineHeight) ValignAtomicGeometry(
+        ComputedSlot valignSlot, double ownLineHeightPx = 0)
     {
-        // vertical-align length cycle (CSS 2.2 §10.8.1) — a positive <length> RAISES the atomic off the
-        // baseline by that distance, a negative one LOWERS it; a <percentage> raises by that fraction of
-        // the line-height. The resolver produces a LengthPx / Percentage slot; the placement reads it.
-        double AtomicTop(ComputedSlot valignSlot)
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+        var ibStyle = MakeStyle();
+        ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
+        ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));
+        ibStyle.Set(PropertyId.VerticalAlign, valignSlot);
+        if (ownLineHeightPx > 0) ibStyle.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(ownLineHeightPx));
+        var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        block.AppendChild(inlineBlock);
+        root.AppendChild(block);
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+        double top = double.NaN, lineHeight = 0;
+        foreach (var f in sink.Fragments)
         {
-            var sink = new RecordingFragmentSink();
-            using var resolver = new SyntheticShaperResolver();
-            var ibStyle = MakeStyle();
-            ibStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(20));
-            ibStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(10));
-            ibStyle.Set(PropertyId.VerticalAlign, valignSlot);
-            var inlineBlock = Box.ForElement(BoxKind.InlineBlockContainer, ibStyle, MakeElement());
-            var root = Box.CreateRoot(MakeStyle());
-            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
-            block.AppendChild(Box.TextRun("A", MakeStyle()));
-            block.AppendChild(inlineBlock);
-            root.AppendChild(block);
-            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
-            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
-            var layoutCtx = new LayoutContext(ctx);
-            using var br = new BreakResolver();
-            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
-            foreach (var f in sink.Fragments)
-                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) return f.BlockOffset;
-            throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+            if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) top = f.BlockOffset;
+            else if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null) lineHeight = f.BlockSize;
         }
+        if (double.IsNaN(top)) throw new Xunit.Sdk.XunitException("no inline-block decoration fragment");
+        return (top, top + 10, lineHeight);   // height is the explicit 10px
+    }
 
-        var baseline = AtomicTop(ComputedSlot.FromKeyword(0));
-        var raised = AtomicTop(ComputedSlot.FromLengthPx(10));     // +10px → raise
-        var lowered = AtomicTop(ComputedSlot.FromLengthPx(-10));   // −10px → lower
-        var pct = AtomicTop(ComputedSlot.FromPercentage(50));      // 50% of the 19.2px line-height ≈ 9.6px
+    [Theory]
+    [InlineData(2, 0.0)]     // super (keyword)
+    [InlineData(1, 0.0)]     // sub (keyword)
+    [InlineData(0, 12.0)]    // +12px length raise
+    [InlineData(0, -12.0)]   // −12px length lower
+    public void Inline_atomic_vertical_align_shift_is_contained_in_the_line(int keyword, double lengthPx)
+    {
+        // Post-PR-#193 review P1 — a baseline-relative SHIFTED atomic (super / sub / a numeric length or
+        // percentage) is now SIZED into the line, not just moved: even an IMG-ish atomic (no own line box)
+        // is CONTAINED — no negative top overflow and no spill past the line bottom. Pre-fix only a
+        // baseline-OWNING inline-block triggered the max-ascent model, so a shifted img-ish box hung above
+        // the line top.
+        var slot = lengthPx != 0 ? ComputedSlot.FromLengthPx(lengthPx) : ComputedSlot.FromKeyword(keyword);
+        var (top, bottom, lineHeight) = ValignAtomicGeometry(slot);
 
-        // The shift magnitude equals the length (raise = up = smaller top offset).
-        Assert.Equal(10.0, baseline - raised, precision: 1);
-        Assert.Equal(10.0, lowered - baseline, precision: 1);
-        // 50% of the default 19.2px line-height ≈ 9.6px raise.
-        Assert.Equal(9.6, baseline - pct, precision: 1);
+        Assert.True(top >= -0.01, $"shifted atomic should not overflow the line top; got top={top}");
+        Assert.True(bottom <= lineHeight + 0.01,
+            $"shifted atomic should fit the line; bottom={bottom} lineHeight={lineHeight}");
+    }
+
+    [Fact]
+    public void Inline_atomic_vertical_align_large_percentage_is_contained()
+    {
+        // Post-PR-#193 review P1 — a large `vertical-align: 200%` raise on an img-ish atomic is contained
+        // (the line grows to hold the raised box), and a positive percentage RAISES it above a negative one.
+        var (rTop, rBottom, rLine) = ValignAtomicGeometry(ComputedSlot.FromPercentage(200));
+        var (lTop, lBottom, lLine) = ValignAtomicGeometry(ComputedSlot.FromPercentage(-200));
+
+        Assert.True(rTop >= -0.01 && rBottom <= rLine + 0.01, $"+200% should be contained; top={rTop} bottom={rBottom} line={rLine}");
+        Assert.True(lTop >= -0.01 && lBottom <= lLine + 0.01, $"−200% should be contained; top={lTop} bottom={lBottom} line={lLine}");
+        Assert.True(rTop < lTop - 1, $"a positive % should raise the box above a negative %: +={rTop} −={lTop}");
+    }
+
+    [Fact]
+    public void Inline_atomic_vertical_align_percentage_uses_the_boxs_own_line_height()
+    {
+        // Post-PR-#193 review P2 — a `vertical-align: %` resolves against the ELEMENT's OWN line-height
+        // (CSS 2.2 §10.8.1), not the parent's / the grown line box. `50%` of an own line-height of 40px is
+        // a 20px raise; of 20px, a 10px raise. The bigger raise grows the line box by the extra 10px.
+        var lh40 = ValignAtomicGeometry(ComputedSlot.FromPercentage(50), ownLineHeightPx: 40);
+        var lh20 = ValignAtomicGeometry(ComputedSlot.FromPercentage(50), ownLineHeightPx: 20);
+
+        Assert.Equal(10.0, lh40.LineHeight - lh20.LineHeight, precision: 1);   // (50% of 40) − (50% of 20)
     }
 
     // The line baseline (where the surrounding text sits) for the inline-block on the outer line.

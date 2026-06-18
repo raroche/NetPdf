@@ -897,6 +897,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_vertical_align_percentage_uses_the_runs_own_line_height()
+    {
+        // Post-PR-#193 review P2 — a text run's `vertical-align: %` resolves against the run's OWN
+        // line-height (CSS 2.2 §10.8.1), not the current line box. The first span (`line-height:20px`)
+        // sits on a line whose box is 40px (the second span's `line-height:40px` dominates). `50%` of the
+        // first span's OWN 20px is a 10px (= 7.5pt) raise — NOT 50% of the 40px line box (which would be
+        // 20px = 15pt). Both renders share the same 40px line box (same baseline), so the "A" glyph's y
+        // difference isolates the raise.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double FirstGlyphY(string firstSpanStyle) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div><span style=\"" + firstSpanStyle + "\">A</span>" +
+            "<span style=\"line-height:40px\">B</span></div></body></html>", opts))).Y;
+
+        var baseline = FirstGlyphY("line-height:20px");
+        var raised = FirstGlyphY("vertical-align:50%;line-height:20px");
+
+        // ~7.5pt (own 20px) raise, NOT ~15pt (the 40px line box) — proving the own-line-height base.
+        Assert.InRange(raised - baseline, 6.0, 9.0);
+    }
+
+    [Fact]
     public void Nonuniform_border_with_radius_rounds_corners_via_clip()
     {
         // Rounded NON-uniform borders cycle — a border-radius with per-side-differing border

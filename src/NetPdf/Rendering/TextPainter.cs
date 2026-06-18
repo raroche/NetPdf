@@ -444,8 +444,10 @@ internal static class TextPainter
                 var baselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
                 // text vertical-align cycle (CSS 2.2 §10.8.1) — a run's own vertical-align RAISES / lowers
                 // its glyph baseline off the line baseline (super / sub / a <length> / <percentage>).
-                // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box is NOT
-                // grown for the shift (first cut — a large raise may spill into the leading).
+                // baseline (the default, incl. plain text) shifts 0 → byte-identical. The line box IS grown
+                // to CONTAIN the shift in layout — BlockLayouter.ComputeInlineAtomicLayout sizes the
+                // §10.8.1 max-ascent line from each shifted run's OWN strut and pins the per-line baseline
+                // the painter draws on (explicitBaselineTopPx) — so the raised glyph stays within its line.
                 baselineTopPx -= InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs

@@ -7192,8 +7192,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         lineNeedsMaxAscent = true;
                         anyMaxAscent = true;
                         anyTextShift = true;
-                        if (textAscentAbovePx + raisePx > ascentAbove) ascentAbove = textAscentAbovePx + raisePx;
-                        if (textDescentBelowPx - raisePx > descentBelow) descentBelow = textDescentBelowPx - raisePx;
+                        // Contain the shift with the SHIFTED RUN's OWN strut (its own font-size + line-
+                        // height), NOT the block's — a font-size:32px super span must grow the line by its
+                        // own ~32px extent; reusing the block's 16px strut under-grows it and the raised
+                        // glyph spills above the line top (post-PR-#194 review P2). Mirrors the block
+                        // textAscentAbovePx / textDescentBelowPx formula, scaled to the run (so a run of the
+                        // block's own size + line-height stays byte-identical to the prior block-strut math).
+                        var runLineHeightPx =
+                            NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(runStyle, runFontSizePx);
+                        var runAscentAbovePx = runLineHeightPx / 2.0 + 0.3 * runFontSizePx;
+                        var runDescentBelowPx = runLineHeightPx - runAscentAbovePx;
+                        if (runAscentAbovePx + raisePx > ascentAbove) ascentAbove = runAscentAbovePx + raisePx;
+                        if (runDescentBelowPx - raisePx > descentBelow) descentBelow = runDescentBelowPx - raisePx;
                     }
                 }
             }

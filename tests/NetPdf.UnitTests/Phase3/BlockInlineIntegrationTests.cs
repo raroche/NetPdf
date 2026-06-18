@@ -846,6 +846,55 @@ public sealed class BlockInlineIntegrationTests
         Assert.True(super > baseline + 1, $"super should grow the line box: super={super} baseline={baseline}");
     }
 
+    [Theory]
+    [InlineData("super")]
+    [InlineData("sub")]
+    [InlineData("length")]
+    [InlineData("percent")]
+    public void Text_vertical_align_shift_grows_the_line_by_the_runs_own_metrics_not_the_block_strut(string kind)
+    {
+        // post-PR-#194 review P2 — line growth for a shifted TEXT run must use the RUN's OWN font-size /
+        // line-height strut, not the block's. A font-size:32px shifted span grows the line by its own
+        // ~32px+ extent; reusing the block's 16px strut under-grows it and the raised 32px glyph spills
+        // above the line top. For super / sub / a <length>, the block-strut model produced a line
+        // SHORTER than the 32px run (≈25–29px) — the `large >= 32` assertion fails without the fix.
+        double BlockHeight(double runFontSizePx)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var textStyle = MakeStyle();   // a DISTINCT style (an inline element's) → the gate lets it shift
+            textStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(runFontSizePx));
+            textStyle.Set(PropertyId.VerticalAlign, kind switch
+            {
+                "super" => ComputedSlot.FromKeyword(2),
+                "sub" => ComputedSlot.FromKeyword(1),
+                "length" => ComputedSlot.FromLengthPx(8),
+                _ => ComputedSlot.FromPercentage(50),    // "percent" — 50% of the run's OWN line-height
+            });
+            var block = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            block.AppendChild(Box.TextRun("A", textStyle));
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null) return f.BlockSize;
+            throw new Xunit.Sdk.XunitException("no block line fragment");
+        }
+
+        var small = BlockHeight(16);   // run == block size → the run strut equals the block strut.
+        var large = BlockHeight(32);   // run twice the block → its own strut must drive the growth.
+
+        // The 32px run's own strut grows the line markedly more than the 16px run's (proving growth uses
+        // the run's own metrics), AND the line CONTAINS the 32px run (no spill above the line top).
+        Assert.True(large > small + 8,
+            $"{kind}: a 32px shifted run should grow the line by its OWN metrics: large={large} small={small}");
+        Assert.True(large >= 32, $"{kind}: the 32px run must be contained in its line box: large={large}");
+    }
+
     [Fact]
     public void Inline_block_with_non_visible_overflow_uses_the_bottom_margin_edge_baseline()
     {

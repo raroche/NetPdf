@@ -876,6 +876,8 @@ public sealed class HtmlPdfConvertTests
             var ys = AllTdY(Latin1(HtmlPdf.Convert(
                 "<!DOCTYPE html><html><body><div><span>X</span>" +
                 "<span style=\"vertical-align:" + valign + "\">A</span></div></body></html>", opts)));
+            Assert.True(ys.Length >= 2,
+                $"expected two Td glyph slices (X then A); got {ys.Length} for vertical-align:{valign}");
             return (ys[0], ys[1]);   // X (baseline) then A (shifted), in document order.
         }
 
@@ -917,6 +919,36 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Vertical_align_on_a_table_cell_does_not_shift_its_direct_text_but_an_inline_span_does()
+    {
+        // text vertical-align inline-level gate, TABLE-CELL coverage (post-PR-#194 review P3). A cell's
+        // inline content is wrapped in an anonymous block that REUSES the cell's style ref (BoxBuilder
+        // FixupAnonymousBlocks), so the painter's ReferenceEquals(runStyle, blockStyle) gate fires for
+        // the cell's DIRECT text — the cell's own `vertical-align: super` doesn't baseline-shift it. A
+        // NESTED <span> carries a DISTINCT style, so its vertical-align STILL shifts. (TableLayouter
+        // ignores cell vertical-align entirely, so the painter's gate is the ONLY thing that could
+        // wrongly move the cell's text — making this the brittle path worth proving directly.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        // (1) The cell's OWN vertical-align:super must NOT leak into its direct text "Y": it stays on the
+        //     baseline with the nested span's "X" (same line). A leak would raise "Y" above "X".
+        var ownValign = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><table><tr>" +
+            "<td style=\"vertical-align:super\"><span>X</span>Y</td></tr></table></body></html>", opts)));
+        Assert.True(ownValign.Length >= 2, $"expected the span 'X' + the direct 'Y' Td; got {ownValign.Length}");
+        Assert.Equal(ownValign[0], ownValign[1], precision: 2);   // X and Y share the baseline — no leak.
+
+        // (2) A nested inline <span style="vertical-align:super"> in a PLAIN cell STILL shifts above its
+        //     same-line baseline text — the gate is inline-level, not a blanket cell suppression.
+        var nestedSpan = AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><table><tr><td><span>X</span>" +
+            "<span style=\"vertical-align:super\">A</span></td></tr></table></body></html>", opts)));
+        Assert.True(nestedSpan.Length >= 2, $"expected the baseline 'X' + the super 'A' Td; got {nestedSpan.Length}");
+        Assert.True(nestedSpan[1] > nestedSpan[0] + 1,
+            $"a nested span's super should sit above same-line cell text: {nestedSpan[1]} vs {nestedSpan[0]}");
+    }
+
+    [Fact]
     public void Text_vertical_align_percentage_uses_the_runs_own_line_height()
     {
         // Post-PR-#193 review P2 — a text run's `vertical-align: %` resolves against the run's OWN
@@ -930,6 +962,7 @@ public sealed class HtmlPdfConvertTests
             "<span style=\"vertical-align:50%;font-size:32px\">A</span></div></body></html>", opts)));
 
         // ~14.4pt (50% of A's OWN 38.4px line-height), NOT ~7.2pt (50% of the block's default line-height).
+        Assert.True(ys.Length >= 2, $"expected two Td glyph slices (X then A); got {ys.Length}");
         Assert.InRange(ys[1] - ys[0], 11.0, 18.0);
     }
 

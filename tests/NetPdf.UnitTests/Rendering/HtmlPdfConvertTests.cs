@@ -3688,7 +3688,11 @@ public sealed class HtmlPdfConvertTests
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         var pdf = Latin1(result.Pdf);
         Assert.Equal(3, TdCount(pdf));               // 3 block children → 3 stacked lines (not 1 flattened)
-        Assert.Contains(" re", pdf);                 // the decorated child paints a background band (nested decoration)
+        // The decorated child paints a FILLED red background band (nested decoration). Assert the red fill
+        // color AND a rectangle FILL (`re f`), not a bare `re` — a clip-path emits `re W n`, so `re` alone
+        // wouldn't prove the band actually painted (Copilot review).
+        Assert.Contains("1 0 0 rg", pdf);            // red fill color (background-color:red)
+        Assert.Contains("re f", pdf);                // a filled rectangle — the band, not a clip-path `re W n`
     }
 
     [Fact]

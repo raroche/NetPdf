@@ -3489,9 +3489,14 @@ flags the categories):
          granularity — the clip rect guarantees nothing paints outside the padding box, but a sliver of a
          partial line isn't painted), and clip-by-default INVERTS the spec initial (CSS Paged Media §6.2
          applies `overflow` to margin boxes with initial `visible` — page furniture spilling over the body
-         is near-always unwanted, so `visible` must be DECLARED to opt out). STILL deferred for `element()`: the running element's REAL
-         nested BLOCK LAYOUT (sub-boxes with their OWN decoration / margins — still FLATTENED text per direct
-         block child) + deep recursion (each direct block child → one line); the box/element being SEPARATELY-decorated
+         is near-always unwanted, so `visible` must be DECLARED to opt out). The running element's nested
+         BLOCK LAYOUT is now rendered (PR-3 task 10 — the segment-style + container-bands cycles): each
+         direct block child lays out on its OWN stacked line(s) with the block's OWN inherited style, its
+         text WRAPS within the box (post-PR-#154), per-segment margins / padding / line-heights apply, and a
+         decorated intermediate block paints its OWN background / border as a CONTAINER BAND over its
+         descendant lines. STILL deferred for `element()`: INLINE-LEVEL styling WITHIN a leaf block (a
+         `<b>`/`<span>` inside a block child is flattened to that block's own style — the capture records
+         per-block text + style, not per-inline-run); the box/element being SEPARATELY-decorated
          boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
          `calc()`) in the element's style resolve against the page context (an approximation — exact for
          absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); the element's own `%`/`em`/`calc()`

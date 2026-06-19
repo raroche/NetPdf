@@ -3599,6 +3599,24 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Running_element_with_block_children_renders_stacked_nested_lines_not_flattened()
+    {
+        // PR-3 task 10 — a `position: running()` element with BLOCK-level children renders its children as
+        // SEPARATE STACKED lines (real nested block layout via the segment-style + container-bands cycles),
+        // NOT one flattened text line. Three block children → three Td lines, each laid out on its own
+        // baseline; long text within a block also wraps (post-PR-#154). A nested container's OWN decoration
+        // (a background band) paints as a rect over its descendant lines — the structure, not flat text.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><div style=\"background-color:red\">P</div><div>Q</div><div>R</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.Equal(3, TdCount(pdf));               // 3 block children → 3 stacked lines (not 1 flattened)
+        Assert.Contains(" re", pdf);                 // the decorated child paints a background band (nested decoration)
+    }
+
+    [Fact]
     public void Page_margin_box_fitting_content_emits_no_clip_path()
     {
         // A box whose content fits carries no clip rect — its stream must stay clip-free

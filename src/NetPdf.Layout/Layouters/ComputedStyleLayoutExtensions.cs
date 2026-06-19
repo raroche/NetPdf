@@ -174,8 +174,14 @@ internal static class ComputedStyleLayoutExtensions
     /// resolve against the box's computed <c>direction</c> (<see cref="DirectionStyleExtensions.IsRtl"/>):
     /// in LTR <c>start</c> → 0 (left), <c>end</c> → 1 (right); in RTL the start edge is the RIGHT
     /// edge, so <c>start</c> → 1 and <c>end</c> → 0. The initial <c>text-align: start</c> therefore
-    /// RIGHT-aligns an RTL block. <c>match-parent</c> stays approximated as <c>start</c>. An LTR box
-    /// is byte-identical to the pre-pipeline mapping.</para>
+    /// RIGHT-aligns an RTL block. An LTR box is byte-identical to the pre-pipeline mapping.</para>
+    ///
+    /// <para><b><c>match-parent</c> is a DEFERRED approximation</b> — a fixed physical LEFT (factor 0),
+    /// direction-INSENSITIVE. Spec-correct <c>match-parent</c> (CSS Text 3 §7.1) takes the PARENT's
+    /// <c>text-align</c>, resolves a <c>start</c>/<c>end</c> against the PARENT's <c>direction</c>, and
+    /// inherits that matched alignment — which needs the parent computed style at cascade time, not
+    /// available to this layout-time reader. Carved out of the direction-aware <c>start</c> path so it
+    /// does NOT masquerade as spec-correct. See <c>deferrals.md#text-align-match-parent</c>.</para>
     ///
     /// <para>Consumed by <c>TextPainter</c> (the glyph lines, via <c>BoxFragment.LineAlignFactor</c>)
     /// + the inline-atomic placement, so the glyphs AND any inline atomic shift together — including
@@ -190,7 +196,8 @@ internal static class ComputedStyleLayoutExtensions
             4 => 0.5,              // center
             5 or 7 => 0.0,         // justify / justify-all — distributed, not a whole-line shift
             1 => rtl ? 0.0 : 1.0,  // end   → left in RTL, right in LTR
-            _ => rtl ? 1.0 : 0.0,  // start(0) / match-parent(6) → right in RTL, left in LTR
+            6 => 0.0,              // match-parent — DEFERRED fixed approximation (left); see XML doc
+            _ => rtl ? 1.0 : 0.0,  // start(0) → right in RTL, left in LTR
         };
     }
 

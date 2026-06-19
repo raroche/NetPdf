@@ -1355,6 +1355,40 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Rtl_block_threads_rtl_base_direction_into_bidi_levels()
+    {
+        // PR 2 review P3 — prove the production wiring BlockLayouter → InlineLayouter.LayoutPerRun(
+        // paragraphDirection: ReadParagraphDirection()) actually reaches the BIDI algorithm, not just the
+        // align factor. The SAME Latin "A" itemizes to bidi level 0 under an LTR base paragraph but level 2
+        // under an RTL base (UAX #9 I2 lifts an L run one level above the odd RTL base level 1). A differing
+        // level on identical text is direct evidence the CSS `direction` set the paragraph base direction
+        // threaded into LayoutPerRun — independent of ReadInlineAlignFactor (which drives the x-position).
+        static int BaseDirectionBidiLevel(int direction)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.Direction, ComputedSlot.FromKeyword(direction));
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            foreach (var f in sink.Fragments)
+                if (f.InlineLayout is { } il && il.ShapedRuns.Count > 0)
+                    return il.ShapedRuns[0].Source.BidiLevel;
+            throw new Xunit.Sdk.XunitException("no inline-layout fragment with shaped runs");
+        }
+
+        Assert.Equal(0, BaseDirectionBidiLevel(0));   // ltr base → "A" stays at level 0
+        Assert.Equal(2, BaseDirectionBidiLevel(1));   // rtl base → "A" (L) lifted to level 2 (UAX #9 I2)
+    }
+
+    [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {
         // Per Finding #5 — margin/border/padding/width applied to the

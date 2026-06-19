@@ -191,6 +191,36 @@ grepping the ID).
 
 ---
 
+## text-align-match-parent
+
+- **ID** — `text-align-match-parent`
+- **Status** — `approximated`.
+- **Behavior** — `text-align: match-parent` (CSS Text 3 §7.1) is approximated as a
+  fixed physical LEFT (line-align factor 0), direction-INSENSITIVE. Per spec it
+  should take the PARENT's computed `text-align`, resolve a `start`/`end` value
+  against the PARENT's `direction` to physical left/right, and inherit that matched
+  alignment. The approximation diverges whenever the parent's resolved alignment is
+  not physical-left — e.g. parent `direction: ltr; text-align: start` with child
+  `direction: rtl; text-align: match-parent` should align LEFT (the parent's start
+  resolved in LTR), and a parent `text-align: center` should make the child center.
+- **Missing** — Parent-aware resolution at cascade / computed-value time:
+  `match-parent` needs the PARENT element's computed `text-align` + `direction`,
+  which the layout-time `ReadInlineAlignFactor` reader does not have.
+- **Trigger** — a document uses `text-align: match-parent` (rare) AND the parent's
+  resolved alignment is not physical-left (parent not `start`-in-LTR), or the child
+  overrides `direction`.
+- **Owner files** — `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
+  (`ReadInlineAlignFactor`, the `6 => 0.0` branch). True resolution belongs in the
+  cascade / box-builder walk where the parent computed style is available.
+- **Added** — PR 2 task 5 review (P2): the direction pipeline made `start`/`end`
+  direction-aware; `match-parent` was carved OUT of the direction-aware `start`
+  path into a fixed approximation so it does not masquerade as spec-correct
+  (a `direction: rtl` child would otherwise have right-aligned).
+- **Removal condition** — `match-parent` resolves against the PARENT's `text-align`
+  + `direction` at computed-value time and inherits the matched alignment.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`

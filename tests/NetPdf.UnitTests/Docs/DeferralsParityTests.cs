@@ -44,6 +44,7 @@ public sealed class DeferralsParityTests
         "hyphens-auto-language-routing",
         "uax-24-script-detection",
         "rtl-fragment-reversal",
+        "text-align-match-parent",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
         "inline-atomic-boxes",

@@ -72,8 +72,8 @@ public sealed class DirectionResolverTests
     [InlineData(3, 1.0)]   // right (physical)
     [InlineData(4, 0.5)]   // center
     [InlineData(5, 0.0)]   // justify — distributed, no whole-line shift
-    [InlineData(6, 0.0)]   // match-parent → start → left
     [InlineData(7, 0.0)]   // justify-all — distributed
+    // match-parent(6) is a deferred approximation — see Match_parent_is_a_deferred_left_approximation.
     public void Ltr_align_factor_is_physical(int textAlign, double expected)
     {
         var s = StyleWith(direction: 0, textAlign: textAlign);
@@ -87,8 +87,8 @@ public sealed class DirectionResolverTests
     [InlineData(3, 1.0)]   // right STAYS physical-right under RTL
     [InlineData(4, 0.5)]   // center is symmetric
     [InlineData(5, 0.0)]   // justify distributes regardless of direction
-    [InlineData(6, 1.0)]   // match-parent → start → RIGHT in RTL
     [InlineData(7, 0.0)]   // justify-all distributes
+    // match-parent(6) is a deferred approximation — see Match_parent_is_a_deferred_left_approximation.
     public void Rtl_align_factor_swaps_start_end(int textAlign, double expected)
     {
         var s = StyleWith(direction: 1, textAlign: textAlign);
@@ -105,5 +105,19 @@ public sealed class DirectionResolverTests
         var ltr = StyleWith(direction: 0);
         Assert.Equal(1.0, rtl.ReadInlineAlignFactor(), precision: 3);
         Assert.Equal(0.0, ltr.ReadInlineAlignFactor(), precision: 3);
+    }
+
+    [Fact]
+    public void Match_parent_is_a_deferred_left_approximation()
+    {
+        // `text-align: match-parent` (CSS Text 3 §7.1, keyword id 6) should take the PARENT's
+        // `text-align`, resolve a start/end against the PARENT's `direction`, and inherit that matched
+        // alignment — which needs parent context at cascade time. It is DEFERRED
+        // (deferrals.md#text-align-match-parent) and approximated as a fixed physical LEFT (factor 0),
+        // direction-INSENSITIVE — deliberately NOT direction-aware, so it does not masquerade as
+        // spec-correct. (Pinning 0 in BOTH directions documents the approximation; the review carved it
+        // out of the direction-aware `start` path that would otherwise right-align it in RTL.)
+        Assert.Equal(0.0, StyleWith(direction: 0, textAlign: 6).ReadInlineAlignFactor(), precision: 3);
+        Assert.Equal(0.0, StyleWith(direction: 1, textAlign: 6).ReadInlineAlignFactor(), precision: 3);
     }
 }

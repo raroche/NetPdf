@@ -157,10 +157,17 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
                 // 0.8/0.2-em approximation (ascent+descent)/2 = 0.3·fontSize — NOT the inline-block's OUTER
                 // font, so a nested-block inline-block with a different font-size / line-height stays exact.
                 var metricsStyle = fragment.TextMetricsStyle ?? style;
-                var lastLineFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                // Per-run last-line metrics (PR-3 task 9) — a SPAN that overrides the font ON the last line
+                // (a larger font-size, ≈ a deeper descender) deepens the inline-block's baseline. Use the
+                // DEEPEST run's style on the last line WHEN it is deeper than the fragment's metrics style
+                // (a strict deepen-only refinement, so the element()-running TextMetricsStyle case and the
+                // uniform-font case stay byte-identical). Was the box / metrics font only — a documented gap.
+                var metricsFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                var deepestStyle = DeepestLastLineRunStyle(inlineLayout, metricsFontSizePx) ?? metricsStyle;
+                var lastLineFontSizePx = deepestStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
                 var lastLineHeightPx = fragment.PerLineHeightsPx is { Count: > 0 } perLineHeights
                     ? perLineHeights[perLineHeights.Count - 1]
-                    : NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(metricsStyle, lastLineFontSizePx);
+                    : NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(deepestStyle, lastLineFontSizePx);
                 LastLineBoxDescentBelowBaselinePx =
                     fragment.PerLineBaselineTopPx is { Count: > 0 } baselines
                         && double.IsFinite(baselines[baselines.Count - 1])
@@ -187,6 +194,35 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         }
 
         _buffered.Add(fragment);
+    }
+
+    /// <summary>Per-run last-line metrics (PR-3 task 9) — the style of the DEEPEST run on
+    /// <paramref name="inline"/>'s LAST line (the largest font-size, ≈ the deepest descender), or
+    /// <see langword="null"/> when no last-line run is deeper than <paramref name="minFontSizePx"/> (so the
+    /// caller keeps its own metrics style — the deepen-only contract that preserves the uniform-font + the
+    /// element()-running cases). Walks the last line's slices → shaped runs → preprocessed source styles.</summary>
+    private static NetPdf.Css.ComputedValues.ComputedStyle? DeepestLastLineRunStyle(
+        NetPdf.Layout.Inline.InlineLayoutResult inline, double minFontSizePx)
+    {
+        var lines = inline.Lines;
+        if (lines.Length == 0) return null;
+        var lastLine = lines[lines.Length - 1];
+        NetPdf.Css.ComputedValues.ComputedStyle? deepest = null;
+        var deepestFontSizePx = minFontSizePx;
+        foreach (var slice in lastLine.Slices)
+        {
+            if (slice.ShapedRunIndex < 0 || slice.ShapedRunIndex >= inline.ShapedRuns.Count) continue;
+            var sourceIdx = inline.ShapedRuns[slice.ShapedRunIndex].Source.SourceTextRunIndex;
+            if (sourceIdx < 0 || sourceIdx >= inline.PreprocessedRuns.Count) continue;
+            var runStyle = inline.PreprocessedRuns[sourceIdx].Style;
+            var fs = runStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+            if (fs > deepestFontSizePx)
+            {
+                deepestFontSizePx = fs;
+                deepest = runStyle;
+            }
+        }
+        return deepest;
     }
 
     public void RollbackTo(int cursor)

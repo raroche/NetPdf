@@ -372,17 +372,19 @@ grepping the ID).
     DescentBelowBaselinePx` — its TextMetricsStyle ?? box font + its real last-line height), so a
     nested-block inline-block with a different font-size / line-height is exact; with NO in-flow line box OR
     a computed `overflow` other than `visible` (the §10.8.1 exception) the baseline is the bottom margin
-    edge (the img-ish placement). Deferred: an inline SPAN overriding the font ON the last line (no per-RUN
-    metrics). The baseline still uses an approximate font ascent/descent (0.8 / −0.2 em — the layout layer
-    has no font-metric access; the painter uses the REAL metrics for glyphs, so an atomic aligns within
-    typical-font tolerance).
+    edge (the img-ish placement). An inline SPAN overriding the font ON the last line IS now honoured (PR-3
+    task 9 — `BufferingMeasureSink.DeepestLastLineRunStyle` scans the last line's slices for the deepest
+    run, a strict deepen-only refinement). The baseline still uses an approximate font ascent/descent
+    (0.8 / −0.2 em — the layout layer has no font-metric access; the painter uses the REAL metrics for
+    glyphs, so an atomic aligns within typical-font tolerance).
   - A `text-align: justify` line carrying an inline ATOMIC now DISTRIBUTES inter-word gaps AND shifts the
     atomic right by the gaps before it (the shared `InlineJustify` helper — the painter + the inline-atomic
-    placement can't disagree); `justify-all` justifies the LAST line too. Deferred: an internal
-    `<br>`-terminated line stays start-aligned even under justify-all. (center / right / end shift the atomic
-    — body text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL
-    block — direction pipeline, PR 2 task 5. What remains: the atomic's bidi VISUAL ORDER within a
-    mixed-direction line is still document-order — see `rtl-fragment-reversal`.)
+    placement can't disagree); `justify-all` justifies the LAST line too AND every internal forced-break
+    (`<br>`)-terminated line (PR-3 task 9 — `justify-all` lifts the §7.3 forced-break exception; plain
+    `justify` still leaves a `<br>` line start-aligned). (center / right / end shift the atomic — body
+    text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL block —
+    direction pipeline, PR 2 task 5. What remains: the atomic's bidi VISUAL ORDER within a mixed-direction
+    line is still document-order — see `rtl-fragment-reversal`.)
   - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
     separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
     by document depth, not a dedicated cap); LTR horizontal-tb.
@@ -407,9 +409,10 @@ grepping the ID).
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
   inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
 - **Removal condition** — RTL bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is
-  already honoured — PR 2 task 5; line-edge text line growth shipped — PR 3 task 7), the inline-block's
-  last-line baseline using true per-RUN content metrics + min-content shrink-to-fit, and inline-flex /
-  -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+  already honoured — PR 2 task 5; line-edge text line growth shipped — PR 3 task 7; last-line per-RUN
+  deepest-font metrics + justify-all on internal `<br>` shipped — PR 3 task 9), the inline-block's last-line
+  baseline min-content shrink-to-fit, and inline-flex / -grid / -table atomics laid out (no longer
+  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 

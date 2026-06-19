@@ -1095,6 +1095,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Line_height_zero_collapses_the_line_pitch_end_to_end()
+    {
+        // Post-PR-#197 review P2 — a valid `line-height: 0` (and `0px`/`0%`) COLLAPSES the line box (the
+        // two <br>-split lines overlap, pitch 0) instead of silently falling back to font-size × 1.2. A
+        // plain numeric sentinel couldn't distinguish explicit 0 from `normal`; the nullable reader can.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double Pitch(string style)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div style=\"" + style + "\">A<br>A</div></body></html>", opts)));
+            Assert.True(ys.Length >= 2, $"expected two lines; got {ys.Length}");
+            return ys[0] - ys[1];
+        }
+
+        Assert.Equal(0.0, Pitch("line-height:0"), precision: 1);    // explicit zero → collapsed
+        Assert.Equal(0.0, Pitch("line-height:0px"), precision: 1);  // 0px → collapsed
+        Assert.Equal(0.0, Pitch("line-height:0%"), precision: 1);   // 0% → collapsed
+        Assert.True(Pitch("") > 5, "the normal control should keep a positive pitch (≠ collapsed)");
+    }
+
+    [Fact]
     public void Vertical_align_on_a_block_or_cell_does_not_shift_its_own_text()
     {
         // text vertical-align inline-level gate — vertical-align applies to INLINE-LEVEL boxes. A

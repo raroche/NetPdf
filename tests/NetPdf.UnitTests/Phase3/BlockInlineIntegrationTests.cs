@@ -1427,6 +1427,42 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Line_edge_growth_uses_the_runs_line_height_not_just_font_size()
+    {
+        // Post-PR-#197 review P2 — line-edge growth uses the run's INLINE-BOX height (its USED line-height),
+        // so a tall `line-height` (not only a large font-size) grows the line. A 16px-font `vertical-align:
+        // top` span with line-height:80px grows the line to ~80px; the same span with normal line-height
+        // (~19.2px) leaves a small line. (Pre-fix the growth used font-size only, so both gave ~16-19px.)
+        double LineSize(double spanLineHeightPx)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            block.AppendChild(Box.TextRun("A", MakeStyle()));
+            var spanStyle = MakeStyle();
+            spanStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(6));   // top
+            spanStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(16));
+            if (spanLineHeightPx > 0)
+                spanStyle.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(spanLineHeightPx));
+            block.AppendChild(Box.TextRun("B", spanStyle));
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            return Assert.Single(sink.Fragments).BlockSize;
+        }
+
+        Assert.True(LineSize(80) >= 70.0,
+            $"line-height:80 + vertical-align:top should grow the line to ~80; got {LineSize(80)}");
+        Assert.True(LineSize(0) < 30.0,
+            $"the same 16px-font span at normal line-height should leave a small line; got {LineSize(0)}");
+    }
+
+    [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {
         // Per Finding #5 — margin/border/padding/width applied to the

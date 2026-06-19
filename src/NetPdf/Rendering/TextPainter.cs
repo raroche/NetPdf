@@ -295,11 +295,10 @@ internal static class TextPainter
         var metricsFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
         // line-height cycle — the full grammar (normal/number/length/%) via ReadLineHeightPx, so a
         // declared `line-height: 24px` (or `1.5`, or `150%`) sets the pitch instead of font-size × 1.2.
-        // The pitch MUST match BlockLayouter's LineHeightOverridePx (same reader + the same metrics font).
-        var lineHeightOverridePx = metricsStyle.ReadLineHeightPx(metricsFontSizePx);
-        var lineHeightPx = lineHeightOverridePx > 0
-            ? lineHeightOverridePx
-            : metricsFontSizePx * NormalLineHeightFactor;
+        // null = `normal` → the × NormalLineHeightFactor fallback; an explicit value (incl. 0, a collapsed
+        // line box) is used. The pitch MUST match BlockLayouter's LineHeightOverridePx (same reader + font).
+        var lineHeightPx = metricsStyle.ReadLineHeightPx(metricsFontSizePx)
+            ?? metricsFontSizePx * NormalLineHeightFactor;
 
         var lines = inline.Lines;
         var shapedRuns = inline.ShapedRuns;

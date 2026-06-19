@@ -251,6 +251,33 @@ grepping the ID).
 
 ---
 
+## margin-box-line-height
+
+- **ID** — `margin-box-line-height`
+- **Status** — `approximated`.
+- **Behavior** — Literal `@page` margin-box content (e.g. `@top-center { content: "..."; }`)
+  uses `font-size × 1.2` for its line pitch regardless of a declared `line-height` —
+  `PageMarginBoxPainter` reads font-size × `NormalLineHeightFactor`, and `line-height` is
+  NOT in `MarginBoxStyle`'s inherited longhand set, so the slot isn't even present on a
+  margin-box style. The BODY layout path was wired in the line-height cycle
+  (`ReadLineHeightPx`), but the margin-box path was not. (The `element()` /
+  `position: running()` running-element segment path parses line-height through a separate
+  manual route, distinct from this.)
+- **Missing** — `PropertyId.LineHeight` in `MarginBoxStyle.SupportedStyleIds` (so it
+  inherits page-context → margin box) + `PageMarginBoxPainter` reading it via
+  `ReadLineHeightPx` (with the `?? font-size × 1.2` fallback).
+- **Trigger** — a MULTI-LINE `@page` margin box (wrapping content) with a declared
+  `line-height` (e.g. `@bottom-center { line-height: 2 }`) — the line pitch stays
+  font-size × 1.2 instead of the declared value.
+- **Owner files** — `src/NetPdf/Rendering/MarginBoxStyle.cs` (`SupportedStyleIds`) +
+  `src/NetPdf/Rendering/PageMarginBoxPainter.cs` (the `lineHeightPx` computation).
+- **Added** — post-PR-#197 review P3 — the line-height cycle wired the body path; the
+  margin-box path is the residual.
+- **Removal condition** — a margin box's declared `line-height` drives its line pitch via
+  `ReadLineHeightPx`.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`

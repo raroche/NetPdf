@@ -96,4 +96,25 @@ public sealed class LineHeightResolverTests
         var r = Resolve("-10px", new CapturingSink());
         Assert.True(r.IsInvalid);
     }
+
+    [Theory]
+    [InlineData("1e309")]    // overflows double → +Infinity
+    [InlineData("1E400")]
+    [InlineData("9e999")]
+    public void Non_finite_unitless_number_is_invalid_not_a_crash(string value)
+    {
+        // Post-PR-#197 review P2 — a number that overflows to ±Infinity is `>= 0` but would THROW from
+        // ComputedSlot.FromNumber; the double.IsFinite guard turns it into invalid CSS, not a pipeline crash.
+        var r = Resolve(value, new CapturingSink());
+        Assert.True(r.IsInvalid, $"{value} should be invalid (non-finite), not throw");
+    }
+
+    [Theory]
+    [InlineData("3e")]       // malformed exponent → not a number, not a length
+    [InlineData("1.2.3")]
+    public void Malformed_numeric_forms_are_invalid(string value)
+    {
+        var r = Resolve(value, new CapturingSink());
+        Assert.True(r.IsInvalid, $"{value} should be invalid");
+    }
 }

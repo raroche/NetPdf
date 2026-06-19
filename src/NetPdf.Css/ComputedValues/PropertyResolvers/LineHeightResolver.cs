@@ -55,8 +55,11 @@ internal static class LineHeightResolver
         // no `%`. A non-negative number → a Number slot; a negative one is invalid (line-height ≥ 0).
         if (IsUnitlessNumber(trimmed))
         {
+            // double.IsFinite guards the overflow path — `line-height: 1e309` parses to +Infinity, which
+            // is `>= 0` but would THROW from ComputedSlot.FromNumber; reject it as invalid CSS instead
+            // (matching NumberResolver's finite check) so untrusted input never crashes the pipeline.
             if (double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
-                && number >= 0)
+                && number >= 0 && double.IsFinite(number))
             {
                 return ResolverResult.Resolved(ComputedSlot.FromNumber(number));
             }

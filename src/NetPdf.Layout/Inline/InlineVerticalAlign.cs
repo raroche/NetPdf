@@ -101,19 +101,18 @@ internal static class InlineVerticalAlign
     /// contribute a content-box <c>Floor</c> the line height must reach. <c>baseline</c> / <c>sub</c> /
     /// <c>super</c> / a <c>&lt;length&gt;</c> / <c>&lt;percentage&gt;</c> (the RAISE path, see
     /// <see cref="TextRaisePx"/>) and block-direct text (the inline-level gate, <paramref name="runStyle"/>
-    /// IS <paramref name="blockStyle"/>) return (0,0,0). The run's content box is approximated as the
-    /// 0.8 / 0.2-em ascent / descent (matching <see cref="TextRaisePx"/> + the layout's atomic extents);
-    /// <paramref name="parentDescentPx"/> is NEGATIVE.</summary>
+    /// IS <paramref name="blockStyle"/>) return (0,0,0). The box height is the run's INLINE-BOX height —
+    /// its used <paramref name="runLineHeightPx"/> (post-PR-#197 review P2) — so a tall <c>line-height</c>
+    /// (not only a large <c>font-size</c>) grows the line; <paramref name="parentDescentPx"/> is
+    /// NEGATIVE.</summary>
     public static (double Above, double Below, double Floor) TextLineEdgeGrowth(
-        ComputedStyle runStyle, ComputedStyle blockStyle, double runFontSizePx,
+        ComputedStyle runStyle, ComputedStyle blockStyle, double runLineHeightPx,
         double parentAscentPx, double parentDescentPx, double parentFontSizePx)
     {
         if (ReferenceEquals(runStyle, blockStyle)) return (0.0, 0.0, 0.0);   // block-direct — inline-level gate
         var slot = runStyle.Get(PropertyId.VerticalAlign);
         if (slot.Tag != ComputedSlotTag.Keyword) return (0.0, 0.0, 0.0);     // length / % → raise path
-        var runAscentPx = 0.8 * runFontSizePx;
-        var runDescentPx = -0.2 * runFontSizePx;        // negative (the font descender)
-        var runHeightPx = runAscentPx - runDescentPx;   // ≈ runFontSizePx (content box)
+        var runHeightPx = runLineHeightPx;   // the run's INLINE-BOX height (its used line-height)
         return slot.AsKeyword() switch
         {
             3 => (parentAscentPx, runHeightPx - parentAscentPx, 0.0),                                          // text-top
@@ -129,7 +128,8 @@ internal static class InlineVerticalAlign
     /// vertical-align <c>%</c> (CSS 2.2 §10.8.1).</summary>
     public static double OwnLineHeightPx(ComputedStyle runStyle, double fontSizePx)
     {
-        var declared = runStyle.ReadLineHeightPx(fontSizePx);   // line-height cycle — number/length/% honored
-        return declared > 0 ? declared : fontSizePx * 1.2;
+        // line-height cycle — number/length/% honored; null = `normal` → font-size × 1.2 (an explicit 0
+        // returns a 0 base, so a percentage vertical-align against a 0 line-height is 0).
+        return runStyle.ReadLineHeightPx(fontSizePx) ?? fontSizePx * 1.2;
     }
 }

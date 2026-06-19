@@ -6722,7 +6722,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double PaddingBlockStart,
         double PaddingBlockEnd,
         double DeclaredWidthPx,    // 0 when `width: auto` (default)
-        double LineHeightOverridePx); // 0 sentinel = use font-size × 1.2
+        double? LineHeightOverridePx); // null = `normal` → font-size × 1.2; an explicit value (incl. 0) is used
 
     private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(Box block, double containingInlinePx)
     {
@@ -7053,17 +7053,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         // Per Finding #5 — line-height honoring. Use the block's
-        // declared line-height when non-zero; fall back to
-        // 1.2 × font-size for `line-height: normal`. CSS Text L3 §3
-        // + CSS Inline L3 §3.5 say the used `line-height` is the
-        // COMPUTED value (`normal` → font's intrinsic line metric);
-        // reading the keyword + the font metric tables remains
-        // sub-cycle 2 work — 1.2 is the de-facto Web default for
+        // declared line-height when present (incl. an explicit 0 — a collapsed line box); fall back to
+        // 1.2 × font-size for `line-height: normal` (null). CSS Text L3 §3 + CSS Inline L3 §3.5 say the
+        // used `line-height` is the COMPUTED value (`normal` → font's intrinsic line metric); reading the
+        // keyword + the font metric tables remains sub-cycle 2 work — 1.2 is the de-facto Web default for
         // `line-height: normal` across major UAs.
         double lineHeight;
-        if (metrics.LineHeightOverridePx > 0)
+        if (metrics.LineHeightOverridePx is { } overridePx)
         {
-            lineHeight = metrics.LineHeightOverridePx;
+            lineHeight = overridePx;
         }
         else
         {
@@ -7222,13 +7220,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         // than the baseline-sized line is CONTAINED (it previously overflowed — the PR #195
                         // deferral). text-top/text-bottom/middle grow the baseline-relative ascent/descent
                         // (the max-ascent model, mirroring the atomic AtomicBaselineExtents path); top/bottom
-                        // are line-edge-relative so they contribute a content-box FLOOR instead. The painter
-                        // positions the run via the SAME InlineVerticalAlign.TextLineEdgeBaselineTopPx using
-                        // the grown line metrics, so layout + paint can't disagree. baseline/plain/block-
-                        // direct text → (0,0,0), so those lines stay byte-identical.
+                        // are line-edge-relative so they contribute an inline-box FLOOR instead. The box
+                        // height is the run's USED line-height (post-PR-#197 review P2 — a tall line-height,
+                        // not only a large font-size, grows the line). The painter positions the run via the
+                        // SAME InlineVerticalAlign.TextLineEdgeBaselineTopPx using the grown line metrics, so
+                        // layout + paint can't disagree. baseline/plain/block-direct text → (0,0,0), so those
+                        // lines stay byte-identical.
+                        var runLineHeightPx =
+                            NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(runStyle, runFontSizePx);
                         var (edgeAbove, edgeBelow, edgeFloor) =
                             NetPdf.Layout.Inline.InlineVerticalAlign.TextLineEdgeGrowth(
-                                runStyle, blockStyle, runFontSizePx, ascentPx, descentPx, fontSizePx);
+                                runStyle, blockStyle, runLineHeightPx, ascentPx, descentPx, fontSizePx);
                         if (edgeAbove != 0.0 || edgeBelow != 0.0)
                         {
                             lineNeedsMaxAscent = true;
@@ -7437,8 +7439,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private static double OwnLineHeightPx(ComputedStyle style)
     {
         var fontSizePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
-        var declared = style.ReadLineHeightPx(fontSizePx);   // line-height cycle — number/length/% honored
-        return declared > 0 ? declared : fontSizePx * 1.2;
+        // line-height cycle — number/length/% honored; null = `normal` → font-size × 1.2. An explicit
+        // line-height: 0 returns a 0 % base (a 0% vertical-align of a 0 line-height is 0).
+        return style.ReadLineHeightPx(fontSizePx) ?? fontSizePx * 1.2;
     }
 
     /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — an atomic's extent ABOVE / BELOW the line

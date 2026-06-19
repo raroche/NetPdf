@@ -567,17 +567,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // natural (= non-reversed) cursor; only the FINAL main-axis
         // offset assigned to each fragment flips for reverse directions.
         //
-        // Per Phase 3 Task 15 L5 post-PR-#65 review F#1 — the axis
-        // mapping below assumes LTR horizontal-tb (the L1 default
-        // writing mode). Per CSS Flexbox §3.1 the spec-correct axis
-        // mapping depends on the cascaded `direction` + `writing-mode`
-        // properties; under RTL or vertical writing modes the physical
-        // mapping differs (e.g., RTL row = right-to-left along the
-        // inline axis = visually equivalent to LTR row-reverse).
-        // Plumbing `direction` / `writing-mode` through the layout
-        // pipeline is L7+ scope (L6 shipped `flex-wrap: wrap` without
-        // expanding the direction pipeline); tracked in
-        // `docs/deferrals.md#flex-layouter-features`.
+        // Per CSS Flexbox §3.1 the physical axis mapping depends on the cascaded
+        // `direction` + `writing-mode`. ROW RTL is now ACTIVE (PR 2 task 6): a `row`
+        // (inline-main-axis) container under `direction: rtl` flips the physical main
+        // axis right-to-left — the XOR into `isReverse` below makes it equivalent to LTR
+        // `row-reverse`. STILL deferred (tracked in `docs/deferrals.md#flex-layouter-features`):
+        // the COLUMN cross-axis under RTL (a column's cross axis is the inline axis), and
+        // all VERTICAL writing modes (`writing-mode` is not yet a registered property).
         var flexDirection = _rootBox.Style.ReadFlexDirection();
         var isColumn = flexDirection.IsFlexColumnDirection();
         var isReverse = flexDirection.IsFlexReverseDirection();

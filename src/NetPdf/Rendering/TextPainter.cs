@@ -451,9 +451,9 @@ internal static class TextPainter
                 // the run to the line box / parent content-area (a non-baseline offset); the others
                 // (baseline / sub / super / a <length> / <percentage>) RAISE off the line baseline. A
                 // sub/super/numeric shift GROWS the line in layout (ComputeInlineAtomicLayout pins the
-                // per-line baseline); a line-edge run positions WITHIN the baseline-sized line — a taller
-                // run may overflow it (line growth for it is deferred, the bounded first cut). baseline /
-                // plain text → byte-identical.
+                // per-line baseline); a line-edge run ALSO grows the line now (PR 3 task 7 —
+                // TextLineEdgeGrowth), so a tall top/bottom/middle/text-* run is positioned WITHIN the
+                // grown line rather than overflowing it. baseline / plain text → byte-identical.
                 var blockFontSizePx = blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
                 var baselineTopPx = InlineVerticalAlign.TextLineEdgeBaselineTopPx(
                         runStyle, blockStyle, lineTopPx, thisLineHeightPx, lineBaselineTopPx,

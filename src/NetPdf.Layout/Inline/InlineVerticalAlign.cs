@@ -59,11 +59,12 @@ internal static class InlineVerticalAlign
     /// the run's midpoint at the line baseline + half the parent x-height), or the PARENT text
     /// content-area (<c>text-top</c> / <c>text-bottom</c> — the run's top / bottom at the parent font's
     /// ascent / descent above / below the line baseline).
-    /// <para><b>Bounded first cut.</b> The run is positioned WITHIN the line box AS SIZED by its baseline
-    /// content; a run TALLER than that line OVERFLOWS it (line growth for non-baseline-aligned content is
-    /// deferred). Parent metrics use the 0.8 / 0.2-em ascent / descent + 0.5-em x-height approximation
-    /// (the same the layout uses). <paramref name="descentPx"/> is NEGATIVE (the font descender), so the
-    /// run spans [<paramref name="lineBaselineTopPx"/> result − ascent, − descent].</para>
+    /// <para><b>Line growth (PR 3 task 7).</b> The line box GROWS to contain a line-edge-aligned run (see
+    /// <see cref="TextLineEdgeGrowth"/>, called by the layout line-box sizing) — a tall <c>top</c> /
+    /// <c>bottom</c> / <c>middle</c> / <c>text-*</c> run no longer overflows. This method positions the run
+    /// WITHIN that (now grown) line. Parent metrics use the 0.8 / 0.2-em ascent / descent + 0.5-em x-height
+    /// approximation (the same the layout uses). <paramref name="descentPx"/> is NEGATIVE (the font
+    /// descender), so the run spans [<paramref name="lineBaselineTopPx"/> result − ascent, − descent].</para>
     /// <para><b>Inline-level gate.</b> Block-direct text (<paramref name="runStyle"/> IS
     /// <paramref name="blockStyle"/>) returns <see langword="null"/> — a block's / cell's own
     /// vertical-align doesn't apply to its inline content (§10.8.1), same as <see cref="TextRaisePx"/>.</para></summary>
@@ -87,6 +88,39 @@ internal static class InlineVerticalAlign
             4 => lineBaselineTopPx - parentDescentPx + descentPx,            // text-bottom: run bottom at parent descent
             5 => lineBaselineTopPx - parentHalfXHeightPx + (ascentPx + descentPx) / 2.0, // middle
             _ => null,                                                       // baseline / sub / super → raise path
+        };
+    }
+
+    /// <summary>text vertical-align line-growth (CSS 2.2 §10.8.1, PR 3 task 7) — the line-box GROWTH a
+    /// LINE-EDGE-aligned inline TEXT run (<c>top</c> / <c>bottom</c> / <c>middle</c> / <c>text-top</c> /
+    /// <c>text-bottom</c>) forces so a run TALLER than the baseline-sized line is CONTAINED instead of
+    /// overflowing. Returns <c>(Above, Below, Floor)</c>: <c>text-top</c> / <c>text-bottom</c> /
+    /// <c>middle</c> grow the baseline-relative ascent / descent (the §10.8.1 max-ascent model, mirroring
+    /// the atomic <c>AtomicBaselineExtents</c> path), so <c>(Above, Below)</c> are the run's extents above /
+    /// below the LINE baseline; <c>top</c> / <c>bottom</c> are line-EDGE-relative (circular) and instead
+    /// contribute a content-box <c>Floor</c> the line height must reach. <c>baseline</c> / <c>sub</c> /
+    /// <c>super</c> / a <c>&lt;length&gt;</c> / <c>&lt;percentage&gt;</c> (the RAISE path, see
+    /// <see cref="TextRaisePx"/>) and block-direct text (the inline-level gate, <paramref name="runStyle"/>
+    /// IS <paramref name="blockStyle"/>) return (0,0,0). The run's content box is approximated as the
+    /// 0.8 / 0.2-em ascent / descent (matching <see cref="TextRaisePx"/> + the layout's atomic extents);
+    /// <paramref name="parentDescentPx"/> is NEGATIVE.</summary>
+    public static (double Above, double Below, double Floor) TextLineEdgeGrowth(
+        ComputedStyle runStyle, ComputedStyle blockStyle, double runFontSizePx,
+        double parentAscentPx, double parentDescentPx, double parentFontSizePx)
+    {
+        if (ReferenceEquals(runStyle, blockStyle)) return (0.0, 0.0, 0.0);   // block-direct — inline-level gate
+        var slot = runStyle.Get(PropertyId.VerticalAlign);
+        if (slot.Tag != ComputedSlotTag.Keyword) return (0.0, 0.0, 0.0);     // length / % → raise path
+        var runAscentPx = 0.8 * runFontSizePx;
+        var runDescentPx = -0.2 * runFontSizePx;        // negative (the font descender)
+        var runHeightPx = runAscentPx - runDescentPx;   // ≈ runFontSizePx (content box)
+        return slot.AsKeyword() switch
+        {
+            3 => (parentAscentPx, runHeightPx - parentAscentPx, 0.0),                                          // text-top
+            4 => (runHeightPx + parentDescentPx, -parentDescentPx, 0.0),                                       // text-bottom (descent < 0)
+            5 => (0.25 * parentFontSizePx + runHeightPx / 2.0, runHeightPx / 2.0 - 0.25 * parentFontSizePx, 0.0), // middle
+            6 or 7 => (0.0, 0.0, runHeightPx),                                                                  // top / bottom — line floor
+            _ => (0.0, 0.0, 0.0),                                                                              // baseline / sub / super → raise path
         };
     }
 

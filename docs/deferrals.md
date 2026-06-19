@@ -301,10 +301,13 @@ grepping the ID).
     `text-bottom` (bounded first cut — position the run at the line-box top/bottom, the line middle, or the
     parent text content-area, via `InlineVerticalAlign.TextLineEdgeBaselineTopPx`). All GATED to
     inline-level runs (a block / table cell's own vertical-align doesn't shift its text — the
-    reference-equality gate; non-inherited so `<sub>`/`<sup>`/`<span>` work). Deferred for text: a line-edge
-    run TALLER than the baseline-sized line OVERFLOWS it (no line growth for non-baseline-aligned content
-    yet); the parent metrics use the 0.8/−0.2-em + 0.5-em-x-height approximation; a deferred (non-LengthPx)
-    declared line-height isn't read as the `%` base (falls back to font-size × 1.2).
+    reference-equality gate; non-inherited so `<sub>`/`<sup>`/`<span>` work). A line-edge run TALLER than the
+    baseline-sized line now GROWS the line so it is CONTAINED (PR 3 task 7 —
+    `InlineVerticalAlign.TextLineEdgeGrowth`: `text-top`/`text-bottom`/`middle` grow the max-ascent
+    ascent/descent extents, `top`/`bottom` contribute a content-box floor; the painter positions the run
+    within the grown line via the shared helper). Deferred for text: the parent metrics use the
+    0.8/−0.2-em + 0.5-em-x-height approximation; a deferred (non-LengthPx) declared line-height isn't read
+    as the `%` base (falls back to font-size × 1.2).
   - An inline-block aligns by its LAST in-flow line box's baseline (CSS 2.2 §10.8.1 — it sits ON the
     surrounding text baseline; the line box is sized by the max-ascent model). The last line's descent is
     captured from the ACTUAL deepest line-bearing fragment's metrics (`BufferingMeasureSink.LastLineBox
@@ -328,9 +331,8 @@ grepping the ID).
   - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
     formatting context) remain deferred.
 - **Trigger** — a mixed-direction line needing bidi VISUAL reordering of an inline `<img>` / inline-block
-  (the RTL text-align alignment is already honoured — PR 2 task 5), a line-edge text `vertical-align`
-  (`top`/`bottom`/`middle`/`text-*`) on a run TALLER than its line (overflow), or an
-  `inline-flex`/`-grid`/`-table` span.
+  (the RTL text-align alignment is already honoured — PR 2 task 5), or an `inline-flex`/`-grid`/`-table`
+  span. (Line-edge text `vertical-align` line growth shipped in PR 3 task 7.)
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
@@ -346,10 +348,10 @@ grepping the ID).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
   inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
-- **Removal condition** — line-edge text `vertical-align` GROWS its line (no overflow for a tall run), RTL
-  bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is already honoured — PR 2 task 5),
-  the inline-block's last-line baseline using true per-RUN content metrics + min-content shrink-to-fit, and
-  inline-flex / -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+- **Removal condition** — RTL bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is
+  already honoured — PR 2 task 5; line-edge text line growth shipped — PR 3 task 7), the inline-block's
+  last-line baseline using true per-RUN content metrics + min-content shrink-to-fit, and inline-flex /
+  -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 

@@ -7143,6 +7143,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         for (var li = 0; li < lines.Length; li++)
         {
             double maxAtomicMarginBoxHeight = 0;
+            double maxLineEdgeTextHeight = 0;   // text vertical-align line-growth — top/bottom run content-box floor.
             var ascentAbove = textAscentAbovePx;
             var descentBelow = textDescentBelowPx;
             var lineNeedsMaxAscent = false;
@@ -7212,21 +7213,55 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         if (runAscentAbovePx + raisePx > ascentAbove) ascentAbove = runAscentAbovePx + raisePx;
                         if (runDescentBelowPx - raisePx > descentBelow) descentBelow = runDescentBelowPx - raisePx;
                     }
+                    else
+                    {
+                        // text vertical-align line-growth cycle (PR 3 task 7) — a LINE-EDGE-aligned inline
+                        // text run (top/bottom/middle/text-top/text-bottom) GROWS the line so a run TALLER
+                        // than the baseline-sized line is CONTAINED (it previously overflowed — the PR #195
+                        // deferral). text-top/text-bottom/middle grow the baseline-relative ascent/descent
+                        // (the max-ascent model, mirroring the atomic AtomicBaselineExtents path); top/bottom
+                        // are line-edge-relative so they contribute a content-box FLOOR instead. The painter
+                        // positions the run via the SAME InlineVerticalAlign.TextLineEdgeBaselineTopPx using
+                        // the grown line metrics, so layout + paint can't disagree. baseline/plain/block-
+                        // direct text → (0,0,0), so those lines stay byte-identical.
+                        var (edgeAbove, edgeBelow, edgeFloor) =
+                            NetPdf.Layout.Inline.InlineVerticalAlign.TextLineEdgeGrowth(
+                                runStyle, blockStyle, runFontSizePx, ascentPx, descentPx, fontSizePx);
+                        if (edgeAbove != 0.0 || edgeBelow != 0.0)
+                        {
+                            lineNeedsMaxAscent = true;
+                            anyMaxAscent = true;
+                            anyTextShift = true;
+                            if (edgeAbove > ascentAbove) ascentAbove = edgeAbove;
+                            if (edgeBelow > descentBelow) descentBelow = edgeBelow;
+                        }
+                        if (edgeFloor > 0.0)
+                        {
+                            // top / bottom — line-edge-relative: the run must FIT the line box (current
+                            // model, centred baseline + the floor grows the line, like a top/bottom atomic).
+                            anyTextShift = true;
+                            if (edgeFloor > maxLineEdgeTextHeight) maxLineEdgeTextHeight = edgeFloor;
+                        }
+                    }
                 }
             }
             if (lineNeedsMaxAscent)
             {
                 // §10.8.1 max-ascent model — the baseline at max-ascent-above so a baseline-aligned
                 // inline-block sits ON the text baseline without overflowing the line top; the line is
-                // at least the sum AND tall enough for any non-baseline (top/bottom) sibling's margin box.
-                perLineHeights[li] = Math.Max(ascentAbove + descentBelow, maxAtomicMarginBoxHeight);
+                // at least the sum AND tall enough for any non-baseline (top/bottom) sibling's margin box
+                // or line-edge text run's content box (text vertical-align line-growth).
+                perLineHeights[li] = Math.Max(ascentAbove + descentBelow,
+                    Math.Max(maxAtomicMarginBoxHeight, maxLineEdgeTextHeight));
                 perLineBaselines[li] = ascentAbove;
             }
             else
             {
                 // Current model (byte-identical when every atomic is baseline/img) — the line grows to the
-                // tallest atomic MARGIN box; the baseline stays centred (NaN → real font metrics).
-                perLineHeights[li] = Math.Max(textLineHeightPx, maxAtomicMarginBoxHeight);
+                // tallest atomic MARGIN box or line-edge (top/bottom) text run; the baseline stays centred
+                // (NaN → real font metrics).
+                perLineHeights[li] = Math.Max(textLineHeightPx,
+                    Math.Max(maxAtomicMarginBoxHeight, maxLineEdgeTextHeight));
                 perLineBaselines[li] = double.NaN;
             }
         }

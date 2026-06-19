@@ -1036,25 +1036,32 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Text_vertical_align_middle_text_top_text_bottom_position_relative_to_the_parent()
     {
-        // text vertical-align line-edge cycle (post-PR-#194 task 3) — `middle` / `text-top` / `text-bottom`
-        // position a run relative to the PARENT's baseline + text content-area (the parent font's x-height
-        // / ascent / descent), so for a run whose font differs from the parent's they give DISTINCT glyph
-        // baselines, ordered (y-up) text-bottom > baseline > middle > text-top. A 40px span in a 16px
-        // block: text-bottom puts its BOTTOM at the parent descent (baseline highest), text-top its TOP at
-        // the parent ascent (baseline lowest), middle its midpoint at the parent baseline + half x-height.
+        // text vertical-align line-edge (post-PR-#194 task 3 + PR 3 task 7 line-growth) — `middle` /
+        // `text-top` / `text-bottom` position a run relative to the PARENT's baseline + text content-area.
+        // Task 7 now GROWS the line to contain a tall such run, which MOVES the shared line baseline — so the
+        // robust check compares the aligned 40px run against a SAME-LINE baseline 40px run (both share the
+        // grown line + its baseline), rather than across separate docs with differing line heights. y-up,
+        // the offset (aligned − same-line baseline) orders text-bottom > middle > text-top: text-bottom puts
+        // the run's BOTTOM at the parent descent (run rides highest), text-top its TOP at the parent ascent
+        // (run rides lowest), middle its midpoint at the parent baseline + half x-height.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div style=\"font-size:16px\">" +
-            "<span style=\"vertical-align:" + valign + ";font-size:40px\">A</span></div></body></html>", opts))).Y;
+        double Offset(string valign)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div style=\"font-size:16px\">" +
+                "<span style=\"font-size:40px\">A</span>" +                                // reference: 40px baseline
+                "<span style=\"vertical-align:" + valign + ";font-size:40px\">A</span>" +   // the aligned 40px run
+                "</div></body></html>", opts)));
+            Assert.True(ys.Length >= 2, $"expected two Td ops (reference + aligned); got {ys.Length}");
+            return ys[1] - ys[0];   // aligned − same-line baseline reference (content-stream / doc order)
+        }
 
-        var baseline = GlyphY("baseline");
-        var middle = GlyphY("middle");
-        var textTop = GlyphY("text-top");
-        var textBottom = GlyphY("text-bottom");
+        var middle = Offset("middle");
+        var textTop = Offset("text-top");
+        var textBottom = Offset("text-bottom");
 
-        Assert.True(textBottom > baseline + 2, $"text-bottom's baseline should sit above baseline's: textBottom={textBottom} baseline={baseline}");
-        Assert.True(baseline > middle + 2, $"baseline should sit above middle: baseline={baseline} middle={middle}");
-        Assert.True(middle > textTop + 2, $"middle should sit above text-top: middle={middle} textTop={textTop}");
+        Assert.True(textBottom > middle + 2, $"text-bottom should ride above middle: textBottom={textBottom} middle={middle}");
+        Assert.True(middle > textTop + 2, $"middle should ride above text-top: middle={middle} textTop={textTop}");
     }
 
     [Fact]

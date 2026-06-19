@@ -1388,6 +1388,44 @@ public sealed class BlockInlineIntegrationTests
         Assert.Equal(2, BaseDirectionBidiLevel(1));   // rtl base → "A" (L) lifted to level 2 (UAX #9 I2)
     }
 
+    [Theory]
+    [InlineData(0, false)]   // baseline — control: a 48px baseline run does NOT grow the line (mixed-font growth is separate)
+    [InlineData(6, true)]    // top      — grows the line to contain the 48px run
+    [InlineData(7, true)]    // bottom   — grows the line
+    [InlineData(5, true)]    // middle   — grows the line
+    [InlineData(3, true)]    // text-top — grows the line
+    public void Line_edge_vertical_align_grows_line_to_contain_tall_run(int valignKeyword, bool expectGrowth)
+    {
+        // PR 3 task 7 — a line-edge-aligned (top/bottom/middle/text-top/text-bottom) inline TEXT run TALLER
+        // than the baseline-sized line GROWS the line so it is CONTAINED (it previously overflowed — the
+        // PR #195 deferral). A 48px line-edge span on a 16px line (~19.2px) grows the line to ≥ ~40px; a
+        // 48px BASELINE span leaves the line at ~19.2 (the separate mixed-font-size growth is out of scope).
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+        var blockStyle = MakeStyle();   // default 16px font → ~19.2px line
+        var root = Box.CreateRoot(MakeStyle());
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        var spanStyle = MakeStyle();
+        spanStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(valignKeyword));
+        spanStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(48));
+        block.AppendChild(Box.TextRun("B", spanStyle));
+        root.AppendChild(block);
+        using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var br = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+        var fragment = Assert.Single(sink.Fragments);
+
+        if (expectGrowth)
+            Assert.True(fragment.BlockSize >= 40.0,
+                $"line-edge valign {valignKeyword} should grow the line to contain the 48px run; got {fragment.BlockSize}");
+        else
+            Assert.True(fragment.BlockSize < 25.0,
+                $"a baseline 48px run should leave the line baseline-sized (~19.2); got {fragment.BlockSize}");
+    }
+
     [Fact]
     public void Block_with_margin_border_padding_honors_box_model()
     {

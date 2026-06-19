@@ -989,6 +989,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Inline_block_last_line_baseline_reflects_a_line_height_overriding_span()
+    {
+        // PR #198 review P2 — the last-line deepest-run selection keys on USED DESCENT (line-height AND
+        // font-size), not font-size alone: a SAME-font span with a much larger line-height on the LAST line
+        // deepens the §10.8.1 descent (more half-leading below the baseline), shifting the inline-block's
+        // baseline and the surrounding "A" aligned to it. Moving the same line-height:80px span from line 1
+        // to the LAST line therefore changes the result — font-size-only selection (the pre-fix behavior)
+        // missed a same-font, larger-line-height run.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double SurroundingY(string ibContent) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block\">" + ibContent
+            + "</span></div></body></html>", opts))).Y;
+
+        // Same glyphs + same font-size; only WHICH line carries the line-height:80px span differs.
+        var tallFirst = SurroundingY("<span style=\"line-height:80px\">y</span><br>x");  // tall lh on line 1
+        var tallLast = SurroundingY("x<br><span style=\"line-height:80px\">y</span>");   // tall lh on the LAST line
+
+        Assert.True(System.Math.Abs(tallFirst - tallLast) > 1.0,
+            $"the LAST line's used line-height should drive the inline-block baseline: tallFirst={tallFirst} tallLast={tallLast}");
+    }
+
+    [Fact]
     public void Vertical_align_top_places_an_inline_block_differently_than_baseline()
     {
         // vertical-align cycle (CSS 2.2 §10.8.1) — end-to-end: a `vertical-align` keyword now resolves
@@ -2085,6 +2107,59 @@ public sealed class HtmlPdfConvertTests
         var runs = GlyphRuns(Latin1(result.Pdf));
         Assert.Equal(2, runs.Count);            // one header per page
         Assert.NotEqual(runs[0], runs[1]);       // page 1 "AA" (rh=A) ≠ page 2 "AB" (rh=B)
+    }
+
+    [Fact]
+    public void Multi_page_string_start_uses_the_page_start_setter_and_carries_forward()
+    {
+        // PR #198 review P1/P2 — string(name, start) end-to-end across pages. The .chap div sets title="A"
+        // and is the FIRST element on page 1, so `start` there is "A" (the page STARTS with the setter — not
+        // the empty entry value the pre-fix code returned); page 2 has no setter, so its `start` is the
+        // carried "A". The header content "Z" string(title, start) is therefore "ZA" (2 glyphs) on BOTH
+        // pages. (Pre-fix, page 1's start was the empty entry → "Z", so the two headers differed.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"Z\" string(title, start) } }" +
+            ".chap { string-set: title \"A\"; height: 50px }" +
+            ".fill { height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"chap\"></div><div class=\"fill\"></div><div class=\"fill\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);              // one header per page
+        Assert.Equal(8, runs[0].Length);          // page 1 "ZA" — start picks up the page-start setter (2 glyphs × 4 hex)
+        Assert.Equal(runs[0], runs[1]);           // page 2 carries the same start value → identical header
+    }
+
+    [Fact]
+    public void Multi_page_first_except_header_is_empty_on_the_chapter_start_page()
+    {
+        // PR #198 review P1/P2 — string(name, first-except) end-to-end. On a page that STARTS with the
+        // assigning element, first == start, so first-except is the EMPTY string (the chapter title isn't
+        // repeated in the header on the page whose top already shows the heading); a pure continuation page
+        // suppresses it too (nothing changed). Plain string(title) DOES show "A" on both pages, proving the
+        // value is resolvable and first-except specifically suppresses it. (Pre-fix `start` was the empty
+        // entry on page 1, so first-except there wrongly showed "A".)
+        const string doc =
+            "<!DOCTYPE html><html><head><style>" +
+            "@page {{ @top-center {{ content: \"Z\" string(title{0}) }} }}" +
+            ".chap {{ string-set: title \"A\"; height: 50px }}" +
+            ".fill {{ height: 600px }}" +
+            "</style></head><body>" +
+            "<div class=\"chap\"></div><div class=\"fill\"></div><div class=\"fill\"></div>" +
+            "</body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var firstExcept = GlyphRuns(Latin1(HtmlPdf.Convert(string.Format(doc, ", first-except"), opts)));
+        var plainFirst = GlyphRuns(Latin1(HtmlPdf.Convert(string.Format(doc, ""), opts)));
+
+        Assert.Equal(2, firstExcept.Count);
+        Assert.All(firstExcept, r => Assert.Equal(4, r.Length));   // each header just "Z" — title suppressed (1 glyph)
+        Assert.Equal(2, plainFirst.Count);
+        Assert.All(plainFirst, r => Assert.Equal(8, r.Length));    // plain string(title) shows "ZA" on both pages
     }
 
     [Fact]

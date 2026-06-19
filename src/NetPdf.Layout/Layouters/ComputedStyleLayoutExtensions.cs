@@ -241,8 +241,10 @@ internal static class ComputedStyleLayoutExtensions
     /// <summary>text-align: justify cycle — whether the LAST line justifies too (CSS Text 3 §7.3) —
     /// i.e. <c>text-align: justify-all</c>(7). <c>justify</c>(5) leaves the last line start-aligned (the
     /// §7.3 exception); <c>justify-all</c> justifies every line including the last. Lets <c>TextPainter</c>
-    /// (and the inline-atomic placement) lift the last-line gate. A forced-break-terminated line stays
-    /// start-aligned even under justify-all (a documented first-cut approximation).</summary>
+    /// (and the inline-atomic placement) lift the last-line gate. Under justify-all an INTERNAL
+    /// forced-break (<c>&lt;br&gt;</c>) line justifies too (PR-3 task 9 — the §7.3 forced-break exception is
+    /// lifted); the gate is keyed on the block's genuine LAST line (<c>isLastLine</c>), NOT the
+    /// mandatory-break flag, since a block's final line also carries that flag.</summary>
     public static bool ReadInlineJustifyAll(this ComputedStyle s) =>
         s.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) is 7;
 

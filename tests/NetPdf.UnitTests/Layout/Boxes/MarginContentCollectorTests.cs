@@ -167,6 +167,71 @@ public sealed class MarginContentCollectorTests
     }
 
     [Fact]
+    public async Task CollectPerPage_start_uses_the_first_assignment_when_the_setter_begins_the_page()
+    {
+        // PR #198 review P1 — string(name, start) uses the page's FIRST assignment WHEN the assigning
+        // element is the FIRST thing rendered on the page (GCPM "the page starts with the setter"). #h sets
+        // title="B" and is the document-order-first rendered element on page 1, so start = "B" — NOT the
+        // (empty) carried entry value the pre-fix code always returned.
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><p id='p0'>x</p><h1 id='h'>B</h1><p id='p1'>y</p></body></html>",
+            "#h { string-set: title \"B\" }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#p0")!] = 0,
+            [doc.QuerySelector("#h")!] = 1,    // the setter is the first rendered element on page 1
+            [doc.QuerySelector("#p1")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("B", pages[1].NamedStringsStart?["title"]);   // page STARTS with the setter → start = "B"
+        Assert.Equal("B", pages[1].NamedStringsFirst?["title"]);   // first-on-page is also "B"
+    }
+
+    [Fact]
+    public async Task CollectPerPage_start_keeps_the_entry_value_for_a_mid_page_setter()
+    {
+        // PR #198 review P1 — a setter that is NOT the first element on the page changes `first`, not
+        // `start`. #p1a renders first on page 1, THEN #h sets title="B"; so string(title, start) is the page
+        // ENTRY value (here the empty carried value, since page 0 set nothing), while string(title) reads the
+        // mid-page "B".
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><p id='p0'>x</p><p id='p1a'>y</p><h2 id='h'>B</h2></body></html>",
+            "#h { string-set: title \"B\" }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#p0")!] = 0,
+            [doc.QuerySelector("#p1a")!] = 1,   // renders FIRST on page 1 (before the setter)
+            [doc.QuerySelector("#h")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Null(pages[1].NamedStringsStart);                   // entry value (empty) — the page didn't start with the setter
+        Assert.Equal("B", pages[1].NamedStringsFirst?["title"]);   // but first-on-page IS the mid-page "B"
+    }
+
+    [Fact]
+    public async Task CollectPerPage_start_carries_the_entry_value_onto_a_page_that_sets_nothing()
+    {
+        // PR #198 review P1 — on a page with NO assignment, string(title, start) is the value at the end of
+        // the prior page (the entry value), carried forward. #a sets title="A" and begins page 0; page 1
+        // sets nothing, so its start (and first) is the carried "A".
+        var (doc, resolved) = await ResolveAsync(
+            "<html><body><h1 id='a'>A</h1><p id='p0'>x</p><p id='p1'>y</p></body></html>",
+            "#a { string-set: title \"A\" }");
+        var map = new System.Collections.Generic.Dictionary<IElement, int>
+        {
+            [doc.QuerySelector("#a")!] = 0,
+            [doc.QuerySelector("#p0")!] = 0,
+            [doc.QuerySelector("#p1")!] = 1,
+        };
+        var pages = MarginContentCollector.CollectPerPage(doc.DocumentElement!, resolved, map, pageCount: 2);
+
+        Assert.Equal("A", pages[0].NamedStringsStart?["title"]);   // page 0 begins with the setter #a → "A"
+        Assert.Equal("A", pages[1].NamedStringsStart?["title"]);   // page 1 sets nothing → carried entry "A"
+    }
+
+    [Fact]
     public async Task CollectPerPage_buckets_running_elements_per_page_cycle5b()
     {
         // Cycle 5b — cross-page element() running content. Two `position: running(rh)` headings, each in

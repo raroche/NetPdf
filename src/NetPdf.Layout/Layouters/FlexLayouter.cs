@@ -581,6 +581,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var flexDirection = _rootBox.Style.ReadFlexDirection();
         var isColumn = flexDirection.IsFlexColumnDirection();
         var isReverse = flexDirection.IsFlexReverseDirection();
+        // Direction pipeline (PR 2 task 6) — for a ROW (inline-main-axis) container, `direction: rtl`
+        // reverses the physical main-axis direction (CSS Flexbox §5.1: row main-start = inline-start =
+        // RIGHT under RTL). So `row` under RTL lays out right-to-left — physically identical to
+        // `row-reverse` under LTR — and `row-reverse` under RTL flips back to left-to-right. RTL therefore
+        // XORs the reverse flag, which (re)routes the main-axis emission AND the flex-start/flex-end
+        // justify-content mapping through the SAME `isReverse` path. Column directions (block main axis)
+        // are unaffected by `direction` on the MAIN axis — the column cross-axis RTL case is a separate,
+        // still-deferred concern (docs/deferrals.md#flex-layouter-features).
+        if (!isColumn && _rootBox.Style.IsRtl())
+            isReverse = !isReverse;
         var (mainSizeProperty, crossSizeProperty) = GetAxisProperties(flexDirection);
 
         // Per Phase 3 Task 15 L6 — read flex-wrap. When the value is

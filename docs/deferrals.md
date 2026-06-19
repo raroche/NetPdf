@@ -1107,22 +1107,17 @@ grepping the ID).
     The cascade slot is lossless so pre-authored
     `align-content: baseline` declarations activate the new behavior
     without a re-author.
-  - Writing-mode and `direction` integration for `flex-direction`
-    axis mapping (CSS Flexbox §3.1): all 4 directions are honored
-    for LTR horizontal-tb but the axis mapping differs in RTL +
-    vertical writing modes. For example, `row` in RTL means right-
-    to-left along the inline axis (physically equivalent to LTR
-    `row-reverse`); `row` in vertical-rl swaps the main + cross
-    axes onto the block + inline directions of the rotated writing
-    mode. The shared direction pipeline now EXISTS
-    (`DirectionStyleExtensions.ReadDirection` / `IsRtl`, PR 2 task 4);
-    the remaining work (PR 2 task 6) is FlexLayouter ADOPTING it — read
-    the cascaded `direction` and flip the `row` main-axis mapping to
-    right-to-left under RTL (`writing-mode` vertical modes stay out of
-    scope). Pinned by the Skip'd
-    `L5_known_gap_rtl_row_should_flip_main_axis_pending_flex_direction_adoption`
-    test — when task 6 wires the adoption, that test should flip to
-    spec-correct expectations + this bullet should be removed.
+  - Writing-mode + column-cross-axis `direction` integration for
+    `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped** (task 6):
+    `flex-direction: row` / `row-reverse` under `direction: rtl` flip the
+    physical MAIN axis right-to-left (row+rtl ≡ row-reverse+ltr) —
+    FlexLayouter XORs its reverse flag via `DirectionStyleExtensions.IsRtl`,
+    pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Still
+    deferred**: the COLUMN cross-axis under RTL (a column's cross axis is the
+    inline axis, so RTL flips cross-start — `align-items`/`align-self`
+    anchors), and all VERTICAL writing modes (`writing-mode` is not yet a
+    registered property; `row` in vertical-rl swaps the main + cross axes
+    onto the rotated block + inline directions).
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
     declared `width`, ignoring item margins / padding / borders /

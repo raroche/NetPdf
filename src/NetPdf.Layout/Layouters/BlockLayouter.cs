@@ -7321,16 +7321,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 ? Math.Max(0.0, (contentInlineSize - lines[li].TotalAdvance) * alignFactor)
                 : 0.0;
             // Per-line justify plan (the SAME gate + math as TextPainter): the LAST line justifies only
-            // under justify-all; a non-last line justifies unless it's forced-break-terminated (an
-            // internal <br> stays start-aligned even under justify-all — a documented approximation).
-            // The last line of a block carries EndsWithMandatoryBreak (content end), so it's gated on
-            // justifyLastLine, NOT the break flag. justify and center/right are mutually exclusive
+            // under justify-all; a non-last line justifies unless it's forced-break-terminated (an internal
+            // <br>) — EXCEPT under justify-all, which justifies EVERY line including forced-break ones
+            // (PR-3 task 9). The last line of a block carries EndsWithMandatoryBreak (content end), so it's
+            // gated on justifyLastLine, NOT the break flag. justify and center/right are mutually exclusive
             // (alignFactor is 0 for justify), so lineAlignOffsetPx is 0 and justifyAccumPx shifts the atomic.
             var isLastLine = li == lines.Length - 1;
             var justifyExtraPerGapPx = 0.0;
             var justifyGapCount = 0;
             if (justifies && justifyConcatText is not null
-                && (isLastLine ? justifyLastLine : !lines[li].EndsWithMandatoryBreak))
+                && (isLastLine ? justifyLastLine : (!lines[li].EndsWithMandatoryBreak || justifyLastLine)))
             {
                 justifyGapCount = NetPdf.Layout.Inline.InlineJustify.InteriorGapCount(
                     lines[li], shapedRuns, justifyConcatText);

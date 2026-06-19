@@ -219,9 +219,10 @@ public sealed class CssContentListTests
 
     private static CssContentList.MarginContentContext Ctx(
         (string Key, string Value)[]? named = null, (string Key, string Value)[]? running = null,
-        (string Key, string Value)[]? namedFirst = null, (string Key, string Value)[]? runningFirst = null)
+        (string Key, string Value)[]? namedFirst = null, (string Key, string Value)[]? runningFirst = null,
+        (string Key, string Value)[]? namedStart = null)
     {
-        Dictionary<string, string>? n = null, r = null, nf = null, rf = null;
+        Dictionary<string, string>? n = null, r = null, nf = null, rf = null, ns = null;
         if (named is not null) { n = new(); foreach (var (k, v) in named) n[k] = v; }
         if (running is not null) { r = new(); foreach (var (k, v) in running) r[k] = v; }
         // Mirror the collector: a single assignment / element sets BOTH first + last. When a test supplies
@@ -229,7 +230,8 @@ public sealed class CssContentListTests
         // `first` default resolves for string() AND element().
         if (namedFirst is not null) { nf = new(); foreach (var (k, v) in namedFirst) nf[k] = v; } else nf = n;
         if (runningFirst is not null) { rf = new(); foreach (var (k, v) in runningFirst) rf[k] = v; } else rf = r;
-        return new CssContentList.MarginContentContext(n, r, nf, rf);
+        if (namedStart is not null) { ns = new(); foreach (var (k, v) in namedStart) ns[k] = v; }
+        return new CssContentList.MarginContentContext(n, r, nf, rf, NamedStringsStart: ns);
     }
 
     [Fact]
@@ -247,14 +249,39 @@ public sealed class CssContentListTests
     }
 
     [Theory]
-    [InlineData("string(t, start)")]         // cross-page → deferred (needs the multi-page driver)
-    [InlineData("string(t, first-except)")]  // niche GCPM keyword → deferred
-    [InlineData("string(t, bogus)")]         // unknown keyword
-    public async Task String_function_unsupported_position_keyword_bails(string raw)
+    [InlineData("string(t, bogus)")]     // unknown keyword → still unsupported
+    [InlineData("string(t, firstexcept)")]   // missing hyphen → not a known keyword
+    public async Task String_function_unknown_position_keyword_bails(string raw)
     {
         var host = await MakeHost("<p id='h'>x</p>", "h");
         var ctx = Ctx(named: new[] { ("t", "v") }, namedFirst: new[] { ("t", "v") });
         Assert.False(CssContentList.TryParse(raw, host, new CssContentList.PageCounters(1, 1), ctx, out _));
+    }
+
+    [Fact]
+    public async Task String_function_start_keyword_reads_the_page_entry_value()
+    {
+        // string(name, start) (PR-3 task 11) — the value at the START of the page (carried in from the prior
+        // page), DISTINCT from `first` (first-on-page-or-carried) and `last` (the exit value).
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(named: new[] { ("t", "last") }, namedFirst: new[] { ("t", "first") },
+            namedStart: new[] { ("t", "start") });
+        Assert.True(CssContentList.TryParse("string(t, start)", host, new CssContentList.PageCounters(1, 1), ctx, out var s));
+        Assert.Equal("start", s);
+    }
+
+    [Fact]
+    public async Task String_function_first_except_is_empty_when_first_equals_start()
+    {
+        // string(name, first-except) (PR-3 task 11) — = `first`, but the EMPTY string when first == start
+        // (so a running header doesn't repeat unchanged at a page boundary, GCPM §7.3).
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var same = Ctx(namedFirst: new[] { ("t", "v") }, namedStart: new[] { ("t", "v") });  // first == start
+        Assert.True(CssContentList.TryParse("string(t, first-except)", host, new CssContentList.PageCounters(1, 1), same, out var e));
+        Assert.Equal("", e);
+        var changed = Ctx(namedFirst: new[] { ("t", "new") }, namedStart: new[] { ("t", "old") });  // first != start
+        Assert.True(CssContentList.TryParse("string(t, first-except)", host, new CssContentList.PageCounters(1, 1), changed, out var c));
+        Assert.Equal("new", c);
     }
 
     [Fact]

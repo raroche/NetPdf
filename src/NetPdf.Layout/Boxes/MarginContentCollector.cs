@@ -27,9 +27,11 @@ namespace NetPdf.Layout.Boxes;
 /// <see cref="CssContentList.MarginContentContext"/> threaded to the margin-box painter.
 /// </para>
 /// <para>
-/// <b>First-cut scope (single page).</b> The CSS GCPM L3 cross-page "running" semantics (a named string
-/// / running element persists onto later pages until re-set) need the multi-page driver and are
-/// deferred. A <c>string-set</c> pair resolves literal strings + <c>attr()</c> + <c>content()</c> (via
+/// <b>Cross-page semantics are LIVE.</b> The CSS GCPM L3 carry-forward (a named string / running element
+/// persists onto later pages until re-set) is implemented by <see cref="CollectPerPage"/> — one context
+/// PER PAGE with first/last/start-on-page selection and entry-value carry-forward (cycles 5 / 5b);
+/// <see cref="Collect"/> is the single-page / whole-document case it short-circuits to. A
+/// <c>string-set</c> pair resolves literal strings + <c>attr()</c> + <c>content()</c> (via
 /// <see cref="CssContentList.TryParseStringSet(string, IElement, out string)"/>). <c>content()</c> (the element's own text — the common
 /// running-header form <c>h1 { string-set: title content() }</c>) works end-to-end: AngleSharp.Css DROPS a
 /// <c>string-set</c> whose value contains <c>content()</c> (an unknown function in an unknown property),
@@ -42,8 +44,10 @@ namespace NetPdf.Layout.Boxes;
 /// <c>text-align</c> (inherited values walked from ancestors, CSS-wide keywords resolved — post-PR-#151
 /// review P2 + post-PR-#153 review P2), plus the element's OWN (non-inherited) <c>background-color</c> +
 /// <c>border-*</c> + <c>padding-*</c> as the box decoration / box model (cascaded UNDER the box's own
-/// declarations) — all captured here by <see cref="CaptureOwnStyle"/>. The running element's nested BLOCK
-/// children (laid-out sub-boxes) stay deferred (deferrals.md).
+/// declarations) — all captured here by <see cref="CaptureOwnStyle"/>. A running element's nested BLOCK
+/// children render as STACKED segment lines (each its own style) with decorated container bands
+/// (segment-style / container-bands cycles); only real nested-block sub-box LAYOUT (separately laid-out
+/// boxes, per-segment <c>line-height</c>) stays deferred (deferrals.md).
 /// </para>
 /// </remarks>
 internal static class MarginContentCollector
@@ -134,16 +138,42 @@ internal static class MarginContentCollector
         }
 
         // Bucket the string-set assignments by the page their setting element laid out on (or its
-        // nearest rendered ancestor's page), preserving document order within a page.
-        List<(string Name, string Value)>[]? namedByPage = null;
+        // nearest rendered ancestor's page), preserving document order within a page. The setting
+        // ELEMENT is carried alongside so string(name, start) can test whether it begins the page
+        // (review P1) — see SetterBeginsPage below.
+        List<(string Name, string Value, IElement Element)>[]? namedByPage = null;
         if (c.NamedOrdered is not null)
         {
-            namedByPage = new List<(string Name, string Value)>[pageCount];
+            namedByPage = new List<(string Name, string Value, IElement Element)>[pageCount];
             foreach (var (element, name, value) in c.NamedOrdered)
             {
                 var p = ResolvePage(element, elementToPage);
                 if (p < 0 || p >= pageCount) continue;
-                (namedByPage[p] ??= new()).Add((name, value));
+                (namedByPage[p] ??= new()).Add((name, value, element));
+            }
+        }
+
+        // Document index (a single document-order walk) + the rendered elements grouped by page — for
+        // string(name, start)'s GCPM test (review P1): `start` uses a name's first assignment on the page
+        // ONLY when the assigning element BEGINS the page (otherwise it is the carried entry value). A
+        // setter begins the page when every element rendered on that page BEFORE it (in document order)
+        // is an ANCESTOR of it — so wrapping containers (<body>, a section) don't count as preceding
+        // content, but a sibling box above the setter does. A continuation (a container that started on an
+        // earlier page) maps to its FIRST page, so it isn't "on" this page and never blocks a top-of-page
+        // setter. Built only when there are named assignments to resolve start for (running element()
+        // start stays the carried entry — deferred).
+        Dictionary<IElement, int>? docIndex = null;
+        List<IElement>[]? elementsByPage = null;
+        if (namedByPage is not null)
+        {
+            docIndex = new Dictionary<IElement, int>();
+            var docCounter = 0;
+            AssignDocumentIndex(root, docIndex, ref docCounter);
+            elementsByPage = new List<IElement>[pageCount];
+            foreach (var (el, page) in elementToPage)
+            {
+                if (page < 0 || page >= pageCount) continue;
+                (elementsByPage[page] ??= new()).Add(el);
             }
         }
 
@@ -184,6 +214,32 @@ internal static class MarginContentCollector
         var carriedRunning = new Dictionary<string, RunningOccurrence>(StringComparer.Ordinal);
         for (var p = 0; p < pageCount; p++)
         {
+            // string(name, start) (PR-3 task 11 / review P1) — the page's ENTRY value (the carried map AS IT
+            // IS before this page's own assignments rebind it below), OVERRIDDEN per GCPM to a name's FIRST
+            // assignment on the page WHEN the assigning element is the first thing rendered on the page (the
+            // page "starts with" the setter). A mid-page setter changes `first`, not `start`; a page with no
+            // assignment keeps the carried entry value. first-except compares the first-on-page value against
+            // this start value (so a chapter-start page, where first == start, shows empty). element(name,
+            // start) stays the carried entry (deferred — the text path bails on it).
+            Dictionary<string, string> startNamed;
+            if (namedByPage?[p] is { Count: > 0 } startAssignments)
+            {
+                Dictionary<string, string>? startOverride = null;
+                var startSeen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var (name, value, element) in startAssignments)
+                {
+                    if (!startSeen.Add(name)) continue;       // only each name's FIRST assignment on the page
+                    if (SetterBeginsPage(element, p, elementsByPage, docIndex))   // the page STARTS with the setter
+                        (startOverride ??= new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal))[name] = value;
+                }
+                startNamed = startOverride ?? carriedNamed;   // no page-start setter → the entry value
+            }
+            else
+            {
+                startNamed = carriedNamed;   // no assignment → the entry value
+            }
+            var startRun = carriedRunning;
+
             // Named strings (cycle 5). Reuse the carried map when the page sets nothing (Copilot — avoid
             // the per-page Dictionary/HashSet allocations on pages with no assignments); copy-on-write only
             // when there are assignments to apply. The carried map is never mutated in place (a page that
@@ -194,7 +250,7 @@ internal static class MarginContentCollector
                 lastNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
                 firstNamed = new Dictionary<string, string>(carriedNamed, StringComparer.Ordinal);
                 var firstSet = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var (name, value) in assignments)
+                foreach (var (name, value, _) in assignments)
                 {
                     lastNamed[name] = value;                            // last-on-page wins
                     if (firstSet.Add(name)) firstNamed[name] = value;  // FIRST on page overrides carried
@@ -227,6 +283,7 @@ internal static class MarginContentCollector
 
             var (firstText, firstStyles, firstSegs, firstConts) = ProjectRunningOccurrences(firstRun);
             var (lastText, lastStyles, lastSegs, lastConts) = ProjectRunningOccurrences(lastRun);
+            var (startText, _, _, _) = ProjectRunningOccurrences(startRun);   // string/element(name, start)
 
             contexts[p] = new CssContentList.MarginContentContext(
                 NamedStrings: lastNamed.Count > 0 ? lastNamed : null,
@@ -238,7 +295,9 @@ internal static class MarginContentCollector
                 RunningElementSegments: lastSegs,
                 RunningElementSegmentsFirst: firstSegs,
                 RunningElementContainers: lastConts,
-                RunningElementContainersFirst: firstConts);
+                RunningElementContainersFirst: firstConts,
+                NamedStringsStart: startNamed.Count > 0 ? startNamed : null,
+                RunningElementsStart: startText);
         }
         return contexts;
     }
@@ -286,6 +345,41 @@ internal static class MarginContentCollector
             if (elementToPage.TryGetValue(el, out var p)) return p;
         }
         return -1;
+    }
+
+    /// <summary>Assign each element a monotonic DOCUMENT-ORDER index (depth-first, pre-order) into
+    /// <paramref name="docIndex"/> — used by <see cref="SetterBeginsPage"/> to order a string-set setter
+    /// against the other elements rendered on its page.</summary>
+    private static void AssignDocumentIndex(IElement element, Dictionary<IElement, int> docIndex, ref int counter)
+    {
+        docIndex[element] = counter++;
+        foreach (var child in element.Children)   // IElement children, document order
+            AssignDocumentIndex(child, docIndex, ref counter);
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="setter"/> (a string-set element) BEGINS
+    /// <paramref name="page"/> — i.e. every element rendered on that page in document order BEFORE it is an
+    /// ANCESTOR of it (string(name, start)'s GCPM "the page starts with the setter" test, review P1). A
+    /// wrapping container (<c>&lt;body&gt;</c>, a section) that merely contains the setter does NOT count as
+    /// preceding content; a SIBLING box laid out above the setter does (so a mid-page setter fails this).
+    /// Continuations (a container that started on an earlier page) are mapped to their first page, so they
+    /// aren't in <paramref name="elementsByPage"/>[<paramref name="page"/>] and never block a top-of-page
+    /// setter.</summary>
+    private static bool SetterBeginsPage(
+        IElement setter, int page, List<IElement>[]? elementsByPage, Dictionary<IElement, int>? docIndex)
+    {
+        if (elementsByPage is null || docIndex is null) return false;
+        if (!docIndex.TryGetValue(setter, out var setterIdx)) return false;
+        if (elementsByPage[page] is not { } pageElements) return true;   // setter is the only thing on the page
+        foreach (var x in pageElements)
+        {
+            if (ReferenceEquals(x, setter)) continue;
+            // A non-ancestor element rendered before the setter on this page ⇒ the page does NOT start
+            // with the setter. (IsDescendantOf(setter, x) ⇔ x is an ancestor of the setter.)
+            if (docIndex.TryGetValue(x, out var xi) && xi < setterIdx && !IsDescendantOf(setter, x))
+                return false;
+        }
+        return true;
     }
 
     /// <summary>Walk the document in DOCUMENT ORDER assigning each element a monotonic index, recording the

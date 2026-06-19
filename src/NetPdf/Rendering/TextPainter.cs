@@ -374,18 +374,18 @@ internal static class TextPainter
                     : null;
 
             // text-align: justify (CSS Text 3 §7.3) — the LAST line justifies only under justify-all
-            // (JustifyLastLine); a non-last line justifies unless it's forced-break-terminated (an
-            // internal <br> stays start-aligned even under justify-all — a documented approximation). The
-            // LAST line of a block carries EndsWithMandatoryBreak (content end), so it's gated on
-            // JustifyLastLine, NOT the break flag. `gapCount` is the interior word-separator-space count
-            // (trailing spaces sort last → excluded; an inline ATOMIC is advance-only, not an opportunity —
-            // EmitJustifiedLine just advances past it, and the layout shifts the atomic by the same gaps);
-            // an overflowing line (free ≤ 0) isn't squeezed.
+            // (JustifyLastLine); a non-last line justifies unless it's forced-break-terminated (an internal
+            // <br>) — EXCEPT under justify-all, which justifies EVERY line including forced-break ones
+            // (PR-3 task 9; was a documented approximation). The LAST line of a block carries
+            // EndsWithMandatoryBreak (content end), so it's gated on JustifyLastLine, NOT the break flag.
+            // `gapCount` is the interior word-separator-space count (trailing spaces sort last → excluded;
+            // an inline ATOMIC is advance-only, not an opportunity — EmitJustifiedLine just advances past
+            // it, and the layout shifts the atomic by the same gaps); an overflowing line (free ≤ 0) isn't squeezed.
             var isLastLine = li == lines.Length - 1;
             var justifyExtraPerGapPx = 0.0;
             var justifyGapCount = 0;
             if (fragment.JustifyLines && concatText is not null
-                && (isLastLine ? fragment.JustifyLastLine : !line.EndsWithMandatoryBreak)
+                && (isLastLine ? fragment.JustifyLastLine : (!line.EndsWithMandatoryBreak || fragment.JustifyLastLine))
                 && (justifyGapCount = InlineJustify.InteriorGapCount(line, shapedRuns, concatText)) > 0)
             {
                 var freePx = contentInlineSizePx - insetLeftPx - insetRightPx - line.TotalAdvance;

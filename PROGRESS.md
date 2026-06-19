@@ -2,7 +2,7 @@
 
 > **Current state (2026-06-18):** Phase 3's layout + pagination **engine is feature-complete and multi-page rendering is live**. What's left to *finish* Phase 3 is (a) wiring W3C conformance **measurement**, (b) a curated **feature/polish backlog**, (c) **confirming** the perf/memory gates, and (d) the **`0.7.0-beta` release**. The recommended next step is **PR 1 — Conformance measurement** (see the roadmap).
 >
-> Active branch: `phase3-rtl-flex-vertalign-lineheight` — tasks 6–8 (RTL flex main-axis flip · line-edge `vertical-align` line growth · `line-height` length/number/% cascade wiring). PR 2 (direction/bidi, tasks 4–6) is now COMPLETE. PR 1 (conformance) still awaits Roland's approach decision; PR-3 task 9 (inline-block per-run baseline + justify-all on `<br>`) is the next remaining item. `git log --oneline -1` shows the exact commit.
+> Active branch: `phase3-tasks-9-10-11` — tasks 9 (justify-all on internal `<br>` + inline-block last-line per-run baseline) · 10 (running-element nested block layout — confirmed already done via the segment-style/container-bands cycles; deferral corrected) · 11 (`string(name, start)`/`first-except`; compound `@page` was already live). PRs 2–3 + parts of PR 4 now COMPLETE. PR 1 (conformance) still awaits Roland's approach decision. `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-19):** 7103 unit / 4 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-19):** 7116 unit / 4 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -65,12 +65,12 @@ Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order.
 ### PR 3 — Inline-text polish  [feature]
 7. ✅ Line-edge `vertical-align` line growth — a tall `top/bottom/middle/text-*` run now GROWS its line (`InlineVerticalAlign.TextLineEdgeGrowth`); the painter follows via the shared per-line metrics.
 8. ✅ `line-height` cascade wiring — `LineHeightResolver` + `ReadLineHeightPx` resolve the full `normal | <number> | <length> | <percentage>` grammar (was UNWIRED → silently font-size × 1.2). Residual: `%` inherit-as-length (`line-height-percentage-inheritance` deferral).
-9. inline-block per-run baseline metrics + justify-all on internal `<br>` lines — **remaining** (the next PR-3 task).
+9. ✅ inline-block per-run baseline metrics (`BufferingMeasureSink.DeepestLastLineRunStyle` — deepest last-line run drives the descent) + justify-all on internal `<br>` lines (lifts the §7.3 forced-break exception under justify-all).
 
 ### PR 4 — Paged-media completion  [feature]
-10. Running-element real nested **block** layout (sub-boxes, not flattened text).
-11. `string(name, start)` / `first-except` + compound `@page` selectors (e.g. `chapter:first`).
-12. Page-margin box overflow + container-relative units in margin-box / running content.
+10. ✅ Running-element nested **block** layout — already rendered via the segment-style + container-bands cycles (stacked lines per block child + wrapping + per-block own-style + decorated container bands); confirmed + deferral corrected. Residual: inline-level styling WITHIN a leaf block.
+11. ✅ `string(name, start)` / `first-except` (the page entry value; first-except empty when first == start) + compound `@page` selectors (`chapter:first` etc. — already live in the multi-page path; stale roadmap item). element() start/first-except stays deferred.
+12. Page-margin box overflow + container-relative units in margin-box / running content — **remaining** (next). Plus `margin-box-line-height` (deferral) + flex COLUMN cross-axis RTL.
 
 ### PR 5 — Perf + memory gates  [criteria 7–8]
 13. 3-page invoice ≤ 200 ms p50 benchmark gate (confirm it runs in CI).

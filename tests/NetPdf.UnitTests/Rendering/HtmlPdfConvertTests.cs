@@ -885,6 +885,29 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Justify_all_justifies_an_internal_br_terminated_line()
+    {
+        // PR-3 task 9 (CSS Text 3 §7.3) — `justify-all` justifies EVERY line including a forced-break
+        // (<br>)-terminated one; plain `justify` leaves a <br>-terminated line start-aligned (the §7.3
+        // exception, like the last line). Here the first line "A A A" ends in a <br> (an INTERNAL forced
+        // break, NOT the last line — "Z" is), so its words spread to the right edge only under justify-all.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        static string Doc(string align) =>
+            "<!DOCTYPE html><html><body><div style=\"width:600px;text-align:" + align + "\">A A A<br>Z</div></body></html>";
+
+        var justify = Latin1(HtmlPdf.Convert(Doc("justify"), opts));
+        var justifyAll = Latin1(HtmlPdf.Convert(Doc("justify-all"), opts));
+
+        // Under plain justify the <br> line stays start-aligned (§7.3 forced-break exception); under
+        // justify-all it justifies — so its words split into per-word Td segments AND its last word is
+        // pushed toward the right edge.
+        Assert.True(TdCount(justifyAll) > TdCount(justify),
+            $"justify-all should split the internal <br> line into per-word segments: all={TdCount(justifyAll)} justify={TdCount(justify)}");
+        Assert.True(MaxTdX(justifyAll) > MaxTdX(justify) + 5.0,
+            $"justify-all should push the <br> line's last word right: all={MaxTdX(justifyAll)} justify={MaxTdX(justify)}");
+    }
+
+    [Fact]
     public void Justify_keeps_text_on_the_layout_pinned_baseline()
     {
         // text-align: justify pinned-baseline (post-PR-#195 review P1) — when a justified line carries a
@@ -942,6 +965,49 @@ public sealed class HtmlPdfConvertTests
             + "<div style=\"line-height:14px\">x</div></span></div></body></html>", opts))).Y;
 
         Assert.Equal(SurroundingTextY("14px"), SurroundingTextY("40px"), precision: 2);
+    }
+
+    [Fact]
+    public void Inline_block_last_line_baseline_reflects_a_font_overriding_span()
+    {
+        // PR-3 task 9 — an inline-block's baseline comes from its LAST in-flow line box (CSS 2.2 §10.8.1),
+        // so a SPAN that overrides the font (a larger font-size ≈ a deeper descender) ON the LAST line
+        // deepens the descent and shifts the baseline — and the surrounding "A" aligned to it. Moving the
+        // SAME 40px span from an earlier line to the LAST line therefore changes the result:
+        // BufferingMeasureSink now scans the last line's DEEPEST run instead of using the box font only.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double SurroundingY(string ibContent) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block\">" + ibContent
+            + "</span></div></body></html>", opts))).Y;
+
+        // Same glyphs; only WHICH line carries the 40px span differs (line 1 vs the LAST line).
+        var deepFirst = SurroundingY("<span style=\"font-size:40px\">y</span><br>x");   // 40px on line 1, 16px last
+        var deepLast = SurroundingY("x<br><span style=\"font-size:40px\">y</span>");    // 16px line 1, 40px last
+
+        Assert.True(System.Math.Abs(deepFirst - deepLast) > 1.0,
+            $"the LAST line's deepest font should drive the inline-block baseline: deepFirst={deepFirst} deepLast={deepLast}");
+    }
+
+    [Fact]
+    public void Inline_block_last_line_baseline_reflects_a_line_height_overriding_span()
+    {
+        // PR #198 review P2 — the last-line deepest-run selection keys on USED DESCENT (line-height AND
+        // font-size), not font-size alone: a SAME-font span with a much larger line-height on the LAST line
+        // deepens the §10.8.1 descent (more half-leading below the baseline), shifting the inline-block's
+        // baseline and the surrounding "A" aligned to it. Moving the same line-height:80px span from line 1
+        // to the LAST line therefore changes the result — font-size-only selection (the pre-fix behavior)
+        // missed a same-font, larger-line-height run.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double SurroundingY(string ibContent) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block\">" + ibContent
+            + "</span></div></body></html>", opts))).Y;
+
+        // Same glyphs + same font-size; only WHICH line carries the line-height:80px span differs.
+        var tallFirst = SurroundingY("<span style=\"line-height:80px\">y</span><br>x");  // tall lh on line 1
+        var tallLast = SurroundingY("x<br><span style=\"line-height:80px\">y</span>");   // tall lh on the LAST line
+
+        Assert.True(System.Math.Abs(tallFirst - tallLast) > 1.0,
+            $"the LAST line's used line-height should drive the inline-block baseline: tallFirst={tallFirst} tallLast={tallLast}");
     }
 
     [Fact]
@@ -2041,6 +2107,59 @@ public sealed class HtmlPdfConvertTests
         var runs = GlyphRuns(Latin1(result.Pdf));
         Assert.Equal(2, runs.Count);            // one header per page
         Assert.NotEqual(runs[0], runs[1]);       // page 1 "AA" (rh=A) ≠ page 2 "AB" (rh=B)
+    }
+
+    [Fact]
+    public void Multi_page_string_start_uses_the_page_start_setter_and_carries_forward()
+    {
+        // PR #198 review P1/P2 — string(name, start) end-to-end across pages. The .chap div sets title="A"
+        // and is the FIRST element on page 1, so `start` there is "A" (the page STARTS with the setter — not
+        // the empty entry value the pre-fix code returned); page 2 has no setter, so its `start` is the
+        // carried "A". The header content "Z" string(title, start) is therefore "ZA" (2 glyphs) on BOTH
+        // pages. (Pre-fix, page 1's start was the empty entry → "Z", so the two headers differed.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @top-center { content: \"Z\" string(title, start) } }" +
+            ".chap { string-set: title \"A\"; height: 50px }" +
+            ".fill { height: 600px }" +
+            "</style></head><body>" +
+            "<div class=\"chap\"></div><div class=\"fill\"></div><div class=\"fill\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(2, result.PageCount);
+        var runs = GlyphRuns(Latin1(result.Pdf));
+        Assert.Equal(2, runs.Count);              // one header per page
+        Assert.Equal(8, runs[0].Length);          // page 1 "ZA" — start picks up the page-start setter (2 glyphs × 4 hex)
+        Assert.Equal(runs[0], runs[1]);           // page 2 carries the same start value → identical header
+    }
+
+    [Fact]
+    public void Multi_page_first_except_header_is_empty_on_the_chapter_start_page()
+    {
+        // PR #198 review P1/P2 — string(name, first-except) end-to-end. On a page that STARTS with the
+        // assigning element, first == start, so first-except is the EMPTY string (the chapter title isn't
+        // repeated in the header on the page whose top already shows the heading); a pure continuation page
+        // suppresses it too (nothing changed). Plain string(title) DOES show "A" on both pages, proving the
+        // value is resolvable and first-except specifically suppresses it. (Pre-fix `start` was the empty
+        // entry on page 1, so first-except there wrongly showed "A".)
+        const string doc =
+            "<!DOCTYPE html><html><head><style>" +
+            "@page {{ @top-center {{ content: \"Z\" string(title{0}) }} }}" +
+            ".chap {{ string-set: title \"A\"; height: 50px }}" +
+            ".fill {{ height: 600px }}" +
+            "</style></head><body>" +
+            "<div class=\"chap\"></div><div class=\"fill\"></div><div class=\"fill\"></div>" +
+            "</body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var firstExcept = GlyphRuns(Latin1(HtmlPdf.Convert(string.Format(doc, ", first-except"), opts)));
+        var plainFirst = GlyphRuns(Latin1(HtmlPdf.Convert(string.Format(doc, ""), opts)));
+
+        Assert.Equal(2, firstExcept.Count);
+        Assert.All(firstExcept, r => Assert.Equal(4, r.Length));   // each header just "Z" — title suppressed (1 glyph)
+        Assert.Equal(2, plainFirst.Count);
+        Assert.All(plainFirst, r => Assert.Equal(8, r.Length));    // plain string(title) shows "ZA" on both pages
     }
 
     [Fact]
@@ -3552,6 +3671,28 @@ public sealed class HtmlPdfConvertTests
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         Assert.Equal(6, TdCount(Latin1(result.Pdf)));          // nothing truncated
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
+    [Fact]
+    public void Running_element_with_block_children_renders_stacked_nested_lines_not_flattened()
+    {
+        // PR-3 task 10 — a `position: running()` element with BLOCK-level children renders its children as
+        // SEPARATE STACKED lines (real nested block layout via the segment-style + container-bands cycles),
+        // NOT one flattened text line. Three block children → three Td lines, each laid out on its own
+        // baseline; long text within a block also wraps (post-PR-#154). A nested container's OWN decoration
+        // (a background band) paints as a rect over its descendant lines — the structure, not flat text.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><div style=\"background-color:red\">P</div><div>Q</div><div>R</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.Equal(3, TdCount(pdf));               // 3 block children → 3 stacked lines (not 1 flattened)
+        // The decorated child paints a FILLED red background band (nested decoration). Assert the red fill
+        // color AND a rectangle FILL (`re f`), not a bare `re` — a clip-path emits `re W n`, so `re` alone
+        // wouldn't prove the band actually painted (Copilot review).
+        Assert.Contains("1 0 0 rg", pdf);            // red fill color (background-color:red)
+        Assert.Contains("re f", pdf);                // a filled rectangle — the band, not a clip-path `re W n`
     }
 
     [Fact]

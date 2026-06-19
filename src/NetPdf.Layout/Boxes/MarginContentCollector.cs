@@ -184,6 +184,12 @@ internal static class MarginContentCollector
         var carriedRunning = new Dictionary<string, RunningOccurrence>(StringComparer.Ordinal);
         for (var p = 0; p < pageCount; p++)
         {
+            // string(name, start) / element(name, start) (PR-3 task 11) — the page's ENTRY value: the carried
+            // maps AS THEY ARE before this page's own assignments (re)bind them below. For page 0 these are the
+            // initial empty maps (no entry value). first-except compares the first-on-page value against this.
+            var startNamed = carriedNamed;
+            var startRun = carriedRunning;
+
             // Named strings (cycle 5). Reuse the carried map when the page sets nothing (Copilot — avoid
             // the per-page Dictionary/HashSet allocations on pages with no assignments); copy-on-write only
             // when there are assignments to apply. The carried map is never mutated in place (a page that
@@ -227,6 +233,7 @@ internal static class MarginContentCollector
 
             var (firstText, firstStyles, firstSegs, firstConts) = ProjectRunningOccurrences(firstRun);
             var (lastText, lastStyles, lastSegs, lastConts) = ProjectRunningOccurrences(lastRun);
+            var (startText, _, _, _) = ProjectRunningOccurrences(startRun);   // string/element(name, start)
 
             contexts[p] = new CssContentList.MarginContentContext(
                 NamedStrings: lastNamed.Count > 0 ? lastNamed : null,
@@ -238,7 +245,9 @@ internal static class MarginContentCollector
                 RunningElementSegments: lastSegs,
                 RunningElementSegmentsFirst: firstSegs,
                 RunningElementContainers: lastConts,
-                RunningElementContainersFirst: firstConts);
+                RunningElementContainersFirst: firstConts,
+                NamedStringsStart: startNamed.Count > 0 ? startNamed : null,
+                RunningElementsStart: startText);
         }
         return contexts;
     }

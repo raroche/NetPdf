@@ -93,8 +93,10 @@ internal static class CssContentList
     /// FIRST assignment / running element (<c>string(name)</c> default + <c>string(name, first)</c>;
     /// <c>element(name)</c> default + <c>element(name, first)</c>); <see cref="NamedStrings"/> /
     /// <see cref="RunningElements"/> hold the LAST (the exit value — <c>string(name, last)</c> /
-    /// <c>element(name, last)</c>). The <c>start</c> / <c>first-except</c> keywords need cross-page context
-    /// and stay deferred.</para></summary>
+    /// <c>element(name, last)</c>); <see cref="NamedStringsStart"/> / <see cref="RunningElementsStart"/> hold
+    /// the page's ENTRY value (<c>string(name, start)</c>; <c>first-except</c> = first, empty when first ==
+    /// start). For <c>string()</c> all four positions resolve (PR-3 task 11); for <c>element()</c> the rich
+    /// render supports first/last and <c>start</c>/<c>first-except</c> stay deferred (occurrence-keyed).</para></summary>
     public readonly record struct MarginContentContext(
         IReadOnlyDictionary<string, string>? NamedStrings,
         IReadOnlyDictionary<string, string>? RunningElements,
@@ -116,7 +118,13 @@ internal static class CssContentList
         // segment range — PRE-order (outer before inner), so paint order nests correctly. First +
         // last occurrence, lockstep like the segments.
         IReadOnlyDictionary<string, IReadOnlyList<RunningContainer>>? RunningElementContainers = null,
-        IReadOnlyDictionary<string, IReadOnlyList<RunningContainer>>? RunningElementContainersFirst = null);
+        IReadOnlyDictionary<string, IReadOnlyList<RunningContainer>>? RunningElementContainersFirst = null,
+        // string(name, start) / element(name, start) — the page's ENTRY value (the named string carried
+        // IN from the prior page, before this page's own assignments). first-except compares first vs start.
+        // Distinct from First (first-on-page-or-carried) + Last (exit). The cross-page state is the
+        // collector's per-page carried map captured at the start of each page.
+        IReadOnlyDictionary<string, string>? NamedStringsStart = null,
+        IReadOnlyDictionary<string, string>? RunningElementsStart = null);
 
     /// <summary>One nested CONTAINER of a running element's content (container-bands cycle): an
     /// intermediate block-level element (between the running root and the leaf lines) carrying its
@@ -290,20 +298,20 @@ internal static class CssContentList
                 return false;
             }
 
-            // string(name [, first|last]) — Task 22 (+ the position keyword). Pulls the named string set
-            // by `string-set` (collected during the document walk). Only valid with a margin context
-            // (page-margin boxes); a missing/undefined name resolves to the empty string per CSS GCPM L3
-            // (no diagnostic). `first` (AND the no-keyword DEFAULT, per GCPM §7.3) → the FIRST assignment on
-            // the page; `last` → the exit value. The cross-page `start` / `first-except` keywords bail to
-            // unsupported (need the multi-page driver).
+            // string(name [, first|last|start|first-except]) — Task 22 + the position keyword (PR-3 task 11).
+            // Pulls the named string set by `string-set` (collected during the document walk). Only valid
+            // with a margin context (page-margin boxes); a missing/undefined name resolves to the empty
+            // string per CSS GCPM L3 (no diagnostic). `first` (AND the no-keyword DEFAULT, per GCPM §7.3) →
+            // the FIRST assignment on the page; `last` → the exit value; `start` → the page's ENTRY value;
+            // `first-except` → first, but empty when first == start. (start / first-except use the collector's
+            // per-page carried map.)
             if (StartsWithCaseInsensitive(span, i, "string("))
             {
                 var tokenStart = i;
                 i += "string(".Length;
-                if (marginContext is { } mcStr && TryReadPositionedFunction(span, ref i, out var stringName, out var first))
+                if (marginContext is { } mcStr && TryReadPositionedFunction(span, ref i, out var stringName, out var stringPos))
                 {
-                    var dict = first ? mcStr.NamedStringsFirst : mcStr.NamedStrings;
-                    var value = dict is { } ns && ns.TryGetValue(stringName, out var v) ? v : string.Empty;
+                    var value = ResolvePositionedString(stringPos, mcStr, stringName);
                     if (!TryAppendBounded(sb, value, sink, raw, location)) return false;
                     continue;
                 }
@@ -324,13 +332,16 @@ internal static class CssContentList
             {
                 var tokenStart = i;
                 i += "element(".Length;
-                if (marginContext is { } mcEl && TryReadPositionedFunction(span, ref i, out var elementName, out var elFirst))
+                if (marginContext is { } mcEl && TryReadPositionedFunction(span, ref i, out var elementName, out var elementPos)
+                    && elementPos is StringPosition.First or StringPosition.Last)
                 {
-                    var dict = elFirst ? mcEl.RunningElementsFirst : mcEl.RunningElements;
+                    var dict = elementPos == StringPosition.First ? mcEl.RunningElementsFirst : mcEl.RunningElements;
                     var value = dict is { } re && re.TryGetValue(elementName, out var v) ? v : string.Empty;
                     if (!TryAppendBounded(sb, value, sink, raw, location)) return false;
                     continue;
                 }
+                // element(name, start) / first-except stay deferred (the rich running-element rendering is
+                // occurrence-keyed) — bail to unsupported, as before.
                 EmitContentFunctionUnsupported(sink, span, tokenStart, raw, location);
                 return false;
             }
@@ -649,17 +660,18 @@ internal static class CssContentList
         return true;
     }
 
-    /// <summary>Parse a <c>string(…)</c> / <c>element(…)</c> argument list (the opening <c>(</c> already
-    /// consumed): a <c>&lt;custom-ident&gt;</c> + an optional GCPM position keyword. <paramref name="first"/>
-    /// is set <see langword="true"/> for <c>first</c> AND for NO keyword — per CSS GCPM L3 §7.3/§7.4
-    /// <c>first</c> is the DEFAULT (the first occurrence on the page) for both functions — and
-    /// <see langword="false"/> for an explicit <c>last</c> (the exit value). Returns <see langword="false"/>
-    /// (→ the caller bails to unsupported) for an empty/invalid name, the cross-page <c>start</c> /
-    /// <c>first-except</c> keywords (deferred), an unknown keyword, or malformed syntax.</summary>
-    private static bool TryReadPositionedFunction(ReadOnlySpan<char> span, ref int i, out string name, out bool first)
+    /// <summary>The position keyword of a <c>string()</c> / <c>element()</c> function (CSS GCPM §7.3/§7.4):
+    /// <c>first</c> (the default) / <c>last</c> / <c>start</c> (the page's ENTRY value, carried in from the
+    /// prior page before this page's assignments) / <c>first-except</c> (the first value, but the empty
+    /// string when it equals the start value — so a running header doesn't repeat unchanged at a page
+    /// boundary).</summary>
+    internal enum StringPosition { First, Last, Start, FirstExcept }
+
+    private static bool TryReadPositionedFunction(
+        ReadOnlySpan<char> span, ref int i, out string name, out StringPosition position)
     {
         name = string.Empty;
-        first = true; // GCPM default position keyword is `first`.
+        position = StringPosition.First; // GCPM default position keyword is `first`.
         i = SkipWhitespace(span, i);
         var start = i;
         while (i < span.Length)
@@ -687,15 +699,36 @@ internal static class CssContentList
                 i++;
             }
             var kw = span[kwStart..i];
-            if (kw.Equals("first", StringComparison.OrdinalIgnoreCase)) first = true;
-            else if (kw.Equals("last", StringComparison.OrdinalIgnoreCase)) first = false;
-            else return false; // start / first-except (cross-page) or unknown → bail
+            if (kw.Equals("first", StringComparison.OrdinalIgnoreCase)) position = StringPosition.First;
+            else if (kw.Equals("last", StringComparison.OrdinalIgnoreCase)) position = StringPosition.Last;
+            else if (kw.Equals("start", StringComparison.OrdinalIgnoreCase)) position = StringPosition.Start;
+            else if (kw.Equals("first-except", StringComparison.OrdinalIgnoreCase)) position = StringPosition.FirstExcept;
+            else return false; // unknown keyword → bail
             i = SkipWhitespace(span, i);
         }
 
         if (i >= span.Length || span[i] != ')') return false;
         i++; // consume ')'
         return true;
+    }
+
+    /// <summary>Resolve a positioned <c>string()</c> value (PR-3 task 11) against the page's margin context:
+    /// <c>First</c> (the first-on-page-or-carried) / <c>Last</c> (the exit) / <c>Start</c> (the page's ENTRY
+    /// value) / <c>FirstExcept</c> (= First, but the empty string when First equals Start — so a running
+    /// header doesn't repeat unchanged at a page boundary, GCPM §7.3). A missing name → empty.</summary>
+    private static string ResolvePositionedString(StringPosition position, in MarginContentContext mc, string name)
+    {
+        static string Get(IReadOnlyDictionary<string, string>? d, string n)
+            => d is { } dd && dd.TryGetValue(n, out var v) ? v : string.Empty;
+        return position switch
+        {
+            StringPosition.Last => Get(mc.NamedStrings, name),
+            StringPosition.Start => Get(mc.NamedStringsStart, name),
+            StringPosition.FirstExcept =>
+                Get(mc.NamedStringsFirst, name) is var f && f == Get(mc.NamedStringsStart, name)
+                    ? string.Empty : f,
+            _ => Get(mc.NamedStringsFirst, name),   // First / the no-keyword default
+        };
     }
 
     /// <summary>When <paramref name="raw"/> is a STANDALONE <c>element(&lt;name&gt; [, first | last])</c>
@@ -712,7 +745,11 @@ internal static class CssContentList
         var span = raw.AsSpan().Trim();
         if (!StartsWithCaseInsensitive(span, 0, "element(")) return false;
         var i = "element(".Length;
-        if (!TryReadPositionedFunction(span, ref i, out name, out first)) return false;
+        if (!TryReadPositionedFunction(span, ref i, out name, out var position)) return false;
+        // The rich (own-style) running-element render supports first / last only; start / first-except are
+        // occurrence-keyed and stay deferred — treat them as non-standalone so the text path bails (as before).
+        if (position is not (StringPosition.First or StringPosition.Last)) return false;
+        first = position == StringPosition.First;
         // STANDALONE — only whitespace may follow the close-paren (a mixed list keeps the box's style).
         while (i < span.Length)
         {

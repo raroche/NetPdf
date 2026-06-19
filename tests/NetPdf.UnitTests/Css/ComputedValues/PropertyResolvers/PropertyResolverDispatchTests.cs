@@ -94,15 +94,15 @@ public sealed class PropertyResolverDispatchTests
     [Fact]
     public void Unsupported_PropertyType_returns_UnsupportedUnvalidated_with_raw_text()
     {
-        // Per the hardening review: still-unwired cycle-2 PropertyTypes (LineHeight
+        // Per the hardening review: still-unwired cycle-2 PropertyTypes (Content
         // here) surface as UnsupportedUnvalidated — distinct from Deferred which
         // means "validated but needs context". The raw text rides along for the
-        // future resolver to pick up. (font-family resolved as of cycle 4.)
+        // future resolver to pick up. (line-height resolves as of the line-height cycle.)
         var sink = new CapturingSink();
-        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "1.5", sink);
+        var result = PropertyResolverDispatch.Resolve(PropertyId.Content, "open-quote", sink);
         Assert.True(result.IsUnsupportedUnvalidated);
         Assert.False(result.IsDeferred);
-        Assert.Equal("1.5", result.RawText);
+        Assert.Equal("open-quote", result.RawText);
         Assert.Empty(sink.Diagnostics);
     }
 

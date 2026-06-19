@@ -6765,10 +6765,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             PaddingBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, containingInlinePx),
             DeclaredWidthPx: block.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx),
             // line-height: read from the block's own style (sub-cycle
-            // 1 simple rule — uniform across the block). Sub-cycle 2
-            // will read per-TextRun + apply the CSS Text L3 strut
-            // rule (max of constituent runs' line-heights).
-            LineHeightOverridePx: block.Style.ReadLengthPxOrZero(PropertyId.LineHeight));
+            // 1 simple rule — uniform across the block). The line-height
+            // cycle reads the full grammar (normal/number/length/%) via
+            // ReadLineHeightPx — a unitless number multiplies the block's
+            // own font-size; 0 = `normal` → the font-size × 1.2 fallback.
+            LineHeightOverridePx: block.Style.ReadLineHeightPx(
+                block.Style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16)));
     }
 
     /// <summary>Whether the box DECLARES an explicit <c>width</c> — a LengthPx or Percentage
@@ -7434,8 +7436,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// element's own line-height, not the parent's or the grown line box).</summary>
     private static double OwnLineHeightPx(ComputedStyle style)
     {
-        var declared = style.ReadLengthPxOrZero(PropertyId.LineHeight);
-        return declared > 0 ? declared : style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * 1.2;
+        var fontSizePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        var declared = style.ReadLineHeightPx(fontSizePx);   // line-height cycle — number/length/% honored
+        return declared > 0 ? declared : fontSizePx * 1.2;
     }
 
     /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — an atomic's extent ABOVE / BELOW the line

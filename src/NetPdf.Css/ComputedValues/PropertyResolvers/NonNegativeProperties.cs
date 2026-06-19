@@ -86,6 +86,10 @@ internal static class NonNegativeProperties
         // §3.4). FontSizeResolver delegates absolute <length> forms to
         // LengthResolver, which consults this set to reject a negative size.
         PropertyId.FontSize,
+        // line-height cycle — line-height is non-negative (CSS Inline 3 §4.2:
+        // negative values are invalid). LineHeightResolver rejects a negative
+        // <number> directly; a negative <length> is rejected via this set.
+        PropertyId.LineHeight,
         // Per the margin-box-border-radius cycle (PR #174 review P2) — a border-radius
         // is non-negative (CSS Backgrounds & Borders 3 §6.1: negative values are
         // invalid), so a negative corner radius invalidates cleanly + falls back to the

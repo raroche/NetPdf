@@ -129,7 +129,7 @@ internal static class InlineVerticalAlign
     /// vertical-align <c>%</c> (CSS 2.2 §10.8.1).</summary>
     public static double OwnLineHeightPx(ComputedStyle runStyle, double fontSizePx)
     {
-        var declared = runStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
+        var declared = runStyle.ReadLineHeightPx(fontSizePx);   // line-height cycle — number/length/% honored
         return declared > 0 ? declared : fontSizePx * 1.2;
     }
 }

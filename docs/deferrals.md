@@ -221,6 +221,36 @@ grepping the ID).
 
 ---
 
+## line-height-percentage-inheritance
+
+- **ID** — `line-height-percentage-inheritance`
+- **Status** — `approximated`.
+- **Behavior** — A `<percentage>` `line-height` (e.g. `line-height: 150%`) resolves to a
+  `Percentage` slot, and `ReadLineHeightPx` computes the used px at READ time as % × the
+  READING element's font-size. Per CSS Inline 3 §4.2 the COMPUTED value should be a
+  LENGTH (% × the DECLARING element's font-size), and that length inherits — so a child
+  with a DIFFERENT font-size that inherits a percentage line-height should keep the
+  parent's computed length, not recompute against its own font-size. Correct for the
+  declaring element and for same-font-size inheritance (the common cases); divergent only
+  when a percentage line-height is inherited across a font-size change. A `<number>`
+  line-height is unaffected (it correctly inherits AS the number and re-multiplies), and a
+  `<length>` is absolute.
+- **Missing** — Resolving `%` → length at computed-value time (the declaring element's
+  font-size), so the inherited value is a length. Needs font-size context at resolve time
+  (the box-builder's `DeferredLengthResolver` has it but currently skips `%` terms).
+- **Trigger** — a percentage `line-height` inherited to a descendant whose font-size
+  differs from the declaring element's.
+- **Owner files** — `src/NetPdf.Css/ComputedValues/PropertyResolvers/LineHeightResolver.cs`
+  (produces the `Percentage` slot) +
+  `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ReadLineHeightPx`
+  read-time resolution). Spec-correct resolution belongs at computed-value time.
+- **Added** — the line-height cycle wired `line-height` (was UNWIRED — every value fell to
+  font-size × 1.2); the percentage inherit-as-length subtlety is the residual.
+- **Removal condition** — a percentage `line-height` resolves to a length at the declaring
+  element's font-size and inherits that length.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`
@@ -306,8 +336,9 @@ grepping the ID).
     `InlineVerticalAlign.TextLineEdgeGrowth`: `text-top`/`text-bottom`/`middle` grow the max-ascent
     ascent/descent extents, `top`/`bottom` contribute a content-box floor; the painter positions the run
     within the grown line via the shared helper). Deferred for text: the parent metrics use the
-    0.8/−0.2-em + 0.5-em-x-height approximation; a deferred (non-LengthPx) declared line-height isn't read
-    as the `%` base (falls back to font-size × 1.2).
+    0.8/−0.2-em + 0.5-em-x-height approximation. (A declared `line-height` IS now read as the
+    vertical-align `%` base — `OwnLineHeightPx` reads it via `ReadLineHeightPx`, the line-height cycle —
+    so a number/length/% line-height no longer silently falls back to font-size × 1.2.)
   - An inline-block aligns by its LAST in-flow line box's baseline (CSS 2.2 §10.8.1 — it sits ON the
     surrounding text baseline; the line box is sized by the max-ascent model). The last line's descent is
     captured from the ACTUAL deepest line-bearing fragment's metrics (`BufferingMeasureSink.LastLineBox

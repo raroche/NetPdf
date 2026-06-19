@@ -40,14 +40,14 @@ public sealed class HardeningReviewTests
     [Fact]
     public void Cycle_2_PropertyType_returns_UnsupportedUnvalidated_not_Deferred()
     {
-        // line-height's PropertyType (LineHeight) is still unwired. Per the
-        // hardening review, it must surface as UnsupportedUnvalidated — distinct
-        // from Deferred which means "validated but needs context". (font-family,
-        // used here pre-cycle-4, now resolves via FontFamilyListResolver.)
-        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "1.5");
+        // `content`'s PropertyType (Content) is still unwired. Per the hardening
+        // review, it must surface as UnsupportedUnvalidated — distinct from Deferred
+        // which means "validated but needs context". (line-height, used here
+        // pre-line-height-cycle, now resolves via LineHeightResolver.)
+        var result = PropertyResolverDispatch.Resolve(PropertyId.Content, "open-quote");
         Assert.True(result.IsUnsupportedUnvalidated);
         Assert.False(result.IsDeferred);
-        Assert.Equal("1.5", result.RawText);
+        Assert.Equal("open-quote", result.RawText);
         Assert.True(result.HasRawText);
     }
 

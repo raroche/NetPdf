@@ -292,10 +292,14 @@ internal static class TextPainter
         // font-size, so the pitch/baseline must match it, not the box's default), falling back
         // to the box style so every other fragment is byte-identical.
         var metricsStyle = fragment.TextMetricsStyle ?? blockStyle;
-        var lineHeightOverridePx = metricsStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
+        var metricsFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        // line-height cycle — the full grammar (normal/number/length/%) via ReadLineHeightPx, so a
+        // declared `line-height: 24px` (or `1.5`, or `150%`) sets the pitch instead of font-size × 1.2.
+        // The pitch MUST match BlockLayouter's LineHeightOverridePx (same reader + the same metrics font).
+        var lineHeightOverridePx = metricsStyle.ReadLineHeightPx(metricsFontSizePx);
         var lineHeightPx = lineHeightOverridePx > 0
             ? lineHeightOverridePx
-            : metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+            : metricsFontSizePx * NormalLineHeightFactor;
 
         var lines = inline.Lines;
         var shapedRuns = inline.ShapedRuns;

@@ -170,6 +170,11 @@ public sealed class PropertyDefaultsParityTests
             // <percentage> → a Percentage slot — there is no "LengthPercentage" slot tag). The default
             // `baseline` resolves to Keyword(0); pre-cycle it returned UnsupportedUnvalidated.
             PropertyType.VerticalAlign,
+            // line-height cycle — LineHeight joined the resolved family via LineHeightResolver
+            // (`normal` → Keyword(0); a unitless <number> → a Number slot; <length>/<percentage> →
+            // LengthPx/Percentage). The default `normal` resolves to Keyword(0); pre-cycle it returned
+            // UnsupportedUnvalidated.
+            PropertyType.LineHeight,
         };
 
         var failures = new List<string>();
@@ -260,6 +265,9 @@ public sealed class PropertyDefaultsParityTests
             // vertical-align cycle — VerticalAlign is now wired (VerticalAlignResolver); its default
             // `baseline` resolves to Keyword(0), so it is NOT UnsupportedUnvalidated — exclude it.
             PropertyType.VerticalAlign,
+            // line-height cycle — LineHeight is now wired (LineHeightResolver); its default `normal`
+            // resolves to Keyword(0), so it is NOT UnsupportedUnvalidated — exclude it.
+            PropertyType.LineHeight,
         };
 
         var failures = new List<string>();

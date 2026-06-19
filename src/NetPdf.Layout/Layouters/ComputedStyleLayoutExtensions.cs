@@ -70,6 +70,32 @@ internal static class ComputedStyleLayoutExtensions
         return style.ReadLengthPxOrDefault(id, defaultPx: 0);
     }
 
+    /// <summary>line-height cycle (CSS 2.2 §10.8.1 / CSS Inline 3) — the USED <c>line-height</c> in px,
+    /// or <see langword="null"/> when it's <c>normal</c> / unset (the caller then uses its own
+    /// <paramref name="fontSizePx"/> × 1.2 default). Decodes the full computed grammar that
+    /// <c>LineHeightResolver</c> produces: a <c>LengthPx</c> slot (an absolute <c>&lt;length&gt;</c>, or an
+    /// <c>em</c>/<c>rem</c> already folded by <c>DeferredLengthResolver</c>) → that px; a <c>Number</c>
+    /// slot (a unitless <c>&lt;number&gt;</c> multiplier) → number × <paramref name="fontSizePx"/> (the
+    /// element's OWN font-size — a number inherits AS the number); a <c>Percentage</c> slot → % of
+    /// <paramref name="fontSizePx"/>; <c>normal</c> / a keyword / an unset slot → <see langword="null"/>.
+    /// <para><b>Explicit zero.</b> A valid <c>line-height: 0</c> / <c>0px</c> / <c>0%</c> returns
+    /// <c>0.0</c> — DISTINCT from <c>normal</c> (null) — so a collapsed line box is honored instead of
+    /// silently falling back to the default (post-PR-#197 review P2; a plain numeric sentinel can't tell
+    /// explicit zero from "use the default"). Pre-fix every call site read
+    /// <c>ReadLengthPxOrZero(LineHeight)</c>, which only honored a <c>LengthPx</c> slot AND the dispatch
+    /// never produced one — so a declared length silently became <c>font-size × 1.2</c>.</para></summary>
+    public static double? ReadLineHeightPx(this ComputedStyle style, double fontSizePx)
+    {
+        var slot = style.Get(PropertyId.LineHeight);
+        return slot.Tag switch
+        {
+            ComputedSlotTag.LengthPx => slot.AsLengthPx(),
+            ComputedSlotTag.Number => slot.AsNumber() * fontSizePx,
+            ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * fontSizePx,
+            _ => null,   // normal / Keyword(normal) / Unset → caller's font-size × 1.2 default
+        };
+    }
+
     /// <summary>Body % lengths (body-percent cycle) — like
     /// <see cref="ReadLengthPxOrZero(ComputedStyle, PropertyId)"/> but a PERCENTAGE slot resolves
     /// against <paramref name="containingInlinePx"/> (the containing block's INLINE size: CSS 2.2

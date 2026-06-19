@@ -930,16 +930,18 @@ public sealed class HtmlPdfConvertTests
     public void Inline_block_box_line_height_does_not_shift_its_block_contents_baseline()
     {
         // inline-block last-line baseline real metrics (post-PR-#194 task 2), end-to-end — an inline-block's
-        // OWN line-height doesn't apply to its BLOCK content, so it must NOT move the §10.8.1 baseline. The
-        // surrounding text "A" sits at the SAME y whether or not the inline-block declares line-height.
-        // Pre-fix the descent was read from the inline-block's own style, so line-height:40px wrongly
-        // shifted the line baseline (and "A" with it) though the content line was unchanged.
+        // baseline comes from its CONTENT's last line box, not the inline-block's OWN line-height. The inner
+        // block here pins its line-height EXPLICITLY (14px), so its line is 14px regardless of what the
+        // inline-block declares — and the surrounding "A" sits at the SAME y whether the inline-block's own
+        // line-height is 14px or 40px. (The inner pin matters now that the line-height cycle makes the value
+        // reach the computed style AND inherit — without it, a 40px inline-block line-height would inherit
+        // to the inner block and legitimately grow its line, which is a different effect than the one tested.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double SurroundingTextY(string ibExtra) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block;" + ibExtra + "\">"
-            + "<div>x</div></span></div></body></html>", opts))).Y;
+        double SurroundingTextY(string ibLineHeight) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>A<span style=\"display:inline-block;line-height:" + ibLineHeight + "\">"
+            + "<div style=\"line-height:14px\">x</div></span></div></body></html>", opts))).Y;
 
-        Assert.Equal(SurroundingTextY(""), SurroundingTextY("line-height:40px"), precision: 2);
+        Assert.Equal(SurroundingTextY("14px"), SurroundingTextY("40px"), precision: 2);
     }
 
     [Fact]
@@ -1036,25 +1038,81 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Text_vertical_align_middle_text_top_text_bottom_position_relative_to_the_parent()
     {
-        // text vertical-align line-edge cycle (post-PR-#194 task 3) — `middle` / `text-top` / `text-bottom`
-        // position a run relative to the PARENT's baseline + text content-area (the parent font's x-height
-        // / ascent / descent), so for a run whose font differs from the parent's they give DISTINCT glyph
-        // baselines, ordered (y-up) text-bottom > baseline > middle > text-top. A 40px span in a 16px
-        // block: text-bottom puts its BOTTOM at the parent descent (baseline highest), text-top its TOP at
-        // the parent ascent (baseline lowest), middle its midpoint at the parent baseline + half x-height.
+        // text vertical-align line-edge (post-PR-#194 task 3 + PR 3 task 7 line-growth) — `middle` /
+        // `text-top` / `text-bottom` position a run relative to the PARENT's baseline + text content-area.
+        // Task 7 now GROWS the line to contain a tall such run, which MOVES the shared line baseline — so the
+        // robust check compares the aligned 40px run against a SAME-LINE baseline 40px run (both share the
+        // grown line + its baseline), rather than across separate docs with differing line heights. y-up,
+        // the offset (aligned − same-line baseline) orders text-bottom > middle > text-top: text-bottom puts
+        // the run's BOTTOM at the parent descent (run rides highest), text-top its TOP at the parent ascent
+        // (run rides lowest), middle its midpoint at the parent baseline + half x-height.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        double GlyphY(string valign) => FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><body><div style=\"font-size:16px\">" +
-            "<span style=\"vertical-align:" + valign + ";font-size:40px\">A</span></div></body></html>", opts))).Y;
+        double Offset(string valign)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div style=\"font-size:16px\">" +
+                "<span style=\"font-size:40px\">A</span>" +                                // reference: 40px baseline
+                "<span style=\"vertical-align:" + valign + ";font-size:40px\">A</span>" +   // the aligned 40px run
+                "</div></body></html>", opts)));
+            Assert.True(ys.Length >= 2, $"expected two Td ops (reference + aligned); got {ys.Length}");
+            return ys[1] - ys[0];   // aligned − same-line baseline reference (content-stream / doc order)
+        }
 
-        var baseline = GlyphY("baseline");
-        var middle = GlyphY("middle");
-        var textTop = GlyphY("text-top");
-        var textBottom = GlyphY("text-bottom");
+        var middle = Offset("middle");
+        var textTop = Offset("text-top");
+        var textBottom = Offset("text-bottom");
 
-        Assert.True(textBottom > baseline + 2, $"text-bottom's baseline should sit above baseline's: textBottom={textBottom} baseline={baseline}");
-        Assert.True(baseline > middle + 2, $"baseline should sit above middle: baseline={baseline} middle={middle}");
-        Assert.True(middle > textTop + 2, $"middle should sit above text-top: middle={middle} textTop={textTop}");
+        Assert.True(textBottom > middle + 2, $"text-bottom should ride above middle: textBottom={textBottom} middle={middle}");
+        Assert.True(middle > textTop + 2, $"middle should ride above text-top: middle={middle} textTop={textTop}");
+    }
+
+    [Fact]
+    public void Line_height_length_and_number_set_the_line_pitch_end_to_end()
+    {
+        // line-height cycle — a declared `line-height` now REACHES the computed style (pre-fix it was
+        // unwired in the dispatch → every value silently fell back to font-size × 1.2). A 2-line block
+        // (split by <br>) has a line PITCH (the Td-y delta between the two lines) equal to the used
+        // line-height. The control `normal` = font-size × 1.2; an absolute `24px` = 24 regardless of font;
+        // a unitless number = number × font-size. The synthetic font-size is derived from the control so
+        // the assertions don't hard-code it. Proves the resolver → ReadLineHeightPx → layouter/painter path.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double Pitch(string style)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div style=\"" + style + "\">A<br>A</div></body></html>", opts)));
+            Assert.True(ys.Length >= 2, $"expected two lines (one Td each); got {ys.Length}");
+            return ys[0] - ys[1];   // y-up: the first line sits above the second; their delta is the pitch
+        }
+
+        var normal = Pitch("");   // control → font-size(16px) × 1.2 = 19.2px = 14.4pt (the Td-y is in PDF pt)
+        // A declared absolute length now REACHES the pitch (pre-fix: unwired → ignored). 40px = 30pt,
+        // and it scales linearly — a 20px length is exactly half — proving the length, not a fallback, drives it.
+        Assert.Equal(30.0, Pitch("line-height:40px"), precision: 1);
+        Assert.Equal(0.5 * Pitch("line-height:40px"), Pitch("line-height:20px"), precision: 1);
+        Assert.True(Pitch("line-height:40px") > normal + 5, $"a 40px line-height should exceed the normal pitch {normal}");
+        // A unitless number scales with the element's font-size — line-height:4 is exactly 2× line-height:2.
+        Assert.Equal(2.0 * Pitch("line-height:2"), Pitch("line-height:4"), precision: 1);
+    }
+
+    [Fact]
+    public void Line_height_zero_collapses_the_line_pitch_end_to_end()
+    {
+        // Post-PR-#197 review P2 — a valid `line-height: 0` (and `0px`/`0%`) COLLAPSES the line box (the
+        // two <br>-split lines overlap, pitch 0) instead of silently falling back to font-size × 1.2. A
+        // plain numeric sentinel couldn't distinguish explicit 0 from `normal`; the nullable reader can.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double Pitch(string style)
+        {
+            var ys = AllTdY(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body><div style=\"" + style + "\">A<br>A</div></body></html>", opts)));
+            Assert.True(ys.Length >= 2, $"expected two lines; got {ys.Length}");
+            return ys[0] - ys[1];
+        }
+
+        Assert.Equal(0.0, Pitch("line-height:0"), precision: 1);    // explicit zero → collapsed
+        Assert.Equal(0.0, Pitch("line-height:0px"), precision: 1);  // 0px → collapsed
+        Assert.Equal(0.0, Pitch("line-height:0%"), precision: 1);   // 0% → collapsed
+        Assert.True(Pitch("") > 5, "the normal control should keep a positive pitch (≠ collapsed)");
     }
 
     [Fact]

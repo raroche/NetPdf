@@ -45,6 +45,8 @@ public sealed class DeferralsParityTests
         "uax-24-script-detection",
         "rtl-fragment-reversal",
         "text-align-match-parent",
+        "line-height-percentage-inheritance",
+        "margin-box-line-height",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
         "inline-atomic-boxes",

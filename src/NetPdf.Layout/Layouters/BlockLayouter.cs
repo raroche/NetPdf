@@ -6722,7 +6722,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double PaddingBlockStart,
         double PaddingBlockEnd,
         double DeclaredWidthPx,    // 0 when `width: auto` (default)
-        double LineHeightOverridePx); // 0 sentinel = use font-size × 1.2
+        double? LineHeightOverridePx); // null = `normal` → font-size × 1.2; an explicit value (incl. 0) is used
 
     private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(Box block, double containingInlinePx)
     {
@@ -6765,10 +6765,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             PaddingBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, containingInlinePx),
             DeclaredWidthPx: block.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx),
             // line-height: read from the block's own style (sub-cycle
-            // 1 simple rule — uniform across the block). Sub-cycle 2
-            // will read per-TextRun + apply the CSS Text L3 strut
-            // rule (max of constituent runs' line-heights).
-            LineHeightOverridePx: block.Style.ReadLengthPxOrZero(PropertyId.LineHeight));
+            // 1 simple rule — uniform across the block). The line-height
+            // cycle reads the full grammar (normal/number/length/%) via
+            // ReadLineHeightPx — a unitless number multiplies the block's
+            // own font-size; 0 = `normal` → the font-size × 1.2 fallback.
+            LineHeightOverridePx: block.Style.ReadLineHeightPx(
+                block.Style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16)));
     }
 
     /// <summary>Whether the box DECLARES an explicit <c>width</c> — a LengthPx or Percentage
@@ -7051,17 +7053,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         // Per Finding #5 — line-height honoring. Use the block's
-        // declared line-height when non-zero; fall back to
-        // 1.2 × font-size for `line-height: normal`. CSS Text L3 §3
-        // + CSS Inline L3 §3.5 say the used `line-height` is the
-        // COMPUTED value (`normal` → font's intrinsic line metric);
-        // reading the keyword + the font metric tables remains
-        // sub-cycle 2 work — 1.2 is the de-facto Web default for
+        // declared line-height when present (incl. an explicit 0 — a collapsed line box); fall back to
+        // 1.2 × font-size for `line-height: normal` (null). CSS Text L3 §3 + CSS Inline L3 §3.5 say the
+        // used `line-height` is the COMPUTED value (`normal` → font's intrinsic line metric); reading the
+        // keyword + the font metric tables remains sub-cycle 2 work — 1.2 is the de-facto Web default for
         // `line-height: normal` across major UAs.
         double lineHeight;
-        if (metrics.LineHeightOverridePx > 0)
+        if (metrics.LineHeightOverridePx is { } overridePx)
         {
-            lineHeight = metrics.LineHeightOverridePx;
+            lineHeight = overridePx;
         }
         else
         {
@@ -7143,6 +7143,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         for (var li = 0; li < lines.Length; li++)
         {
             double maxAtomicMarginBoxHeight = 0;
+            double maxLineEdgeTextHeight = 0;   // text vertical-align line-growth — top/bottom run content-box floor.
             var ascentAbove = textAscentAbovePx;
             var descentBelow = textDescentBelowPx;
             var lineNeedsMaxAscent = false;
@@ -7212,21 +7213,59 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         if (runAscentAbovePx + raisePx > ascentAbove) ascentAbove = runAscentAbovePx + raisePx;
                         if (runDescentBelowPx - raisePx > descentBelow) descentBelow = runDescentBelowPx - raisePx;
                     }
+                    else
+                    {
+                        // text vertical-align line-growth cycle (PR 3 task 7) — a LINE-EDGE-aligned inline
+                        // text run (top/bottom/middle/text-top/text-bottom) GROWS the line so a run TALLER
+                        // than the baseline-sized line is CONTAINED (it previously overflowed — the PR #195
+                        // deferral). text-top/text-bottom/middle grow the baseline-relative ascent/descent
+                        // (the max-ascent model, mirroring the atomic AtomicBaselineExtents path); top/bottom
+                        // are line-edge-relative so they contribute an inline-box FLOOR instead. The box
+                        // height is the run's USED line-height (post-PR-#197 review P2 — a tall line-height,
+                        // not only a large font-size, grows the line). The painter positions the run via the
+                        // SAME InlineVerticalAlign.TextLineEdgeBaselineTopPx using the grown line metrics, so
+                        // layout + paint can't disagree. baseline/plain/block-direct text → (0,0,0), so those
+                        // lines stay byte-identical.
+                        var runLineHeightPx =
+                            NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(runStyle, runFontSizePx);
+                        var (edgeAbove, edgeBelow, edgeFloor) =
+                            NetPdf.Layout.Inline.InlineVerticalAlign.TextLineEdgeGrowth(
+                                runStyle, blockStyle, runLineHeightPx, ascentPx, descentPx, fontSizePx);
+                        if (edgeAbove != 0.0 || edgeBelow != 0.0)
+                        {
+                            lineNeedsMaxAscent = true;
+                            anyMaxAscent = true;
+                            anyTextShift = true;
+                            if (edgeAbove > ascentAbove) ascentAbove = edgeAbove;
+                            if (edgeBelow > descentBelow) descentBelow = edgeBelow;
+                        }
+                        if (edgeFloor > 0.0)
+                        {
+                            // top / bottom — line-edge-relative: the run must FIT the line box (current
+                            // model, centred baseline + the floor grows the line, like a top/bottom atomic).
+                            anyTextShift = true;
+                            if (edgeFloor > maxLineEdgeTextHeight) maxLineEdgeTextHeight = edgeFloor;
+                        }
+                    }
                 }
             }
             if (lineNeedsMaxAscent)
             {
                 // §10.8.1 max-ascent model — the baseline at max-ascent-above so a baseline-aligned
                 // inline-block sits ON the text baseline without overflowing the line top; the line is
-                // at least the sum AND tall enough for any non-baseline (top/bottom) sibling's margin box.
-                perLineHeights[li] = Math.Max(ascentAbove + descentBelow, maxAtomicMarginBoxHeight);
+                // at least the sum AND tall enough for any non-baseline (top/bottom) sibling's margin box
+                // or line-edge text run's content box (text vertical-align line-growth).
+                perLineHeights[li] = Math.Max(ascentAbove + descentBelow,
+                    Math.Max(maxAtomicMarginBoxHeight, maxLineEdgeTextHeight));
                 perLineBaselines[li] = ascentAbove;
             }
             else
             {
                 // Current model (byte-identical when every atomic is baseline/img) — the line grows to the
-                // tallest atomic MARGIN box; the baseline stays centred (NaN → real font metrics).
-                perLineHeights[li] = Math.Max(textLineHeightPx, maxAtomicMarginBoxHeight);
+                // tallest atomic MARGIN box or line-edge (top/bottom) text run; the baseline stays centred
+                // (NaN → real font metrics).
+                perLineHeights[li] = Math.Max(textLineHeightPx,
+                    Math.Max(maxAtomicMarginBoxHeight, maxLineEdgeTextHeight));
                 perLineBaselines[li] = double.NaN;
             }
         }
@@ -7399,8 +7438,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// element's own line-height, not the parent's or the grown line box).</summary>
     private static double OwnLineHeightPx(ComputedStyle style)
     {
-        var declared = style.ReadLengthPxOrZero(PropertyId.LineHeight);
-        return declared > 0 ? declared : style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * 1.2;
+        var fontSizePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        // line-height cycle — number/length/% honored; null = `normal` → font-size × 1.2. An explicit
+        // line-height: 0 returns a 0 % base (a 0% vertical-align of a 0 line-height is 0).
+        return style.ReadLineHeightPx(fontSizePx) ?? fontSizePx * 1.2;
     }
 
     /// <summary>vertical-align cycle (CSS 2.2 §10.8.1) — an atomic's extent ABOVE / BELOW the line

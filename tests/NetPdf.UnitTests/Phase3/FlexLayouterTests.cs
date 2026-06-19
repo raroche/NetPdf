@@ -2720,30 +2720,62 @@ public sealed class FlexLayouterTests
 
     // -- F#1 (P2) — direction/writing-mode pipeline known gap -----------
 
-    [Fact(Skip = "PR 2 task 6 — FlexLayouter has not yet ADOPTED the direction pipeline; the shared reader " +
-        "(DirectionStyleExtensions.ReadDirection, added in task 4) exists, but the RTL row → main-axis flip is the " +
-        "remaining work. Tracked in flex-layouter-features deferral.")]
-    public void L5_known_gap_rtl_row_should_flip_main_axis_pending_flex_direction_adoption()
+    [Fact]
+    public void Rtl_row_flips_main_axis_like_row_reverse_ltr()
     {
-        // Per CSS Flexbox §3.1 axis-mapping: `row` in RTL writing mode
-        // means right-to-left (= same physical layout as `row-reverse`
-        // in LTR). With L5's LTR-only main-axis mapping, an RTL
-        // container with `flex-direction: row` would still emit items
-        // left-to-right (= InlineOffsets 0/50/100). When task 6 wires
-        // FlexLayouter to the direction pipeline, this test will pin the
-        // spec-correct behavior: items emitted in physical right-to-left
-        // order so DOM 0 lands at the right edge (= InlineOffset 350 for
-        // 3×50 items in 400px), DOM 1 at 300, DOM 2 at 250 — matching the
-        // current `row-reverse` LTR output for the same fixture.
-        //
-        // When task 6 lands (the pipeline ALREADY exists post-task-4):
-        //   1. Read the cascaded `direction` via DirectionStyleExtensions.
-        //      ReadDirection / IsRtl inside FlexLayouter.
-        //   2. The axis mapping switches from "row → inline left-to-
-        //      right" to "row → inline right-to-left" under RTL.
-        //   3. Drop this test's [Skip] + assert spec-correct offsets.
-        //   4. Remove the corresponding Missing bullet in
-        //      docs/deferrals.md#flex-layouter-features.
+        // PR 2 task 6 — `flex-direction: row` under `direction: rtl` reverses the physical main axis
+        // (CSS Flexbox §5.1: row main-start = inline-start = RIGHT in RTL), so it lays out identically to
+        // `row-reverse` under LTR: items in physical right-to-left order, DOM 0 at the right edge. For
+        // 3×50px items in 400px with default justify (flex-start) the flip transform yields DOM 0 → 350,
+        // DOM 1 → 300, DOM 2 → 250 (the same the row-reverse tests pin). And `row-reverse` under RTL flips
+        // BACK to left-to-right (0/50/100), proving `direction` XORs the reverse flag — not a one-way force.
+        static double[] InlineOffsets(int flexDirectionKeyword)
+        {
+            var sink = new RecordingFragmentSink();
+            using var shaper = new SyntheticShaperResolver();
+            var root = Box.CreateRoot(MakeStyle());
+            var flex = BuildFlexContainer();
+            flex.Style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(1));   // rtl
+            flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(flexDirectionKeyword));
+            SetLengthPx(flex.Style, PropertyId.Height, 100);
+            var items = new Box[3];
+            for (var i = 0; i < items.Length; i++)
+            {
+                var style = MakeStyle();
+                SetLengthPx(style, PropertyId.Width, 50);
+                SetLengthPx(style, PropertyId.Height, 50);
+                items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+                flex.AppendChild(items[i]);
+            }
+            root.AppendChild(flex);
+            using var layouter = new BlockLayouter(
+                rootBox: root, sink: sink, incomingContinuation: null, diagnostics: null,
+                shaperResolver: shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+            var offsets = new double[items.Length];
+            for (var i = 0; i < items.Length; i++)
+            {
+                offsets[i] = double.NaN;
+                foreach (var f in sink.Fragments)
+                    if (f.Box == items[i]) { offsets[i] = f.InlineOffset; break; }
+            }
+            return offsets;
+        }
+
+        // `row` (keyword 0) under RTL → right-to-left, DOM 0 at the right edge (= row-reverse LTR).
+        var row = InlineOffsets(0);
+        Assert.Equal(350.0, row[0], precision: 3);
+        Assert.Equal(300.0, row[1], precision: 3);
+        Assert.Equal(250.0, row[2], precision: 3);
+
+        // `row-reverse` (keyword 1) under RTL → flips BACK to left-to-right (= plain row in LTR).
+        var rowReverse = InlineOffsets(1);
+        Assert.Equal(0.0, rowReverse[0], precision: 3);
+        Assert.Equal(50.0, rowReverse[1], precision: 3);
+        Assert.Equal(100.0, rowReverse[2], precision: 3);
     }
 
     // -- F#3 (P2) — reverse alignment matrix hardening ------------------

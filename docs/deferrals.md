@@ -221,6 +221,63 @@ grepping the ID).
 
 ---
 
+## line-height-percentage-inheritance
+
+- **ID** — `line-height-percentage-inheritance`
+- **Status** — `approximated`.
+- **Behavior** — A `<percentage>` `line-height` (e.g. `line-height: 150%`) resolves to a
+  `Percentage` slot, and `ReadLineHeightPx` computes the used px at READ time as % × the
+  READING element's font-size. Per CSS Inline 3 §4.2 the COMPUTED value should be a
+  LENGTH (% × the DECLARING element's font-size), and that length inherits — so a child
+  with a DIFFERENT font-size that inherits a percentage line-height should keep the
+  parent's computed length, not recompute against its own font-size. Correct for the
+  declaring element and for same-font-size inheritance (the common cases); divergent only
+  when a percentage line-height is inherited across a font-size change. A `<number>`
+  line-height is unaffected (it correctly inherits AS the number and re-multiplies), and a
+  `<length>` is absolute.
+- **Missing** — Resolving `%` → length at computed-value time (the declaring element's
+  font-size), so the inherited value is a length. Needs font-size context at resolve time
+  (the box-builder's `DeferredLengthResolver` has it but currently skips `%` terms).
+- **Trigger** — a percentage `line-height` inherited to a descendant whose font-size
+  differs from the declaring element's.
+- **Owner files** — `src/NetPdf.Css/ComputedValues/PropertyResolvers/LineHeightResolver.cs`
+  (produces the `Percentage` slot) +
+  `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ReadLineHeightPx`
+  read-time resolution). Spec-correct resolution belongs at computed-value time.
+- **Added** — the line-height cycle wired `line-height` (was UNWIRED — every value fell to
+  font-size × 1.2); the percentage inherit-as-length subtlety is the residual.
+- **Removal condition** — a percentage `line-height` resolves to a length at the declaring
+  element's font-size and inherits that length.
+
+---
+
+## margin-box-line-height
+
+- **ID** — `margin-box-line-height`
+- **Status** — `approximated`.
+- **Behavior** — Literal `@page` margin-box content (e.g. `@top-center { content: "..."; }`)
+  uses `font-size × 1.2` for its line pitch regardless of a declared `line-height` —
+  `PageMarginBoxPainter` reads font-size × `NormalLineHeightFactor`, and `line-height` is
+  NOT in `MarginBoxStyle`'s inherited longhand set, so the slot isn't even present on a
+  margin-box style. The BODY layout path was wired in the line-height cycle
+  (`ReadLineHeightPx`), but the margin-box path was not. (The `element()` /
+  `position: running()` running-element segment path parses line-height through a separate
+  manual route, distinct from this.)
+- **Missing** — `PropertyId.LineHeight` in `MarginBoxStyle.SupportedStyleIds` (so it
+  inherits page-context → margin box) + `PageMarginBoxPainter` reading it via
+  `ReadLineHeightPx` (with the `?? font-size × 1.2` fallback).
+- **Trigger** — a MULTI-LINE `@page` margin box (wrapping content) with a declared
+  `line-height` (e.g. `@bottom-center { line-height: 2 }`) — the line pitch stays
+  font-size × 1.2 instead of the declared value.
+- **Owner files** — `src/NetPdf/Rendering/MarginBoxStyle.cs` (`SupportedStyleIds`) +
+  `src/NetPdf/Rendering/PageMarginBoxPainter.cs` (the `lineHeightPx` computation).
+- **Added** — post-PR-#197 review P3 — the line-height cycle wired the body path; the
+  margin-box path is the residual.
+- **Removal condition** — a margin box's declared `line-height` drives its line pitch via
+  `ReadLineHeightPx`.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`
@@ -301,10 +358,14 @@ grepping the ID).
     `text-bottom` (bounded first cut — position the run at the line-box top/bottom, the line middle, or the
     parent text content-area, via `InlineVerticalAlign.TextLineEdgeBaselineTopPx`). All GATED to
     inline-level runs (a block / table cell's own vertical-align doesn't shift its text — the
-    reference-equality gate; non-inherited so `<sub>`/`<sup>`/`<span>` work). Deferred for text: a line-edge
-    run TALLER than the baseline-sized line OVERFLOWS it (no line growth for non-baseline-aligned content
-    yet); the parent metrics use the 0.8/−0.2-em + 0.5-em-x-height approximation; a deferred (non-LengthPx)
-    declared line-height isn't read as the `%` base (falls back to font-size × 1.2).
+    reference-equality gate; non-inherited so `<sub>`/`<sup>`/`<span>` work). A line-edge run TALLER than the
+    baseline-sized line now GROWS the line so it is CONTAINED (PR 3 task 7 —
+    `InlineVerticalAlign.TextLineEdgeGrowth`: `text-top`/`text-bottom`/`middle` grow the max-ascent
+    ascent/descent extents, `top`/`bottom` contribute a content-box floor; the painter positions the run
+    within the grown line via the shared helper). Deferred for text: the parent metrics use the
+    0.8/−0.2-em + 0.5-em-x-height approximation. (A declared `line-height` IS now read as the
+    vertical-align `%` base — `OwnLineHeightPx` reads it via `ReadLineHeightPx`, the line-height cycle —
+    so a number/length/% line-height no longer silently falls back to font-size × 1.2.)
   - An inline-block aligns by its LAST in-flow line box's baseline (CSS 2.2 §10.8.1 — it sits ON the
     surrounding text baseline; the line box is sized by the max-ascent model). The last line's descent is
     captured from the ACTUAL deepest line-bearing fragment's metrics (`BufferingMeasureSink.LastLineBox
@@ -328,9 +389,8 @@ grepping the ID).
   - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
     formatting context) remain deferred.
 - **Trigger** — a mixed-direction line needing bidi VISUAL reordering of an inline `<img>` / inline-block
-  (the RTL text-align alignment is already honoured — PR 2 task 5), a line-edge text `vertical-align`
-  (`top`/`bottom`/`middle`/`text-*`) on a run TALLER than its line (overflow), or an
-  `inline-flex`/`-grid`/`-table` span.
+  (the RTL text-align alignment is already honoured — PR 2 task 5), or an `inline-flex`/`-grid`/`-table`
+  span. (Line-edge text `vertical-align` line growth shipped in PR 3 task 7.)
 - **Owner files** —
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
@@ -346,10 +406,10 @@ grepping the ID).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
 - **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
   inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
-- **Removal condition** — line-edge text `vertical-align` GROWS its line (no overflow for a tall run), RTL
-  bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is already honoured — PR 2 task 5),
-  the inline-block's last-line baseline using true per-RUN content metrics + min-content shrink-to-fit, and
-  inline-flex / -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
+- **Removal condition** — RTL bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is
+  already honoured — PR 2 task 5; line-edge text line growth shipped — PR 3 task 7), the inline-block's
+  last-line baseline using true per-RUN content metrics + min-content shrink-to-fit, and inline-flex /
+  -grid / -table atomics laid out (no longer `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
 ---
 
@@ -1107,22 +1167,17 @@ grepping the ID).
     The cascade slot is lossless so pre-authored
     `align-content: baseline` declarations activate the new behavior
     without a re-author.
-  - Writing-mode and `direction` integration for `flex-direction`
-    axis mapping (CSS Flexbox §3.1): all 4 directions are honored
-    for LTR horizontal-tb but the axis mapping differs in RTL +
-    vertical writing modes. For example, `row` in RTL means right-
-    to-left along the inline axis (physically equivalent to LTR
-    `row-reverse`); `row` in vertical-rl swaps the main + cross
-    axes onto the block + inline directions of the rotated writing
-    mode. The shared direction pipeline now EXISTS
-    (`DirectionStyleExtensions.ReadDirection` / `IsRtl`, PR 2 task 4);
-    the remaining work (PR 2 task 6) is FlexLayouter ADOPTING it — read
-    the cascaded `direction` and flip the `row` main-axis mapping to
-    right-to-left under RTL (`writing-mode` vertical modes stay out of
-    scope). Pinned by the Skip'd
-    `L5_known_gap_rtl_row_should_flip_main_axis_pending_flex_direction_adoption`
-    test — when task 6 wires the adoption, that test should flip to
-    spec-correct expectations + this bullet should be removed.
+  - Writing-mode + column-cross-axis `direction` integration for
+    `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped** (task 6):
+    `flex-direction: row` / `row-reverse` under `direction: rtl` flip the
+    physical MAIN axis right-to-left (row+rtl ≡ row-reverse+ltr) —
+    FlexLayouter XORs its reverse flag via `DirectionStyleExtensions.IsRtl`,
+    pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Still
+    deferred**: the COLUMN cross-axis under RTL (a column's cross axis is the
+    inline axis, so RTL flips cross-start — `align-items`/`align-self`
+    anchors), and all VERTICAL writing modes (`writing-mode` is not yet a
+    registered property; `row` in vertical-rl swaps the main + cross axes
+    onto the rotated block + inline directions).
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
     declared `width`, ignoring item margins / padding / borders /

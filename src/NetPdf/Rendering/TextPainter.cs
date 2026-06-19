@@ -292,10 +292,13 @@ internal static class TextPainter
         // font-size, so the pitch/baseline must match it, not the box's default), falling back
         // to the box style so every other fragment is byte-identical.
         var metricsStyle = fragment.TextMetricsStyle ?? blockStyle;
-        var lineHeightOverridePx = metricsStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
-        var lineHeightPx = lineHeightOverridePx > 0
-            ? lineHeightOverridePx
-            : metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+        var metricsFontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        // line-height cycle — the full grammar (normal/number/length/%) via ReadLineHeightPx, so a
+        // declared `line-height: 24px` (or `1.5`, or `150%`) sets the pitch instead of font-size × 1.2.
+        // null = `normal` → the × NormalLineHeightFactor fallback; an explicit value (incl. 0, a collapsed
+        // line box) is used. The pitch MUST match BlockLayouter's LineHeightOverridePx (same reader + font).
+        var lineHeightPx = metricsStyle.ReadLineHeightPx(metricsFontSizePx)
+            ?? metricsFontSizePx * NormalLineHeightFactor;
 
         var lines = inline.Lines;
         var shapedRuns = inline.ShapedRuns;
@@ -451,9 +454,9 @@ internal static class TextPainter
                 // the run to the line box / parent content-area (a non-baseline offset); the others
                 // (baseline / sub / super / a <length> / <percentage>) RAISE off the line baseline. A
                 // sub/super/numeric shift GROWS the line in layout (ComputeInlineAtomicLayout pins the
-                // per-line baseline); a line-edge run positions WITHIN the baseline-sized line — a taller
-                // run may overflow it (line growth for it is deferred, the bounded first cut). baseline /
-                // plain text → byte-identical.
+                // per-line baseline); a line-edge run ALSO grows the line now (PR 3 task 7 —
+                // TextLineEdgeGrowth), so a tall top/bottom/middle/text-* run is positioned WITHIN the
+                // grown line rather than overflowing it. baseline / plain text → byte-identical.
                 var blockFontSizePx = blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
                 var baselineTopPx = InlineVerticalAlign.TextLineEdgeBaselineTopPx(
                         runStyle, blockStyle, lineTopPx, thisLineHeightPx, lineBaselineTopPx,

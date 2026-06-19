@@ -30,9 +30,9 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// without context"; <see cref="ResolutionState.UnsupportedUnvalidated"/> means
 /// "no resolver wired yet — raw text passed through unchecked, cycle-2 work
 /// surface". Treating them identically would silently let typos through for
-/// cycle-2 PropertyTypes. Still unwired: <c>LineHeight</c>,
-/// <c>VerticalAlign</c>, <c>Content</c>, <c>Url</c>, <c>String</c>, <c>Time</c>,
-/// <c>Angle</c>, <c>Resolution</c>.
+/// cycle-2 PropertyTypes. Still unwired: <c>Content</c>, <c>Url</c>, <c>String</c>,
+/// <c>Time</c>, <c>Angle</c>, <c>Resolution</c>. (<c>LineHeight</c> + <c>VerticalAlign</c>
+/// are now wired — <see cref="LineHeightResolver"/> / <see cref="VerticalAlignResolver"/>.)
 /// </para>
 /// </remarks>
 internal static class PropertyResolverDispatch
@@ -161,6 +161,14 @@ internal static class PropertyResolverDispatch
             // text-top / text-bottom / middle / top / bottom) → a Keyword slot; <length> / <percentage>
             // → a LengthPercentage slot (may be negative). Consumed by the inline-atomic placement.
             PropertyType.VerticalAlign => VerticalAlignResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
+
+            // line-height cycle (CSS 2.2 §10.8.1 / CSS Inline 3) — `normal` → Keyword(0); a unitless
+            // <number> → a Number slot (the multiplier, × the element's own font-size at use time);
+            // <length>/<percentage> → LengthResolver (absolute → LengthPx, em/rem → Deferred raw the
+            // box-builder folds, % → a Percentage slot). Pre-fix line-height was UNWIRED (every value →
+            // UnsupportedUnvalidated), so a declared `line-height: 24px` never reached layout/paint.
+            PropertyType.LineHeight => LineHeightResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
             // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)

@@ -2297,49 +2297,70 @@ flags the categories):
 ## grid-fragment-plan-shared-sizing-deferral
 
 - **ID** — `grid-fragment-plan-shared-sizing-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5c.2b post-
-  PR-#100 review P2.
+- **Status** — `approximated`. Phase 3 Task 17 cycle 5c.2b post-
+  PR-#100 review P2; **partially addressed in Task 18** (the
+  cross-page row-extent memo landed; the full per-attempt plan
+  stays deferred — see below).
 - **Behavior** — auto-height paginatable grids run
-  `GridSizing.Resolve` three times per attempted fragment:
+  `GridSizing.Resolve` up to three times per attempted fragment:
   (1) in `PreMeasureGridRowExtent` to grow the wrapper to
   natural extent; (2) in F1's `PreMeasureGridRowExtentAt`
   probe (when no incoming cache present); (3) inside
-  `GridLayouter.AttemptLayout` for the actual dispatch. Each
-  `Resolve` runs §11 sizing + §8.5 placement; for grids with
-  many items + repeat-expanded tracks, this triples the §11
-  work per attempt + amplifies the cycle-5 resume cache's CPU
-  amortization rationale.
-- **Practical impact** — measurable CPU overhead on large
-  invoice / report grids; the resume cache hit path on page 2+
-  avoids one Resolve (cycle 5c.2a P1#2), but pages where the
-  cache is invalidated (= inline-size mismatch, identity
-  mismatch) or absent (= first-page) still triple-resolve.
-- **Missing** — a shared per-attempt `GridFragmentPlan`
-  immutable record carrying row geometry + placements + the
-  next-row fit prediction + the emitted-extent inputs, computed
-  ONCE per attempt + threaded through pre-measure +
-  `PreMeasureGridRowExtentAt` + `DispatchGridInner` so all
-  three sites consume the same authoritative resolve. Mirrors
-  the cycle-5 resume cache pattern but lives one layer up (=
-  per-attempt, not per-resume-cycle).
+  `GridLayouter.AttemptLayout` for the actual dispatch.
+- **Task 18 finding (corrects the original premise)** — the
+  three Resolves are NOT redundant duplicates; they take
+  GENUINELY DIFFERENT inputs, so a naive "compute once, share
+  across all three" would be **incorrect**: (1) uses an
+  INDEFINITE block budget (`contentBlockSize: 1`) to compute
+  the auto-height grid's natural extent — under indefinite
+  block, `fr` rows collapse (CSS Grid §11.5), whereas (3) uses
+  the DEFINITE wrapper extent where `fr` rows expand to fill;
+  the two produce different row sizes for `fr` grids (the
+  chicken-and-egg that forces site 1 to be separate). (2) the
+  probe passes NO content/width measurers, so its content-row
+  sizes differ from (3)'s. The Length-only fixtures that "don't
+  surface it" are exactly the case where indefinite≡definite +
+  measurers don't matter. Additionally, the EXPENSIVE work —
+  per-cell content SHAPING — is ALREADY shared across all three
+  sites via `GridMeasurementCache` (the `MeasurePassCount`
+  regression test pins it); the residual redundancy is only the
+  §11/§8.5 ARITHMETIC, which is comparatively cheap.
+- **Task 18 (what landed)** — `PreMeasureGridRowExtent`'s
+  natural row extent is page-INVARIANT (indefinite block budget;
+  fixed inline + page budget), and a multi-page grid re-grows
+  its wrapper on every page. That site-1 §11 pass is now
+  memoized on `GridMeasurementCache.RowExtentSum` keyed by
+  (grid box, inline size, measure budget), so resume pages +
+  rewind retries skip it entirely (the `RowExtentComputeCount`
+  regression test pins "== 1 across a multi-page grid").
+  Byte-identical (deterministic Resolve).
+- **Practical impact** — the first-page 3× remains (three
+  genuinely-different resolves; not safely collapsible), but
+  the expensive shaping is shared + the cross-page site-1
+  re-resolve is now elided.
+- **Missing** — collapsing the first-page site-2 (probe) and
+  site-3 (dispatch) resolves where they DO align (Length-only
+  grids, or by giving the probe the dispatch's measurers — but
+  that shifts content-grid pagination decisions, so it needs a
+  reftest sweep); a full per-attempt `GridFragmentPlan` is only
+  correct for the definite-block sites (2+3), NOT site 1.
 - **Trigger** — when a benchmark on a large multi-page grid
   shows measurable CPU regression vs cycle 5b atomic dispatch.
-  Until benchmarks land, accepted as a known cost since the
-  Length-only track tests in cycle 5c.2a/b don't surface it.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Result` type
-    becomes the shared plan's payload.
+  - `src/NetPdf.Layout/Layouters/GridMeasurementCache.cs` —
+    `RowExtentSum` memo + `RowExtentComputeCount` (Task 18).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
-    `PreMeasureGridRowExtent` + `PreMeasureGridRowExtentAt` +
-    `DispatchGridInner` thread the shared plan.
+    `PreMeasureGridRowExtent` consults the memo;
+    `PreMeasureGridRowExtentAt` + `DispatchGridInner` would
+    thread a definite-block plan for the 2+3 collapse.
   - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
     `ConfigureEmission` accepts a precomputed plan in lieu of
     running its own `Resolve`.
 - **Added** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
-  P2.
-- **Removal condition** — shared plan lands AND benchmark
-  shows ≤ 1× CPU vs cycle 5b atomic dispatch for paginatable-
-  grid fixtures.
+  P2; partially addressed Phase 3 Task 18.
+- **Removal condition** — the site-2+3 definite-block collapse
+  lands AND a benchmark shows ≤ 1× CPU vs cycle 5b atomic
+  dispatch for paginatable-grid fixtures.
 
 ---
 

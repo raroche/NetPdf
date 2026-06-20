@@ -9760,6 +9760,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // common case (the cache key carries them, so a writing-mode mismatch just
         // misses + re-measures — correct, never stale). Null → the local caches.
         var measureBudget = _capturedFragmentainer?.BlockSize ?? 1_000_000;
+        // Per Phase 3 Task 18 (grid-fragment-plan-shared-sizing-deferral, partial) —
+        // the natural row extent is page-invariant for a fixed-width grid (block budget
+        // is the indefinite signal `1`; the inline size + measure budget don't change
+        // across the pages it spans). Memoize it on the shared cache so resume pages +
+        // rewind retries skip the redundant §11 sizing pass entirely (the cell shaping
+        // was already shared; this elides the arithmetic too). Byte-identical: Resolve
+        // is deterministic for the key.
+        if (sharedCache is not null
+            && sharedCache.TryGetRowExtentSum(gridBox, contentInlineSize, measureBudget, out var cachedRowExtent))
+        {
+            return cachedRowExtent;
+        }
         var measureCache = new Dictionary<(Box Item, double AvailInline), double>();
         GridSizing.GridContentMeasurer? measurer = _shaperResolver is null
             ? null
@@ -9816,6 +9828,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken: cancellationToken,
             contentMeasurer: measurer,
             widthMeasurer: widthMeasurer);
+        // Per Phase 3 Task 18 — memoize for the grid's subsequent pages / retries.
+        sharedCache?.CacheRowExtentSum(
+            gridBox, contentInlineSize, measureBudget, sizing.RowExtentSum);
         return sizing.RowExtentSum;
     }
 

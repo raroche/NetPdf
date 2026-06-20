@@ -803,6 +803,62 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task RowExtent_premeasure_is_memoized_across_a_grids_pages()
+    {
+        // Per Phase 3 Task 18 (grid-fragment-plan-shared-sizing-deferral, partial) —
+        // PreMeasureGridRowExtent runs a full §11 sizing + §8.5 placement pass to grow
+        // an auto-height grid's wrapper. That pass is page-invariant (indefinite block
+        // budget, fixed inline size + page budget), so for a grid that spans multiple
+        // pages it now resolves ONCE across all of them (RowExtentComputeCount == 1) —
+        // resume pages + rewind retries reuse the memoized extent instead of re-running
+        // the §11 arithmetic. (The cell SHAPING was already shared via MeasurePassCount;
+        // this elides the arithmetic too.)
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+              .grid { display: grid; grid-template-columns: 100px; grid-auto-rows: 200px; }
+              .grid > div { background-color: #3366cc; }
+            </style></head><body>
+              <div class="grid">
+                <div></div><div></div><div></div><div></div><div></div>
+              </div>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var cache = new GridMeasurementCache();
+        using var shaper = new SyntheticShaperResolver();
+
+        // 5 rows × 200 = 1000px content on a 500px page → spans 3 pages.
+        LayoutContinuation? incoming = null;
+        var pages = 0;
+        var done = false;
+        while (!done && pages < 8)
+        {
+            var sink = new RecordingFragmentSink();
+            var diag = new RecordingDiagnosticsSink();
+            using var layouter = new BlockLayouter(box, sink, incoming, diag, shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag, GridMeasureCache = cache };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+            pages++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) done = true;
+            else incoming = result.Continuation;
+        }
+
+        Assert.True(done, "the grid never completed within the page bound");
+        Assert.True(pages >= 2, "the grid should span multiple pages to exercise the memo");
+        // The §11 row-extent pre-measure ran exactly once across all the pages.
+        Assert.Equal(1, cache.RowExtentComputeCount);
+    }
+
+    [Fact]
     public async Task Production_html_spanning_item_distributes_after_subtracting_fixed_tracks()
     {
         // Riders-2 grid spanning-item distribution cycle (CSS Grid §11.5.1) — a content item spanning a

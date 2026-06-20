@@ -278,6 +278,63 @@ grepping the ID).
 
 ---
 
+## inline-only-block-pagination
+
+- **ID** — `inline-only-block-pagination`
+- **Status** — `approximated` (inline-only blocks emit atomically + overflow page 1; no child-boundary
+  break is consulted, so prose doesn't paginate).
+- **Behavior** — A block whose content is INLINE-ONLY (text / line boxes — a `<p>`, a `<div>text</div>`) is
+  laid out + emitted ATOMICALLY by `BlockLayouter.EmitInlineOnlyBlockInRecursion`; the recursion's
+  inline-only branch `continue`s WITHOUT consulting the break resolver. So when N such blocks stack taller
+  than a page they do NOT break across pages — they force-overflow page 1 (`<p>×200` → ONE A4 page, all
+  paragraphs crammed on it). Empty / explicit-height blocks (no line box), tables, flex, grid, and multicol
+  DO fragment; only plain PROSE block-flow fails to paginate. The outer-loop path (`DispatchInlineOnlyBlock`,
+  the layout root's direct children) IS pagination-aware — the gap is the RECURSION (content nested under
+  `body`), which every real document hits.
+- **Missing** — a break consult in the recursion's inline-only branch (`BlockLayouter.cs` ~line 4623)
+  mirroring the block-flow check (~4830): measure the inline-only block's extent, `ConsiderBreakAt`, and on
+  `BreakHere` return `BlockContinuation(ResumeAtChild)` to push the whole block to the next page. CAVEAT
+  (2026-06-19): a first cut of exactly that block-granularity break DID paginate prose (200 paragraphs → 9
+  pages, no content duplicated; empty-block pagination unchanged) but REGRESSED two flex/grid pagination
+  tests through an UNEXPLAINED interaction (an all-empty-item `flex-wrap: wrap-reverse` container began
+  paginating), so it was reverted. The correct fix needs the right context guard (exclude flex/grid
+  item-content measure recursions) and likely LINE-LEVEL splitting (orphans/widows) for a single
+  page-taller-than-one paragraph — the "true mid-subtree split / sub-cycle 2" work.
+- **Trigger** — any document whose main content is plain prose in block-flow (`<p>` / `<div>` text) taller
+  than one page — the most common document shape. It silently overflows page 1 instead of paginating.
+- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (the inline-only branch in
+  `EmitBlockSubtreeRecursive` + `EmitInlineOnlyBlockInRecursion` + `MeasureInlineOnlyBlockExtent`).
+- **Added** — 2026-06-19, surfaced while wiring the task-14 "20-page report" perf gate. Already noted in
+  code as "true mid-subtree splitting is sub-cycle 2 work" (`BlockLayouter.cs:7920`).
+- **Removal condition** — plain prose (`<p>×N` / `<div>text</div>×N` taller than a page) paginates with no
+  content loss or duplication, AND the flex/grid pagination tests stay green.
+
+---
+
+## multi-page-allocation-churn
+
+- **ID** — `multi-page-allocation-churn`
+- **Status** — `approximated` (correct output; super-linear transient allocations).
+- **Behavior** — Total allocation CHURN on the multi-page path scales ~O(n²) with page count: a single
+  table at ~26 rows/page allocates ~28 MiB/page at 5 pages but ~192 MiB/page at 39 pages (≈ O(n^1.9)
+  cumulative). The driver re-walks / re-measures content per page instead of carrying a continuation cursor
+  that does O(1) work per page. RETAINED memory is unaffected — it stays flat (~52 MiB at both 5 and 39
+  pages) because pages stream to the output, so exit criterion 8 (memory grows linearly) HOLDS; this is
+  purely transient GC pressure that also makes wall-clock somewhat super-linear (24 pg ≈ 400 ms, 34 pg ≈
+  800 ms). Within the exit-criterion-7 thresholds (3-page ≤ 200 ms, 20-page ≤ 1.5 s) the absolute times pass
+  with headroom; documents of hundreds of pages would degrade.
+- **Missing** — a continuation-carried layout cursor so each page does work proportional to its OWN content,
+  not all prior content re-measured each page. Likely overlaps the pagination cost-model / continuation-token
+  hardening.
+- **Trigger** — rendering a document of many (50+) pages — the per-page allocation grows with the page index.
+- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (the per-page re-measure passes) +
+  `src/NetPdf.Paginate/` (the driver loop).
+- **Added** — 2026-06-19, measured while wiring the task-15 memory-linearity gate.
+- **Removal condition** — per-page allocation is ~constant (O(1) per page) across a page-count sweep; total
+  churn grows linearly.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`

@@ -1,8 +1,8 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-20):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, empty/explicit-height blocks — **and now PLAIN PROSE** (task 16): a stack of text blocks taller than a page breaks across pages at paragraph boundaries (`<p>×200` paginates; was 1 overflowing page). Block-granularity only — a SINGLE paragraph taller than a whole page still force-overflows (line-level orphans/widows deferred: `inline-only-block-line-splitting`). What's left to *finish* Phase 3: (a) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (b) feature/polish + pagination/table/grid hardening, (c) multi-page allocation-churn perf (`multi-page-allocation-churn`), (d) the `0.7.0-beta` release. Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
+> **Current state (2026-06-20):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. **PR 7 (table/grid/float hardening) just landed:** table intra-cell row splitting (a tall row's stacked-block cell content breaks across pages — task 17), grid cross-page row-extent memo (task 18), and float content atomicity (nested grid/flex in floats stop truncating — task 19). What's left to *finish* Phase 3: (a) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (b) remaining hardening residuals (nested table/multicol in floats, recursive consumed-extent accounting, `multi-page-allocation-churn` — all latent/documented), (c) the `0.7.0-beta` release. Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
 >
-> Last merged: PR [#199](https://github.com/raroche/NetPdf/pull/199) (tasks 12–15: perf + memory gates). This branch `phase3-prose-pagination`: **task 16 — block-granularity prose pagination** (the inline-only branch consults the break resolver; guards a real content extent so zero-extent flex/grid blocks don't spuriously break). `git log --oneline -1` shows the exact commit.
+> Last merged: PR [#200](https://github.com/raroche/NetPdf/pull/200) (task 16: prose pagination). This branch `phase3-table-grid-float-hardening`: **tasks 17–19** (3 commits, one per task). `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-19):** 7125 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-20):** 7133 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -80,10 +80,10 @@ Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order.
 ### PR 6 — PROSE PAGINATION  ✅ DONE
 16. ✅ **Inline-only block pagination** (block-granularity) — the recursion's inline-only branch now consults the break resolver, so a text block whose margin-box overflows the page breaks WHOLE to the next page (`<p>×200` paginates; no content loss/duplication). Guards a real content extent (`InlineOnlyBreakMinExtentPx`) so a ZERO-extent anonymous block (flex/grid content past the page edge) doesn't spuriously break — the regression that blocked the first cut, root-caused (both triggers were `chunk == 0` at `start > pageBlockSize`). Residual: line-level paragraph splitting / orphans+widows (`inline-only-block-line-splitting`). Full unit suite + snapshots/golden/real-docs all green.
 
-### PR 7 — Pagination / table / grid hardening  [feature]
-17. Table intra-cell row splitting (cell content > remaining page height).
-18. Grid shared track-sizing across continuation pages + emitted-rows extent.
-19. Float-continuation propagation + recursive-block consumed-extent accounting. Plus `multi-page-allocation-churn` (per-page O(1) layout cursor — large-doc perf).
+### PR 7 — Pagination / table / grid hardening  [feature] ✅ DONE
+17. ✅ **Table intra-cell row splitting** (block-granularity) — a body row whose cell stacks block children taller than the page breaks WITHIN itself across pages (`TableContinuation.RowSplitOffset`; cells measure full natural height via `SuppressBlockPagination`; split-aware dry-run propagates the continuation through the production `BlockLayouter` path). Tight scope: no footers/bottom-captions/rowspan-origin; a single atomic block still force-overflows (`inline-only-block-line-splitting`).
+18. ✅ **Grid cross-page row-extent memo** + corrected the deferral premise — the 3 `GridSizing.Resolve` sites take GENUINELY different inputs (indefinite-block site 1 vs definite sites 2/3; probe lacks measurers), so a naive 3→1 share is INCORRECT for `fr` grids; the expensive shaping was already shared. Landed the page-invariant site-1 §11 memo (`GridMeasurementCache.RowExtentSum`) so resume pages skip it; site-2+3 collapse needs a reftest sweep (stays deferred).
+19. ✅ **Float content atomicity** — nested grid + flex in a float emit atomically (lossless) instead of paginating-then-truncating (floats don't fragment yet; `_inAtomicFloatSubtree`). Residual (all `not-started`/`approximated`, documented): nested table+multicol in floats still truncate (page-budget-coupled wrapper sizing); recursive consumed-extent accounting + `multi-page-allocation-churn` are LATENT (no visible impact).
 
 ### PR 8 — Release  [criterion 11]
 20. **Deferral audit** — reconcile `deferrals.md` / `compatibility-matrix.md` with live state; close stale entries (especially the grid residuals, several of which already shipped).

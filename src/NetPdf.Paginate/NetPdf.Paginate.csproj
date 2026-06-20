@@ -30,6 +30,10 @@
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
     <InternalsVisibleTo Include="NetPdf.PaginationGolden" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
+    <!-- Per Phase 3 PR 1 — the curated conformance suite drives BlockLayouter
+         directly (FragmentainerContext / LayoutContext / BreakResolver /
+         LayoutAttemptResult), all internal to this leaf assembly. -->
+    <InternalsVisibleTo Include="NetPdf.W3cConformance" />
   </ItemGroup>
 
 </Project>

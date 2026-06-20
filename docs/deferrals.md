@@ -1012,23 +1012,39 @@ grepping the ID).
   Finding #1; floats remain out-of-flow per CSS 2.2 §9.5 and can't
   yet carry a continuation across pages).
 - **Behavior** — When a float subtree (`float: left` / `float: right`
-  containing block-level descendants) hosts a nested multicol or
-  table whose pagination breaks mid-emission, the `BlockLayouter`
-  recursion produces a non-null `LayoutContinuation` for that
-  subtree. Floats are out-of-flow per CSS 2.2 §9.5; propagating
-  their continuation through the in-flow pagination machinery would
-  require float-tracking continuation machinery
-  (FloatManager-aware continuation state, float-fragment resume
-  contract, BFC-snapshot restoration in the float emission path).
-  The cycle 2 hardening pass discards the recursion return inside
-  float subtrees (the float's first-page slice is committed; the
-  remainder is truncated) + emits the new
-  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001` Warning diagnostic at most
-  once per page so the truncation is observable.
-- **Missing** — float-tracking continuation machinery
-  (FloatManager state snapshot/restore across pages; float-
-  fragment resume contract; cross-page float overflow per
-  CSS Fragmentation L3 §5).
+  containing block-level descendants) hosts a nested container whose
+  pagination breaks mid-emission, the `BlockLayouter` recursion would
+  produce a non-null `LayoutContinuation` for that subtree. Floats are
+  out-of-flow per CSS 2.2 §9.5; propagating their continuation through
+  the in-flow pagination machinery would require float-tracking
+  continuation machinery (FloatManager-aware continuation state, float-
+  fragment resume contract, BFC-snapshot restoration).
+- **Task 19 (what landed)** — floats DON'T fragment across pages yet,
+  so nested **grid** + **flex** containers inside a float now emit
+  ATOMICALLY (the cycle-1 contract: all rows / items on one page,
+  overflowing the page edge if tall) — LOSSLESS, the correct
+  out-of-flow model, mirroring how a float with tall explicit content
+  already force-overflows. Gated by `_inAtomicFloatSubtree` (set
+  save/restore around the float recursion entry in `EmitFloat` /
+  `EmitNestedFloat`), which suppresses the recursive-site
+  paginatable-grid + paginatable-flex clamp/flag. In-flow content is
+  byte-identical (the flag is only set inside a float). A regression
+  test pins "float + 1000px grid on a 500px page → AllDone, no
+  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001`, rows past the page edge
+  emitted".
+- **Still truncates (+ diagnoses)** — nested **table** + **multicol**
+  inside a float. Their wrapper sizing couples to the page budget
+  (`PreMeasureTableIfNeeded` with `useDryRunCommittedHeight`; the
+  MulticolLayouter paginates against the captured fragmentainer), so
+  forcing them atomic needs a page-budget-decoupled measure pass
+  (a separate cycle); until then the recursion return is discarded +
+  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001` fires at most once per page.
+- **Missing** — atomic (or fragmenting) nested **table** + **multicol**
+  inside floats; the full float-tracking continuation machinery
+  (FloatManager state snapshot/restore across pages — the snapshot/
+  restore API already exists; float-fragment resume contract; cross-
+  page float overflow per CSS Fragmentation L3 §5) for true float
+  fragmentation rather than atomic overflow.
 - **Trigger** — corpus needs a float containing multicol/table that
   spans pages, OR a user-reported case where content inside a
   large float vanishes.

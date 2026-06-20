@@ -32,6 +32,16 @@ public sealed class PerformanceGateTests
         Assert.True(p50 <= 200.0,
             $"Exit criterion 7: the 3-page invoice p50 {p50:F1} ms exceeds the 200 ms gate.");
     }
+
+    [Fact]
+    public void Report_20_page_renders_within_1500ms_p50()
+    {
+        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Report(sections: 22, rowsPerSection: 18),
+            warmup: 2, iters: 7);
+        Assert.True(pages >= 20, $"the report fixture should be ≥ 20 pages; got {pages}.");
+        Assert.True(p50 <= 1500.0,
+            $"Exit criterion 7: the {pages}-page report p50 {p50:F1} ms exceeds the 1.5 s gate.");
+    }
 }
 
 internal static class PerfFixtures
@@ -76,5 +86,25 @@ internal static class PerfFixtures
               .Append(i).Append("</td><td>").Append((i % 9) + 1).Append("</td><td>$")
               .Append((i * 7) % 500).Append(".00</td></tr>");
         return sb.Append("</table><p>Thank you for your business.</p></body></html>").ToString();
+    }
+
+    /// <summary>A paginating multi-section tabular report (each section a heading + a small table; the
+    /// tables fragment across pages). 22 sections × 18 rows ≈ 22 pages.</summary>
+    internal static string Report(int sections, int rowsPerSection)
+    {
+        var sb = new StringBuilder("<!DOCTYPE html><html><head><style>"
+            + "body { font-size: 13px } h2 { font-size: 18px } table { width: 100% }"
+            + "td { padding: 3px } @page { @bottom-center { content: counter(page) } }"
+            + "</style></head><body>");
+        for (var s = 0; s < sections; s++)
+        {
+            sb.Append("<h2>Section ").Append(s).Append("</h2><table>");
+            for (var r = 0; r < rowsPerSection; r++)
+                sb.Append("<tr><td>Row ").Append(r).Append(" of section ").Append(s)
+                  .Append("</td><td>Some tabular content value ").Append(r * 3)
+                  .Append("</td><td>").Append((r * 11) % 1000).Append("</td></tr>");
+            sb.Append("</table>");
+        }
+        return sb.Append("</body></html>").ToString();
     }
 }

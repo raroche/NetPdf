@@ -35,10 +35,10 @@ namespace NetPdf.UnitTests.Performance;
 /// deferrals.md <c>multi-page-allocation-churn</c>), which the MemoryDiagnoser standard would flag, so
 /// criterion 8 is only PARTIALLY met (review P1).</item></list></para>
 ///
-/// <para>These gates use wall-clock timing + forced full GCs, so they run in a
-/// <see cref="PerformanceGatesCollection"/> with <c>DisableParallelization = true</c> — they do NOT run
-/// concurrently with the rest of the xUnit suite, which would otherwise inject CPU/GC contention noise into
-/// the measured p50 (Copilot review).</para>
+/// <para>The two p50 gates use WALL-CLOCK timing and the retained-heap gate forces full GCs, so all three
+/// run in a <see cref="PerformanceGatesCollection"/> with <c>DisableParallelization = true</c> — they do
+/// NOT run concurrently with the rest of the xUnit suite, which would otherwise inject CPU/GC contention
+/// noise into the timing / heap measurements (Copilot review).</para>
 /// </summary>
 [Collection("PerformanceGates")]
 public sealed class PerformanceGateTests
@@ -119,9 +119,12 @@ internal static class PerfFixtures
     }
 
     /// <summary>Render <paramref name="html"/> once for the page count, warm up, then return the median
-    /// wall-clock over <paramref name="iters"/> renders (the p50 the exit criteria specify).</summary>
+    /// wall-clock over <paramref name="iters"/> renders (the p50 the exit criteria specify).
+    /// <paramref name="iters"/> must be ≥ 1; an even count averages the two middle samples (Copilot review).</summary>
     internal static (int Pages, double P50Ms) Median(string html, int warmup, int iters)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(iters, 1);
+        ArgumentOutOfRangeException.ThrowIfNegative(warmup);
         var opts = new HtmlPdfOptions { FontResolver = new SynthResolver() };
         var pages = HtmlPdf.ConvertDetailed(html, opts).PageCount;
         for (var i = 0; i < warmup; i++) _ = HtmlPdf.Convert(html, opts);
@@ -134,7 +137,11 @@ internal static class PerfFixtures
             samples[i] = sw.Elapsed.TotalMilliseconds;
         }
         Array.Sort(samples);
-        return (pages, samples[iters / 2]);
+        // Exact median: the middle sample for an odd count, the mean of the two middle for an even count.
+        var p50 = iters % 2 == 1
+            ? samples[iters / 2]
+            : (samples[iters / 2 - 1] + samples[iters / 2]) / 2.0;
+        return (pages, p50);
     }
 
     /// <summary>A paginating invoice: a header + an N-row line-item table (tables fragment across pages).

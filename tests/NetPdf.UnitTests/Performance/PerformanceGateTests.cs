@@ -20,7 +20,9 @@ namespace NetPdf.UnitTests.Performance;
 /// font loading (which adds ~140 ms of fixed, environment-dependent overhead). Fixtures use TABLE content,
 /// which fragments across pages on the live multi-page path; plain block-flow PROSE pagination is a tracked
 /// open gap (deferrals.md <c>inline-only-block-pagination</c>). Thresholds carry ~4× headroom over the
-/// measured p50 on dev hardware.
+/// measured p50 on dev hardware. NOTE: allocation CHURN on the multi-page path is super-linear (~O(n²)) — a
+/// perf-hardening item for very large documents (deferrals.md <c>multi-page-allocation-churn</c>) — but the
+/// RETAINED footprint stays flat (pages stream to the output), so criterion 8 holds.
 /// </summary>
 public sealed class PerformanceGateTests
 {
@@ -41,6 +43,37 @@ public sealed class PerformanceGateTests
         Assert.True(pages >= 20, $"the report fixture should be ≥ 20 pages; got {pages}.");
         Assert.True(p50 <= 1500.0,
             $"Exit criterion 7: the {pages}-page report p50 {p50:F1} ms exceeds the 1.5 s gate.");
+    }
+
+    [Fact]
+    public void Multi_page_retained_memory_grows_sublinearly_with_page_count()
+    {
+        // Exit criterion 8 — RETAINED managed heap grows (sub-)linearly with page count. A single table at
+        // ~26 rows/page renders ~5 pages vs ~20 pages (4×); the retained heap after each (the output is kept
+        // alive) must not grow super-linearly. An O(n²) retention (e.g. holding every page's display list)
+        // would balloon the larger render; in practice the heap stays flat because pages stream to the PDF.
+        var small = RetainedHeapAfterRender(PerfFixtures.Invoice(lineItems: 130), out var smallPages);
+        var big = RetainedHeapAfterRender(PerfFixtures.Invoice(lineItems: 520), out var bigPages);
+
+        Assert.True(bigPages >= smallPages * 3,
+            $"the fixtures should scale page count ~4× ({smallPages} → {bigPages} pages).");
+        Assert.True(big < small * 2.0,
+            $"Exit criterion 8: retained heap should grow sub-linearly with pages "
+            + $"({smallPages} pg = {small / 1024} KiB → {bigPages} pg = {big / 1024} KiB; a super-linear "
+            + "retention would exceed 2×).");
+    }
+
+    private static long RetainedHeapAfterRender(string html, out int pages)
+    {
+        var opts = new HtmlPdfOptions { FontResolver = new PerfFixtures.SynthResolver() };
+        var result = HtmlPdf.ConvertDetailed(html, opts);
+        pages = result.PageCount;
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        var retained = GC.GetTotalMemory(forceFullCollection: true);
+        GC.KeepAlive(result);   // keep the rendered output alive so it counts toward the retained heap
+        return retained;
     }
 }
 

@@ -152,24 +152,34 @@ namespace NetPdf.Layout.Layouters;
 ///   falling back to Pass B / Pass C.</item>
 ///   <item>Border-collapse model + <c>border-spacing</c> per
 ///   §6.3.</item>
-///   <item>Multi-fragmentainer ROW-INTERNAL splitting (one row whose
-///   content is taller than the remaining page is committed in full
-///   + the existing forced-overflow diagnostic fires; cycle 2+ may
-///   split row content across pages).</item>
+///   <item>Row-internal splitting is now LIVE at BLOCK granularity
+///   (Task 17 cycle 5c.2d): a body row whose cell stacks block
+///   children taller than the page breaks WITHIN itself across pages
+///   (the cut lands on the deepest block boundary that fits;
+///   <see cref="TableContinuation.RowSplitOffset"/> carries the
+///   cell-relative consumed extent). Tight scope: no footers / bottom
+///   captions / rowspan origin in the row. STILL deferred: a single
+///   ATOMIC block taller than the page (no inner block boundary)
+///   force-overflows rather than splitting mid-box (shares the prose
+///   <c>inline-only-block-line-splitting</c> line-granularity
+///   deferral); packing a following row below a split row's tail
+///   (a split row owns each of its pages).</item>
 ///   <item>Right-to-left tables / writing-mode flips.</item>
 ///   <item>Spec-strict CSS Tables L3 rowspan distribution-proportional
 ///   algorithm. Sub-cycle 2 uses a naive "extra height to the last
 ///   row of the span" approach.</item>
-///   <item>Nested-recursion continuation propagation past a single
-///   depth — Task 13 cycle 2 hardening (Finding 1) carries
-///   <see cref="TableContinuation"/> through
-///   <see cref="BlockLayouter.EmitBlockSubtreeRecursive"/> when the
-///   table is a DIRECT descendant (depth=1) of the just-emitted top-
-///   level block (so <c>&lt;body&gt;&gt;&lt;table&gt;</c> tables now
-///   split + repeat headers/footers across pages); deeper nesting
-///   (e.g. <c>&lt;body&gt;&gt;&lt;div&gt;&gt;&lt;table&gt;</c>) still
-///   falls back to the atomic <see cref="NoBreakBreakResolver"/>.
-///   Sub-cycle 6+ may generalize to arbitrary depth.</item>
+///   <item>Nested-recursion continuation propagation: Task 14 cycle 2
+///   hardening (Finding 1) lifted the original depth==1 limit —
+///   <see cref="BlockLayouter.EmitBlockSubtreeRecursive"/> now returns
+///   a <c>LayoutContinuation?</c> chain that carries a
+///   <see cref="TableContinuation"/> through ANY in-flow recursion
+///   depth (so both <c>&lt;body&gt;&gt;&lt;table&gt;</c> and
+///   <c>&lt;body&gt;&gt;&lt;div&gt;&gt;&lt;table&gt;</c> split + repeat
+///   headers/footers); the depth≥2 <see cref="NoBreakBreakResolver"/>
+///   fallback was deleted (the class survives for caption layout).
+///   Tables nested inside an out-of-flow FLOAT remain atomic (Task 19;
+///   the recursion still discards their continuation — see
+///   <c>docs/deferrals.md#float-continuation-propagation</c>).</item>
 /// </list>
 ///
 /// <para><b>Per Phase 3 Task 13 cycle 2 — <c>&lt;thead&gt;</c> /
@@ -192,13 +202,19 @@ namespace NetPdf.Layout.Layouters;
 /// <see cref="TableContinuation"/> via
 /// <see cref="LayoutAttemptResult.PageComplete"/>. The outer
 /// <see cref="BlockLayouter"/> propagates the continuation through
-/// its <see cref="BlockContinuation.LayouterState"/> slot.
-/// <c>PAGINATION-FORCED-OVERFLOW-001</c> still fires for the
-/// degenerate single-oversized-row case (a row taller than the
-/// fragmentainer is unsplittable in cycle 1 — committed in full +
-/// the existing forced-overflow diagnostic surfaces it). Row-INTERNAL
-/// splitting + per-row <c>break-inside: avoid</c> support are cycle
-/// 2+ scope — see
+/// its <see cref="BlockContinuation.LayouterState"/> slot. Per Task 17
+/// cycle 5c.2d a single oversized row that is SLICEABLE (its cell
+/// stacks block children) now breaks WITHIN itself at the deepest
+/// fitting block boundary instead of force-overflowing
+/// (<see cref="TableContinuation.RowSplitOffset"/>; the split-aware
+/// <see cref="DryRunCommittedBlockSize"/> sizes the wrapper to the
+/// slice so the outer dispatch propagates the continuation).
+/// <c>PAGINATION-FORCED-OVERFLOW-001</c> now fires only for the truly
+/// ATOMIC oversized row — one whose first remaining block is itself
+/// taller than the page (no inner block boundary to cut at), or a row
+/// with footers / bottom captions / a rowspan origin (out of the
+/// cycle's tight scope). Per-row <c>break-inside: avoid</c> support
+/// stays deferred — see
 /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
 ///
 /// <para><b>Per-cell break-resolver isolation (post-Finding-3 hardening).</b>
@@ -314,6 +330,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 throw new ArgumentOutOfRangeException(
                     nameof(incomingContinuation),
                     $"TableContinuation.ConsumedBlockSize={tc.ConsumedBlockSize} "
+                    + "must be finite + non-negative.");
+            }
+            // Per PR-#201 review P2 — RowSplitOffset is now layout-critical
+            // (it feeds the resume row's slice height + the dry-run wrapper
+            // size). A NaN / infinite / negative offset would produce a
+            // negative `remaining` / `sliceHeight` and emit negative-sized
+            // row + cell fragments. Reject at the boundary; the upper-bound
+            // (offset within the resumed row's height) is clamped in
+            // AttemptLayout once the measure pass knows the row height.
+            if (!double.IsFinite(tc.RowSplitOffset) || tc.RowSplitOffset < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(incomingContinuation),
+                    $"TableContinuation.RowSplitOffset={tc.RowSplitOffset} "
                     + "must be finite + non-negative.");
             }
         }
@@ -692,18 +722,30 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// sizing simulation (<see cref="DryRunCommittedBlockSize"/>).</summary>
     private const double IntraCellRowSplitMinBudgetPx = 1.0;
 
-    /// <summary>Per Phase 3 Task 17 cycle 5c.2d — whether body row
-    /// <paramref name="rowIndex"/> can break WITHIN itself at the cell-
-    /// relative block offset <paramref name="sliceEndCellRelative"/> (=
-    /// already-consumed cut + this page's budget). True only when the
-    /// tight cycle-1 scope holds — no footers, no bottom captions, no
-    /// rowspan origin in the row — AND at least one cell has a buffered
-    /// content fragment starting at/after the cut (= a real block-
-    /// granularity break opportunity below the budget; a single atomic
-    /// block has none). The emit-time splitter and the dry-run wrapper-
-    /// sizing simulation MUST agree, so both call this one predicate.</summary>
-    private bool IsBodyRowSliceable(int rowIndex, double sliceEndCellRelative)
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2d (PR-#201 review P1) — derive the
+    /// intra-cell row split cut from the cell content's actual BLOCK BOUNDARIES,
+    /// not the raw page-budget edge. The <paramref name="cut"/> is the DEEPEST
+    /// buffered fragment BOTTOM (across every cell anchored in row
+    /// <paramref name="rowIndex"/>) that still fits the page window
+    /// <c>[<paramref name="priorCut"/>, priorCut + <paramref name="avail"/>]</c> —
+    /// i.e. "the last full block boundary that fits". Block-granularity: the cut
+    /// lands on a block edge, so a block whose bottom exceeds the window moves
+    /// WHOLE to the next page (it isn't cut mid-box); a spanning wrapper
+    /// fragment's bottom exceeds the window (the row is oversized) so it's
+    /// naturally excluded from the cut while the content blocks below it drive it.
+    ///
+    /// <para>Returns <see langword="true"/> (with <paramref name="cut"/> &gt;
+    /// <paramref name="priorCut"/>) only when the tight cycle-1 scope holds (no
+    /// footers, no bottom captions, no rowspan origin) AND at least one block
+    /// boundary fits past <paramref name="priorCut"/>. Returns
+    /// <see langword="false"/> when the FIRST remaining block is taller than the
+    /// page (no fitting boundary) → the caller force-overflows. The emit-time
+    /// splitter and the dry-run wrapper-sizing simulation MUST agree, so both
+    /// call this one method.</para></summary>
+    private bool TryComputeRowSliceCut(
+        int rowIndex, double priorCut, double avail, out double cut)
     {
+        cut = priorCut;
         if (_measuredFooterRowCount > 0) return false;
         if (_measuredCaptionList is { Count: > 0 })
         {
@@ -713,15 +755,23 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             }
         }
         if (_measuredPlacements is null) return false;
-        var any = false;
+        var limit = priorCut + avail;
         for (var i = 0; i < _measuredPlacements.Count; i++)
         {
             var p = _measuredPlacements[i];
             if (p.OriginRow != rowIndex) continue;
             if (p.RowSpan > 1) return false;
-            if (p.ContentBuffer.HasContentAtOrBelow(sliceEndCellRelative)) any = true;
+            var buf = p.ContentBuffer.Buffered;
+            for (var j = 0; j < buf.Count; j++)
+            {
+                var bottom = buf[j].BlockOffset + buf[j].BlockSize;
+                if (bottom > priorCut && bottom <= limit && bottom > cut)
+                {
+                    cut = bottom;
+                }
+            }
         }
-        return any;
+        return cut > priorCut + IntraCellRowSplitMinBudgetPx;
     }
 
     /// <summary>Per Phase 3 Task 13 cycle 1 hardening (Finding 2) —
@@ -814,8 +864,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             var chunk = rows[r].RowHeight;
             // Per Phase 3 Task 17 cycle 5c.2d — on the resume page of an
             // intra-cell split, only the row's REMAINING content (below
-            // the prior cut) is still to emit.
-            var priorCut = r == resumeAtRow ? incomingRowSplitOffset : 0.0;
+            // the prior cut) is still to emit. Per PR-#201 review P2 —
+            // clamp the offset to the measured row height so a malformed
+            // over-large continuation can't drive remainingChunk negative.
+            var priorCut = r == resumeAtRow
+                ? System.Math.Min(incomingRowSplitOffset, chunk)
+                : 0.0;
             var remainingChunk = chunk - priorCut;
             // cycle 2: chunk fits if rowBottom + footerStackHeight <= BlockSize.
             if (cursorInFragmentainer + remainingChunk + footerStackHeight > pageBlockSize)
@@ -836,19 +890,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 {
                     // Per Phase 3 Task 17 cycle 5c.2d — when the oversized
                     // row is SLICEABLE it breaks WITHIN itself: only the
-                    // page-budget slice commits here + the table returns
-                    // PageComplete. Report needsSplitting (NOT force-
-                    // overflow) so the wrapper sizes to the slice + the
-                    // outer dispatch propagates the continuation, matching
-                    // the multi-row deferral path. A non-sliceable atomic
-                    // row keeps the forced-overflow path (full chunk).
+                    // boundary-aligned slice commits here + the table
+                    // returns PageComplete. Report needsSplitting (NOT
+                    // force-overflow) so the wrapper sizes to the slice +
+                    // the outer dispatch propagates the continuation. The
+                    // committed extent is the SAME boundary-derived cut the
+                    // emit pass uses (PR-#201 review P1), not the raw
+                    // budget, so the wrapper matches the emitted slice.
                     var availForRow =
                         pageBlockSize - cursorInFragmentainer - footerStackHeight;
                     if (availForRow > IntraCellRowSplitMinBudgetPx
-                        && IsBodyRowSliceable(r, priorCut + availForRow))
+                        && TryComputeRowSliceCut(r, priorCut, availForRow, out var dryCut))
                     {
                         needsSplitting = true;
-                        committedBodyRowsBlock += availForRow;
+                        committedBodyRowsBlock += dryCut - priorCut;
                         // Row r is NOT fully committed: leave
                         // lastCommittedRowExclusive < bodyEnd so bottom
                         // captions don't count toward this page's extent.
@@ -1702,22 +1757,29 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
             var rowHeight = rows![r].RowHeight;
             var remaining = rowHeight - priorCut;
-            var sliceEnd = priorCut + availBudget;
 
-            // Sliceable only when the remaining content has a block-
-            // granularity break opportunity at/below the budget (shared
-            // with the dry-run wrapper-sizing predicate so both agree). A
-            // single atomic block taller than the page has none and must
-            // force-overflow (mirrors inline-only-block-line-splitting).
-            // The tail-fits case (remaining <= budget) needs no such
-            // boundary — it emits the rest in one go.
-            if (remaining > availBudget && !IsBodyRowSliceable(r, sliceEnd))
+            // Choose the slice height. The tail-fits case emits all the
+            // remaining content in one go. Otherwise the cut lands on the
+            // DEEPEST block boundary that fits the budget (PR-#201 review
+            // P1) — NOT the raw page edge — so an earlier boundary isn't
+            // missed + a block straddling the edge moves whole rather than
+            // overflowing. No fitting boundary → the first remaining block
+            // is taller than the page → force-overflow (return null).
+            double sliceHeight;
+            if (remaining <= availBudget)
+            {
+                sliceHeight = remaining;
+            }
+            else if (TryComputeRowSliceCut(r, priorCut, availBudget, out var cut))
+            {
+                sliceHeight = cut - priorCut;
+            }
+            else
             {
                 return null;
             }
 
-            // Commit. Headers repeat at the top of every page the row
-            // spans; the slice fills the remaining budget.
+            // Commit. Headers repeat at the top of every page the row spans.
             if (repeatHeadOnThisPage)
             {
                 EmitHeaderRows(
@@ -1729,7 +1791,6 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     cancellationToken: cancellationToken);
             }
 
-            var sliceHeight = System.Math.Min(remaining, availBudget);
             var hasMore = EmitSlicedRow(
                 rows!, placementsByRow, columnOffsetsLocal!, rowBlockOffsets,
                 usedInlineSize, r, priorCut, sliceHeight,
@@ -1778,7 +1839,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // row. Emit the tail slice (which may itself split again).
         if (incomingRowSplitOffset > 0 && resumeAtRow < bodyEnd)
         {
-            var splitResume = TryEmitSplitRow(resumeAtRow, incomingRowSplitOffset);
+            // Per PR-#201 review P2 — the constructor already rejected NaN /
+            // infinite / negative offsets; clamp an over-large offset to the
+            // now-measured row height so the slice height can't go negative.
+            // Clamped == row height ⇒ remaining 0 ⇒ TryEmitSplitRow emits a
+            // degenerate empty slice + advances to the next row (no re-emit /
+            // no loss) — the graceful recovery for a malformed continuation.
+            var resumeRowHeight = rows![resumeAtRow].RowHeight;
+            var clampedSplitOffset = System.Math.Min(incomingRowSplitOffset, resumeRowHeight);
+            var splitResume = TryEmitSplitRow(resumeAtRow, clampedSplitOffset);
             if (splitResume is not null) return splitResume.Value;
             // Not splittable on resume (shouldn't happen — we only park a
             // row we already sliced) — fall through to the normal loop,
@@ -5697,24 +5766,6 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 target.Emit(f with { BlockOffset = f.BlockOffset + shift });
             }
             return hasMore;
-        }
-
-        /// <summary>Per Phase 3 Task 17 cycle 5c.2d — true when any
-        /// buffered fragment's cell-relative block TOP is at or below
-        /// <paramref name="cellRelativeOffset"/>. Drives the intra-cell
-        /// split decision: a row only splits (rather than force-
-        /// overflowing) when its content has a block-granularity break
-        /// opportunity below the page budget — i.e. at least one cell has
-        /// a fragment starting at/after the cut. A single atomic block
-        /// (explicit-<c>height</c> cell, no inner break opportunity) has
-        /// no such fragment and falls back to forced-overflow.</summary>
-        public bool HasContentAtOrBelow(double cellRelativeOffset)
-        {
-            for (var i = 0; i < _buffered.Count; i++)
-            {
-                if (_buffered[i].BlockOffset >= cellRelativeOffset) return true;
-            }
-            return false;
         }
 
         /// <summary>Per Finding 2 — exposed for diagnostics / tests

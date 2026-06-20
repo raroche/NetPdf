@@ -1092,6 +1092,79 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
+    public void IntraCell_production_non_divisor_blocks_cut_at_boundary()
+    {
+        // Per PR-#201 review P1/P3 — through the production BlockLayouter path
+        // (which adds the split-aware dry-run wrapper sizing) with NON-divisor
+        // blocks: 600 + 600 on an 800px page. No block starts at the 800px
+        // budget, so a raw-edge cut would force-overflow; the boundary-aware cut
+        // must split after the first block (RowSplitOffset == 600). Both blocks
+        // emit across 2 pages, no forced-overflow.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        foreach (var h in new[] { 600.0, 600.0 })
+        {
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, h);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+        }
+        cell.AppendChild(anon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        LayoutContinuation? incoming = null;
+        var pages = 0;
+        var done = false;
+        var firstSplitOffset = -1.0;
+        while (!done && pages < 8)
+        {
+            using var layouter = new BlockLayouter(
+                rootBox: root, sink: sink, incomingContinuation: incoming,
+                diagnostics: diagSink, shaperResolver: shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+            pages++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                done = true;
+            }
+            else
+            {
+                Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+                incoming = result.Continuation;
+                var bc = Assert.IsType<BlockContinuation>(incoming);
+                var tc = Assert.IsType<TableContinuation>(bc.LayouterState);
+                if (firstSplitOffset < 0) firstSplitOffset = tc.RowSplitOffset;
+            }
+        }
+
+        Assert.True(done, "table never completed within the page bound");
+        Assert.Equal(2, pages);
+        Assert.Equal(600.0, firstSplitOffset, precision: 3); // boundary, not 800
+        var blockFragments = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) blockFragments++;
+        }
+        Assert.Equal(2, blockFragments);
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
     public void Cycle2_production_table_at_depth_3_splits_cleanly()
     {
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — the

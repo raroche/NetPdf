@@ -803,7 +803,7 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
-    public async Task RowExtent_premeasure_is_memoized_across_a_grids_pages()
+    public async Task RowExtent_premeasure_is_memoized_across_grid_pages()
     {
         // Per Phase 3 Task 18 (grid-fragment-plan-shared-sizing-deferral, partial) —
         // PreMeasureGridRowExtent runs a full §11 sizing + §8.5 placement pass to grow
@@ -906,6 +906,51 @@ public sealed class GridLayouterProductionTests
 
         // Lossless: grid rows past the 500px page edge were emitted (atomic
         // overflow), not truncated. The last row tops at 800px.
+        Assert.Contains(sink.Fragments, f => f.BlockOffset >= 700);
+    }
+
+    [Fact]
+    public async Task Float_with_tall_nested_flex_column_emits_atomically_without_truncation()
+    {
+        // Per PR-#201 review P2 — `_inAtomicFloatSubtree` suppresses nested FLEX
+        // pagination as well as grid, but the grid test alone wouldn't catch a
+        // flex regression. A column flex taller than the page inside a float must
+        // emit ATOMICALLY (all items, overflowing the page edge) — lossless, no
+        // truncation. 5 items × 200 = 1000px in a float on a 500px page.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+              .f { float: left; width: 200px; }
+              .flex { display: flex; flex-direction: column; }
+              .flex > div { height: 200px; background-color: #3366cc; }
+            </style></head><body>
+              <div class="f">
+                <div class="flex">
+                  <div></div><div></div><div></div><div></div><div></div>
+                </div>
+              </div>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        using var layouter = new BlockLayouter(box, sink, null, diag, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutFloatBreakInsideNested001);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        // Lossless: flex items past the 500px page edge were emitted.
         Assert.Contains(sink.Fragments, f => f.BlockOffset >= 700);
     }
 

@@ -890,6 +890,65 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
+    public void IntraCell_constructor_rejects_malformed_RowSplitOffset()
+    {
+        // Per PR-#201 review P2 — RowSplitOffset is layout-critical (it feeds
+        // the resume slice height + dry-run wrapper size), so the constructor
+        // rejects NaN / infinity / negative just like ConsumedBlockSize. A bad
+        // value would otherwise produce a negative slice + negative-sized cell
+        // fragments.
+        var sink = new RecordingFragmentSink();
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        foreach (var bad in new[] { double.NaN, double.PositiveInfinity, -1.0 })
+        {
+            var cont = new TableContinuation(
+                RepeatHead: false, RepeatFoot: false,
+                NextRowIndex: 0, ConsumedBlockSize: 0, ColumnLayoutCache: null,
+                RowSplitOffset: bad);
+            Assert.Throws<ArgumentOutOfRangeException>(() =>
+                new TableLayouter(table, sink, incomingContinuation: cont));
+        }
+    }
+
+    [Fact]
+    public void IntraCell_over_large_RowSplitOffset_is_clamped_not_negative()
+    {
+        // Per PR-#201 review P2 — a (finite, non-negative) RowSplitOffset that
+        // exceeds the measured row height is clamped to the row height rather
+        // than driving remaining/sliceHeight negative. The row is treated as
+        // already fully emitted; the layouter completes without crashing and
+        // emits NO negative-sized fragments.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (_, table) = BuildStackedCellTableVar([300, 300]); // row height 600
+
+        var bogus = new TableContinuation(
+            RepeatHead: false, RepeatFoot: false,
+            NextRowIndex: 0, ConsumedBlockSize: 0, ColumnLayoutCache: null,
+            RowSplitOffset: 99999.0); // >> 600
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink, incomingContinuation: bogus,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var lc = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var res = layouter.AttemptLayout(ctx, ref lc, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Completes gracefully (row treated as consumed → done), no negative
+        // fragment geometry leaked into the sink.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, res.Outcome);
+        Assert.All(sink.Fragments, f =>
+        {
+            Assert.True(f.BlockSize >= 0, $"negative BlockSize {f.BlockSize}");
+            Assert.True(f.InlineSize >= 0, $"negative InlineSize {f.InlineSize}");
+        });
+    }
+
+    [Fact]
     public void Cycle1_table_out_of_range_resume_index_throws_at_attempt_layout()
     {
         // Per Phase 3 Task 13 cycle 1 — when NextRowIndex exceeds the
@@ -2394,6 +2453,142 @@ public sealed class TableLayouterTests
         table.AppendChild(grid);
         root.AppendChild(table);
         return (root, table);
+    }
+
+    /// <summary>Per PR-#201 review P1/P3 — one row / one cell whose stacked block
+    /// children have NON-UNIFORM heights, so child block starts do NOT land on
+    /// page-budget multiples. Proves the intra-cell splitter cuts at the deepest
+    /// actual block boundary that fits, not the raw page edge.</summary>
+    private static (Box root, Box table) BuildStackedCellTableVar(double[] blockHeights)
+    {
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        foreach (var h in blockHeights)
+        {
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, h);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+        }
+        cell.AppendChild(anon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+        return (root, table);
+    }
+
+    // Drive a single-cell stacked-block table across pages; returns the page
+    // count, the per-page RowSplitOffset of each PageComplete, and the total
+    // BlockContainer fragment count (lossless check).
+    private static (int Pages, System.Collections.Generic.List<double> SplitOffsets, int BlockFragments)
+        DriveStackedTablePages(Box table, double pageBlockSize)
+    {
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        var offsets = new System.Collections.Generic.List<double>();
+        TableContinuation? cont = null;
+        var pages = 0;
+        var done = false;
+        while (!done && pages < 12)
+        {
+            using var layouter = new TableLayouter(
+                rootBox: table, sink: sink, incomingContinuation: cont,
+                diagnostics: diagSink, shaperResolver: shaper);
+            layouter.ConfigureEmission(0, 0, 600);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: pageBlockSize);
+            var lc = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var res = layouter.AttemptLayout(ctx, ref lc, resolver, LayoutAttemptStrategy.LastResort);
+            pages++;
+            if (res.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                done = true;
+            }
+            else
+            {
+                Assert.Equal(LayoutAttemptOutcome.PageComplete, res.Outcome);
+                cont = Assert.IsType<TableContinuation>(res.Continuation);
+                offsets.Add(cont.RowSplitOffset);
+            }
+        }
+        Assert.True(done, "table never completed within the page bound");
+        var blocks = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) blocks++;
+        }
+        return (pages, offsets, blocks);
+    }
+
+    [Fact]
+    public void IntraCell_split_cuts_at_block_boundary_not_page_edge_600_600()
+    {
+        // Per PR-#201 review P1 — two 600px blocks on an 800px page must split
+        // AFTER the first block (cut at 600px), NOT force-overflow because no
+        // block starts exactly at the 800px budget. Page 1 commits block 0 and
+        // re-parks row 0 with RowSplitOffset == 600; page 2 commits block 1.
+        var (_, table) = BuildStackedCellTableVar([600, 600]);
+        var (pages, offsets, blocks) = DriveStackedTablePages(table, pageBlockSize: 800);
+
+        Assert.Equal(2, pages);
+        Assert.Equal(2, blocks);                 // both blocks emitted, lossless
+        Assert.Single(offsets);
+        Assert.Equal(600.0, offsets[0], precision: 3); // boundary cut, not 800
+    }
+
+    [Fact]
+    public void IntraCell_split_does_not_overflow_a_straddling_block_500_400_200()
+    {
+        // Per PR-#201 review P1 — 500 + 400 + 200 on an 800px page. The 400px
+        // block straddles the 800 edge (500→900); cutting at the raw budget would
+        // emit it overflowing. The boundary-aware cut breaks after the 500px
+        // block instead (RowSplitOffset == 500); the 400+200 tail then fits the
+        // next page in one slice. All three blocks emit, no row overflows its page.
+        var (_, table) = BuildStackedCellTableVar([500, 400, 200]);
+        var (pages, offsets, blocks) = DriveStackedTablePages(table, pageBlockSize: 800);
+
+        Assert.Equal(2, pages);
+        Assert.Equal(3, blocks);
+        Assert.Single(offsets);
+        Assert.Equal(500.0, offsets[0], precision: 3);
+    }
+
+    [Fact]
+    public void IntraCell_first_block_taller_than_page_force_overflows_not_splits()
+    {
+        // Per PR-#201 review P1 — when the FIRST remaining block (1500px) is
+        // taller than the whole page there is no fitting block boundary, so the
+        // splitter must NOT split (which would emit a zero/negative slice) — it
+        // force-overflows the row in full (lossless). AllDone on the first page,
+        // PAGINATION-FORCED-OVERFLOW-001 fires, both blocks present.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (_, table) = BuildStackedCellTableVar([1500, 300]);
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var lc = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var res = layouter.AttemptLayout(ctx, ref lc, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, res.Outcome);
+        var blocks = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) blocks++;
+        }
+        Assert.Equal(2, blocks); // both emitted (overflowing), nothing lost
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
     }
 
     [Fact]

@@ -1,8 +1,8 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-19):** Phase 3's layout + pagination engine drives multi-page rendering for **tables, flex, grid, multicol, and empty/explicit-height blocks**. **⚠️ Known gap (the biggest one): plain PROSE block-flow does NOT paginate** — a text-bearing `<p>`/`<div>` taller than a page overflows page 1 instead of breaking (deferrals.md `inline-only-block-pagination`). A block-granularity first cut DID paginate prose (200 `<p>` → 9 pages, no content loss) but REGRESSED two flex/grid pagination tests via an unexplained interaction, so it was reverted — the correct fix is the deferred "mid-subtree split" work. So "multi-page is live" is true for structured content but NOT yet for prose. What's left to *finish* Phase 3: (a) **prose pagination** (top priority), (b) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (c) feature/polish backlog, (d) the `0.7.0-beta` release. **Perf + memory exit criteria 7–8 are now layout-pipeline smoke-gated** (PR 5 — synthetic-font p50 thresholds + a retained-heap check; the full image+web-font workload + allocation-scaling stay the BenchmarkDotNet flow).
+> **Current state (2026-06-20):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, empty/explicit-height blocks — **and now PLAIN PROSE** (task 16): a stack of text blocks taller than a page breaks across pages at paragraph boundaries (`<p>×200` paginates; was 1 overflowing page). Block-granularity only — a SINGLE paragraph taller than a whole page still force-overflows (line-level orphans/widows deferred: `inline-only-block-line-splitting`). What's left to *finish* Phase 3: (a) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (b) feature/polish + pagination/table/grid hardening, (c) multi-page allocation-churn perf (`multi-page-allocation-churn`), (d) the `0.7.0-beta` release. Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
 >
-> Last merged: PR [#198](https://github.com/raroche/NetPdf/pull/198) (tasks 9–11). This branch `phase3-tasks-12-13-14`: task 12 confirmed done (margin-box overflow + relative-unit resolution already implemented + tested; container units are a tracked post-v1 deferral) + tasks 13–15 (perf + memory gates). `git log --oneline -1` shows the exact commit.
+> Last merged: PR [#199](https://github.com/raroche/NetPdf/pull/199) (tasks 12–15: perf + memory gates). This branch `phase3-prose-pagination`: **task 16 — block-granularity prose pagination** (the inline-only branch consults the break resolver; guards a real content extent so zero-extent flex/grid blocks don't spuriously break). `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -46,7 +46,7 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 | 10 | Determinism | ✅ |
 | 11 | CHANGELOG + `0.7.0-beta` tagged | ❌ |
 
-**Bottom line:** most engine work is done, but **two real multi-page gaps surfaced while gating perf (2026-06-19): (1) prose block-flow doesn't paginate** (`inline-only-block-pagination` — the top open item) and (2) allocation churn is super-linear on long docs (`multi-page-allocation-churn`). The critical path is **prose pagination → conformance measurement → release.**
+**Bottom line:** the big multi-page gap is closed — **prose now paginates** (task 16, block-granularity). Remaining: line-level paragraph splitting (`inline-only-block-line-splitting`, niche), super-linear allocation churn on long docs (`multi-page-allocation-churn`), conformance measurement, and table/grid hardening. The critical path is now **conformance measurement → hardening → release.**
 
 ## Phase 3 — remaining-work roadmap
 
@@ -77,8 +77,8 @@ Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order.
 14. ✅ 20-page report ≤ 1.5 s p50 — enforced gate (~400 ms, 22-page tabular report; the live multi-page path).
 15. ✅ Retained-heap gate — heap flat across page count (criterion 8 PARTIAL: retained footprint linear; ALLOCATION scaling is super-linear — `multi-page-allocation-churn`, the `[MemoryDiagnoser]` standard would flag it; a slope gate is large-doc hardening).
 
-### ▶ PR 6 — PROSE PAGINATION  [the top open gap — DO NEXT]
-16. **Inline-only block pagination** (`inline-only-block-pagination`) — make a text-bearing block taller than a page break across pages. A block-granularity first cut works for prose but regressed flex/grid (reverted); the fix needs the right context guard (exclude flex/grid item-content measure recursions) + likely line-level splitting (orphans/widows). The single most impactful remaining feature — prose is the common document.
+### PR 6 — PROSE PAGINATION  ✅ DONE
+16. ✅ **Inline-only block pagination** (block-granularity) — the recursion's inline-only branch now consults the break resolver, so a text block whose margin-box overflows the page breaks WHOLE to the next page (`<p>×200` paginates; no content loss/duplication). Guards a real content extent (`InlineOnlyBreakMinExtentPx`) so a ZERO-extent anonymous block (flex/grid content past the page edge) doesn't spuriously break — the regression that blocked the first cut, root-caused (both triggers were `chunk == 0` at `start > pageBlockSize`). Residual: line-level paragraph splitting / orphans+widows (`inline-only-block-line-splitting`). Full unit suite + snapshots/golden/real-docs all green.
 
 ### PR 7 — Pagination / table / grid hardening  [feature]
 17. Table intra-cell row splitting (cell content > remaining page height).

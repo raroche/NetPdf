@@ -4358,6 +4358,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             => _outer.UpdateFragmentBlockSize(_baseline + cursor, newBlockSize);
     }
 
+    /// <summary>Minimum margin-box content extent (px) below an inline-only block's border-box top for the
+    /// prose-pagination break to consider it. A block at or under this is treated as having NO paginatable
+    /// content (an empty / whitespace anonymous block) — breaking before it would spawn a spurious page.
+    /// Sub-px to admit any real single line while excluding the zero-extent case.</summary>
+    private const double InlineOnlyBreakMinExtentPx = 0.5;
+
     /// <summary>Per Phase 3 Task 7 cycle 2b — recursively emit fragments
     /// for <paramref name="parent"/>'s block-level descendants. Called
     /// AFTER the parent's own fragment is emitted; offsets are relative
@@ -4635,6 +4641,48 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // AFTER the child instead of pushing it down.
                 var inlineOnlyMarginStart =
                     child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
+
+                // Prose pagination (block-granularity) — consult the break resolver BEFORE emitting an
+                // inline-only block, mirroring the block-flow check below. Pre-fix this branch emitted
+                // unconditionally + `continue`d, so N stacked text blocks taller than the page all
+                // force-overflowed page 1 (`<p>×200` → 1 page). Now a text block whose margin-box would
+                // overflow the fragmentainer breaks WHOLE to the next page (its resume re-enters at
+                // `childIdx`, exactly like a block-flow child). CHILD-BOUNDARY granularity only — splitting a
+                // single paragraph's LINES across pages (orphans/widows) stays the deferred mid-subtree work.
+                //
+                // GUARD `inlineChunk > InlineOnlyBreakMinExtentPx`: only break a block with REAL content
+                // extent. A ZERO-extent inline-only block — an empty/whitespace AnonymousBlock the recursion
+                // may walk for flex/grid content, placed PAST the page edge by that layout — has nothing to
+                // push to the next page; breaking it spawned a spurious page (regressed flex wrap-reverse +
+                // grid-fr — both were chunk == 0 blocks at start > pageBlockSize). Forward-progress guard
+                // (`_sink.Cursor > sinkCursorAtRecursionEntry`): an over-tall FIRST block still
+                // force-overflows so pagination always progresses. Named-page breaks on an inline-only block
+                // stay deferred (rare; the block-flow path owns them).
+                if (propagatingResolver is not null
+                    && propagatingFragmentainer is { SuppressBlockPagination: false } pfInline
+                    && _sink.Cursor > sinkCursorAtRecursionEntry)
+                {
+                    var inlineMarginBoxExtent = MeasureInlineOnlyBlockExtent(
+                        child, contentInlineSize, cancellationToken);
+                    // Border-box top (matches the emit offset below); the chunk runs from there to the
+                    // margin-box bottom (border-box + margin-bottom = margin-box extent − margin-top).
+                    var inlineChunk = Math.Max(0, inlineMarginBoxExtent - inlineOnlyMarginStart);
+                    if (inlineChunk > InlineOnlyBreakMinExtentPx)
+                    {
+                        var inlineChildStart = Math.Max(0, contentTop + childCursor + inlineOnlyMarginStart);
+                        var savedUsedBlockSizeInline = pfInline.UsedBlockSize;
+                        pfInline.UsedBlockSize = inlineChildStart;
+                        var inlineDecision = propagatingResolver.ConsiderBreakAt(
+                            BreakOpportunity.Block(
+                                usedBlockSize: inlineChildStart, chunkBlockSize: inlineChunk),
+                            pfInline);
+                        pfInline.UsedBlockSize = savedUsedBlockSizeInline;
+                        if (inlineDecision.Action == BreakAction.BreakHere)
+                        {
+                            return new BlockContinuation(ResumeAtChild: childIdx, ConsumedBlockSize: 0);
+                        }
+                    }
+                }
 
                 var emittedExtent = EmitInlineOnlyBlockInRecursion(
                     child,

@@ -635,9 +635,7 @@ grepping the ID).
 - **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: percentage
   column widths; full grid/table used-inline-size reconciliation for
   content-shrink scenarios; §6.3 border-collapse + border-spacing;
-  §6.4 column-group widths beyond Pass A fallback; row-internal
-  splitting (a single row taller than the fragmentainer is
-  currently atomic + triggers forced-overflow);
+  §6.4 column-group widths beyond Pass A fallback;
   §11 spec-strict rowspan distribution-proportional algorithm;
   CSS Tables L3 §3 spec-strict proportional-weight column-width
   distribution (sub-cycle 5 ships a deterministic linear-interpolation
@@ -686,12 +684,31 @@ grepping the ID).
     fallback was deleted (the class remains, still used for
     captions). The `TableLayouter` single-oversized-row forward-
     progress fallback is the safety net.
+    Phase 3 Task 17 cycle 5c.2d added **intra-cell row splitting at
+    BLOCK granularity**: a single body row whose cell content stacks
+    block children taller than the page now breaks WITHIN itself
+    across pages (`TableContinuation.RowSplitOffset` carries the
+    cell-relative cut; the resume page re-measures + re-slices
+    deterministically) instead of force-overflowing. Cell content is
+    measured at full natural height (`SuppressBlockPagination` on the
+    cell fragmentainer — pagination is the table's job, not the
+    cell's). The dry-run wrapper-sizing (`DryRunCommittedBlockSize`)
+    is split-aware so the outer dispatch propagates the continuation.
+    Tight cycle-1 scope: a split row OWNS each of its pages (the next
+    row starts fresh after the tail); enabled only when the table has
+    no footers + no bottom captions + the row carries no rowspan
+    origin. A single ATOMIC block taller than the page (explicit
+    `height`, no inner break opportunity) still force-overflows —
+    shares the `inline-only-block-line-splitting` line-granularity
+    deferral.
     Remaining: spec-strict §11 rowspan distribution-proportional
     algorithm; §6.3 border-collapse model + `border-spacing`;
-    row-internal splitting + row-level `break-inside: avoid`; RTL
-    writing modes / row reversal / caption inline-axis keyword
-    routing; HTML5 colspan='0'/rowspan='0' remainder semantics;
-    percentage column widths.
+    intra-cell splitting for rows WITH footers / bottom captions /
+    rowspan origins, and packing a following row below a split row's
+    tail (currently the next row starts fresh); row-level
+    `break-inside: avoid`; RTL writing modes / row reversal / caption
+    inline-axis keyword routing; HTML5 colspan='0'/rowspan='0'
+    remainder semantics; percentage column widths.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
     — sub-cycle 5 hardening Finding 6 now consumes the table's
     `MeasuredUsedInlineSize` to widen the wrapper's border-box

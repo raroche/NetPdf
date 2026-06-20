@@ -593,6 +593,120 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
+    public void IntraCell_oversized_row_with_stacked_blocks_splits_across_pages()
+    {
+        // Per Phase 3 Task 17 cycle 5c.2d — a single body row whose cell
+        // stacks block children TALLER than the page no longer force-
+        // overflows at full extent: it breaks WITHIN itself at a block-
+        // granularity boundary. Page 1 emits the fitting slice + returns
+        // PageComplete with RowSplitOffset > 0 (still NextRowIndex == 0 —
+        // the split is inside row 0); page 2 resumes the tail + returns
+        // AllDone. Every block emits exactly once (lossless, no dup).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // One row, one cell, six 200-px blocks (1200 px) on an 800 page.
+        var (_, table) = BuildStackedCellTable(blockCount: 6, blockHeight: 200);
+
+        TableContinuation cont;
+        using (var page1 = new TableLayouter(
+            rootBox: table, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var lc1 = new LayoutContext(ctx1) { Diagnostics = diagSink };
+            using var r1 = new BreakResolver();
+            var res1 = page1.AttemptLayout(
+                ctx1, ref lc1, r1, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, res1.Outcome);
+            cont = Assert.IsType<TableContinuation>(res1.Continuation);
+            Assert.Equal(0, cont.NextRowIndex);
+            Assert.True(cont.RowSplitOffset > 0,
+                "expected a non-zero intra-row split offset");
+        }
+
+        using (var page2 = new TableLayouter(
+            rootBox: table, sink: sink, incomingContinuation: cont,
+            diagnostics: diagSink, shaperResolver: shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var lc2 = new LayoutContext(ctx2) { Diagnostics = diagSink };
+            using var r2 = new BreakResolver();
+            var res2 = page2.AttemptLayout(
+                ctx2, ref lc2, r2, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.AllDone, res2.Outcome);
+        }
+
+        // All six block-container fragments emitted exactly once across
+        // the two pages (lossless, no duplication).
+        var blockFragments = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) blockFragments++;
+        }
+        Assert.Equal(6, blockFragments);
+
+        // The row split cleanly — no forced-overflow / truncation.
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
+    public void IntraCell_split_row_taller_than_two_pages_paginates_three_pages()
+    {
+        // Per Phase 3 Task 17 cycle 5c.2d — a row taller than TWO pages
+        // splits across three: each intermediate page returns PageComplete
+        // re-parking the SAME row 0 with a growing RowSplitOffset, until
+        // the final tail fits + returns AllDone. Lossless across all pages.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Twelve 200-px blocks (2400 px) on an 800 page → 3 pages.
+        var (_, table) = BuildStackedCellTable(blockCount: 12, blockHeight: 200);
+
+        var pages = 0;
+        TableContinuation? cont = null;
+        var done = false;
+        while (!done && pages < 8)
+        {
+            using var pageLayouter = new TableLayouter(
+                rootBox: table, sink: sink, incomingContinuation: cont,
+                diagnostics: diagSink, shaperResolver: shaper);
+            pageLayouter.ConfigureEmission(0, 0, 600);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var lc = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var res = pageLayouter.AttemptLayout(
+                ctx, ref lc, resolver, LayoutAttemptStrategy.LastResort);
+            pages++;
+            if (res.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                done = true;
+            }
+            else
+            {
+                Assert.Equal(LayoutAttemptOutcome.PageComplete, res.Outcome);
+                cont = Assert.IsType<TableContinuation>(res.Continuation);
+            }
+        }
+
+        Assert.True(done, "table never completed within the page bound");
+        Assert.Equal(3, pages);
+
+        // All twelve blocks emitted exactly once across the three pages.
+        var blockFragments = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) blockFragments++;
+        }
+        Assert.Equal(12, blockFragments);
+    }
+
+    [Fact]
     public void Cycle1_table_top_caption_emits_only_on_first_page()
     {
         // Per Phase 3 Task 13 cycle 1 — top captions emit only when
@@ -2245,6 +2359,38 @@ public sealed class TableLayouterTests
             row.AppendChild(cell);
             grid.AppendChild(row);
         }
+        table.AppendChild(grid);
+        root.AppendChild(table);
+        return (root, table);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2d — one row / one cell whose
+    /// content is a STACK of <paramref name="blockCount"/> block children,
+    /// each <paramref name="blockHeight"/> px tall. Unlike
+    /// <see cref="BuildTallRowTable"/> (a single explicit-height block =
+    /// one atomic, unsliceable fragment), the stacked children give the
+    /// intra-cell splitter block-granularity break opportunities, so a row
+    /// taller than the page breaks within itself instead of force-
+    /// overflowing.</summary>
+    private static (Box root, Box table) BuildStackedCellTable(
+        int blockCount, double blockHeight)
+    {
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        for (var i = 0; i < blockCount; i++)
+        {
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, blockHeight);
+            var bc = Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement());
+            anon.AppendChild(bc);
+        }
+        cell.AppendChild(anon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
         table.AppendChild(grid);
         root.AppendChild(table);
         return (root, table);

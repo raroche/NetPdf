@@ -8922,11 +8922,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // splits cleanly internally).
         if (useDryRunCommittedHeight)
         {
-            var resumeAt =
-                (incomingTableContinuation as TableContinuation)?.NextRowIndex ?? 0;
+            var resumeCont = incomingTableContinuation as TableContinuation;
+            var resumeAt = resumeCont?.NextRowIndex ?? 0;
+            // Per Phase 3 Task 17 cycle 5c.2d — thread the intra-cell row
+            // split offset so the dry-run sizes the resume-page wrapper to
+            // the row's REMAINING tail, not its full height.
+            var resumeSplitOffset = resumeCont?.RowSplitOffset ?? 0.0;
             var dryRunCommitted = tableLayouter.DryRunCommittedBlockSize(
                 fragmentainer, resumeAt,
-                out _, out _);
+                out _, out _, resumeSplitOffset);
             tableContentHeight = dryRunCommitted;
         }
         else

@@ -80,13 +80,32 @@ internal sealed record InlineContinuation(
 /// widths so the resume-page TableLayouter skips the (expensive) auto-
 /// layout pass. When non-null on resume, the layouter loads the cached
 /// values + jumps straight to the cell-content emit pass for the
-/// resumed rows.</summary>
+/// resumed rows.
+/// <paramref name="RowSplitOffset"/> per Phase 3 Task 17 cycle 5c.2d —
+/// intra-cell ROW splitting. When a single body row's content is taller
+/// than the entire fragmentainer body budget AND its cells' content is
+/// SLICEABLE (= has block-granularity break opportunities below the
+/// page budget), the row breaks WITHIN itself: the portion that fits is
+/// emitted on this page and the remainder resumes on the next page at
+/// row <paramref name="NextRowIndex"/>. <paramref name="RowSplitOffset"/>
+/// is the cumulative cell-relative block-axis extent of row
+/// <paramref name="NextRowIndex"/> ALREADY emitted on prior pages (0 =
+/// the row starts fresh; &gt; 0 = resume the row's tail at that cell-
+/// relative offset). Block-granularity only — a single atomic block
+/// (e.g. an explicit-<c>height</c> cell with no inner break
+/// opportunity) taller than the page still force-overflows rather than
+/// splitting mid-block (mirrors the prose
+/// <c>inline-only-block-line-splitting</c> deferral). The cut is the
+/// page budget; the resume page re-measures the cells deterministically
+/// + re-slices from <paramref name="RowSplitOffset"/>, so the heavy
+/// per-cell content buffers don't need to cross the page boundary.</summary>
 internal sealed record TableContinuation(
     bool RepeatHead,
     bool RepeatFoot,
     int NextRowIndex,
     double ConsumedBlockSize = 0.0,
-    object? ColumnLayoutCache = null) : LayoutContinuation;
+    object? ColumnLayoutCache = null,
+    double RowSplitOffset = 0.0) : LayoutContinuation;
 
 /// <summary>Multi-line flex container split between flex lines.
 /// <c>LineIndex</c> identifies the next flex line to emit.

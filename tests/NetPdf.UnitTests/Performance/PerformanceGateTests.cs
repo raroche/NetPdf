@@ -23,7 +23,13 @@ namespace NetPdf.UnitTests.Performance;
 /// measured p50 on dev hardware. NOTE: allocation CHURN on the multi-page path is super-linear (~O(n²)) — a
 /// perf-hardening item for very large documents (deferrals.md <c>multi-page-allocation-churn</c>) — but the
 /// RETAINED footprint stays flat (pages stream to the output), so criterion 8 holds.
+///
+/// <para>These gates use wall-clock timing + forced full GCs, so they run in a
+/// <see cref="PerformanceGatesCollection"/> with <c>DisableParallelization = true</c> — they do NOT run
+/// concurrently with the rest of the xUnit suite, which would otherwise inject CPU/GC contention noise into
+/// the measured p50 (Copilot review).</para>
 /// </summary>
+[Collection("PerformanceGates")]
 public sealed class PerformanceGateTests
 {
     [Fact]
@@ -77,12 +83,21 @@ public sealed class PerformanceGateTests
     }
 }
 
+/// <summary>Serializes the perf/memory gates (no parallel execution with the rest of the assembly), so
+/// their wall-clock timing isn't perturbed by concurrent test classes (Copilot review).</summary>
+[CollectionDefinition("PerformanceGates", DisableParallelization = true)]
+public sealed class PerformanceGatesCollection { }
+
 internal static class PerfFixtures
 {
     internal sealed class SynthResolver : IFontResolver
     {
+        // Build the synthetic TTF ONCE — SyntheticFont.Build() allocates the whole byte stream per call, so
+        // resolving it per font query would measure the test-font builder, not the engine (Copilot review).
+        private static readonly byte[] FontBytes = SyntheticFont.Build();
+
         public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
-            => new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
+            => new(new FontFaceData { Bytes = FontBytes, Family = query.Family });
     }
 
     /// <summary>Render <paramref name="html"/> once for the page count, warm up, then return the median

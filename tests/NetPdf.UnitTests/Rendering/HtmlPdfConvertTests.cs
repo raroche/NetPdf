@@ -226,25 +226,36 @@ public sealed class HtmlPdfConvertTests
         Assert.True(result.PageCount >= 2, $"expected prose to paginate; got {result.PageCount} page(s).");
         Assert.True(result.PageCount < 20, $"sanity: a handful of pages, got {result.PageCount}.");
         Assert.Equal(120, TdCount(Latin1(result.Pdf)));   // one Td per paragraph — no content lost or duplicated
+        // No CONTENT was truncated — the paragraphs paginated, none dropped (review P3, like the adjacent
+        // block-pagination tests). (PAGINATION-FORCED-OVERFLOW-001 is the existing "subtree taller than a
+        // page, committed + recursed" signal shared by ALL block-flow pagination — empty-height blocks emit
+        // it too — so it is NOT asserted absent here; only data loss matters.)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
     }
 
     [Fact]
     public void Prose_and_empty_height_blocks_paginate_together_without_content_loss()
     {
-        // The inline-only break (prose) composes with the block-flow break (empty/explicit-height blocks):
-        // a doc mixing both paginates with ALL content present. 20 + 20 one-line paragraphs around a tall
-        // empty block → both paths break, and all 40 paragraph lines are emitted exactly once.
+        // The inline-only break (prose) composes with the block-flow break (explicit-height blocks): a doc
+        // mixing both paginates with ALL content present. 20 + 20 one-line paragraphs around a tall RED
+        // spacer → both paths break, all 40 paragraph lines emit exactly once, AND the spacer still paints
+        // its red fill (so dropping/misplacing the spacer fails the test, not just the surrounding prose —
+        // review P2).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var sb = new StringBuilder("<!DOCTYPE html><html><body>");
         for (var i = 0; i < 20; i++) sb.Append("<p>Alpha ").Append(i).Append("</p>");
-        sb.Append("<div style=\"height:500px\"></div>");
+        sb.Append("<div style=\"height:500px;background-color:red\"></div>");
         for (var i = 0; i < 20; i++) sb.Append("<p>Beta ").Append(i).Append("</p>");
         sb.Append("</body></html>");
 
         var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
 
         Assert.True(result.PageCount >= 2, $"expected pagination; got {result.PageCount}.");
-        Assert.Equal(40, TdCount(Latin1(result.Pdf)));   // all 40 paragraphs present, once each
+        Assert.Equal(40, TdCount(pdf));      // all 40 paragraphs present, once each
+        Assert.Contains("1 0 0 rg", pdf);    // the red spacer's fill color
+        Assert.Contains("re f", pdf);        // the spacer paints a filled rectangle (not dropped)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
     }
 
     // Non-block pagination — regression lock-in (multi-page-driver.md, post-cycle-8 audit).

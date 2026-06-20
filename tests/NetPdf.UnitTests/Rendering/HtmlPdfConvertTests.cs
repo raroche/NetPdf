@@ -209,7 +209,8 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Prose_block_flow_taller_than_one_page_paginates_at_paragraph_boundaries()
     {
-        // Prose pagination (deferrals.md `inline-only-block-pagination`, now BLOCK-granularity): a stack of
+        // Prose pagination (block-granularity — the broad `inline-only-block-pagination` deferral is now
+        // CLOSED; the residual single-paragraph line split is `inline-only-block-line-splitting`): a stack of
         // text-bearing blocks (inline-only blocks) taller than the page now BREAKS across pages instead of
         // overflowing page 1 (the pre-fix behavior was 120 paragraphs crammed onto a single page). Each
         // paragraph is emitted EXACTLY ONCE — Td count == paragraph count — so the break/resume neither

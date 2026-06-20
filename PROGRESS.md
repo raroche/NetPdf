@@ -1,6 +1,6 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-19):** Phase 3's layout + pagination engine drives multi-page rendering for **tables, flex, grid, multicol, and empty/explicit-height blocks**. **⚠️ Known gap (the biggest one): plain PROSE block-flow does NOT paginate** — a text-bearing `<p>`/`<div>` taller than a page overflows page 1 instead of breaking (deferrals.md `inline-only-block-pagination`). A block-granularity first cut DID paginate prose (200 `<p>` → 9 pages, no content loss) but REGRESSED two flex/grid pagination tests via an unexplained interaction, so it was reverted — the correct fix is the deferred "mid-subtree split" work. So "multi-page is live" is true for structured content but NOT yet for prose. What's left to *finish* Phase 3: (a) **prose pagination** (top priority), (b) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (c) feature/polish backlog, (d) the `0.7.0-beta` release. **Perf + memory exit criteria 7–8 are now gated + passing** (PR 5).
+> **Current state (2026-06-19):** Phase 3's layout + pagination engine drives multi-page rendering for **tables, flex, grid, multicol, and empty/explicit-height blocks**. **⚠️ Known gap (the biggest one): plain PROSE block-flow does NOT paginate** — a text-bearing `<p>`/`<div>` taller than a page overflows page 1 instead of breaking (deferrals.md `inline-only-block-pagination`). A block-granularity first cut DID paginate prose (200 `<p>` → 9 pages, no content loss) but REGRESSED two flex/grid pagination tests via an unexplained interaction, so it was reverted — the correct fix is the deferred "mid-subtree split" work. So "multi-page is live" is true for structured content but NOT yet for prose. What's left to *finish* Phase 3: (a) **prose pagination** (top priority), (b) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (c) feature/polish backlog, (d) the `0.7.0-beta` release. **Perf + memory exit criteria 7–8 are now layout-pipeline smoke-gated** (PR 5 — synthetic-font p50 thresholds + a retained-heap check; the full image+web-font workload + allocation-scaling stay the BenchmarkDotNet flow).
 >
 > Last merged: PR [#198](https://github.com/raroche/NetPdf/pull/198) (tasks 9–11). This branch `phase3-tasks-12-13-14`: task 12 confirmed done (margin-box overflow + relative-unit resolution already implemented + tested; container units are a tracked post-v1 deferral) + tasks 13–15 (perf + memory gates). `git log --oneline -1` shows the exact commit.
 >
@@ -40,8 +40,8 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 | 4 | W3C Flexbox pass-rate ≥ 85% | ⚠️ **not measured** |
 | 5 | W3C Grid L1 pass-rate ≥ 70% | ⚠️ **not measured** |
 | 6 | W3C Fragmentation pass-rate ≥ 80% | ⚠️ **not measured** |
-| 7 | Perf: 3-pg ≤ 200 ms, 20-pg ≤ 1.5 s p50 | ✅ **gated** (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms, synthetic-font table content). Caveat: allocation churn is super-linear (`multi-page-allocation-churn`) — large-doc hardening deferred; absolute thresholds pass. |
-| 8 | Memory linear with page count | ✅ **gated** (`PerformanceGateTests` — retained heap flat ~52 MiB across 5→39 pages). |
+| 7 | Perf: 3-pg ≤ 200 ms, 20-pg ≤ 1.5 s p50 | 🟡 **layout-pipeline smoke-gated** (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms — synthetic fonts + table content). The FULL-pipeline target (tables + **images + web fonts**, docs/design/performance.md) is the BenchmarkDotNet flow, not yet a build gate. |
+| 8 | Memory linear with page count | 🟡 **partial** — RETAINED heap flat (gated); ALLOCATION linearity NOT met: multi-page churn is super-linear (`multi-page-allocation-churn` — the `[MemoryDiagnoser]` standard would flag it). |
 | 9 | AOT smoke passes | ✅ |
 | 10 | Determinism | ✅ |
 | 11 | CHANGELOG + `0.7.0-beta` tagged | ❌ |
@@ -75,7 +75,7 @@ Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order.
 ### PR 5 — Perf + memory gates  [criteria 7–8] ✅ DONE
 13. ✅ 3-page invoice ≤ 200 ms p50 — enforced `PerformanceGateTests` (~42 ms, synthetic-font table invoice).
 14. ✅ 20-page report ≤ 1.5 s p50 — enforced gate (~400 ms, 22-page tabular report; the live multi-page path).
-15. ✅ Memory-linearity gate — retained heap flat across page count (criterion 8 holds). Surfaced `multi-page-allocation-churn` (super-linear transient allocations — large-doc hardening, deferred).
+15. ✅ Retained-heap gate — heap flat across page count (criterion 8 PARTIAL: retained footprint linear; ALLOCATION scaling is super-linear — `multi-page-allocation-churn`, the `[MemoryDiagnoser]` standard would flag it; a slope gate is large-doc hardening).
 
 ### ▶ PR 6 — PROSE PAGINATION  [the top open gap — DO NEXT]
 16. **Inline-only block pagination** (`inline-only-block-pagination`) — make a text-bearing block taller than a page break across pages. A block-granularity first cut works for prose but regressed flex/grid (reverted); the fix needs the right context guard (exclude flex/grid item-content measure recursions) + likely line-level splitting (orphans/widows). The single most impactful remaining feature — prose is the common document.

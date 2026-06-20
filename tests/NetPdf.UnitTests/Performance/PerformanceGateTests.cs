@@ -14,15 +14,26 @@ using Xunit;
 namespace NetPdf.UnitTests.Performance;
 
 /// <summary>
-/// Phase 3 exit-criterion 7 + 8 enforced gates (docs/phases/phase-3-layout-and-pagination.md). The perf
-/// gates render through a SYNTHETIC font resolver (deterministic glyphs, no system-font I/O) so they
-/// measure the layout → paginate → paint → PDF-write pipeline — the engine's own throughput — not platform
-/// font loading (which adds ~140 ms of fixed, environment-dependent overhead). Fixtures use TABLE content,
-/// which fragments across pages on the live multi-page path; plain block-flow PROSE pagination is a tracked
-/// open gap (deferrals.md <c>inline-only-block-pagination</c>). Thresholds carry ~4× headroom over the
-/// measured p50 on dev hardware. NOTE: allocation CHURN on the multi-page path is super-linear (~O(n²)) — a
-/// perf-hardening item for very large documents (deferrals.md <c>multi-page-allocation-churn</c>) — but the
-/// RETAINED footprint stays flat (pages stream to the output), so criterion 8 holds.
+/// Phase 3 exit-criterion 7 + 8 SMOKE gates (docs/phases/phase-3-layout-and-pagination.md). These measure
+/// the engine's LAYOUT → paginate → paint → PDF-write THROUGHPUT through a SYNTHETIC font resolver
+/// (deterministic glyphs, no system-font I/O — platform font loading adds ~140 ms of fixed,
+/// environment-dependent overhead) over TABLE fixtures (plain block-flow PROSE pagination is a tracked open
+/// gap, deferrals.md <c>inline-only-block-pagination</c>). They carry ~4× headroom over the measured p50 on
+/// dev hardware.
+///
+/// <para><b>Scope — these are guard rails, not the authoritative perf numbers.</b> The repo's standard for
+/// strict perf + ALLOCATION scaling is the BenchmarkDotNet + <c>[MemoryDiagnoser]</c> flow in
+/// <c>tests/NetPdf.Benchmarks/</c> on a stable runner (docs/design/performance.md). These xUnit gates run
+/// everywhere (every <c>dotnet test</c>) as a coarse regression net; for that reason they are tagged
+/// <c>[Trait("Category", "Performance")]</c> so CI can route them separately (review P3). Two scope caveats:
+/// <list type="bullet">
+/// <item>The exit-criterion-7 "20-page report" target (docs/design/performance.md) is a FULL-pipeline
+/// workload — tables + images + web fonts. This gate covers only the SYNTHETIC layout/pagination pipeline;
+/// the image + real-font cost belongs in a Phase-4 corpus benchmark (review P2).</item>
+/// <item>Criterion 8 here is a RETAINED-heap check only (the heap stays flat across page count). It does NOT
+/// enforce ALLOCATION linearity — multi-page allocation CHURN is super-linear (~O(n²),
+/// deferrals.md <c>multi-page-allocation-churn</c>), which the MemoryDiagnoser standard would flag, so
+/// criterion 8 is only PARTIALLY met (review P1).</item></list></para>
 ///
 /// <para>These gates use wall-clock timing + forced full GCs, so they run in a
 /// <see cref="PerformanceGatesCollection"/> with <c>DisableParallelization = true</c> — they do NOT run
@@ -33,6 +44,7 @@ namespace NetPdf.UnitTests.Performance;
 public sealed class PerformanceGateTests
 {
     [Fact]
+    [Trait("Category", "Performance")]
     public void Invoice_3_page_renders_within_200ms_p50()
     {
         var (pages, p50) = PerfFixtures.Median(PerfFixtures.Invoice(lineItems: 80), warmup: 5, iters: 15);
@@ -42,16 +54,22 @@ public sealed class PerformanceGateTests
     }
 
     [Fact]
+    [Trait("Category", "Performance")]
     public void Report_20_page_renders_within_1500ms_p50()
     {
         var (pages, p50) = PerfFixtures.Median(PerfFixtures.Report(sections: 22, rowsPerSection: 18),
             warmup: 2, iters: 7);
-        Assert.True(pages >= 20, $"the report fixture should be ≥ 20 pages; got {pages}.");
+        // Bound BOTH sides: the deterministic synthetic fixture lands at a fixed page count, so a regression
+        // that duplicates pages or over-fragments (→ 30-40 pages) must fail even if it stays under 1.5 s —
+        // the workload would no longer be the intended ~22-page report (review P2).
+        Assert.True(pages is >= 20 and <= 24,
+            $"the report fixture should be a 20–24 page workload; got {pages} — the workload shape drifted.");
         Assert.True(p50 <= 1500.0,
             $"Exit criterion 7: the {pages}-page report p50 {p50:F1} ms exceeds the 1.5 s gate.");
     }
 
     [Fact]
+    [Trait("Category", "Performance")]
     public void Multi_page_retained_memory_grows_sublinearly_with_page_count()
     {
         // Exit criterion 8 — RETAINED managed heap grows (sub-)linearly with page count. A single table at

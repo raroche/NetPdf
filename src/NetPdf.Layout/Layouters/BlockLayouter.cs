@@ -447,6 +447,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// page. Reset on every AttemptLayout entry.</summary>
     private bool _emittedFloatBreakInsideNestedDiagnosticThisPage;
 
+    /// <summary>Per Phase 3 Task 19 (float-continuation-propagation, partial) — set
+    /// while emitting a FLOAT's subtree. Floats are out-of-flow (CSS 2.2 §9.5) and the
+    /// engine does NOT yet fragment them across pages; a nested grid / flex that
+    /// paginated inside a float returned a continuation the float path discarded,
+    /// silently TRUNCATING the overflow. With this flag set, nested grid + flex
+    /// containers in a float emit ATOMICALLY (the cycle-1 contract: all rows / items on
+    /// one page, overflowing the page edge if tall) — lossless, the correct "floats
+    /// don't fragment yet" model, mirroring how a float with tall explicit content
+    /// already force-overflows. Block-flow content in floats already emits atomically
+    /// (the float recursion passes no propagating fragmentainer). Nested TABLE +
+    /// multicol stay on the truncate-and-diagnose path (their wrapper-sizing couples to
+    /// the page budget — a separate cycle). Save/restore around the recursion entry so
+    /// float-in-float nesting composes; in-flow content (flag false) is byte-identical.</summary>
+    private bool _inAtomicFloatSubtree;
+
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// block children, emitting fragments into <paramref name="sink"/>.
     /// <paramref name="incomingContinuation"/> resumes a multi-page
@@ -5275,8 +5290,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // the page.</para>
                 // PR-#182 review P1 — suppressed for nested content (a discarded
                 // PageComplete would drop the deferred flex items).
+                // Per Phase 3 Task 19 — also suppressed inside a FLOAT subtree: the
+                // flex emits atomically (full natural extent, no page clamp) so its
+                // items are lossless rather than truncated past a discarded split.
                 if (IsPaginatableFlex(child)
                     && !_disableFlexPagination
+                    && !_inAtomicFloatSubtree
                     && _capturedFragmentainer is not null)
                 {
                     var pageRemainingForFlex =
@@ -5373,8 +5392,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // see authored == clamped + the dual-input mechanism
             // degenerates to legacy behavior.
             var recursiveAuthoredBorderBoxBlockSize = childBorderBoxBlockSize;
+            // Per Phase 3 Task 19 — a grid inside a FLOAT subtree emits atomically
+            // (full natural extent, no page clamp) so its rows are lossless rather than
+            // truncated past a discarded split (floats don't fragment yet).
             if (IsPaginatableGrid(child)
                 && !_disableGridPagination
+                && !_inAtomicFloatSubtree
                 && _capturedFragmentainer is not null)
             {
                 var pageRemainingForGrid =
@@ -6196,13 +6219,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // + emit a one-shot per-page diagnostic so the truncation is
         // observable. The first-page slice of the float is committed;
         // the deep break's remainder is lost.
-        var nestedFloatRet = EmitBlockSubtreeRecursive(
-            child,
-            parentBlockOffset: fragmentBlockOffset,
-            parentInlineOffset: fragmentInlineOffset,
-            parentInlineSize: borderBoxInlineSize,
-            cancellationToken: cancellationToken,
-            depth: 1);
+        // Per Phase 3 Task 19 — mark the float subtree so nested grid / flex emit
+        // atomically (lossless) instead of paginating into a discarded continuation.
+        var nestedPrevAtomicFloat = _inAtomicFloatSubtree;
+        _inAtomicFloatSubtree = true;
+        LayoutContinuation? nestedFloatRet;
+        try
+        {
+            nestedFloatRet = EmitBlockSubtreeRecursive(
+                child,
+                parentBlockOffset: fragmentBlockOffset,
+                parentInlineOffset: fragmentInlineOffset,
+                parentInlineSize: borderBoxInlineSize,
+                cancellationToken: cancellationToken,
+                depth: 1);
+        }
+        finally
+        {
+            _inAtomicFloatSubtree = nestedPrevAtomicFloat;
+        }
         if (nestedFloatRet is not null
             && !_emittedFloatBreakInsideNestedDiagnosticThisPage)
         {
@@ -6455,13 +6490,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // without float-tracking continuation machinery (existing
         // Phase 3 Task 8 deferral). Emit a one-shot per-page
         // diagnostic so authors see the truncation.
-        var floatRet = EmitBlockSubtreeRecursive(
-            child,
-            parentBlockOffset: fragmentBlockOffset,
-            parentInlineOffset: fragmentInlineOffset,
-            parentInlineSize: borderBoxInlineSize,
-            cancellationToken: cancellationToken,
-            depth: 1);
+        // Per Phase 3 Task 19 — mark the float subtree so nested grid / flex emit
+        // atomically (lossless) instead of paginating into a discarded continuation.
+        var floatPrevAtomicFloat = _inAtomicFloatSubtree;
+        _inAtomicFloatSubtree = true;
+        LayoutContinuation? floatRet;
+        try
+        {
+            floatRet = EmitBlockSubtreeRecursive(
+                child,
+                parentBlockOffset: fragmentBlockOffset,
+                parentInlineOffset: fragmentInlineOffset,
+                parentInlineSize: borderBoxInlineSize,
+                cancellationToken: cancellationToken,
+                depth: 1);
+        }
+        finally
+        {
+            _inAtomicFloatSubtree = floatPrevAtomicFloat;
+        }
         if (floatRet is not null
             && !_emittedFloatBreakInsideNestedDiagnosticThisPage)
         {
@@ -8922,11 +8969,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // splits cleanly internally).
         if (useDryRunCommittedHeight)
         {
-            var resumeAt =
-                (incomingTableContinuation as TableContinuation)?.NextRowIndex ?? 0;
+            var resumeCont = incomingTableContinuation as TableContinuation;
+            var resumeAt = resumeCont?.NextRowIndex ?? 0;
+            // Per Phase 3 Task 17 cycle 5c.2d — thread the intra-cell row
+            // split offset so the dry-run sizes the resume-page wrapper to
+            // the row's REMAINING tail, not its full height.
+            var resumeSplitOffset = resumeCont?.RowSplitOffset ?? 0.0;
             var dryRunCommitted = tableLayouter.DryRunCommittedBlockSize(
                 fragmentainer, resumeAt,
-                out _, out _);
+                out _, out _, resumeSplitOffset);
             tableContentHeight = dryRunCommitted;
         }
         else
@@ -9756,6 +9807,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // common case (the cache key carries them, so a writing-mode mismatch just
         // misses + re-measures — correct, never stale). Null → the local caches.
         var measureBudget = _capturedFragmentainer?.BlockSize ?? 1_000_000;
+        // Per Phase 3 Task 18 (grid-fragment-plan-shared-sizing-deferral, partial) —
+        // the natural row extent is page-invariant for a fixed-width grid (block budget
+        // is the indefinite signal `1`; the inline size + measure budget don't change
+        // across the pages it spans). Memoize it on the shared cache so resume pages +
+        // rewind retries skip the redundant §11 sizing pass entirely (the cell shaping
+        // was already shared; this elides the arithmetic too). Byte-identical: Resolve
+        // is deterministic for the key.
+        if (sharedCache is not null
+            && sharedCache.TryGetRowExtentSum(gridBox, contentInlineSize, measureBudget, out var cachedRowExtent))
+        {
+            return cachedRowExtent;
+        }
         var measureCache = new Dictionary<(Box Item, double AvailInline), double>();
         GridSizing.GridContentMeasurer? measurer = _shaperResolver is null
             ? null
@@ -9812,6 +9875,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken: cancellationToken,
             contentMeasurer: measurer,
             widthMeasurer: widthMeasurer);
+        // Per Phase 3 Task 18 — memoize for the grid's subsequent pages / retries.
+        sharedCache?.CacheRowExtentSum(
+            gridBox, contentInlineSize, measureBudget, sizing.RowExtentSum);
         return sizing.RowExtentSum;
     }
 

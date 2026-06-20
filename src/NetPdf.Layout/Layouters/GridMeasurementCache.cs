@@ -34,11 +34,48 @@ internal sealed class GridMeasurementCache
     private readonly Dictionary<
         (Box Item, double BlockBudget, WritingMode Wm, bool Rtl), double> _inlineExtent = new();
 
+    /// <summary>Per Phase 3 Task 18 (grid-fragment-plan-shared-sizing-deferral, partial)
+    /// — the natural row extent <c>BlockLayouter.PreMeasureGridRowExtent</c> resolves to
+    /// grow an auto-height grid's wrapper, memoized per (grid box, content inline size,
+    /// measure block budget). That pre-grow runs an entire §11 sizing + §8.5 placement
+    /// pass and repeats IDENTICALLY on every page a multi-page grid spans (the inputs —
+    /// indefinite block budget = 1, the wrapper's content inline size, the page block
+    /// budget — are page-invariant). The cell SHAPING is already shared via
+    /// <see cref="_blockExtent"/>/<see cref="_inlineExtent"/>; this memo additionally
+    /// elides the redundant §11 ARITHMETIC on resume pages + rewind retries. The result
+    /// is deterministic for the key (same inputs → same Resolve), so a hit is byte-
+    /// identical.</summary>
+    private readonly Dictionary<(Box Grid, double Inline, double Budget), double> _rowExtentSum = new();
+
     /// <summary>Instrumentation — the <see cref="NestedContentMeasurer.Measure"/>
     /// passes that actually RAN (cache misses). A regression test asserts the
     /// pre-measure + emission of one grid share the cache (the second site adds
     /// zero passes), proving the cross-component win is real.</summary>
     public int MeasurePassCount { get; private set; }
+
+    /// <summary>Per Phase 3 Task 18 — instrumentation: the number of
+    /// <c>PreMeasureGridRowExtent</c> §11 passes that actually RAN (row-extent cache
+    /// misses). A regression test asserts a multi-page grid pre-measures its row extent
+    /// ONCE across all its pages (== 1), proving the cross-page memo elides the
+    /// per-page re-resolve.</summary>
+    public int RowExtentComputeCount { get; private set; }
+
+    /// <summary>Per Phase 3 Task 18 — true (with the memoized extent) when the natural
+    /// row extent for this grid + inputs was already resolved on a prior page / attempt.
+    /// The caller skips the §11 pass entirely on a hit.</summary>
+    public bool TryGetRowExtentSum(Box grid, double inline, double budget, out double extent)
+        => _rowExtentSum.TryGetValue((grid, inline, budget), out extent);
+
+    /// <summary>Per Phase 3 Task 18 — record a freshly-resolved row extent. Increments
+    /// <see cref="RowExtentComputeCount"/> only on the first store for a key (the caller
+    /// guards with <see cref="TryGetRowExtentSum"/>, so a key is computed once).</summary>
+    public void CacheRowExtentSum(Box grid, double inline, double budget, double extent)
+    {
+        var key = (grid, inline, budget);
+        if (_rowExtentSum.ContainsKey(key)) return;
+        RowExtentComputeCount++;
+        _rowExtentSum[key] = extent;
+    }
 
     /// <summary>The cell's CONTENT block extent at <paramref name="availInline"/>,
     /// memoized on the full input set. Mirrors the lambda in

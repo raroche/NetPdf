@@ -803,6 +803,158 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task RowExtent_premeasure_is_memoized_across_grid_pages()
+    {
+        // Per Phase 3 Task 18 (grid-fragment-plan-shared-sizing-deferral, partial) —
+        // PreMeasureGridRowExtent runs a full §11 sizing + §8.5 placement pass to grow
+        // an auto-height grid's wrapper. That pass is page-invariant (indefinite block
+        // budget, fixed inline size + page budget), so for a grid that spans multiple
+        // pages it now resolves ONCE across all of them (RowExtentComputeCount == 1) —
+        // resume pages + rewind retries reuse the memoized extent instead of re-running
+        // the §11 arithmetic. (The cell SHAPING was already shared via MeasurePassCount;
+        // this elides the arithmetic too.)
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+              .grid { display: grid; grid-template-columns: 100px; grid-auto-rows: 200px; }
+              .grid > div { background-color: #3366cc; }
+            </style></head><body>
+              <div class="grid">
+                <div></div><div></div><div></div><div></div><div></div>
+              </div>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var cache = new GridMeasurementCache();
+        using var shaper = new SyntheticShaperResolver();
+
+        // 5 rows × 200 = 1000px content on a 500px page → spans 3 pages.
+        LayoutContinuation? incoming = null;
+        var pages = 0;
+        var done = false;
+        while (!done && pages < 8)
+        {
+            var sink = new RecordingFragmentSink();
+            var diag = new RecordingDiagnosticsSink();
+            using var layouter = new BlockLayouter(box, sink, incoming, diag, shaper);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag, GridMeasureCache = cache };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+            pages++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) done = true;
+            else incoming = result.Continuation;
+        }
+
+        Assert.True(done, "the grid never completed within the page bound");
+        Assert.True(pages >= 2, "the grid should span multiple pages to exercise the memo");
+        // The §11 row-extent pre-measure ran exactly once across all the pages.
+        Assert.Equal(1, cache.RowExtentComputeCount);
+    }
+
+    [Fact]
+    public async Task Float_with_tall_nested_grid_emits_atomically_without_truncation()
+    {
+        // Per Phase 3 Task 19 (float-continuation-propagation, partial) — a grid taller
+        // than the page INSIDE a float used to paginate, and the out-of-flow float path
+        // discarded the continuation → the overflow rows were silently TRUNCATED +
+        // LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001 fired. Floats don't fragment across pages
+        // yet, so the grid now emits ATOMICALLY (all rows, overflowing the page edge) —
+        // lossless, no truncation. 5 rows × 200 = 1000px in a float on a 500px page.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+              .f { float: left; width: 200px; }
+              .grid { display: grid; grid-template-columns: 100px; grid-auto-rows: 200px; }
+              .grid > div { background-color: #3366cc; }
+            </style></head><body>
+              <div class="f">
+                <div class="grid">
+                  <div></div><div></div><div></div><div></div><div></div>
+                </div>
+              </div>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        using var layouter = new BlockLayouter(box, sink, null, diag, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // The grid stayed atomic inside the float — no truncation continuation,
+        // so the float-break-inside-nested diagnostic does NOT fire, and the page
+        // completes (AllDone) rather than deferring the float's overflow.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutFloatBreakInsideNested001);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Lossless: grid rows past the 500px page edge were emitted (atomic
+        // overflow), not truncated. The last row tops at 800px.
+        Assert.Contains(sink.Fragments, f => f.BlockOffset >= 700);
+    }
+
+    [Fact]
+    public async Task Float_with_tall_nested_flex_column_emits_atomically_without_truncation()
+    {
+        // Per PR-#201 review P2 — `_inAtomicFloatSubtree` suppresses nested FLEX
+        // pagination as well as grid, but the grid test alone wouldn't catch a
+        // flex regression. A column flex taller than the page inside a float must
+        // emit ATOMICALLY (all items, overflowing the page edge) — lossless, no
+        // truncation. 5 items × 200 = 1000px in a float on a 500px page.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+              .f { float: left; width: 200px; }
+              .flex { display: flex; flex-direction: column; }
+              .flex > div { height: 200px; background-color: #3366cc; }
+            </style></head><body>
+              <div class="f">
+                <div class="flex">
+                  <div></div><div></div><div></div><div></div><div></div>
+                </div>
+              </div>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        using var layouter = new BlockLayouter(box, sink, null, diag, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutFloatBreakInsideNested001);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        // Lossless: flex items past the 500px page edge were emitted.
+        Assert.Contains(sink.Fragments, f => f.BlockOffset >= 700);
+    }
+
+    [Fact]
     public async Task Production_html_spanning_item_distributes_after_subtracting_fixed_tracks()
     {
         // Riders-2 grid spanning-item distribution cycle (CSS Grid §11.5.1) — a content item spanning a

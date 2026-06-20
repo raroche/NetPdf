@@ -635,9 +635,7 @@ grepping the ID).
 - **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: percentage
   column widths; full grid/table used-inline-size reconciliation for
   content-shrink scenarios; §6.3 border-collapse + border-spacing;
-  §6.4 column-group widths beyond Pass A fallback; row-internal
-  splitting (a single row taller than the fragmentainer is
-  currently atomic + triggers forced-overflow);
+  §6.4 column-group widths beyond Pass A fallback;
   §11 spec-strict rowspan distribution-proportional algorithm;
   CSS Tables L3 §3 spec-strict proportional-weight column-width
   distribution (sub-cycle 5 ships a deterministic linear-interpolation
@@ -686,12 +684,31 @@ grepping the ID).
     fallback was deleted (the class remains, still used for
     captions). The `TableLayouter` single-oversized-row forward-
     progress fallback is the safety net.
+    Phase 3 Task 17 cycle 5c.2d added **intra-cell row splitting at
+    BLOCK granularity**: a single body row whose cell content stacks
+    block children taller than the page now breaks WITHIN itself
+    across pages (`TableContinuation.RowSplitOffset` carries the
+    cell-relative cut; the resume page re-measures + re-slices
+    deterministically) instead of force-overflowing. Cell content is
+    measured at full natural height (`SuppressBlockPagination` on the
+    cell fragmentainer — pagination is the table's job, not the
+    cell's). The dry-run wrapper-sizing (`DryRunCommittedBlockSize`)
+    is split-aware so the outer dispatch propagates the continuation.
+    Tight cycle-1 scope: a split row OWNS each of its pages (the next
+    row starts fresh after the tail); enabled only when the table has
+    no footers + no bottom captions + the row carries no rowspan
+    origin. A single ATOMIC block taller than the page (explicit
+    `height`, no inner break opportunity) still force-overflows —
+    shares the `inline-only-block-line-splitting` line-granularity
+    deferral.
     Remaining: spec-strict §11 rowspan distribution-proportional
     algorithm; §6.3 border-collapse model + `border-spacing`;
-    row-internal splitting + row-level `break-inside: avoid`; RTL
-    writing modes / row reversal / caption inline-axis keyword
-    routing; HTML5 colspan='0'/rowspan='0' remainder semantics;
-    percentage column widths.
+    intra-cell splitting for rows WITH footers / bottom captions /
+    rowspan origins, and packing a following row below a split row's
+    tail (currently the next row starts fresh); row-level
+    `break-inside: avoid`; RTL writing modes / row reversal / caption
+    inline-axis keyword routing; HTML5 colspan='0'/rowspan='0'
+    remainder semantics; percentage column widths.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
     — sub-cycle 5 hardening Finding 6 now consumes the table's
     `MeasuredUsedInlineSize` to widen the wrapper's border-box
@@ -995,23 +1012,39 @@ grepping the ID).
   Finding #1; floats remain out-of-flow per CSS 2.2 §9.5 and can't
   yet carry a continuation across pages).
 - **Behavior** — When a float subtree (`float: left` / `float: right`
-  containing block-level descendants) hosts a nested multicol or
-  table whose pagination breaks mid-emission, the `BlockLayouter`
-  recursion produces a non-null `LayoutContinuation` for that
-  subtree. Floats are out-of-flow per CSS 2.2 §9.5; propagating
-  their continuation through the in-flow pagination machinery would
-  require float-tracking continuation machinery
-  (FloatManager-aware continuation state, float-fragment resume
-  contract, BFC-snapshot restoration in the float emission path).
-  The cycle 2 hardening pass discards the recursion return inside
-  float subtrees (the float's first-page slice is committed; the
-  remainder is truncated) + emits the new
-  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001` Warning diagnostic at most
-  once per page so the truncation is observable.
-- **Missing** — float-tracking continuation machinery
-  (FloatManager state snapshot/restore across pages; float-
-  fragment resume contract; cross-page float overflow per
-  CSS Fragmentation L3 §5).
+  containing block-level descendants) hosts a nested container whose
+  pagination breaks mid-emission, the `BlockLayouter` recursion would
+  produce a non-null `LayoutContinuation` for that subtree. Floats are
+  out-of-flow per CSS 2.2 §9.5; propagating their continuation through
+  the in-flow pagination machinery would require float-tracking
+  continuation machinery (FloatManager-aware continuation state, float-
+  fragment resume contract, BFC-snapshot restoration).
+- **Task 19 (what landed)** — floats DON'T fragment across pages yet,
+  so nested **grid** + **flex** containers inside a float now emit
+  ATOMICALLY (the cycle-1 contract: all rows / items on one page,
+  overflowing the page edge if tall) — LOSSLESS, the correct
+  out-of-flow model, mirroring how a float with tall explicit content
+  already force-overflows. Gated by `_inAtomicFloatSubtree` (set
+  save/restore around the float recursion entry in `EmitFloat` /
+  `EmitNestedFloat`), which suppresses the recursive-site
+  paginatable-grid + paginatable-flex clamp/flag. In-flow content is
+  byte-identical (the flag is only set inside a float). A regression
+  test pins "float + 1000px grid on a 500px page → AllDone, no
+  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001`, rows past the page edge
+  emitted".
+- **Still truncates (+ diagnoses)** — nested **table** + **multicol**
+  inside a float. Their wrapper sizing couples to the page budget
+  (`PreMeasureTableIfNeeded` with `useDryRunCommittedHeight`; the
+  MulticolLayouter paginates against the captured fragmentainer), so
+  forcing them atomic needs a page-budget-decoupled measure pass
+  (a separate cycle); until then the recursion return is discarded +
+  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001` fires at most once per page.
+- **Missing** — atomic (or fragmenting) nested **table** + **multicol**
+  inside floats; the full float-tracking continuation machinery
+  (FloatManager state snapshot/restore across pages — the snapshot/
+  restore API already exists; float-fragment resume contract; cross-
+  page float overflow per CSS Fragmentation L3 §5) for true float
+  fragmentation rather than atomic overflow.
 - **Trigger** — corpus needs a float containing multicol/table that
   spans pages, OR a user-reported case where content inside a
   large float vanishes.
@@ -2280,49 +2313,70 @@ flags the categories):
 ## grid-fragment-plan-shared-sizing-deferral
 
 - **ID** — `grid-fragment-plan-shared-sizing-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5c.2b post-
-  PR-#100 review P2.
+- **Status** — `approximated`. Phase 3 Task 17 cycle 5c.2b post-
+  PR-#100 review P2; **partially addressed in Task 18** (the
+  cross-page row-extent memo landed; the full per-attempt plan
+  stays deferred — see below).
 - **Behavior** — auto-height paginatable grids run
-  `GridSizing.Resolve` three times per attempted fragment:
+  `GridSizing.Resolve` up to three times per attempted fragment:
   (1) in `PreMeasureGridRowExtent` to grow the wrapper to
   natural extent; (2) in F1's `PreMeasureGridRowExtentAt`
   probe (when no incoming cache present); (3) inside
-  `GridLayouter.AttemptLayout` for the actual dispatch. Each
-  `Resolve` runs §11 sizing + §8.5 placement; for grids with
-  many items + repeat-expanded tracks, this triples the §11
-  work per attempt + amplifies the cycle-5 resume cache's CPU
-  amortization rationale.
-- **Practical impact** — measurable CPU overhead on large
-  invoice / report grids; the resume cache hit path on page 2+
-  avoids one Resolve (cycle 5c.2a P1#2), but pages where the
-  cache is invalidated (= inline-size mismatch, identity
-  mismatch) or absent (= first-page) still triple-resolve.
-- **Missing** — a shared per-attempt `GridFragmentPlan`
-  immutable record carrying row geometry + placements + the
-  next-row fit prediction + the emitted-extent inputs, computed
-  ONCE per attempt + threaded through pre-measure +
-  `PreMeasureGridRowExtentAt` + `DispatchGridInner` so all
-  three sites consume the same authoritative resolve. Mirrors
-  the cycle-5 resume cache pattern but lives one layer up (=
-  per-attempt, not per-resume-cycle).
+  `GridLayouter.AttemptLayout` for the actual dispatch.
+- **Task 18 finding (corrects the original premise)** — the
+  three Resolves are NOT redundant duplicates; they take
+  GENUINELY DIFFERENT inputs, so a naive "compute once, share
+  across all three" would be **incorrect**: (1) uses an
+  INDEFINITE block budget (`contentBlockSize: 1`) to compute
+  the auto-height grid's natural extent — under indefinite
+  block, `fr` rows collapse (CSS Grid §11.5), whereas (3) uses
+  the DEFINITE wrapper extent where `fr` rows expand to fill;
+  the two produce different row sizes for `fr` grids (the
+  chicken-and-egg that forces site 1 to be separate). (2) the
+  probe passes NO content/width measurers, so its content-row
+  sizes differ from (3)'s. The Length-only fixtures that "don't
+  surface it" are exactly the case where indefinite≡definite +
+  measurers don't matter. Additionally, the EXPENSIVE work —
+  per-cell content SHAPING — is ALREADY shared across all three
+  sites via `GridMeasurementCache` (the `MeasurePassCount`
+  regression test pins it); the residual redundancy is only the
+  §11/§8.5 ARITHMETIC, which is comparatively cheap.
+- **Task 18 (what landed)** — `PreMeasureGridRowExtent`'s
+  natural row extent is page-INVARIANT (indefinite block budget;
+  fixed inline + page budget), and a multi-page grid re-grows
+  its wrapper on every page. That site-1 §11 pass is now
+  memoized on `GridMeasurementCache.RowExtentSum` keyed by
+  (grid box, inline size, measure budget), so resume pages +
+  rewind retries skip it entirely (the `RowExtentComputeCount`
+  regression test pins "== 1 across a multi-page grid").
+  Byte-identical (deterministic Resolve).
+- **Practical impact** — the first-page 3× remains (three
+  genuinely-different resolves; not safely collapsible), but
+  the expensive shaping is shared + the cross-page site-1
+  re-resolve is now elided.
+- **Missing** — collapsing the first-page site-2 (probe) and
+  site-3 (dispatch) resolves where they DO align (Length-only
+  grids, or by giving the probe the dispatch's measurers — but
+  that shifts content-grid pagination decisions, so it needs a
+  reftest sweep); a full per-attempt `GridFragmentPlan` is only
+  correct for the definite-block sites (2+3), NOT site 1.
 - **Trigger** — when a benchmark on a large multi-page grid
   shows measurable CPU regression vs cycle 5b atomic dispatch.
-  Until benchmarks land, accepted as a known cost since the
-  Length-only track tests in cycle 5c.2a/b don't surface it.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Result` type
-    becomes the shared plan's payload.
+  - `src/NetPdf.Layout/Layouters/GridMeasurementCache.cs` —
+    `RowExtentSum` memo + `RowExtentComputeCount` (Task 18).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
-    `PreMeasureGridRowExtent` + `PreMeasureGridRowExtentAt` +
-    `DispatchGridInner` thread the shared plan.
+    `PreMeasureGridRowExtent` consults the memo;
+    `PreMeasureGridRowExtentAt` + `DispatchGridInner` would
+    thread a definite-block plan for the 2+3 collapse.
   - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
     `ConfigureEmission` accepts a precomputed plan in lieu of
     running its own `Resolve`.
 - **Added** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
-  P2.
-- **Removal condition** — shared plan lands AND benchmark
-  shows ≤ 1× CPU vs cycle 5b atomic dispatch for paginatable-
-  grid fixtures.
+  P2; partially addressed Phase 3 Task 18.
+- **Removal condition** — the site-2+3 definite-block collapse
+  lands AND a benchmark shows ≤ 1× CPU vs cycle 5b atomic
+  dispatch for paginatable-grid fixtures.
 
 ---
 

@@ -23,6 +23,8 @@ public sealed class ConformanceGates
 
     private const double Css22Floor = 0.80;
     private const double Css22Target = 0.90;
+    private const double FragmentationFloor = 0.80;
+    private const double FragmentationTarget = 0.80;
 
     [Fact]
     public void Css22_layout_pass_rate_meets_floor()
@@ -33,5 +35,17 @@ public sealed class ConformanceGates
         Assert.True(rate >= Css22Floor,
             $"CSS 2.2 conformance {rate:P1} ({passed}/{total}) fell below the "
             + $"{Css22Floor:P0} regression floor.\n{report}");
+    }
+
+    [Fact]
+    public void Fragmentation_pass_rate_meets_floor()
+    {
+        var (rate, passed, total, report) =
+            ConformanceRunner.Evaluate("Fragmentation", FragmentationCases.All);
+        _out.WriteLine(report);
+        _out.WriteLine($"floor {FragmentationFloor:P0}, roadmap target {FragmentationTarget:P0}");
+        Assert.True(rate >= FragmentationFloor,
+            $"Fragmentation conformance {rate:P1} ({passed}/{total}) fell below the "
+            + $"{FragmentationFloor:P0} regression floor.\n{report}");
     }
 }

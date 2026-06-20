@@ -1,8 +1,8 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-18):** Phase 3's layout + pagination **engine is feature-complete and multi-page rendering is live**. What's left to *finish* Phase 3 is (a) wiring W3C conformance **measurement**, (b) a curated **feature/polish backlog**, (c) **confirming** the perf/memory gates, and (d) the **`0.7.0-beta` release**. The recommended next step is **PR 1 — Conformance measurement** (see the roadmap).
+> **Current state (2026-06-19):** Phase 3's layout + pagination engine drives multi-page rendering for **tables, flex, grid, multicol, and empty/explicit-height blocks**. **⚠️ Known gap (the biggest one): plain PROSE block-flow does NOT paginate** — a text-bearing `<p>`/`<div>` taller than a page overflows page 1 instead of breaking (deferrals.md `inline-only-block-pagination`). A block-granularity first cut DID paginate prose (200 `<p>` → 9 pages, no content loss) but REGRESSED two flex/grid pagination tests via an unexplained interaction, so it was reverted — the correct fix is the deferred "mid-subtree split" work. So "multi-page is live" is true for structured content but NOT yet for prose. What's left to *finish* Phase 3: (a) **prose pagination** (top priority), (b) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (c) feature/polish backlog, (d) the `0.7.0-beta` release. **Perf + memory exit criteria 7–8 are now layout-pipeline smoke-gated** (PR 5 — synthetic-font p50 thresholds + a retained-heap check; the full image+web-font workload + allocation-scaling stay the BenchmarkDotNet flow).
 >
-> Active branch: `phase3-tasks-9-10-11` — tasks 9 (justify-all on internal `<br>` + inline-block last-line per-run baseline) · 10 (running-element nested block layout — confirmed already done via the segment-style/container-bands cycles; deferral corrected) · 11 (`string(name, start)`/`first-except`; compound `@page` was already live). PRs 2–3 + parts of PR 4 now COMPLETE. PR 1 (conformance) still awaits Roland's approach decision. `git log --oneline -1` shows the exact commit.
+> Last merged: PR [#198](https://github.com/raroche/NetPdf/pull/198) (tasks 9–11). This branch `phase3-tasks-12-13-14`: task 12 confirmed done (margin-box overflow + relative-unit resolution already implemented + tested; container units are a tracked post-v1 deferral) + tasks 13–15 (perf + memory gates). `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-19):** 7116 unit / 4 skip · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-19):** 7125 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -40,13 +40,13 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 | 4 | W3C Flexbox pass-rate ≥ 85% | ⚠️ **not measured** |
 | 5 | W3C Grid L1 pass-rate ≥ 70% | ⚠️ **not measured** |
 | 6 | W3C Fragmentation pass-rate ≥ 80% | ⚠️ **not measured** |
-| 7 | Perf: 3-pg ≤ 200 ms, 20-pg ≤ 1.5 s p50 | 🟡 confirm (the 20-page multi-page case) |
-| 8 | Memory linear with page count | 🟡 not separately gated |
+| 7 | Perf: 3-pg ≤ 200 ms, 20-pg ≤ 1.5 s p50 | 🟡 **layout-pipeline smoke-gated** (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms — synthetic fonts + table content). The FULL-pipeline target (tables + **images + web fonts**, docs/design/performance.md) is the BenchmarkDotNet flow, not yet a build gate. |
+| 8 | Memory linear with page count | 🟡 **partial** — RETAINED heap flat (gated); ALLOCATION linearity NOT met: multi-page churn is super-linear (`multi-page-allocation-churn` — the `[MemoryDiagnoser]` standard would flag it). |
 | 9 | AOT smoke passes | ✅ |
 | 10 | Determinism | ✅ |
 | 11 | CHANGELOG + `0.7.0-beta` tagged | ❌ |
 
-**Bottom line:** the hard engine work is done. The critical path is **measure → fix what measurement reveals → confirm perf → release.**
+**Bottom line:** most engine work is done, but **two real multi-page gaps surfaced while gating perf (2026-06-19): (1) prose block-flow doesn't paginate** (`inline-only-block-pagination` — the top open item) and (2) allocation churn is super-linear on long docs (`multi-page-allocation-churn`). The critical path is **prose pagination → conformance measurement → release.**
 
 ## Phase 3 — remaining-work roadmap
 
@@ -70,22 +70,25 @@ Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order.
 ### PR 4 — Paged-media completion  [feature]
 10. ✅ Running-element nested **block** layout — already rendered via the segment-style + container-bands cycles (stacked lines per block child + wrapping + per-block own-style + decorated container bands); confirmed + deferral corrected. Residual: inline-level styling WITHIN a leaf block.
 11. ✅ `string(name, start)` / `first-except` (the page entry value; first-except empty when first == start) + compound `@page` selectors (`chapter:first` etc. — already live in the multi-page path; stale roadmap item). element() start/first-except stays deferred.
-12. Page-margin box overflow + container-relative units in margin-box / running content — **remaining** (next). Plus `margin-box-line-height` (deferral) + flex COLUMN cross-axis RTL.
+12. ✅ Page-margin box overflow + container-relative units — CONFIRMED done: overflow (vertical line-granularity truncation + horizontal glyph clip-path + `overflow:visible` opt-out + `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001`) and `%`/`em`/`vw`/`calc()` resolution are implemented + tested; container units (`cqw`/…) are a tracked **post-v1 (v1.4)** deferral, already diagnosed + dropped + tested. Residual: `margin-box-line-height` (deferral), border-radius `calc()` (minor), flex COLUMN cross-axis RTL.
 
-### PR 5 — Perf + memory gates  [criteria 7–8]
-13. 3-page invoice ≤ 200 ms p50 benchmark gate (confirm it runs in CI).
-14. 20-page report ≤ 1.5 s p50 benchmark gate (the now-live multi-page path).
-15. Memory-linearity test (linear growth with page count).
+### PR 5 — Perf + memory gates  [criteria 7–8] ✅ DONE
+13. ✅ 3-page invoice ≤ 200 ms p50 — enforced `PerformanceGateTests` (~42 ms, synthetic-font table invoice).
+14. ✅ 20-page report ≤ 1.5 s p50 — enforced gate (~400 ms, 22-page tabular report; the live multi-page path).
+15. ✅ Retained-heap gate — heap flat across page count (criterion 8 PARTIAL: retained footprint linear; ALLOCATION scaling is super-linear — `multi-page-allocation-churn`, the `[MemoryDiagnoser]` standard would flag it; a slope gate is large-doc hardening).
 
-### PR 6 — Pagination / table / grid hardening  [feature]
-16. Table intra-cell row splitting (cell content > remaining page height).
-17. Grid shared track-sizing across continuation pages + emitted-rows extent.
-18. Float-continuation propagation + recursive-block consumed-extent accounting.
+### ▶ PR 6 — PROSE PAGINATION  [the top open gap — DO NEXT]
+16. **Inline-only block pagination** (`inline-only-block-pagination`) — make a text-bearing block taller than a page break across pages. A block-granularity first cut works for prose but regressed flex/grid (reverted); the fix needs the right context guard (exclude flex/grid item-content measure recursions) + likely line-level splitting (orphans/widows). The single most impactful remaining feature — prose is the common document.
 
-### PR 7 — Release  [criterion 11]
-19. **Deferral audit** — reconcile `deferrals.md` / `compatibility-matrix.md` with live state; close stale entries (especially the grid residuals, several of which already shipped).
-20. CHANGELOG `0.7.0-beta` entry + exit-criteria sign-off.
-21. Tag `0.7.0-beta`.
+### PR 7 — Pagination / table / grid hardening  [feature]
+17. Table intra-cell row splitting (cell content > remaining page height).
+18. Grid shared track-sizing across continuation pages + emitted-rows extent.
+19. Float-continuation propagation + recursive-block consumed-extent accounting. Plus `multi-page-allocation-churn` (per-page O(1) layout cursor — large-doc perf).
+
+### PR 8 — Release  [criterion 11]
+20. **Deferral audit** — reconcile `deferrals.md` / `compatibility-matrix.md` with live state; close stale entries (especially the grid residuals, several of which already shipped).
+21. CHANGELOG `0.7.0-beta` entry + exit-criteria sign-off.
+22. Tag `0.7.0-beta`.
 
 > **Backlog pool** (interleave into the PRs above as conformance findings dictate): flex `align-content: baseline`, flex `%`/`em`/`calc()` item sizing, multicol font-relative `column-width` + balancing cache, grid box-sizing/maximize/perf residuals (**audit first — many may be stale**), `outline` non-solid styles + diagnostic, `page`/`object-position` `@supports` registration, empty-resume-page sentinel cleanup, per-page abspos container geometry. Full inventory: the 2026-06-18 backlog sweep (34 items) is summarized in the conversation that produced this roadmap; ground each task against `deferrals.md` before starting.
 

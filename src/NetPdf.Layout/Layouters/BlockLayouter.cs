@@ -4358,6 +4358,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             => _outer.UpdateFragmentBlockSize(_baseline + cursor, newBlockSize);
     }
 
+    /// <summary>Minimum margin-box content extent (px) below an inline-only block's border-box top for the
+    /// prose-pagination break to consider it. A block at or under this is treated as having NO paginatable
+    /// content (an empty / whitespace anonymous block) — breaking before it would spawn a spurious page.
+    /// Sub-px to admit any real single line while excluding the zero-extent case.</summary>
+    private const double InlineOnlyBreakMinExtentPx = 0.5;
+
     /// <summary>Per Phase 3 Task 7 cycle 2b — recursively emit fragments
     /// for <paramref name="parent"/>'s block-level descendants. Called
     /// AFTER the parent's own fragment is emitted; offsets are relative
@@ -4635,6 +4641,51 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // AFTER the child instead of pushing it down.
                 var inlineOnlyMarginStart =
                     child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
+
+                // Prose pagination (block-granularity, 2026-06-20) — the recursion's inline-only path now
+                // CONSULTS the break resolver before emitting, mirroring the in-flow block break check below.
+                // Pre-fix this branch emitted unconditionally + `continue`d, so N stacked text blocks taller
+                // than the page all force-overflowed page 1 (`<p>×200` → 1 page). Now a text block whose
+                // VISUAL extent would overflow the fragmentainer breaks WHOLE to the next page (its resume
+                // re-enters at `childIdx`, exactly like a block-flow child). CHILD-BOUNDARY granularity only —
+                // splitting a single paragraph's LINES across pages (orphans/widows) stays the deferred
+                // mid-subtree work (`inline-only-block-line-splitting`).
+                //
+                // The chunk is the VISUAL extent BELOW the border-box top (border-box + a NON-NEGATIVE
+                // margin-bottom), mirroring the top-level inline path's `max(marginBox, visualBlockExtent)`
+                // (review P2): a negative margin-bottom must NOT shrink it below the real text border-box,
+                // which would let visible prose overflow instead of breaking.
+                //
+                // GUARD `> InlineOnlyBreakMinExtentPx`: only break a block with REAL content extent. A
+                // ZERO-extent inline-only block — an empty/whitespace AnonymousBlock the recursion may walk
+                // for flex/grid content, placed PAST the page edge by that layout — has nothing to push to
+                // the next page; breaking it spawned a spurious page (regressed flex wrap-reverse + grid-fr —
+                // both chunk == 0 at start > pageBlockSize). Forward-progress guard (`_sink.Cursor >
+                // sinkCursorAtRecursionEntry`): an over-tall FIRST block still force-overflows so pagination
+                // always progresses. Named-page breaks on an inline-only block stay deferred (rare; the
+                // block-flow path owns them).
+                if (propagatingResolver is not null
+                    && propagatingFragmentainer is { SuppressBlockPagination: false } pfInline
+                    && _sink.Cursor > sinkCursorAtRecursionEntry)
+                {
+                    _ = MeasureInlineOnlyBlockExtent(
+                        child, contentInlineSize, out var inlineVisualChunk, cancellationToken);
+                    if (inlineVisualChunk > InlineOnlyBreakMinExtentPx)
+                    {
+                        var inlineChildStart = Math.Max(0, contentTop + childCursor + inlineOnlyMarginStart);
+                        var savedUsedBlockSizeInline = pfInline.UsedBlockSize;
+                        pfInline.UsedBlockSize = inlineChildStart;
+                        var inlineDecision = propagatingResolver.ConsiderBreakAt(
+                            BreakOpportunity.Block(
+                                usedBlockSize: inlineChildStart, chunkBlockSize: inlineVisualChunk),
+                            pfInline);
+                        pfInline.UsedBlockSize = savedUsedBlockSizeInline;
+                        if (inlineDecision.Action == BreakAction.BreakHere)
+                        {
+                            return new BlockContinuation(ResumeAtChild: childIdx, ConsumedBlockSize: 0);
+                        }
+                    }
+                }
 
                 var emittedExtent = EmitInlineOnlyBlockInRecursion(
                     child,
@@ -7911,13 +7962,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// margin-collapse arithmetic; this helper just runs the
     /// inline pass + emits.
     ///
-    /// <para><b>Pagination scope.</b> The recursive path does NOT
-    /// consult the resolver (the outer-loop's measure pass already
-    /// reserved page space via
-    /// <see cref="MeasureSubtreeVisualBlockExtent"/>). If the
-    /// inline content overflows the parent, the outer-loop's
-    /// forced-overflow path fires per existing cycle 2c semantics.
-    /// True mid-subtree splitting is sub-cycle 2 work.</para>
+    /// <para><b>Pagination scope.</b> The recursive caller (<see cref="EmitBlockSubtreeRecursive"/>) now
+    /// CONSULTS the break resolver BEFORE invoking this helper (prose pagination, 2026-06-20): a
+    /// text-bearing block whose visual extent would overflow the fragmentainer breaks WHOLE to the next page
+    /// at child-boundary granularity. This helper itself just runs the inline pass + emits at the chosen
+    /// offset; it is reached only once the caller has decided the block fits (or is the first, force-overflow
+    /// case). Intra-block LINE splitting — a single paragraph taller than a whole page resuming at line K on
+    /// the next page (orphans/widows) — stays deferred (`inline-only-block-line-splitting`).</para>
     ///
     /// <para><b>NotSupportedException + atomic-inline diagnostics.</b>
     /// Routed through the captured diagnostic sink (set at
@@ -7993,6 +8044,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private double MeasureInlineOnlyBlockExtent(
         Box inlineOnlyBlock,
         double parentContentInlineSize,
+        out double visualChunkBelowBorderTopPx,
         CancellationToken cancellationToken)
     {
         var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock, parentContentInlineSize);
@@ -8005,9 +8057,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken);
         if (computation is null)
         {
+            visualChunkBelowBorderTopPx = 0;
             return 0;
         }
         var comp = computation.Value;
+        // The VISUAL extent BELOW the border-box top (border-box + a NON-negative margin-bottom — a negative
+        // margin-bottom is clamped to 0, mirroring the top-level inline path's `visualBlockExtent`). The
+        // prose-pagination break uses this as its chunk so a negative margin-bottom can't shrink the break
+        // below the real text border-box (review P2).
+        visualChunkBelowBorderTopPx = comp.BorderBoxBlockSize + Math.Max(0, metrics.MarginBlockEnd);
         // Return the margin-box block-axis extent so the parent's
         // measure pass reserves enough page space (matches the
         // in-flow block path's measure semantics).
@@ -8462,6 +8520,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var inlineMargined = MeasureInlineOnlyBlockExtent(
                 parent,
                 parentContentInlineSize: _bfcContentInlineSize,
+                out _,
                 cancellationToken);
             return Math.Max(parentBorderBoxBlockSize, inlineMargined);
         }

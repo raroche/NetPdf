@@ -47,7 +47,7 @@ public sealed class DeferralsParityTests
         "text-align-match-parent",
         "line-height-percentage-inheritance",
         "margin-box-line-height",
-        "inline-only-block-pagination",
+        "inline-only-block-line-splitting",
         "multi-page-allocation-churn",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",

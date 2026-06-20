@@ -17,9 +17,10 @@ namespace NetPdf.UnitTests.Performance;
 /// Phase 3 exit-criterion 7 + 8 SMOKE gates (docs/phases/phase-3-layout-and-pagination.md). These measure
 /// the engine's LAYOUT → paginate → paint → PDF-write THROUGHPUT through a SYNTHETIC font resolver
 /// (deterministic glyphs, no system-font I/O — platform font loading adds ~140 ms of fixed,
-/// environment-dependent overhead) over TABLE fixtures (plain block-flow PROSE pagination is a tracked open
-/// gap, deferrals.md <c>inline-only-block-pagination</c>). They carry ~4× headroom over the measured p50 on
-/// dev hardware.
+/// environment-dependent overhead) over TABLE fixtures (block-flow PROSE now paginates too — see the
+/// <c>Prose_*</c> tests in HtmlPdfConvertTests + the <c>Prose_*</c> gate below; only single-paragraph
+/// line-splitting remains, deferrals.md <c>inline-only-block-line-splitting</c>). They carry ~4× headroom
+/// over the measured p50 on dev hardware.
 ///
 /// <para><b>Scope — these are guard rails, not the authoritative perf numbers.</b> The repo's standard for
 /// strict perf + ALLOCATION scaling is the BenchmarkDotNet + <c>[MemoryDiagnoser]</c> flow in
@@ -66,6 +67,18 @@ public sealed class PerformanceGateTests
             $"the report fixture should be a 20–24 page workload; got {pages} — the workload shape drifted.");
         Assert.True(p50 <= 1500.0,
             $"Exit criterion 7: the {pages}-page report p50 {p50:F1} ms exceeds the 1.5 s gate.");
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public void Prose_multi_page_renders_within_budget_p50()
+    {
+        // Prose pagination (task 16) bounds the per-block recursive break measure: 150 one-line paragraphs
+        // (~6 pages) render well within budget, so the measure-then-emit pass on the no-break path is not a
+        // throughput problem at realistic prose scale (review P3). ~58 ms p50 on dev hardware (~4× headroom).
+        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Prose(paragraphs: 150), warmup: 3, iters: 9);
+        Assert.True(pages >= 4, $"the prose fixture should paginate (≥ 4 pages); got {pages}.");
+        Assert.True(p50 <= 250.0, $"prose ({pages} pages) p50 {p50:F1} ms exceeds the 250 ms budget.");
     }
 
     [Fact]
@@ -178,6 +191,20 @@ internal static class PerfFixtures
                   .Append("</td><td>").Append((r * 11) % 1000).Append("</td></tr>");
             sb.Append("</table>");
         }
+        return sb.Append("</body></html>").ToString();
+    }
+
+    /// <summary>A paginating PROSE document — N one-line paragraphs (inline-only blocks that break at
+    /// paragraph boundaries). Exercises the prose-pagination path, whose recursive break check measures each
+    /// block's inline extent before emitting — this fixture bounds that cost (review P3).</summary>
+    internal static string Prose(int paragraphs)
+    {
+        var sb = new StringBuilder("<!DOCTYPE html><html><head><style>"
+            + "body { font-size: 13px } @page { @bottom-center { content: counter(page) } }"
+            + "</style></head><body>");
+        for (var i = 0; i < paragraphs; i++)
+            sb.Append("<p>Paragraph ").Append(i)
+              .Append(" with a sentence of body text that fills roughly one line on the page.</p>");
         return sb.Append("</body></html>").ToString();
     }
 }

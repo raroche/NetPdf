@@ -278,36 +278,32 @@ grepping the ID).
 
 ---
 
-## inline-only-block-pagination
+## inline-only-block-line-splitting
 
-- **ID** — `inline-only-block-pagination`
-- **Status** — `approximated` (inline-only blocks emit atomically + overflow page 1; no child-boundary
-  break is consulted, so prose doesn't paginate).
-- **Behavior** — A block whose content is INLINE-ONLY (text / line boxes — a `<p>`, a `<div>text</div>`) is
-  laid out + emitted ATOMICALLY by `BlockLayouter.EmitInlineOnlyBlockInRecursion`; the recursion's
-  inline-only branch `continue`s WITHOUT consulting the break resolver. So when N such blocks stack taller
-  than a page they do NOT break across pages — they force-overflow page 1 (`<p>×200` → ONE A4 page, all
-  paragraphs crammed on it). Empty / explicit-height blocks (no line box), tables, flex, grid, and multicol
-  DO fragment; only plain PROSE block-flow fails to paginate. The outer-loop path (`DispatchInlineOnlyBlock`,
-  the layout root's direct children) IS pagination-aware — the gap is the RECURSION (content nested under
-  `body`), which every real document hits.
-- **Missing** — a break consult in the recursion's inline-only branch (`BlockLayouter.cs` ~line 4623)
-  mirroring the block-flow check (~4830): measure the inline-only block's extent, `ConsiderBreakAt`, and on
-  `BreakHere` return `BlockContinuation(ResumeAtChild)` to push the whole block to the next page. CAVEAT
-  (2026-06-19): a first cut of exactly that block-granularity break DID paginate prose (200 paragraphs → 9
-  pages, no content duplicated; empty-block pagination unchanged) but REGRESSED two flex/grid pagination
-  tests through an UNEXPLAINED interaction (an all-empty-item `flex-wrap: wrap-reverse` container began
-  paginating), so it was reverted. The correct fix needs the right context guard (exclude flex/grid
-  item-content measure recursions) and likely LINE-LEVEL splitting (orphans/widows) for a single
-  page-taller-than-one paragraph — the "true mid-subtree split / sub-cycle 2" work.
-- **Trigger** — any document whose main content is plain prose in block-flow (`<p>` / `<div>` text) taller
-  than one page — the most common document shape. It silently overflows page 1 instead of paginating.
+- **ID** — `inline-only-block-line-splitting`
+- **Status** — `approximated` (block-granularity prose pagination ships; a SINGLE paragraph taller than a
+  whole page can't split its own lines — it force-overflows).
+- **Behavior** — Block-granularity PROSE pagination is LIVE (2026-06-20): the recursion's inline-only branch
+  now consults the break resolver before emitting (mirroring the block-flow check at ~`BlockLayouter.cs`
+  L4830), so a text-bearing block whose margin-box would overflow the fragmentainer breaks WHOLE to the next
+  page — `<p>×200` paginates cleanly across pages (was ONE overflowing A4 page). The RESIDUAL is LINE-LEVEL:
+  a SINGLE inline-only block taller than an ENTIRE page can't split its OWN lines across pages (no
+  orphans/widows), so it force-overflows the page it starts on instead of breaking mid-paragraph.
+  Multi-paragraph prose — the common case — paginates at paragraph boundaries.
+- **Missing** — intra-block LINE fragmentation: a continuation that resumes a paragraph at line K on the
+  next page (an `InlineContinuation` carrying the resume line index) + orphans/widows (CSS Fragmentation
+  §4) — the "true mid-subtree split" work.
+- **Trigger** — a SINGLE `<p>`/`<div>` whose text is taller than one whole page (rare) — it overflows the
+  bottom of its starting page rather than splitting its lines.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (the inline-only branch in
-  `EmitBlockSubtreeRecursive` + `EmitInlineOnlyBlockInRecursion` + `MeasureInlineOnlyBlockExtent`).
-- **Added** — 2026-06-19, surfaced while wiring the task-14 "20-page report" perf gate. Already noted in
-  code as "true mid-subtree splitting is sub-cycle 2 work" (`BlockLayouter.cs:7920`).
-- **Removal condition** — plain prose (`<p>×N` / `<div>text</div>×N` taller than a page) paginates with no
-  content loss or duplication, AND the flex/grid pagination tests stay green.
+  `EmitBlockSubtreeRecursive` + `EmitInlineOnlyBlockInRecursion`).
+- **Added** — 2026-06-20, when block-granularity prose pagination shipped (the broad
+  `inline-only-block-pagination` deferral CLOSED). The fix guards on a real content extent
+  (`InlineOnlyBreakMinExtentPx`) so a ZERO-extent anonymous block — flex/grid content the recursion walks,
+  placed past the page edge — does NOT spuriously break (that was the earlier flex/grid regression: both
+  triggering blocks had `chunk == 0` at `start > pageBlockSize`).
+- **Removal condition** — a single inline-only block taller than a page splits its lines across pages with
+  orphans/widows honored.
 
 ---
 

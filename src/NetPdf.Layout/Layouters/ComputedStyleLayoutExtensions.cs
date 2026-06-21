@@ -1458,8 +1458,10 @@ internal static class ComputedStyleLayoutExtensions
     /// <see cref="ResolveFlexItemMinMaxMainSize"/>); <c>max</c> is applied first then
     /// <c>min</c>, so min wins when min &gt; max (§10.4). <c>min: auto</c> (unset) →
     /// 0 floor (a no-op past the chrome); <c>max: none</c> (unset) → no upper bound.
-    /// Percentage min/max are out of this cut (LengthPx only). When neither is an
-    /// explicit length this is the IDENTITY, so non-min/max block layout stays
+    /// Percentage min/max are out of this cut (LengthPx only) — the
+    /// <c>min-max-percentage-sizing</c> deferral tracks them (they need the
+    /// containing size + the indefinite-axis rule). When neither is an explicit
+    /// length this is the IDENTITY, so non-min/max block layout stays
     /// byte-identical.</summary>
     public static double ClampBorderBoxToMinMax(
         this Boxes.Box box, double borderBoxSize,

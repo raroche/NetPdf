@@ -167,6 +167,16 @@ internal static class Css22Cases
                 + "height:20px;box-sizing:border-box'></div>"),
             new[] { new BoxExpectation("a", Width: 200) }), // border-box min-width
 
+        // max-width clamps an AUTO (fill) width too, not just an explicit one.
+        new ConformanceCase("css22-max-width-on-auto", "CSS 2.1 §10.3.3/§10.4",
+            Doc("<div id='a' style='max-width:120px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", X: 0, Width: 120) }), // auto fill 600 → capped 120
+
+        // min-width raises an AUTO (fill) width (nested in an 80px parent).
+        new ConformanceCase("css22-min-width-on-auto", "CSS 2.1 §10.3.3/§10.4",
+            Doc("<div style='width:80px'><div id='a' style='min-width:150px;height:20px'></div></div>"),
+            new[] { new BoxExpectation("a", Width: 150) }), // fill 80 → raised to 150
+
         // ---- features NetPdf approximates (honest gap cases) ----
 
         // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow children.
@@ -181,5 +191,14 @@ internal static class Css22Cases
             Doc("<div id='p' style='padding:20px'><div id='c' style='height:30px'></div></div>"),
             new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
             KnownGap: "auto-height emits 0+chrome — growing it breaks multi-page pagination"),
+
+        // §10.4 — a PERCENTAGE min/max resolves against the containing block. The
+        // min/max clamp handles LengthPx only (percentages need the containing
+        // size + the indefinite-axis rule), so a `%` min/max is ignored and the
+        // explicit width passes through. See `min-max-percentage-sizing`.
+        new ConformanceCase("css22-min-width-percentage", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:50px;min-width:50%;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 300) }, // 50% of 600
+            KnownGap: "percentage min/max-width/height not resolved (LengthPx only)"),
     };
 }

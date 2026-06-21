@@ -15,7 +15,7 @@ a **pass-rate**.
 
 | Category | Pass-rate | Roadmap target | Status |
 |---|---|---|---|
-| CSS 2.2 layout | **96.3%** (26/27) | ≥ 90% | ✅ met |
+| CSS 2.2 layout | **93.3%** (28/30) | ≥ 90% | ✅ met |
 | Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
 | Flexbox L1 | **83.3%** (10/12) | ≥ 85% | ⚠️ below — documented gaps |
 | Grid L1 | **80.0%** (8/10) | ≥ 70% | ✅ met |
@@ -23,8 +23,9 @@ a **pass-rate**.
 Three of the four exit criteria are **met** (CSS 2.2, Fragmentation, Grid); only
 Flexbox is below its target with **documented gaps** (listed below). CSS 2.2 rose
 from 84.2% after the box-model gap fixes (`box-sizing: border-box` on the block
-axis + min/max-width/height clamping); the one remaining CSS 2.2 gap is
-auto-height shrink-to-fit (see below).
+axis + the measure pass + floats; min/max-width/height clamping on explicit AND
+auto/fill sizes). The two remaining CSS 2.2 gaps are auto-height shrink-to-fit and
+percentage min/max (see below).
 
 ## How the gate works — per-case baseline, not a pass-rate floor
 
@@ -77,6 +78,10 @@ metrics) so they're deterministic without a font dependency.
   multi-page block-flow pagination (forced-overflow instead of clean splits), so
   it stays deferred — see `auto-height-emit-vs-pagination` in
   [docs/deferrals.md](../../docs/deferrals.md).
+- **percentage min/max sizing** (§10.4/§10.7) — a `LengthPx` `min/max-width/height`
+  clamps (explicit and auto/fill, box-sizing-aware); a PERCENTAGE min/max
+  (`min-width: 50%`) is ignored — see `min-max-percentage-sizing` in
+  [docs/deferrals.md](../../docs/deferrals.md).
 - **`break-before: page`** (Fragmentation §3.1) — forced-break metadata isn't
   propagated from the box yet.
 - **`gap` / `column-gap` / `row-gap`** on flex + grid containers — gutters aren't
@@ -86,9 +91,10 @@ metrics) so they're deterministic without a font dependency.
   works around this by nesting in a sized parent; `flex-explicit-container-width`
   exercises it head-on so the Flexbox rate isn't inflated by avoiding it).
 
-**Closed this PR:** `box-sizing: border-box` (block axis) and min/max-width/height
-clamping on an explicit size — both now pass; their conformance cases moved from
-`KnownGap` to passing and CSS 2.2 rose to 96.3%.
+**Closed this PR:** `box-sizing: border-box` (block-axis emit + the subtree
+measure + floats, so emit and pagination agree) and `LengthPx` min/max-width/height
+clamping on explicit AND auto/fill sizes — their conformance cases moved from
+`KnownGap` to passing (CSS 2.2 84.2% → 93.3%).
 
 These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 [docs/compatibility-matrix.md](../../docs/compatibility-matrix.md).

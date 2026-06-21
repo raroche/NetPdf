@@ -574,6 +574,103 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Border_box_sizing_height_is_border_box_in_a_nested_subtree()
+    {
+        // The test above covers the depth-1 MAIN dispatch path. A block nested one
+        // level deeper (root > wrapper > child) is emitted via the RECURSIVE
+        // subtree emitter, whose BLOCK-axis size pre-fix added padding OUTSIDE the
+        // declared border-box height (only the inline axis routed through the
+        // box-sizing helper). Child height 100 + 15px top/bottom padding →
+        // border-box → block size IS 100 (content 70); content-box (initial) → 130.
+        foreach (var (borderBox, expected) in new[] { (true, 100.0), (false, 130.0) })
+        {
+            var sink = new RecordingFragmentSink();
+            var childStyle = MakeStyle();
+            SetLengthPx(childStyle, PropertyId.Width, 200);
+            SetLengthPx(childStyle, PropertyId.Height, 100);
+            SetLengthPx(childStyle, PropertyId.PaddingTop, 15);
+            SetLengthPx(childStyle, PropertyId.PaddingBottom, 15);
+            if (borderBox) SetKeyword(childStyle, PropertyId.BoxSizing, 1);   // border-box
+
+            var root = Box.CreateRoot(MakeStyle());
+            var wrapper = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            wrapper.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+            root.AppendChild(wrapper);
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            // The child fragment is the one sized to the explicit 200px width
+            // (the auto-width wrapper fills the 600px content area).
+            var child = Assert.Single(sink.Fragments, f => Math.Abs(f.InlineSize - 200) < 0.001);
+            Assert.Equal(expected, child.BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Min_and_max_width_clamp_an_explicit_width()
+    {
+        // §10.4 — min raises a smaller width, max lowers a larger one, and min
+        // wins when min > max (max applied first, then min). Pre-fix the block
+        // path never read min/max-width, so the explicit width passed through.
+        foreach (var (declared, min, max, expected) in new (double, double?, double?, double)[]
+        {
+            (50, 150, null, 150),    // min raises
+            (300, null, 120, 120),   // max lowers
+            (50, 150, 100, 150),     // min > max → min wins
+        })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, declared);
+            SetLengthPx(style, PropertyId.Height, 20);
+            if (min is not null) SetLengthPx(style, PropertyId.MinWidth, min.Value);
+            if (max is not null) SetLengthPx(style, PropertyId.MaxWidth, max.Value);
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].InlineSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Min_and_max_height_clamp_an_explicit_height()
+    {
+        // §10.7 — min-height raises a smaller height, max-height lowers a larger one.
+        foreach (var (declared, min, max, expected) in new (double, double?, double?, double)[]
+        {
+            (20, 90, null, 90),     // min raises
+            (200, null, 80, 80),    // max lowers
+        })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, declared);
+            if (min is not null) SetLengthPx(style, PropertyId.MinHeight, min.Value);
+            if (max is not null) SetLengthPx(style, PropertyId.MaxHeight, max.Value);
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
     public void Float_border_box_sizing_makes_the_declared_height_the_border_box()
     {
         // PR #189 review (extra coverage) — the FLOAT border-box-block-size path honors
@@ -606,6 +703,106 @@ public sealed class BlockLayouterTests
 
             Assert.Equal(expected, sink.Fragments[0].BlockSize, precision: 3);
         }
+    }
+
+    [Fact]
+    public void Float_border_box_sizing_makes_the_declared_width_the_border_box()
+    {
+        // PR #203 review [P1] — a `box-sizing: border-box` float's declared WIDTH
+        // IS the border box: width:100, padding:20 each side → 100px wide (content
+        // 60), not 140. Pre-fix the float always ADDED the insets, so it reported a
+        // 140px footprint to FloatManager → mis-placed flow-around / clear. The
+        // emitted InlineSize is exactly that footprint.
+        foreach (var (borderBox, expected) in new[] { (true, 100.0), (false, 140.0) })
+        {
+            var sink = new RecordingFragmentSink();
+            var floatStyle = MakeStyle();
+            SetLengthPx(floatStyle, PropertyId.Width, 100);
+            SetLengthPx(floatStyle, PropertyId.Height, 50);
+            SetLengthPx(floatStyle, PropertyId.PaddingLeft, 20);
+            SetLengthPx(floatStyle, PropertyId.PaddingRight, 20);
+            SetKeyword(floatStyle, PropertyId.Float, 1);   // left
+            if (borderBox) SetKeyword(floatStyle, PropertyId.BoxSizing, 1);
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].InlineSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Sibling_after_a_border_box_height_block_has_no_phantom_gap()
+    {
+        // PR #203 review [P1] — a border-box block (height:100, padding:15 →
+        // border-box 100) followed by a sibling: the sibling sits at y=100, not
+        // 130. The emit is border-box (100) but pre-fix
+        // MeasureSubtreeVisualBlockExtent reported 130 (content-box), so the cursor
+        // advanced 130 → a 30px phantom gap. Nested one level so the recursive
+        // emitter measures the child for the cursor advance.
+        var sink = new RecordingFragmentSink();
+
+        var bbStyle = MakeStyle();
+        SetLengthPx(bbStyle, PropertyId.Width, 200);
+        SetLengthPx(bbStyle, PropertyId.Height, 100);
+        SetLengthPx(bbStyle, PropertyId.PaddingTop, 15);
+        SetLengthPx(bbStyle, PropertyId.PaddingBottom, 15);
+        SetKeyword(bbStyle, PropertyId.BoxSizing, 1);   // border-box
+
+        var sibStyle = MakeStyle();
+        SetLengthPx(sibStyle, PropertyId.Width, 300);   // distinct width to find it
+        SetLengthPx(sibStyle, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var wrapper = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        wrapper.AppendChild(Box.ForElement(BoxKind.BlockContainer, bbStyle, MakeElement()));
+        wrapper.AppendChild(Box.ForElement(BoxKind.BlockContainer, sibStyle, MakeElement()));
+        root.AppendChild(wrapper);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var sibling = Assert.Single(sink.Fragments, f => Math.Abs(f.InlineSize - 300) < 0.001);
+        Assert.Equal(100, sibling.BlockOffset, precision: 3);   // not 130
+    }
+
+    [Fact]
+    public void Border_box_height_block_near_page_boundary_fits_without_premature_break()
+    {
+        // PR #203 review [P1] — a border-box block (border-box height 100) on a
+        // 110px page fits on page 0. Pre-fix the measure reported 130 (content-box)
+        // > 110, so the cursor/break machinery reserved more than the painted box.
+        var sink = new RecordingFragmentSink();
+        var bbStyle = MakeStyle();
+        SetLengthPx(bbStyle, PropertyId.Width, 200);
+        SetLengthPx(bbStyle, PropertyId.Height, 100);
+        SetLengthPx(bbStyle, PropertyId.PaddingTop, 15);
+        SetLengthPx(bbStyle, PropertyId.PaddingBottom, 15);
+        SetKeyword(bbStyle, PropertyId.BoxSizing, 1);   // border-box
+
+        var root = Box.CreateRoot(MakeStyle());
+        var wrapper = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        wrapper.AppendChild(Box.ForElement(BoxKind.BlockContainer, bbStyle, MakeElement()));
+        root.AppendChild(wrapper);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 110);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        var bb = Assert.Single(sink.Fragments, f => Math.Abs(f.InlineSize - 200) < 0.001);
+        Assert.Equal(100, bb.BlockSize, precision: 3);
+        Assert.Equal(0, bb.BlockOffset, precision: 3);
     }
 
     [Fact]

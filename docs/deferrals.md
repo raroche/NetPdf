@@ -331,6 +331,70 @@ grepping the ID).
 
 ---
 
+## auto-height-emit-vs-pagination
+
+- **ID** — `auto-height-emit-vs-pagination`
+- **Status** — `approximated`.
+- **Behavior** — An `auto`-height block emits its OWN border-box block size as
+  `0 + chrome` (padding + border), so its painted background / border / radius
+  under-sizes when its in-flow children are taller than that chrome. Sibling
+  placement + pagination are NOT affected — the cursor advance + break checks
+  already use `childEffectiveBlockSize = max(own border-box, subtree extent)`
+  (the measure appends the parent's bottom padding/border when descendants
+  dominate), so flow is correct; only the emitted fragment's `BlockSize` (what
+  the painter draws) is chrome-only.
+- **Missing** — CSS 2.1 §10.6.3 shrink-to-fit of the EMITTED auto height to the
+  in-flow content extent plus the box's own padding/border.
+- **Trigger** — a corpus/user case where a single-page auto-height block's
+  background, border, or border-radius must visibly span its taller children.
+- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the
+  recursive emit in `EmitBlockSubtreeRecursive` (~line 5567) + the main-dispatch
+  emit (~line 3082). NOTE: naively emitting `childEffectiveBlockSize` for an
+  auto-height block REGRESSES multi-page block-flow pagination — a tall
+  auto-height subtree (extent > page) forced-overflows on every page instead of
+  splitting (confirmed by 4 `HtmlPdfConvertTests` pagination tests:
+  `Content_taller_than_one_page_paginates_across_multiple_pages`,
+  `Prose_block_flow_taller_than_one_page_paginates_at_paragraph_boundaries`,
+  `Multi_page_composition_paginates_with_running_header_footer_counter_and_named_page`,
+  `Prose_and_empty_height_blocks_paginate_together_without_content_loss`). A
+  correct fix must emit the PER-PAGE-FRAGMENT extent (the part on this page), not
+  the whole-subtree extent — reconciling the emitted size with the page-split
+  machinery.
+- **Added** — Phase 3 PR (CSS 2.2 box-model gaps) — attempted alongside the
+  box-sizing / min-max fixes, reverted after the multi-page pagination
+  regression; documented here for the next attempt.
+- **Removal condition** — the emitted auto-height fragment spans its in-flow
+  children, the `css22-auto-height-contains-child` conformance case passes, AND
+  every `HtmlPdfConvertTests` multi-page pagination test stays green.
+
+---
+
+## min-max-percentage-sizing
+
+- **ID** — `min-max-percentage-sizing`
+- **Status** — `approximated`.
+- **Behavior** — `min-width` / `max-width` / `min-height` / `max-height` clamp an
+  element's used size (explicit OR auto/fill, box-sizing-aware, max-then-min)
+  when the value is a `LengthPx`. A PERCENTAGE min/max (e.g. `min-width: 50%`) is
+  IGNORED — `ClampBorderBoxToMinMax` reads `LengthPx` slots only, so the size
+  passes through unclamped.
+- **Missing** — CSS 2.1 §10.4/§10.7 percentage resolution of min/max against the
+  containing block, including the indefinite-axis rule (a `%` max-height against
+  an indefinite containing height computes to `none`; a `%` min-height to `0`).
+- **Trigger** — a corpus/user case using a percentage min/max constraint.
+- **Owner files** — `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
+  (`ClampBorderBoxToMinMax` — needs a containing-size parameter + `Percentage`
+  slot handling with the indefinite-axis rule) + its call sites in
+  `BlockLayouter.cs` (thread the inline / block percentage base already used for
+  the corresponding width/height read).
+- **Added** — Phase 3 PR (CSS 2.2 box-model gaps) — length min/max shipped; the
+  percentage cut was scoped out (containing-size + indefinite-axis subtleties).
+- **Removal condition** — `ClampBorderBoxToMinMax` resolves percentage min/max
+  against the containing block AND the `css22-min-width-percentage` conformance
+  case passes.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`

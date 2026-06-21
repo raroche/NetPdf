@@ -108,26 +108,97 @@ internal static class Css22Cases
             Doc("<div id='f' style='float:right;width:100px;height:50px'></div>"),
             new[] { new BoxExpectation("f", X: 500, Y: 0, Width: 100, Height: 50) }), // 600-100
 
+        // ---- box-sizing (CSS3-UI) — width/height honor border-box on BOTH axes ----
+
+        // border-box: the declared width/height ARE the border box (padding folds
+        // inside), on both axes — pre-fix the BLOCK axis added padding outside.
+        new ConformanceCase("css22-box-sizing-border-box", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:200px;height:50px;padding:20px;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 200, Height: 50) }), // content 160×10, +40 chrome inside
+
+        // border-box folds BOTH padding + border into the declared size.
+        new ConformanceCase("css22-box-sizing-border-box-with-border", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:200px;height:60px;padding:10px;"
+                + "border:5px solid #000;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 200, Height: 60) }), // 30px chrome/axis, inside
+
+        // content-box (the initial) ADDS padding+border to the declared size — the
+        // control proving the border-box mapping is conditional, not blanket.
+        new ConformanceCase("css22-box-sizing-content-box", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:100px;height:40px;padding:15px;box-sizing:content-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 130, Height: 70) }), // +30 chrome/axis
+
+        // border-box floors at the chrome when the declared size is smaller than
+        // padding+border (the content area bottoms out at 0), on both axes.
+        new ConformanceCase("css22-box-sizing-border-box-floor", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:30px;height:20px;padding:20px;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 40, Height: 40) }), // max(declared, 40 chrome)
+
+        // ---- min/max sizing (§10.4 width, §10.7 height) — clamp an explicit size ----
+
+        // min-width raises a smaller explicit width.
+        new ConformanceCase("css22-min-width-on-explicit", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:50px;min-width:150px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 150) }),
+
+        // max-width lowers a larger explicit width.
+        new ConformanceCase("css22-max-width-on-explicit", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:300px;max-width:120px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 120) }),
+
+        // min-height raises a smaller explicit height.
+        new ConformanceCase("css22-min-height-on-explicit", "CSS 2.1 §10.7",
+            Doc("<div id='a' style='width:100px;height:20px;min-height:90px'></div>"),
+            new[] { new BoxExpectation("a", Height: 90) }),
+
+        // max-height lowers a larger explicit height.
+        new ConformanceCase("css22-max-height-on-explicit", "CSS 2.1 §10.7",
+            Doc("<div id='a' style='width:100px;height:200px;max-height:80px'></div>"),
+            new[] { new BoxExpectation("a", Height: 80) }),
+
+        // §10.4 — min-width wins when min > max (max applied first, then min).
+        new ConformanceCase("css22-min-width-beats-max-width", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:50px;min-width:150px;max-width:100px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 150) }), // min > max → min wins
+
+        // min-width under box-sizing:border-box refers to the BORDER box.
+        new ConformanceCase("css22-min-width-border-box", "CSS 2.1 §10.4 / CSS3-UI",
+            Doc("<div id='a' style='width:60px;min-width:200px;padding:20px;"
+                + "height:20px;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 200) }), // border-box min-width
+
+        // max-width clamps an AUTO (fill) width too, not just an explicit one.
+        new ConformanceCase("css22-max-width-on-auto", "CSS 2.1 §10.3.3/§10.4",
+            Doc("<div id='a' style='max-width:120px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", X: 0, Width: 120) }), // auto fill 600 → capped 120
+
+        // min-width raises an AUTO (fill) width (nested in an 80px parent).
+        new ConformanceCase("css22-min-width-on-auto", "CSS 2.1 §10.3.3/§10.4",
+            Doc("<div style='width:80px'><div id='a' style='min-width:150px;height:20px'></div></div>"),
+            new[] { new BoxExpectation("a", Width: 150) }), // fill 80 → raised to 150
+
         // ---- features NetPdf approximates (honest gap cases) ----
 
-        // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow
-        // children. NetPdf resolves auto height to 0 + chrome (documented
-        // approximation), so the parent under-sizes. EXPECTED here is spec.
+        // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow children.
+        // NetPdf resolves auto height to 0 + chrome (documented approximation) for
+        // the EMITTED box, so the parent's painted background/border under-sizes —
+        // even though sibling placement + pagination already use the subtree extent
+        // (the cursor advance is correct; only the box's own emitted height is
+        // chrome-only). Growing the emitted height destabilizes multi-page
+        // block-flow pagination (forced-overflow instead of clean splits — see the
+        // `auto-height-emit-vs-pagination` deferral), so it stays deferred.
         new ConformanceCase("css22-auto-height-contains-child", "CSS 2.1 §10.6.3",
             Doc("<div id='p' style='padding:20px'><div id='c' style='height:30px'></div></div>"),
             new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
-            KnownGap: "auto-height resolves to 0+chrome — no shrink-to-fit to in-flow children"),
+            KnownGap: "auto-height emits 0+chrome — growing it breaks multi-page pagination"),
 
-        // CSS3-UI — box-sizing:border-box (width/height include padding+border).
-        new ConformanceCase("css22-box-sizing-border-box", "CSS3-UI box-sizing",
-            Doc("<div id='a' style='width:200px;height:50px;padding:20px;box-sizing:border-box'></div>"),
-            new[] { new BoxExpectation("a", Width: 200, Height: 50) },
-            KnownGap: "box-sizing:border-box treated as content-box"),
-
-        // §10.4 — min-width raises a smaller explicit width.
-        new ConformanceCase("css22-min-width-on-explicit", "CSS 2.1 §10.4",
-            Doc("<div id='a' style='width:50px;min-width:150px;height:20px'></div>"),
-            new[] { new BoxExpectation("a", Width: 150) },
-            KnownGap: "min/max-width don't clamp an explicit width"),
+        // §10.4 — a PERCENTAGE min/max resolves against the containing block. The
+        // min/max clamp handles LengthPx only (percentages need the containing
+        // size + the indefinite-axis rule), so a `%` min/max is ignored and the
+        // explicit width passes through. See `min-max-percentage-sizing`.
+        new ConformanceCase("css22-min-width-percentage", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:50px;min-width:50%;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 300) }, // 50% of 600
+            KnownGap: "percentage min/max-width/height not resolved (LengthPx only)"),
     };
 }

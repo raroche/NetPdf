@@ -288,7 +288,7 @@ PR 1 — the rates below are the honest engine measurement, not aspiration; see
 
 1. ✅ All 4 invoice corpus files render to a valid PDF (visual fidelity polish lands in Phase 4).
 2. ✅ The Anvil sample (`04-anvil-running-elements.html`) renders with the footer + "Page N of M" appearing on every page.
-3. 📊 W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 84.2%** (16/19); below target, documented gaps (auto-height shrink-to-fit, `box-sizing`, min/max-on-explicit). **Criterion OPEN** — closing these gaps is the next PR.
+3. ✅ W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 96.3%** (26/27); MET after the box-model fixes (`box-sizing: border-box` block axis + min/max-width/height clamping). One residual gap deferred: auto-height shrink-to-fit of the emitted box (`auto-height-emit-vs-pagination` — growing it regresses multi-page pagination).
 4. 📊 W3C Flexbox test pass-rate ≥ 85% — **MEASURED 83.3%** (10/12); below target after counting the explicit-container-width gap head-on (PR 1 review). Documented gaps: flex `gap`, container ignores own `width`. **Criterion OPEN**.
 5. ✅ W3C Grid Level 1 test pass-rate ≥ 70% — **MEASURED 80.0%** (8/10) (Grid is genuinely hard; raise the bar in v1.x).
 6. ✅ W3C Fragmentation test pass-rate ≥ 80% — **MEASURED 90.0%** (9/10).
@@ -298,11 +298,10 @@ PR 1 — the rates below are the honest engine measurement, not aspiration; see
 10. ✅ Determinism: byte-equal output for byte-equal input.
 11. ❌ CHANGELOG updated, `0.7.0-beta` tagged — pending the release PR.
 
-**Release gating:** criteria 3 + 4 are OPEN (CSS 2.2 + Flexbox below target with
-documented gaps). The release is not "ready now with all criteria met" — the
-critical path is to close the CSS 2.2 gaps (clears criterion 3), then either
-clear or formally accept-with-documented-gaps the Flexbox container-width gap,
-before tagging `0.7.0-beta`.
+**Release gating:** criterion 3 is now MET (CSS 2.2 96.3%). Only criterion 4
+(Flexbox 83.3%) remains OPEN — the container-own-width + `gap` gaps. The critical
+path is to either clear or formally accept-with-documented-gaps the Flexbox
+container-width gap, then tag `0.7.0-beta`.
 
 ## Common pitfalls
 

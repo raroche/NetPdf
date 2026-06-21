@@ -1371,6 +1371,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // floored at the chrome; `content-box` (initial) adds it — byte-identical.
             var borderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
                 child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
+            // §10.7 — min-height / max-height clamp the explicit height. No-op when unset.
+            borderBoxBlockSize = child.ClampBorderBoxToMinMax(
+                borderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight);
 
             // Per Phase 3 Task 8 cycle 2 — flow around floats. The
             // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
@@ -4770,8 +4773,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // auto, CSS 2.2 §10.5 — percent-height cycle).
             var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
 
-            var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
-                + paddingEnd + borderEnd;
+            // Box-sizing audit (CSS Basic UI 4 §10) — an explicit `height` under
+            // `box-sizing: border-box` IS the border box (chrome inside), floored at
+            // the chrome; `content-box` (the initial) adds it, byte-identical to the
+            // pre-fix `declared + chrome`. Mirrors the outer dispatch (line ~1372) +
+            // the float path: pre-fix this recursive emitter added chrome
+            // unconditionally, so a border-box block over-sized on the BLOCK axis
+            // while the inline axis already routed through
+            // ResolveInFlowBorderBoxInlineSize → BoxSizingHelper.
+            var childBorderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
+                child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
+            // §10.7 — min-height / max-height clamp the explicit height. No-op when unset.
+            childBorderBoxBlockSize = child.ClampBorderBoxToMinMax(
+                childBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight);
             // Per the body-explicit-width gap fix — same §10.3.3 subset
             // as the outer dispatch path (explicit `width` on a plain
             // block container overrides the fill), so a nested div
@@ -6346,9 +6360,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // inline size includes inline-axis border + padding (the
         // content-box size alone mis-reports the float's footprint to
         // FloatManager for `clear` + inline-range calculations).
-        var borderBoxInlineSize = Math.Max(0,
-            borderInlineStart + paddingInlineStart + contentInline
-            + paddingInlineEnd + borderInlineEnd);
+        // Box-sizing audit (PR #203 review [P1]) — a `box-sizing: border-box`
+        // float's declared `width` IS the border box (chrome inside), floored at
+        // the chrome; pre-fix the insets were always ADDED, so a border-box float
+        // over-reported its footprint to FloatManager (placement / clear /
+        // flow-around). Routes through the same mapping as in-flow blocks +
+        // honors min/max-width. Byte-identical for content-box without min/max.
+        var floatInlineInsets =
+            borderInlineStart + paddingInlineStart + paddingInlineEnd + borderInlineEnd;
+        var borderBoxInlineSize = DeclaredWidthToBorderBox(
+            child.Style, contentInline, floatInlineInsets);
+        borderBoxInlineSize = child.ClampBorderBoxToMinMax(
+            borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth);
         return new(
             MarginStart: marginStart,
             MarginInlineStart: marginInlineStart,
@@ -6843,6 +6866,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + block.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
                 + block.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
             var borderBox = DeclaredWidthToBorderBox(block.Style, declaredWidth, inlineInsets);
+            // §10.4 — clamp by min/max-width BEFORE distributing auto margins, so a
+            // centred block whose width is raised by min-width (or lowered by
+            // max-width) centres against its USED width — matching the same clamp
+            // ComputeInlineOnlyBlockLayout applies to the emitted width (PR #203
+            // Copilot review: the two must use the same border-box width).
+            borderBox = block.ClampBorderBoxToMinMax(
+                borderBox, PropertyId.MinWidth, PropertyId.MaxWidth);
             ResolveAutoInlineMargins(
                 block, borderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
         }
@@ -6941,8 +6971,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, containingInlinePx)
                     + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, containingInlinePx);
                 // Body `box-sizing` (box-sizing cycle, CSS Basic UI 4 §10) — the shared mapping.
-                return DeclaredWidthToBorderBox(child.Style, declaredWidth, inlineInsets);
+                var borderBoxWidth = DeclaredWidthToBorderBox(child.Style, declaredWidth, inlineInsets);
+                // §10.4 — min-width / max-width clamp the explicit width (max first,
+                // then min so min wins when min > max). A no-op when neither is set.
+                return child.ClampBorderBoxToMinMax(
+                    borderBoxWidth, PropertyId.MinWidth, PropertyId.MaxWidth);
             }
+            // §10.3.3 — `width: auto` on a plain block fills the available range
+            // (minus margins); §10.4 — min-width/max-width then clamp that USED
+            // width (e.g. `max-width: 600px` on an auto-width content column).
+            // No-op when neither is set, so the fill path stays byte-identical
+            // (PR #203 review [P2]). Gated to plain block kinds — anonymous / flex
+            // / grid / table fill is unchanged (they own their width logic).
+            var autoFillWidth = Math.Max(0,
+                availableInlineSize - marginInlineStart - marginInlineEnd);
+            return child.ClampBorderBoxToMinMax(
+                autoFillWidth, PropertyId.MinWidth, PropertyId.MaxWidth);
         }
         return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
     }
@@ -7056,12 +7100,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + metrics.PaddingInlineStart + metrics.PaddingInlineEnd;
             borderBoxInlineSize = DeclaredWidthToBorderBox(
                 inlineOnlyBlock.Style, metrics.DeclaredWidthPx, inlineInsets);
+            // §10.4 — min-width / max-width clamp the explicit width.
+            borderBoxInlineSize = inlineOnlyBlock.ClampBorderBoxToMinMax(
+                borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth);
         }
         else
         {
+            // §10.3.3 fill + §10.4 min/max clamp (PR #203 review [P2]) — e.g. a
+            // `<p style="max-width:600px">` text block caps its auto width.
             borderBoxInlineSize = Math.Max(0,
                 containingInlineSize
                 - metrics.MarginInlineStart - metrics.MarginInlineEnd);
+            borderBoxInlineSize = inlineOnlyBlock.ClampBorderBoxToMinMax(
+                borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth);
         }
         // Inline-pass available size = the content-box inline range.
         var contentInlineSize = Math.Max(0,
@@ -8539,8 +8590,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var pBorderEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
         var pPaddingEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
         var pHeight = parent.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
-        var parentBorderBoxBlockSize = pBorderStart + pPaddingStart + pHeight
-            + pPaddingEnd + pBorderEnd;
+        // Box-sizing + min/max-height MUST mirror the EMIT paths (the recursive
+        // emit ~line 4784 + the main dispatch ~line 1372), else this measure
+        // reserves a different block extent than the fragment paints — a
+        // `box-sizing: border-box` block emits at its declared height while the
+        // measure would over-reserve `declared + chrome`, opening a phantom gap or
+        // a premature page break (PR #203 review [P1]). Byte-identical for
+        // content-box without min/max (the common case).
+        var parentBorderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
+            parent.Style, pHeight, pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd);
+        parentBorderBoxBlockSize = parent.ClampBorderBoxToMinMax(
+            parentBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight);
 
         // Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening review
         // Finding #2 — inline-only blocks contribute their wrapped-

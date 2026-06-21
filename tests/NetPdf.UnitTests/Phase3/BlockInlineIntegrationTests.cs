@@ -92,6 +92,41 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
+    public void Inline_only_block_centres_against_its_min_width_clamped_width()
+    {
+        // PR #203 Copilot review — a text-bearing `width:200; min-width:400;
+        // margin:0 auto` block must centre against its USED (clamped) width 400,
+        // not the declared 200. Pre-fix the auto-margin distribution in
+        // ReadInlineOnlyBlockMetrics used the UNCLAMPED width, so margin-left
+        // centred a 200px box (→ InlineOffset 200) while the emitted box was the
+        // clamped 400px wide → off-centre. The clamp now precedes the distribution.
+        var sink = new RecordingFragmentSink();
+        using var resolver = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var blockStyle = MakeStyle();
+        blockStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(200));
+        blockStyle.Set(PropertyId.MinWidth, ComputedSlot.FromLengthPx(400));
+        blockStyle.Set(PropertyId.MarginLeft, ComputedSlot.FromKeyword(0));   // auto
+        blockStyle.Set(PropertyId.MarginRight, ComputedSlot.FromKeyword(0));  // auto
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        block.AppendChild(Box.TextRun("A", MakeStyle()));
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: null, shaperResolver: resolver);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var breakResolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, breakResolver, LayoutAttemptStrategy.Strict);
+
+        var fragment = sink.Fragments[0];
+        Assert.Equal(400, fragment.InlineSize, precision: 3);    // raised to min-width
+        Assert.Equal(100, fragment.InlineOffset, precision: 3);  // (600-400)/2 centred
+    }
+
+    [Fact]
     public void Block_with_inline_content_advances_fragmentainer_by_lineCount_times_lineHeight()
     {
         // Arrange — same setup as the first test. Sub-cycle 1's

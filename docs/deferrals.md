@@ -369,32 +369,6 @@ grepping the ID).
 
 ---
 
-## min-max-percentage-sizing
-
-- **ID** — `min-max-percentage-sizing`
-- **Status** — `approximated`.
-- **Behavior** — `min-width` / `max-width` / `min-height` / `max-height` clamp an
-  element's used size (explicit OR auto/fill, box-sizing-aware, max-then-min)
-  when the value is a `LengthPx`. A PERCENTAGE min/max (e.g. `min-width: 50%`) is
-  IGNORED — `ClampBorderBoxToMinMax` reads `LengthPx` slots only, so the size
-  passes through unclamped.
-- **Missing** — CSS 2.1 §10.4/§10.7 percentage resolution of min/max against the
-  containing block, including the indefinite-axis rule (a `%` max-height against
-  an indefinite containing height computes to `none`; a `%` min-height to `0`).
-- **Trigger** — a corpus/user case using a percentage min/max constraint.
-- **Owner files** — `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
-  (`ClampBorderBoxToMinMax` — needs a containing-size parameter + `Percentage`
-  slot handling with the indefinite-axis rule) + its call sites in
-  `BlockLayouter.cs` (thread the inline / block percentage base already used for
-  the corresponding width/height read).
-- **Added** — Phase 3 PR (CSS 2.2 box-model gaps) — length min/max shipped; the
-  percentage cut was scoped out (containing-size + indefinite-axis subtleties).
-- **Removal condition** — `ClampBorderBoxToMinMax` resolves percentage min/max
-  against the containing block AND the `css22-min-width-percentage` conformance
-  case passes.
-
----
-
 ## gap-percentage-sizing
 
 - **ID** — `gap-percentage-sizing`

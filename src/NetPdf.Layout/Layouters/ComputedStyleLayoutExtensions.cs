@@ -1472,16 +1472,24 @@ internal static class ComputedStyleLayoutExtensions
     /// <see cref="ResolveFlexItemMinMaxMainSize"/>); <c>max</c> is applied first then
     /// <c>min</c>, so min wins when min &gt; max (§10.4). <c>min: auto</c> (unset) →
     /// 0 floor (a no-op past the chrome); <c>max: none</c> (unset) → no upper bound.
-    /// Percentage min/max are out of this cut (LengthPx only) — the
-    /// <c>min-max-percentage-sizing</c> deferral tracks them (they need the
-    /// containing size + the indefinite-axis rule). When neither is an explicit
-    /// length this is the IDENTITY, so non-min/max block layout stays
-    /// byte-identical.</summary>
+    ///
+    /// <para>A PERCENTAGE min/max resolves against <paramref name="containingSize"/>
+    /// (CSS 2.1 §10.4/§10.7). When the containing size is INDEFINITE — the default
+    /// <see cref="double.NaN"/>, used by the inline auto-fill / float fast paths and
+    /// the indefinite block axis — the §10.7 indefinite rule applies: a <c>%</c> max
+    /// computes to <c>none</c> (no upper bound) and a <c>%</c> min to <c>0</c> (no
+    /// floor), so percentages are skipped. Callers that don't pass a definite
+    /// containing size stay byte-identical (a <c>%</c> min/max remains a no-op for
+    /// them, exactly as before). When neither min nor max is set this is the IDENTITY,
+    /// so non-min/max block layout is unchanged.</para></summary>
     public static double ClampBorderBoxToMinMax(
         this Boxes.Box box, double borderBoxSize,
-        PropertyId minProperty, PropertyId maxProperty)
+        PropertyId minProperty, PropertyId maxProperty,
+        double containingSize = double.NaN)
     {
+        var definiteContaining = double.IsFinite(containingSize) && containingSize >= 0;
         var chrome = box.Style.AxisBorderPaddingPx(minProperty);
+
         var maxSlot = box.Style.Get(maxProperty);
         if (maxSlot.Tag == ComputedSlotTag.LengthPx)
         {
@@ -1489,11 +1497,28 @@ internal static class ComputedStyleLayoutExtensions
                 box.Style, Math.Max(0, maxSlot.AsLengthPx()), chrome);
             borderBoxSize = Math.Min(borderBoxSize, maxBorderBox);
         }
+        else if (maxSlot.Tag == ComputedSlotTag.Percentage && definiteContaining)
+        {
+            // §10.7 — a definite `%` max-* resolves against the containing size; an
+            // indefinite one computes to `none` (handled by the definiteContaining gate).
+            var maxBorderBox = BoxSizingHelper.DeclaredToBorderBox(
+                box.Style, Math.Max(0, maxSlot.AsPercentage() / 100.0 * containingSize), chrome);
+            borderBoxSize = Math.Min(borderBoxSize, maxBorderBox);
+        }
+
         var minSlot = box.Style.Get(minProperty);
         if (minSlot.Tag == ComputedSlotTag.LengthPx)
         {
             var minBorderBox = BoxSizingHelper.DeclaredToBorderBox(
                 box.Style, Math.Max(0, minSlot.AsLengthPx()), chrome);
+            borderBoxSize = Math.Max(borderBoxSize, minBorderBox);
+        }
+        else if (minSlot.Tag == ComputedSlotTag.Percentage && definiteContaining)
+        {
+            // §10.4 — a definite `%` min-* resolves against the containing size; an
+            // indefinite one computes to `0` (handled by the definiteContaining gate).
+            var minBorderBox = BoxSizingHelper.DeclaredToBorderBox(
+                box.Style, Math.Max(0, minSlot.AsPercentage() / 100.0 * containingSize), chrome);
             borderBoxSize = Math.Max(borderBoxSize, minBorderBox);
         }
         return borderBoxSize;

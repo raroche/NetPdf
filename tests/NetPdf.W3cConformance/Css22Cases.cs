@@ -192,13 +192,13 @@ internal static class Css22Cases
             new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
             KnownGap: "auto-height emits 0+chrome — growing it breaks multi-page pagination"),
 
-        // §10.4 — a PERCENTAGE min/max resolves against the containing block. The
-        // min/max clamp handles LengthPx only (percentages need the containing
-        // size + the indefinite-axis rule), so a `%` min/max is ignored and the
-        // explicit width passes through. See `min-max-percentage-sizing`.
+        // §10.4 — a PERCENTAGE min/max resolves against the containing block.
+        // ClampBorderBoxToMinMax now takes the containing size + resolves a `%`
+        // min/max against it (indefinite → none/0 per §10.7), so min-width:50% of
+        // the 600px parent clamps the 50px width up to 300. (Closed by the
+        // sizing-residuals PR — min-max-percentage-sizing.)
         new ConformanceCase("css22-min-width-percentage", "CSS 2.1 §10.4",
             Doc("<div id='a' style='width:50px;min-width:50%;height:20px'></div>"),
-            new[] { new BoxExpectation("a", Width: 300) }, // 50% of 600
-            KnownGap: "percentage min/max-width/height not resolved (LengthPx only)"),
+            new[] { new BoxExpectation("a", Width: 300) }), // 50% of 600
     };
 }

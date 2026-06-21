@@ -28,7 +28,7 @@ public sealed class HtmlPdfFacadeTests
     {
         // The fix from the Phase 1 global review: HtmlPdf.Version must read
         // AssemblyInformationalVersionAttribute (which carries the prerelease tag —
-        // "0.3.0-alpha+<sha>") rather than AssemblyName.Version (which gives the
+        // "0.7.0-beta+<sha>") rather than AssemblyName.Version (which gives the
         // 4-part assembly version "0.1.0.0" and silently drops the prerelease).
         var version = HtmlPdf.Version;
 
@@ -37,8 +37,10 @@ public sealed class HtmlPdfFacadeTests
             $"HtmlPdf.Version returned the 4-part assembly version '{version}' — should be the " +
             "informational/package version (with the prerelease tag preserved).");
         // When this assertion fails on a legitimate version bump, update the expectation.
-        Assert.Contains("0.3.0", version, StringComparison.Ordinal);
-        Assert.Contains("alpha", version, StringComparison.Ordinal);
+        // ReleaseVersionParityTests guards that this matches Directory.Build.props +
+        // build/version.json + the CHANGELOG's latest version heading.
+        Assert.Contains("0.7.0", version, StringComparison.Ordinal);
+        Assert.Contains("beta", version, StringComparison.Ordinal);
     }
 
     [Fact]

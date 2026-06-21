@@ -1,8 +1,8 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-20):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. **PR 1 (W3C conformance MEASUREMENT) just landed:** a curated NetPdf assertion suite (Roland's call over vendored WPT) replaced the smoke stub — exit criteria 3–6 are now measured (CSS 2.2 84.2%, Fragmentation 90%, Flexbox 83.3%, Grid 80%; **2 of 4 MET** — Fragmentation + Grid; CSS 2.2 + Flexbox below target with documented gaps). PR 7 (table/grid/float hardening — tasks 17–19) merged before it ([#201](https://github.com/raroche/NetPdf/pull/201)). What's left to *finish* Phase 3: (a) **close the CSS 2.2 gaps** (auto-height shrink-to-fit, box-sizing, min/max) to clear criterion 3 — the critical path, next PR; (b) niche residuals (`inline-only-block-line-splitting`, `multi-page-allocation-churn`, nested table/multicol in floats, flex/grid container-own-width); (c) the **`0.7.0-beta` release** (PR 8). Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
+> **Current state (2026-06-21):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. Conformance is MEASURED (curated suite, PR 1 [#202](https://github.com/raroche/NetPdf/pull/202)). **The CSS 2.2 box-model gaps are now closing:** `box-sizing: border-box` on the block axis + min/max-width/height clamping landed, taking **CSS 2.2 84.2% → 96.3% (26/27) — exit criterion 3 MET**. Auto-height shrink-to-fit was attempted but DEFERRED (growing the emitted height destabilizes multi-page pagination — `auto-height-emit-vs-pagination` deferral). Measured rates now: CSS 2.2 96.3%, Fragmentation 90%, Flexbox 83.3%, Grid 80% — **3 of 4 MET**; only Flexbox below target (container-own-width gap). What's left to *finish* Phase 3: (a) optionally close the Flexbox container-width gap to clear criterion 4; (b) niche residuals (`inline-only-block-line-splitting`, `multi-page-allocation-churn`, `auto-height-emit-vs-pagination`, nested table/multicol in floats); (c) the **`0.7.0-beta` release** (PR 8). Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
 >
-> Last merged: PR [#201](https://github.com/raroche/NetPdf/pull/201) (tasks 17–19: table/grid/float hardening). This branch `phase3-conformance-measurement`: **PR 1 tasks 1–3** (3 commits — harness + CSS 2.2 / Fragmentation / Flexbox+Grid). `git log --oneline -1` shows the exact commit.
+> Last merged: PR [#202](https://github.com/raroche/NetPdf/pull/202) (PR 1 — W3C conformance measurement: curated suite + per-case baseline). Current branch `phase3-css22-box-model-gaps`: box-sizing (block axis), min/max clamping, auto-height (attempted → deferred). `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-20):** 7140 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · **W3cConformance (4 per-case-baseline gates; published rates CSS 2.2 84% / Frag 90% / Flex 83% / Grid 80%)** · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-21):** 7145 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · **W3cConformance (4 per-case-baseline gates; published rates CSS 2.2 96% / Frag 90% / Flex 83% / Grid 80%)** · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -36,7 +36,7 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 |---|---|---|
 | 1 | 4 invoice corpus files render to a valid PDF | ✅ |
 | 2 | Anvil sample: footer + "Page N of M" on every page | ✅ (multi-page + counters live) |
-| 3 | W3C CSS 2.2 layout pass-rate ≥ 90% | 📊 **MEASURED 84.2%** (16/19) — OPEN, below target; gaps: auto-height shrink-to-fit, box-sizing, min/max-on-explicit (curated suite, PR 1) |
+| 3 | W3C CSS 2.2 layout pass-rate ≥ 90% | ✅ **MEASURED 96.3%** (26/27) — MET (box-sizing + min/max fixed); 1 residual gap: auto-height emit (`auto-height-emit-vs-pagination`) |
 | 4 | W3C Flexbox pass-rate ≥ 85% | 📊 **MEASURED 83.3%** (10/12) — OPEN, below target; gaps: flex `gap`, container ignores own `width` (explicit-width case counted head-on per PR 1 review) |
 | 5 | W3C Grid L1 pass-rate ≥ 70% | ✅ **MEASURED 80.0%** (8/10) — MET (gap: column-gap/row-gap) |
 | 6 | W3C Fragmentation pass-rate ≥ 80% | ✅ **MEASURED 90.0%** (9/10) — MET (gap: break-before:page) |
@@ -46,11 +46,16 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 | 10 | Determinism | ✅ |
 | 11 | CHANGELOG + `0.7.0-beta` tagged | ❌ |
 
-**Bottom line:** conformance is now **MEASURED** (PR 1 — curated assertion suite replaced the smoke stub): 2 of 4 exit criteria MET (Fragmentation 90% / Grid 80%); CSS 2.2 84.2% and Flexbox 83.3% are below target with documented gaps (CSS 2.2: auto-height shrink-to-fit, box-sizing, min/max-on-explicit; Flexbox: flex `gap`, container ignores own `width`). Criteria 3 + 4 are **OPEN** — so the critical path is **closing the CSS 2.2 gaps** (the next PR, clears criterion 3), then deciding whether to clear or formally accept-with-documented-gaps the Flexbox container-width gap, *then* the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag). Release is NOT "all criteria met, ship now."
+**Bottom line:** **3 of 4 conformance exit criteria MET** (CSS 2.2 96.3% / Fragmentation 90% / Grid 80%) after the CSS 2.2 box-model fixes (box-sizing block-axis + min/max clamping) cleared criterion 3. Only **Flexbox 83.3% is OPEN** (below 85%; gaps: flex `gap`, container ignores own `width`). One CSS 2.2 residual stays deferred — auto-height shrink-to-fit of the EMITTED box (`auto-height-emit-vs-pagination`: growing it regresses multi-page pagination; flow + placement are already correct). Critical path now: (a) optionally close the Flexbox container-width gap to clear criterion 4, then (b) the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag).
 
 ## Phase 3 — remaining-work roadmap
 
-Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order. PRs 1–7 are DONE. **The recommended next PR closes the CSS 2.2 gaps** (auto-height shrink-to-fit, box-sizing, min/max-on-explicit) to clear criterion 3 — criteria 3 + 4 are OPEN (below target), so release (PR 8) is NOT the immediate next step. Each gap fix flips its `KnownGap` conformance case to passing + raises the published CSS 2.2 rate.
+Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order. PRs 1–7 + the CSS 2.2 box-model PR are DONE. **Criterion 3 is now MET (96.3%)**; the recommended next PR either closes the Flexbox container-width gap (clears criterion 4) or goes straight to the **`0.7.0-beta` release** (PR 8). Surface the fork to Roland if unsure.
+
+### CSS 2.2 box-model gaps  [clears criterion 3] ✅ DONE
+1. ✅ **`box-sizing: border-box` (block axis)** — the recursive subtree emitter added padding/border OUTSIDE the declared height (inline axis already honored box-sizing); routed it through `BoxSizingHelper`. Flips `css22-box-sizing-border-box` + 3 new cases.
+2. ✅ **min/max-width/height clamp an explicit size** (§10.4/§10.7) — added `ClampBorderBoxToMinMax` (block mirror of the flex min/max reader), applied at the in-flow width/height sites. Flips `css22-min-width-on-explicit` + 5 new cases. **CSS 2.2 → 96.3% (26/27), criterion 3 MET.**
+3. ⏸️ **auto-height shrink-to-fit** — ATTEMPTED + reverted: emitting the effective (content-spanning) height regresses multi-page block-flow pagination (forced-overflow vs clean splits). Deferred as `auto-height-emit-vs-pagination`; criterion 3 already met without it.
 
 ### PR 1 — Conformance measurement  [criteria 3–6] ✅ DONE (PR [#202])
 1. ✅ **Harness** — replaced the `NetPdf.W3cConformance` smoke stub with a CURATED assertion suite (Roland's A/B call: curated NetPdf cases over vendored WPT). Drives the internal pipeline (`Phase2Pipeline`→`BlockLayouter`) + asserts `BoxFragment` geometry. CSS 2.2 subset (19 cases) → **84.2%**.

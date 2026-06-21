@@ -11,17 +11,20 @@ NetPdf engine. This replaces the prior smoke stub (`Solution_Compiles`) with a
 border-box geometry the layout must produce, and a per-category runner computes
 a **pass-rate**.
 
-## Pass-rates (measured 2026-06-20)
+## Pass-rates (measured 2026-06-21)
 
 | Category | Pass-rate | Roadmap target | Status |
 |---|---|---|---|
-| CSS 2.2 layout | **84.2%** (16/19) | ≥ 90% | ⚠️ below — documented gaps |
+| CSS 2.2 layout | **96.3%** (26/27) | ≥ 90% | ✅ met |
 | Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
 | Flexbox L1 | **83.3%** (10/12) | ≥ 85% | ⚠️ below — documented gaps |
 | Grid L1 | **80.0%** (8/10) | ≥ 70% | ✅ met |
 
-Two of the four exit criteria are **met** (Fragmentation, Grid); CSS 2.2 and
-Flexbox are below their targets with **documented gaps** (listed below).
+Three of the four exit criteria are **met** (CSS 2.2, Fragmentation, Grid); only
+Flexbox is below its target with **documented gaps** (listed below). CSS 2.2 rose
+from 84.2% after the box-model gap fixes (`box-sizing: border-box` on the block
+axis + min/max-width/height clamping); the one remaining CSS 2.2 gap is
+auto-height shrink-to-fit (see below).
 
 ## How the gate works — per-case baseline, not a pass-rate floor
 
@@ -67,12 +70,13 @@ metrics) so they're deterministic without a font dependency.
 
 ## Known gaps (the failing cases — each is a real, documented approximation)
 
-- **`auto` height shrink-to-fit** (CSS 2.1 §10.6.3) — NetPdf resolves an auto
-  block height to `0 + padding + border` (sibling placement uses the subtree
-  visual extent, so flow is correct; the box's own background/border under-size).
-- **`box-sizing: border-box`** — declared width/height are treated as content-box.
-- **min/max sizing on an explicit width** (§10.4) — `min-width`/`max-width` don't
-  clamp an explicit `width`.
+- **`auto` height shrink-to-fit** (CSS 2.1 §10.6.3) — NetPdf emits an auto block
+  height of `0 + padding + border`. Sibling placement + pagination already use
+  the subtree visual extent (flow is correct), but the box's own emitted
+  background/border under-sizes. Growing the EMITTED height destabilizes
+  multi-page block-flow pagination (forced-overflow instead of clean splits), so
+  it stays deferred — see `auto-height-emit-vs-pagination` in
+  [docs/deferrals.md](../../docs/deferrals.md).
 - **`break-before: page`** (Fragmentation §3.1) — forced-break metadata isn't
   propagated from the box yet.
 - **`gap` / `column-gap` / `row-gap`** on flex + grid containers — gutters aren't
@@ -81,6 +85,10 @@ metrics) so they're deterministic without a font dependency.
   `width` and fills the parent content width instead (the rest of the suite
   works around this by nesting in a sized parent; `flex-explicit-container-width`
   exercises it head-on so the Flexbox rate isn't inflated by avoiding it).
+
+**Closed this PR:** `box-sizing: border-box` (block axis) and min/max-width/height
+clamping on an explicit size — both now pass; their conformance cases moved from
+`KnownGap` to passing and CSS 2.2 rose to 96.3%.
 
 These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 [docs/compatibility-matrix.md](../../docs/compatibility-matrix.md).

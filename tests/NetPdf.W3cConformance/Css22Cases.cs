@@ -169,12 +169,17 @@ internal static class Css22Cases
 
         // ---- features NetPdf approximates (honest gap cases) ----
 
-        // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow
-        // children. NetPdf resolves auto height to 0 + chrome (documented
-        // approximation), so the parent under-sizes. EXPECTED here is spec.
+        // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow children.
+        // NetPdf resolves auto height to 0 + chrome (documented approximation) for
+        // the EMITTED box, so the parent's painted background/border under-sizes —
+        // even though sibling placement + pagination already use the subtree extent
+        // (the cursor advance is correct; only the box's own emitted height is
+        // chrome-only). Growing the emitted height destabilizes multi-page
+        // block-flow pagination (forced-overflow instead of clean splits — see the
+        // `auto-height-emit-vs-pagination` deferral), so it stays deferred.
         new ConformanceCase("css22-auto-height-contains-child", "CSS 2.1 §10.6.3",
             Doc("<div id='p' style='padding:20px'><div id='c' style='height:30px'></div></div>"),
             new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
-            KnownGap: "auto-height resolves to 0+chrome — no shrink-to-fit to in-flow children"),
+            KnownGap: "auto-height emits 0+chrome — growing it breaks multi-page pagination"),
     };
 }

@@ -6946,9 +6946,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   (img-pipeline cycle): the sizing pre-pass writes the §10.3.2 used width/height into
     ///   the slots, so an explicit width here is the image's used size — filling would
     ///   stretch it.</item>
-    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> keep
-    ///   the documented cycle-1 fill behavior (their explicit-width honoring is its own cycle
-    ///   — see <c>docs/deferrals.md</c>).</item>
+    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> now
+    ///   honor an explicit <c>width</c> too (the flex/grid container-width cycle): the declared
+    ///   border-box width feeds <c>FlexGeometryHelper</c> / <c>GridGeometryHelper</c>'s content
+    ///   inline size, so alignment / wrap / track sizing run against the declared width, not the
+    ///   page width. <c>width: auto</c> keeps the fill behavior.</item>
     /// </list>
     /// §10.3.3 margin DISTRIBUTION ships in the auto-margins cycle — see
     /// <see cref="ResolveAutoInlineMargins"/> (the caller applies it right after this).</summary>
@@ -6956,7 +6958,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         Box child, double availableInlineSize, double containingInlinePx,
         double marginInlineStart, double marginInlineEnd)
     {
-        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement)
+        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
+            or BoxKind.FlexContainer or BoxKind.GridContainer)
         {
             // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
             // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available

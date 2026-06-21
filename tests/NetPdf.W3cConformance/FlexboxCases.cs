@@ -165,17 +165,31 @@ internal static class FlexboxCases
             }),
 
         // §9.2 — an explicit `width` on the flex container itself sizes its main
-        // axis. NetPdf's flex/grid containers ignore their own `width` and fill
-        // the parent content width instead (the rest of this suite works AROUND
-        // that gap by nesting in a sized parent). This case exercises the gap
-        // HEAD-ON so the published Flexbox rate isn't inflated by avoiding it
-        // (PR 1 review [P1]): a 200px container with justify-content:flex-end
-        // must place the 100px item at X=100; the engine fills the 600px body
-        // and places it at X=500. EXPECTED is spec.
+        // axis: a 200px container with justify-content:flex-end places the 100px
+        // item at X=100 (200 - 100), not X=500 (against the 600px page).
         new ConformanceCase("flex-explicit-container-width", "CSS Flexbox L1 §9.2",
             Doc("<div style='display:flex;width:200px;justify-content:flex-end'>"
                 + Item("a", 100, 50) + "</div>"),
-            new[] { new BoxExpectation("a", X: 100) }, // 200 - 100
-            KnownGap: "flex container ignores its own explicit width, fills the parent"),
+            new[] { new BoxExpectation("a", X: 100) }), // 200 - 100
+
+        // §9.2 — justify-content:center against the DECLARED width (300px), so the
+        // 100px item centers at X=100, not against the 600px page.
+        new ConformanceCase("flex-explicit-width-center", "CSS Flexbox L1 §9.2",
+            Doc("<div style='display:flex;width:300px;justify-content:center'>"
+                + Item("a", 100, 50) + "</div>"),
+            new[] { new BoxExpectation("a", X: 100) }), // (300-100)/2
+
+        // §9.2 — an explicit width narrower than the items triggers flex-shrink
+        // against the DECLARED width: 3×100px items in a 240px container shrink to
+        // 80 each (240/3), packing at 0 / 80 / 160.
+        new ConformanceCase("flex-explicit-width-shrinks-items", "CSS Flexbox L1 §9.2/§9.7",
+            Doc("<div style='display:flex;width:240px'>"
+                + Item("a", 100, 50) + Item("b", 100, 50) + Item("c", 100, 50) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Width: 80),
+                new BoxExpectation("b", X: 80, Width: 80),
+                new BoxExpectation("c", X: 160, Width: 80),
+            }),
     };
 }

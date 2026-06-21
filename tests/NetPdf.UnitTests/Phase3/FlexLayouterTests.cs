@@ -2145,18 +2145,11 @@ public sealed class FlexLayouterTests
             siblingFragment!.Value.BlockOffset, precision: 3);
     }
 
-    [Fact(Skip =
-        "Phase 3 Task 15 L4 post-PR-#64 review F#2 — explicit-width "
-        + "honoring for flex containers requires the BlockLayouter "
-        + "width-resolution pipeline to honor declared `width` as a "
-        + "shrink-to-fit constraint (cycle-1 BlockLayouter derives "
-        + "borderBoxInlineSize from the available inline range + "
-        + "ignores declared width). The fix is out of L4 hardening "
-        + "scope; tracked as the BlockLayouter-flex-explicit-width "
-        + "Missing bullet under docs/deferrals.md#flex-layouter-features. "
-        + "When that gap is closed, remove the Skip + the assertion "
-        + "below verifies items center against the declared 200px "
-        + "container (not the 600px page).")]
+    // Flex/grid container-width cycle — a flex container now HONORS its own
+    // explicit `width` (added to the ResolveInFlowBorderBoxInlineSize gate), so
+    // align-items:center centers items against the declared 200px, not the 600px
+    // page. Was Skip'd as a known gap; the fix flips it to passing.
+    [Fact]
     public void L4_hardening_column_explicit_width_smaller_than_page_centers_correctly()
     {
         // F#2 — page = 600px wide. Flex container has explicit
@@ -2202,60 +2195,6 @@ public sealed class FlexLayouterTests
         Assert.NotNull(itemFragment);
         // F#2 expected: item centered in the 200-px declared width.
         Assert.Equal(50.0, itemFragment!.Value.InlineOffset, precision: 3);
-    }
-
-    [Fact]
-    public void L4_hardening_known_gap_column_flex_ignores_declared_width()
-    {
-        // F#2 known-gap pin — paired with the Skip'd test above.
-        // Documents the CURRENT (incomplete) behavior: a column flex
-        // container with width:200 in a 600px page treats
-        // _contentInlineSize as the full page width, so align-items:
-        // center centers items against 600 (= page) instead of 200
-        // (= declared width). Reviewer-flagged at PR #64.
-        //
-        // When the BlockLayouter width-resolution fix lands + the
-        // Skip'd "smaller_than_page_centers_correctly" test starts
-        // passing, this test will start failing — at which point
-        // remove BOTH this pin AND the matching Missing bullet in
-        // docs/deferrals.md.
-        var sink = new RecordingFragmentSink();
-        using var shaper = new SyntheticShaperResolver();
-
-        var root = Box.CreateRoot(MakeStyle());
-        var flex = BuildFlexContainer();
-        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
-        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
-        SetLengthPx(flex.Style, PropertyId.Height, 300);
-        SetLengthPx(flex.Style, PropertyId.Width, 200);
-
-        var itemStyle = MakeStyle();
-        SetLengthPx(itemStyle, PropertyId.Width, 100);
-        SetLengthPx(itemStyle, PropertyId.Height, 50);
-        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
-        flex.AppendChild(item);
-        root.AppendChild(flex);
-
-        using var layouter = new BlockLayouter(
-            rootBox: root, sink: sink,
-            incomingContinuation: null, diagnostics: null,
-            shaperResolver: shaper);
-        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
-        var layoutCtx = new LayoutContext(ctx);
-        using var resolver = new BreakResolver();
-        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
-            LayoutAttemptStrategy.LastResort);
-
-        BoxFragment? itemFragment = null;
-        foreach (var f in sink.Fragments)
-        {
-            if (f.Box == item) { itemFragment = f; break; }
-        }
-        Assert.NotNull(itemFragment);
-        // Known-gap — item centered against the 600px page, NOT
-        // against the declared 200px container width. Spec-correct
-        // is 50; current is 250.
-        Assert.Equal(250.0, itemFragment!.Value.InlineOffset, precision: 3);
     }
 
     [Fact]
@@ -3651,12 +3590,11 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L6_flex_wrap_nowrap_default_behavior_unchanged()
+    public void L6_flex_wrap_nowrap_keeps_a_single_line_with_shrink()
     {
-        // Sanity: with default flex-wrap (nowrap), the layout is the
-        // L1-L5 single-line algorithm. 3 items of 100 in 250px container
-        // — total 300 > 250, but no wrap. Items pack at inline 0, 100,
-        // 200; item 2 overflows past 250 but does not wrap.
+        // With default flex-wrap (nowrap), the layout is the L1-L5 single-line
+        // algorithm — it never wraps. The container honors its declared 250px
+        // width, so the 3 × 100px items (300 > 250) flex-shrink:1 to fit.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -3697,12 +3635,12 @@ public sealed class FlexLayouterTests
         }
 
         Assert.Equal(3, fragments.Count);
-        // All items on the same line (BlockOffset 0); InlineOffset
-        // walks 0/100/200. Item 2 ends at 300 (overflows 250) — that's
-        // the spec'd nowrap behavior (CSS Flexbox L1 §6 + §9.4).
+        // All items on the same line (BlockOffset 0) — nowrap never wraps. The
+        // items shrink to 250/3 ≈ 83.333 each (flex-shrink:1) and pack at
+        // 0 / 83.333 / 166.667, no longer overflowing at 0/100/200.
         Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
-        Assert.Equal(100.0, fragments[1].InlineOffset, precision: 3);
-        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(83.333, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(166.667, fragments[2].InlineOffset, precision: 3);
         Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
         Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
         Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);

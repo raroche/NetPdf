@@ -17,14 +17,15 @@ a **pass-rate**.
 |---|---|---|---|
 | CSS 2.2 layout | **93.3%** (28/30) | ≥ 90% | ✅ met |
 | Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
-| Flexbox L1 | **83.3%** (10/12) | ≥ 85% | ⚠️ below — documented gaps |
-| Grid L1 | **80.0%** (8/10) | ≥ 70% | ✅ met |
+| Flexbox L1 | **100%** (18/18) | ≥ 85% | ✅ met |
+| Grid L1 | **92.3%** (12/13) | ≥ 70% | ✅ met |
 
-Three of the four exit criteria are **met** (CSS 2.2, Fragmentation, Grid); only
-Flexbox is below its target with **documented gaps** (listed below). CSS 2.2 rose
-from 84.2% after the box-model gap fixes (`box-sizing: border-box` on the block
-axis + the measure pass + floats; min/max-width/height clamping on explicit AND
-auto/fill sizes). The two remaining CSS 2.2 gaps are auto-height shrink-to-fit and
+**All four conformance exit criteria are now met.** The flex/grid gap PR took
+Flexbox to 100% (gap gutters + the flex container honoring its own explicit
+`width`) and Grid to 92.3% (gap gutters; one residual: `fr` tracks + gap). CSS 2.2
+rose to 93.3% earlier from the box-model gap fixes (`box-sizing: border-box` on the
+block axis + the measure pass + floats; min/max-width/height clamping on explicit
+AND auto/fill sizes). The remaining CSS 2.2 gaps are auto-height shrink-to-fit and
 percentage min/max (see below).
 
 ## How the gate works — per-case baseline, not a pass-rate floor
@@ -84,17 +85,17 @@ metrics) so they're deterministic without a font dependency.
   [docs/deferrals.md](../../docs/deferrals.md).
 - **`break-before: page`** (Fragmentation §3.1) — forced-break metadata isn't
   propagated from the box yet.
-- **`gap` / `column-gap` / `row-gap`** on flex + grid containers — gutters aren't
-  inserted between tracks/items.
-- **explicit `width` on a flex/grid container** — the container ignores its own
-  `width` and fills the parent content width instead (the rest of the suite
-  works around this by nesting in a sized parent; `flex-explicit-container-width`
-  exercises it head-on so the Flexbox rate isn't inflated by avoiding it).
+- **grid `fr` tracks + gap** (Grid §7.2.3/§10.1) — gap gutters are positioned, but
+  the gaps aren't subtracted from the free space `fr` tracks distribute, so
+  `1fr 1fr; column-gap:20` over-sizes each fr — see `grid-gap-fr-track-sizing` in
+  [docs/deferrals.md](../../docs/deferrals.md).
 
-**Closed this PR:** `box-sizing: border-box` (block-axis emit + the subtree
-measure + floats, so emit and pagination agree) and `LengthPx` min/max-width/height
-clamping on explicit AND auto/fill sizes — their conformance cases moved from
-`KnownGap` to passing (CSS 2.2 84.2% → 93.3%).
+**Closed by the flex/grid gap PR:** flex + grid `gap` / `column-gap` / `row-gap`
+gutters (Flexbox → 100%, Grid fixed-track gaps → 100%) and an explicit `width` on
+a flex/grid container (alignment / shrink / wrap / track sizing now run against
+the declared width). **Closed earlier (box-model PR):** `box-sizing: border-box`
+(block-axis emit + subtree measure + floats) and `LengthPx` min/max-width/height
+clamping on explicit AND auto/fill sizes.
 
 These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 [docs/compatibility-matrix.md](../../docs/compatibility-matrix.md).

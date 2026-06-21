@@ -323,9 +323,12 @@ internal static class LengthResolver
             slot = ComputedSlot.FromKeyword(KeywordIdAuto);
             return true;
         }
-        if (propertyId == PropertyId.ColumnGap
+        if ((propertyId == PropertyId.ColumnGap || propertyId == PropertyId.RowGap)
             && value.Equals("normal", StringComparison.OrdinalIgnoreCase))
         {
+            // CSS Box Alignment L3 §8.1 — `normal` is the initial gap for both
+            // axes (column-gap + row-gap). The flex/grid readers map the Keyword
+            // slot to 0 (multicol's column-gap reader maps it to 1em).
             slot = ComputedSlot.FromKeyword(KeywordIdNormal);
             return true;
         }

@@ -150,5 +150,18 @@ internal static class GridCases
                 new BoxExpectation("b", X: 100),
                 new BoxExpectation("c", X: 200),
             }),
+
+        // §7.2.3 — an explicit `width` on the GRID container sizes the fr tracks:
+        // a 200px grid with 1fr 1fr splits into two 100px columns (against the
+        // declared 200, not the 600px page). No gap → unaffected by the fr-gap
+        // deferral.
+        new ConformanceCase("grid-explicit-container-width", "CSS Grid L1 §7.2.3",
+            Doc("<div style='display:grid;width:200px;grid-template-columns:1fr 1fr;"
+                + "grid-auto-rows:40px'><div id='a'></div><div id='b'></div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Width: 100),
+                new BoxExpectation("b", X: 100, Width: 100),
+            }),
     };
 }

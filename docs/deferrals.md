@@ -1433,31 +1433,22 @@ grepping the ID).
     `L3_hardening_known_gap_stretch_ignores_min_max_constraints`
     test — when sub-cycle L4+ ships the clamping, that test
     should fail + this bullet should be removed.
-  - **Explicit-width honoring for flex containers**. Per Phase 3
-    Task 15 L4 post-PR-#64 review F#2 — a `display: flex;
-    flex-direction: column; width: 200px` container in a 600px page
-    currently has `_contentInlineSize = 600` (= the available
-    inline range from `BlockLayouter`'s float-adjusted derivation
-    at BlockLayouter.cs:1138). The FlexLayouter then computes
-    `align-items: center` against the 600 page width, not the
-    declared 200. The fix touches the BlockLayouter
-    width-resolution pipeline (cycle-1 BlockLayouter does NOT
-    honor declared `width` as a shrink-to-fit constraint —
-    `borderBoxInlineSize` is always the float-adjusted available
-    range). Tracked by the
-    `L4_hardening_known_gap_column_flex_ignores_declared_width`
-    pinning test + the Skip'd
+  - ~~**Explicit-width honoring for flex/grid containers**~~ —
+    **shipped in the flex/grid gap PR (container-width cycle).**
+    Added `BoxKind.FlexContainer` + `BoxKind.GridContainer` to the
+    `ResolveInFlowBorderBoxInlineSize` gate, so an explicit `width`
+    on a flex/grid container becomes its border-box width (feeding
+    `FlexGeometryHelper` / `GridGeometryHelper`'s content inline
+    size). Alignment, flex-shrink, flex-wrap, and fr track sizing
+    now run against the declared width, not the page width. The
+    three pins flipped to the spec-correct behavior:
     `L4_hardening_column_explicit_width_smaller_than_page_centers_correctly`
-    test. Per Phase 3 Task 15 L6 post-PR-#66 review F#2 — also
-    tracked by the
-    `L6_hardening_known_gap_narrow_flex_in_wide_page_does_not_wrap_yet`
-    production-pipeline test, which pins the wrap-related symptom:
-    `width: 250px` declared on a `flex-wrap: wrap` container in a
-    600px page → wrap fires against the page width (= 4×100=400 <
-    600 → no wrap) instead of the spec-correct declared width
-    (= 4×100=400 > 250 → 2 lines). When the BlockLayouter
-    width-resolution fix lands ALL THREE tests should flip — at
-    which point remove BOTH this bullet AND all three pins.
+    un-Skip'd (item centers in 200 → X=50); the `..._known_gap_...`
+    pin removed; `L6_narrow_flex_in_wide_page_wraps_per_declared_width`
+    now asserts 2 lines. Conformance `flex-explicit-container-width`
+    + `flex-explicit-width-center` + `flex-explicit-width-shrinks-items`
+    + `grid-explicit-container-width` pass. (No real-document output
+    changed — confirmed by the RealDocuments guard.)
   - ~~`order` property~~ — **shipped in Phase 3 Task 15 L10.** New
     `order` Integer property (default 0, applies_to FlexItems) +
     `ReadOrder` extension + `GetFlexChildrenInOrderSequence` shared

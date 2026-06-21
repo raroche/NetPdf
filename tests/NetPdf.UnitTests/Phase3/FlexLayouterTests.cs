@@ -127,6 +127,50 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void Column_gap_inserts_a_main_axis_gutter_between_row_items()
+    {
+        // §8 — column-gap is the row-direction main-axis gutter. 3 items 100/50/80
+        // wide with column-gap:20 land at 0, 120 (100+20), 190 (100+20+50+20).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        SetLengthPx(flex.Style, PropertyId.ColumnGap, 20);
+
+        var widths = new[] { 100.0, 50.0, 80.0 };
+        var items = new Box[widths.Length];
+        for (var i = 0; i < widths.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, widths[i]);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            for (var i = 0; i < items.Length; i++)
+                if (f.Box == items[i]) { itemFragments.Add(f); break; }
+
+        Assert.Equal(3, itemFragments.Count);
+        Assert.Equal(0.0, itemFragments[0].InlineOffset, precision: 3);
+        Assert.Equal(120.0, itemFragments[1].InlineOffset, precision: 3);
+        Assert.Equal(190.0, itemFragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
     public void Flex_container_single_item_emits_at_origin()
     {
         // A single flex item should emit at the container's content-

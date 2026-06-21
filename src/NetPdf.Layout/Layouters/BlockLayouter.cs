@@ -9610,9 +9610,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // emission-time call; only the return value differs.
         var sortedChildIndices =
             flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
+        // §8 — pass the gap gutters so the pre-measure wrap decision + cross
+        // extent match emission (FlexLayouter). Row: main=column-gap, cross=row-gap;
+        // column swaps. No-op when no gap is set.
+        var isColumn = direction.IsFlexColumnDirection();
+        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
+            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap);
+        var crossGap = flexContainer.Style.ReadFlexGridGapOrZero(
+            isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
         return FlexLinePacker.SumCrossExtent(
             flexContainer, sortedChildIndices, direction,
-            containerMainSize, isWrapping: true, cancellationToken);
+            containerMainSize, isWrapping: true, cancellationToken, mainGap, crossGap);
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

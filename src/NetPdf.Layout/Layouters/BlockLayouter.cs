@@ -6857,6 +6857,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + block.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
                 + block.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
             var borderBox = DeclaredWidthToBorderBox(block.Style, declaredWidth, inlineInsets);
+            // §10.4 — clamp by min/max-width BEFORE distributing auto margins, so a
+            // centred block whose width is raised by min-width (or lowered by
+            // max-width) centres against its USED width — matching the same clamp
+            // ComputeInlineOnlyBlockLayout applies to the emitted width (PR #203
+            // Copilot review: the two must use the same border-box width).
+            borderBox = block.ClampBorderBoxToMinMax(
+                borderBox, PropertyId.MinWidth, PropertyId.MaxWidth);
             ResolveAutoInlineMargins(
                 block, borderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
         }

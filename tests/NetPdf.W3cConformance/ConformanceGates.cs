@@ -1,87 +1,73 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Generic;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace NetPdf.W3cConformance;
 
-/// <summary>Per Phase 3 PR 1 — curated W3C conformance pass-rate gates (exit
-/// criteria 3–6). Each category runs its case set, computes a pass-rate, and
-/// gates against a REGRESSION FLOOR that is met today. The roadmap exit-criteria
-/// TARGETS (CSS 2.2 ≥90%, Fragmentation ≥80%, Flexbox ≥85%, Grid ≥70%) are the
-/// aspiration; the curated suite MEASURES the engine's honest conformance — which
-/// is currently below several targets because NetPdf deliberately approximates
-/// some features (auto-height shrink-to-fit, box-sizing, min/max sizing, …). The
-/// floor guards the cases that pass today from regressing; the README publishes
-/// the four measured rates next to their targets + the gap analysis.
+/// <summary>Per Phase 3 PR 1 — curated W3C conformance gates (exit criteria 3–6).
+/// Each category runs its case set and gates on a PER-CASE BASELINE, not the
+/// aggregate pass-rate: every case with no <c>KnownGap</c> marker MUST pass (its
+/// regression turns the gate red), and every <c>KnownGap</c> case MUST still fail
+/// (if a gap closes, the gate goes red so the marker + published rate get
+/// updated). A loose pass-rate floor could let a passing case break while a
+/// known-failing case starts passing — aggregate unchanged, CI green — which the
+/// PR 1 review [P1] flagged; the per-case baseline closes that hole.
 ///
-/// <para>The per-failure report goes to the test output so a regression names
-/// WHICH case slipped, not just the number.</para></summary>
+/// <para>The pass-rate is still computed and written to the test output as the
+/// PUBLISHED MEASUREMENT next to its roadmap target (CSS 2.2 ≥90%, Fragmentation
+/// ≥80%, Flexbox ≥85%, Grid ≥70%) — see <c>README.md</c> — but it is not the
+/// gate.</para></summary>
 public sealed class ConformanceGates
 {
     private readonly ITestOutputHelper _out;
     public ConformanceGates(ITestOutputHelper output) => _out = output;
 
-    // Measured rates (2026-06-20) vs roadmap targets (exit criteria 3–6):
-    //   CSS 2.2        84.2% (16/19)  target 90%  — BELOW (auto-height, box-sizing, min/max)
-    //   Fragmentation  90.0% ( 9/10)  target 80%  — MET   (gap: break-before:page)
-    //   Flexbox        90.9% (10/11)  target 85%  — MET   (gap: flex `gap` property)
-    //   Grid           80.0% ( 8/10)  target 70%  — MET   (gap: column-gap / row-gap)
-    // Floors sit a margin below the measured rate to absorb tolerance while still
-    // catching a real regression (a passing case breaking).
-    private const double Css22Floor = 0.80;
+    // Roadmap exit-criteria TARGETS (3–6). Reported next to the measured rate;
+    // not asserted (the per-case baseline is the gate). A category below target
+    // is honest — it has documented gaps (see README + docs/deferrals.md).
     private const double Css22Target = 0.90;
-    private const double FragmentationFloor = 0.80;
     private const double FragmentationTarget = 0.80;
-    private const double FlexboxFloor = 0.70;
     private const double FlexboxTarget = 0.85;
-    private const double GridFloor = 0.70;
     private const double GridTarget = 0.70;
 
     [Fact]
-    public void Css22_layout_pass_rate_meets_floor()
-    {
-        var (rate, passed, total, report) = ConformanceRunner.Evaluate("CSS 2.2", Css22Cases.All);
-        _out.WriteLine(report);
-        _out.WriteLine($"floor {Css22Floor:P0}, roadmap target {Css22Target:P0}");
-        Assert.True(rate >= Css22Floor,
-            $"CSS 2.2 conformance {rate:P1} ({passed}/{total}) fell below the "
-            + $"{Css22Floor:P0} regression floor.\n{report}");
-    }
+    public void Css22_layout_conformance_baseline()
+        => AssertBaseline("CSS 2.2", Css22Cases.All, Css22Target);
 
     [Fact]
-    public void Fragmentation_pass_rate_meets_floor()
-    {
-        var (rate, passed, total, report) =
-            ConformanceRunner.Evaluate("Fragmentation", FragmentationCases.All);
-        _out.WriteLine(report);
-        _out.WriteLine($"floor {FragmentationFloor:P0}, roadmap target {FragmentationTarget:P0}");
-        Assert.True(rate >= FragmentationFloor,
-            $"Fragmentation conformance {rate:P1} ({passed}/{total}) fell below the "
-            + $"{FragmentationFloor:P0} regression floor.\n{report}");
-    }
+    public void Fragmentation_conformance_baseline()
+        => AssertBaseline("Fragmentation", FragmentationCases.All, FragmentationTarget);
 
     [Fact]
-    public void Flexbox_pass_rate_meets_floor()
-    {
-        var (rate, passed, total, report) =
-            ConformanceRunner.Evaluate("Flexbox", FlexboxCases.All);
-        _out.WriteLine(report);
-        _out.WriteLine($"floor {FlexboxFloor:P0}, roadmap target {FlexboxTarget:P0}");
-        Assert.True(rate >= FlexboxFloor,
-            $"Flexbox conformance {rate:P1} ({passed}/{total}) fell below the "
-            + $"{FlexboxFloor:P0} regression floor.\n{report}");
-    }
+    public void Flexbox_conformance_baseline()
+        => AssertBaseline("Flexbox", FlexboxCases.All, FlexboxTarget);
 
     [Fact]
-    public void Grid_pass_rate_meets_floor()
+    public void Grid_conformance_baseline()
+        => AssertBaseline("Grid", GridCases.All, GridTarget);
+
+    private void AssertBaseline(
+        string category, IReadOnlyList<ConformanceCase> cases, double target)
     {
-        var (rate, passed, total, report) = ConformanceRunner.Evaluate("Grid", GridCases.All);
-        _out.WriteLine(report);
-        _out.WriteLine($"floor {GridFloor:P0}, roadmap target {GridTarget:P0}");
-        Assert.True(rate >= GridFloor,
-            $"Grid conformance {rate:P1} ({passed}/{total}) fell below the "
-            + $"{GridFloor:P0} regression floor.\n{report}");
+        var e = ConformanceRunner.Evaluate(category, cases);
+        _out.WriteLine(e.Report);
+        _out.WriteLine(
+            $"published pass-rate {e.Rate:P1} vs roadmap target {target:P0} "
+            + (e.Rate >= target ? "(MET)" : "(below — documented gaps)"));
+
+        Assert.True(e.Regressions.Count == 0,
+            $"{category} REGRESSION — these expected-passing cases now FAIL:\n  "
+            + string.Join("\n  ", e.Regressions)
+            + "\nFix the regression, or (if the change is intended) mark the case "
+            + "KnownGap and document it.");
+
+        Assert.True(e.ClosedGaps.Count == 0,
+            $"{category} GAP CLOSED — these cases are marked KnownGap but now PASS:\n  "
+            + string.Join("\n  ", e.ClosedGaps)
+            + "\nRemove the KnownGap marker + update the published rate in "
+            + "tests/NetPdf.W3cConformance/README.md (a gap closing is good news).");
     }
 }

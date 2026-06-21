@@ -6,6 +6,7 @@ using NetPdf;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Paginate;
+using NetPdf.Paginate.Diagnostics;
 using NetPdf.Phase2;
 
 namespace NetPdf.W3cConformance;
@@ -20,9 +21,11 @@ namespace NetPdf.W3cConformance;
 ///
 /// <para>Cases are authored against BLOCK-BOX geometry (sized elements, no text
 /// metrics) so they're deterministic without a font dependency — the layouter
-/// runs with <c>shaperResolver: null</c>; text-bearing blocks are skipped (they
-/// emit a no-shaper diagnostic) which is fine because the curated cases assert
-/// box positions / sizes, not glyph runs.</para></summary>
+/// runs with <c>shaperResolver: null</c>. A text-bearing block would be SKIPPED
+/// (it emits the no-shaper diagnostic), which is why the harness now CAPTURES
+/// diagnostics and the runner fails any case that emits an unexpected one — a
+/// silent layout omission (e.g. accidental text content) becomes a hard failure
+/// instead of a misleading pass (PR 1 review [P2]).</para></summary>
 internal static class ConformanceHarness
 {
     /// <summary>A laid-out element's border-box rectangle in content-area-
@@ -32,13 +35,23 @@ internal static class ConformanceHarness
     public readonly record struct LaidOutBox(
         string Id, int Page, double X, double Y, double Width, double Height);
 
+    /// <summary>The outcome of rendering a case: every laid-out <c>id</c>'d box,
+    /// the diagnostics the pipeline emitted (so the runner can fail on an
+    /// unexpected one — silent content omission), and whether the page loop hit
+    /// its <c>maxPages</c> ceiling with layout still incomplete (an unconsumed
+    /// continuation — a runaway / under-asserted case, never a real pass).</summary>
+    internal readonly record struct RenderResult(
+        IReadOnlyList<LaidOutBox> Boxes,
+        IReadOnlyList<PaginateDiagnostic> Diagnostics,
+        bool MaxPagesExhausted);
+
     /// <summary>Render <paramref name="html"/> across however many pages it
     /// needs (single page for most cases; multi-page for fragmentation) into a
     /// content area of <paramref name="contentWidthPx"/> ×
     /// <paramref name="contentHeightPx"/>, and return every laid-out box that
-    /// carries an <c>id</c> attribute, tagged with its page + border-box
-    /// geometry. The first match for a given id wins per page.</summary>
-    public static IReadOnlyList<LaidOutBox> Render(
+    /// carries an <c>id</c> attribute (tagged with its page + border-box
+    /// geometry), plus the emitted diagnostics and the exhaustion flag.</summary>
+    internal static RenderResult Render(
         string html, double contentWidthPx, double contentHeightPx, int maxPages = 32)
     {
         var options = new HtmlPdfOptions();
@@ -50,7 +63,9 @@ internal static class ConformanceHarness
             phase2.BoxRoot, contentWidthPx, contentHeightPx);
 
         var laidOut = new List<LaidOutBox>();
+        var diagnostics = new RecordingDiagnosticsSink();
         LayoutContinuation? continuation = null;
+        var completed = false;
         for (var page = 0; page < maxPages; page++)
         {
             var sink = new RecordingFragmentSink();
@@ -58,19 +73,20 @@ internal static class ConformanceHarness
                 rootBox: phase2.BoxRoot,
                 sink: sink,
                 incomingContinuation: continuation,
-                diagnostics: null,
+                diagnostics: diagnostics,
                 shaperResolver: null))
             {
                 var fragmentainer = new FragmentainerContext(contentWidthPx, contentHeightPx)
                 {
                     PageIndex = page,
                 };
-                var layout = new LayoutContext(fragmentainer);
+                var layout = new LayoutContext(fragmentainer) { Diagnostics = diagnostics };
                 using var breaks = new BreakResolver();
                 // Drive each page through the production retry coordinator
                 // (Strict → DropAvoidInside → LastResort) so fragmentation cases
                 // see the same break behavior the real pipeline produces.
-                var coordinator = new LayoutRetryCoordinator(diagnostics: null, fragmentSink: sink);
+                var coordinator = new LayoutRetryCoordinator(
+                    diagnostics: diagnostics, fragmentSink: sink);
                 var result = coordinator.Run(layouter, fragmentainer, ref layout, breaks);
 
                 foreach (var f in sink.Fragments)
@@ -84,12 +100,14 @@ internal static class ConformanceHarness
                 if (result.Outcome != LayoutAttemptOutcome.PageComplete
                     || result.Continuation is null)
                 {
+                    // AllDone, or a final page with nothing left to continue.
+                    completed = true;
                     break;
                 }
                 continuation = result.Continuation;
             }
         }
-        return laidOut;
+        return new RenderResult(laidOut, diagnostics.Diagnostics, MaxPagesExhausted: !completed);
     }
 
     /// <summary>Recording fragment sink — captures every emitted
@@ -114,5 +132,15 @@ internal static class ConformanceHarness
             if (cursor < 0 || cursor >= Fragments.Count) return;
             Fragments[cursor] = Fragments[cursor] with { BlockSize = newBlockSize };
         }
+    }
+
+    /// <summary>Recording diagnostics sink — captures every
+    /// <see cref="PaginateDiagnostic"/> the layouter / retry coordinator emit so
+    /// the runner can fail a case on an unexpected one. Mirrors the canonical
+    /// unit-test sink.</summary>
+    private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
+    {
+        public List<PaginateDiagnostic> Diagnostics { get; } = new();
+        public void Emit(PaginateDiagnostic diagnostic) => Diagnostics.Add(diagnostic);
     }
 }

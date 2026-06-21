@@ -134,6 +134,7 @@ internal static class FragmentationCases
                 new BoxExpectation("a", Page: 0, Y: 0),
                 new BoxExpectation("b", Page: 1, Y: 0), // forced onto page 1
             },
-            PageHeightPx: 400),
+            PageHeightPx: 400,
+            KnownGap: "break-before:page forced-break metadata isn't propagated from the box"),
     };
 }

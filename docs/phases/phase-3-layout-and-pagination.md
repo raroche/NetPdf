@@ -282,19 +282,27 @@ Mark `src/NetPdf.Layout/Grid/` files with a one-line note like:
 
 ## Exit criteria
 
-Phase 3 is complete when:
+Phase 3 is complete when (status MEASURED by the curated conformance suite as of
+PR 1 — the rates below are the honest engine measurement, not aspiration; see
+[tests/NetPdf.W3cConformance/README.md](../../tests/NetPdf.W3cConformance/README.md)):
 
 1. ✅ All 4 invoice corpus files render to a valid PDF (visual fidelity polish lands in Phase 4).
 2. ✅ The Anvil sample (`04-anvil-running-elements.html`) renders with the footer + "Page N of M" appearing on every page.
-3. ✅ W3C CSS 2.2 layout test pass-rate ≥ 90%.
-4. ✅ W3C Flexbox test pass-rate ≥ 85%.
-5. ✅ W3C Grid Level 1 test pass-rate ≥ 70% (Grid is genuinely hard; raise the bar in v1.x).
-6. ✅ W3C Fragmentation test pass-rate ≥ 80%.
-7. ✅ Performance: 3-page invoice ≤ 200 ms p50; 20-page report ≤ 1.5 s p50.
-8. ✅ Memory: linear growth with page count.
+3. 📊 W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 84.2%** (16/19); below target, documented gaps (auto-height shrink-to-fit, `box-sizing`, min/max-on-explicit). **Criterion OPEN** — closing these gaps is the next PR.
+4. 📊 W3C Flexbox test pass-rate ≥ 85% — **MEASURED 83.3%** (10/12); below target after counting the explicit-container-width gap head-on (PR 1 review). Documented gaps: flex `gap`, container ignores own `width`. **Criterion OPEN**.
+5. ✅ W3C Grid Level 1 test pass-rate ≥ 70% — **MEASURED 80.0%** (8/10) (Grid is genuinely hard; raise the bar in v1.x).
+6. ✅ W3C Fragmentation test pass-rate ≥ 80% — **MEASURED 90.0%** (9/10).
+7. 🟡 Performance: 3-page invoice ≤ 200 ms p50; 20-page report ≤ 1.5 s p50 — layout-pipeline smoke-gated; full-pipeline (images + web fonts) benchmark is not yet a build gate.
+8. 🟡 Memory: linear growth with page count — retained heap flat (gated); per-page allocation linearity still open (`multi-page-allocation-churn`).
 9. ✅ AOT smoke test still passes.
 10. ✅ Determinism: byte-equal output for byte-equal input.
-11. ✅ CHANGELOG updated, `0.7.0-beta` tagged.
+11. ❌ CHANGELOG updated, `0.7.0-beta` tagged — pending the release PR.
+
+**Release gating:** criteria 3 + 4 are OPEN (CSS 2.2 + Flexbox below target with
+documented gaps). The release is not "ready now with all criteria met" — the
+critical path is to close the CSS 2.2 gaps (clears criterion 3), then either
+clear or formally accept-with-documented-gaps the Flexbox container-width gap,
+before tagging `0.7.0-beta`.
 
 ## Common pitfalls
 

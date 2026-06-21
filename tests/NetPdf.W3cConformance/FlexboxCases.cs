@@ -116,6 +116,21 @@ internal static class FlexboxCases
         // (NetPdf does not yet apply flex/grid gap — honest gap; EXPECTED is spec.)
         new ConformanceCase("flex-gap-main-axis", "CSS Box Alignment L3 §8 / Flexbox L1",
             Doc("<div style='display:flex;gap:20px'>" + Item("a", 100, 50) + Item("b", 100, 50) + "</div>"),
-            new[] { new BoxExpectation("b", X: 120) }), // 100 + 20 gap
+            new[] { new BoxExpectation("b", X: 120) }, // 100 + 20 gap
+            KnownGap: "flex `gap` gutter isn't inserted between items"),
+
+        // §9.2 — an explicit `width` on the flex container itself sizes its main
+        // axis. NetPdf's flex/grid containers ignore their own `width` and fill
+        // the parent content width instead (the rest of this suite works AROUND
+        // that gap by nesting in a sized parent). This case exercises the gap
+        // HEAD-ON so the published Flexbox rate isn't inflated by avoiding it
+        // (PR 1 review [P1]): a 200px container with justify-content:flex-end
+        // must place the 100px item at X=100; the engine fills the 600px body
+        // and places it at X=500. EXPECTED is spec.
+        new ConformanceCase("flex-explicit-container-width", "CSS Flexbox L1 §9.2",
+            Doc("<div style='display:flex;width:200px;justify-content:flex-end'>"
+                + Item("a", 100, 50) + "</div>"),
+            new[] { new BoxExpectation("a", X: 100) }, // 200 - 100
+            KnownGap: "flex container ignores its own explicit width, fills the parent"),
     };
 }

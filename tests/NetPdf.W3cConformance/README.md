@@ -17,13 +17,41 @@ a **pass-rate**.
 |---|---|---|---|
 | CSS 2.2 layout | **84.2%** (16/19) | ≥ 90% | ⚠️ below — documented gaps |
 | Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
-| Flexbox L1 | **90.9%** (10/11) | ≥ 85% | ✅ met |
+| Flexbox L1 | **83.3%** (10/12) | ≥ 85% | ⚠️ below — documented gaps |
 | Grid L1 | **80.0%** (8/10) | ≥ 70% | ✅ met |
 
-Three of the four exit criteria are **met**; CSS 2.2 is below its 90% target.
-The gates assert a **regression floor** met today (not the aspirational target),
-so a passing case breaking turns a gate red while a known gap stays documented
-rather than blocking the build.
+Two of the four exit criteria are **met** (Fragmentation, Grid); CSS 2.2 and
+Flexbox are below their targets with **documented gaps** (listed below).
+
+## How the gate works — per-case baseline, not a pass-rate floor
+
+The pass-rate above is **published measurement only**. The actual regression
+gate is **per-case** (`ConformanceGates`): every case with no `KnownGap` marker
+**must pass**, and every `KnownGap` case **must still fail**. So:
+
+- A previously-passing case breaking → the gate goes red (a regression).
+- A `KnownGap` case starting to pass → the gate goes red too, telling you to
+  drop the marker and re-publish the higher rate (a gap closing is good news,
+  and the gate makes sure the docs get updated rather than the win slipping by).
+
+A loose pass-rate floor couldn't do this: a passing case could break while a
+known-failing case started passing, leaving the aggregate unchanged and CI
+green. The per-case baseline closes that hole (PR 1 review [P1]).
+
+Two further harness guards back the geometry assertions:
+
+- **Content-omission diagnostics fail a case.** The harness captures pipeline
+  diagnostics; a `LAYOUT-INLINE-SKIPPED-*` / `*-UNSUPPORTED-*` diagnostic means
+  an element was silently dropped (the canonical hazard: every case runs
+  `shaperResolver: null`, so accidental text content would be skipped), which a
+  geometry assertion can't always catch. Approximation / overflow diagnostics
+  (forced-overflow, grid-fr-under-indefinite) are *not* fatal — that content is
+  emitted, so the geometry checks validate it directly (PR 1 review [P2]).
+- **Duplicate / partial output fails a case.** Each expectation asserts the
+  fragment count for its `(id, page)` (default 1) — a duplicate emission is a
+  failure, not a silent first-match (PR 1 review [P3]) — and a render that
+  exhausts `maxPages` with layout still incomplete fails rather than asserting
+  on partial output.
 
 ## Why curated (not vendored WPT)
 
@@ -49,6 +77,10 @@ metrics) so they're deterministic without a font dependency.
   propagated from the box yet.
 - **`gap` / `column-gap` / `row-gap`** on flex + grid containers — gutters aren't
   inserted between tracks/items.
+- **explicit `width` on a flex/grid container** — the container ignores its own
+  `width` and fills the parent content width instead (the rest of the suite
+  works around this by nesting in a sized parent; `flex-explicit-container-width`
+  exercises it head-on so the Flexbox rate isn't inflated by avoiding it).
 
 These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 [docs/compatibility-matrix.md](../../docs/compatibility-matrix.md).
@@ -56,12 +88,14 @@ These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 ## Layout
 
 - `ConformanceHarness.cs` — HTML → laid-out `BoxFragment` geometry (drives
-  `BlockLayouter` through the production `LayoutRetryCoordinator`, multi-page).
-- `ConformanceCase.cs` — the case + `BoxExpectation` model + the pass/fail runner
-  + per-category `Evaluate` (rate + per-failure report).
+  `BlockLayouter` through the production `LayoutRetryCoordinator`, multi-page) +
+  captures diagnostics + flags `maxPages` exhaustion.
+- `ConformanceCase.cs` — the case + `BoxExpectation` model (incl. `KnownGap` and
+  per-`(id, page)` fragment count) + the pass/fail runner + per-category
+  `Evaluate` (regressions, closed gaps, published rate, per-case report).
 - `Css22Cases.cs` / `FragmentationCases.cs` / `FlexboxCases.cs` / `GridCases.cs`
   — the curated case sets.
-- `ConformanceGates.cs` — the four `[Fact]` pass-rate gates.
+- `ConformanceGates.cs` — the four `[Fact]` per-case-baseline gates.
 
 ## Adding a case
 
@@ -69,3 +103,8 @@ Append a `ConformanceCase` to the relevant set: an HTML fragment with `id`'d
 elements + the spec-correct `BoxExpectation`s (assert only the axes the case is
 about). A flex/grid container fills its **parent** content width, so constrain
 width via a sized parent, not an explicit `width` on the container.
+
+If a case documents an engine gap and is **expected to fail**, tag it with
+`KnownGap: "<reason>"` — the gate then guards it from the opposite direction
+(when the gap closes the gate goes red so the marker + published rate get
+updated). When you fix the gap, remove the marker and bump the rate here.

@@ -115,16 +115,19 @@ internal static class Css22Cases
         // approximation), so the parent under-sizes. EXPECTED here is spec.
         new ConformanceCase("css22-auto-height-contains-child", "CSS 2.1 §10.6.3",
             Doc("<div id='p' style='padding:20px'><div id='c' style='height:30px'></div></div>"),
-            new[] { new BoxExpectation("p", Height: 70) }), // 30 + 20 + 20
+            new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
+            KnownGap: "auto-height resolves to 0+chrome — no shrink-to-fit to in-flow children"),
 
         // CSS3-UI — box-sizing:border-box (width/height include padding+border).
         new ConformanceCase("css22-box-sizing-border-box", "CSS3-UI box-sizing",
             Doc("<div id='a' style='width:200px;height:50px;padding:20px;box-sizing:border-box'></div>"),
-            new[] { new BoxExpectation("a", Width: 200, Height: 50) }),
+            new[] { new BoxExpectation("a", Width: 200, Height: 50) },
+            KnownGap: "box-sizing:border-box treated as content-box"),
 
         // §10.4 — min-width raises a smaller explicit width.
         new ConformanceCase("css22-min-width-on-explicit", "CSS 2.1 §10.4",
             Doc("<div id='a' style='width:50px;min-width:150px;height:20px'></div>"),
-            new[] { new BoxExpectation("a", Width: 150) }),
+            new[] { new BoxExpectation("a", Width: 150) },
+            KnownGap: "min/max-width don't clamp an explicit width"),
     };
 }

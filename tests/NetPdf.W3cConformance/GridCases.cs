@@ -85,7 +85,8 @@ internal static class GridCases
             {
                 new BoxExpectation("a", X: 0),
                 new BoxExpectation("b", X: 120), // 100 + 20 gap
-            }),
+            },
+            KnownGap: "column-gap gutter isn't inserted between grid tracks"),
 
         // §10.1 — row-gap inserts a gutter between row tracks.
         new ConformanceCase("grid-row-gap", "CSS Grid L1 §10.1",
@@ -96,7 +97,8 @@ internal static class GridCases
             {
                 new BoxExpectation("a", Y: 0),
                 new BoxExpectation("b", Y: 80), // 50 + 30 gap
-            }),
+            },
+            KnownGap: "row-gap gutter isn't inserted between grid tracks"),
 
         // §8.3 — line-based placement (grid-column / grid-row) drops an item
         // into a specific cell.

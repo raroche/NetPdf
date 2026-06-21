@@ -633,10 +633,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // items in a line (column-gap for row direction, row-gap for column); the
         // CROSS-axis gutter sits between wrapped lines (the swapped pair). `normal`
         // / unset → 0 for flex (ReadFlexGridGapOrZero).
+        // §8.3 — a `%` gutter resolves against the matching content dimension:
+        // column-gap → the inline content size, row-gap → the block content size
+        // (independent of flex-direction). A `%` row-gap, though, only resolves when
+        // the block size is DEFINITE; for an auto / content-height container the block
+        // axis is indefinite, so the `%` resolves to 0 (the indefinite-reference rule,
+        // matching browsers AND the BlockLayouter pre-measure, which sums the block
+        // extent with gap 0 because that extent is still being derived). Without this
+        // gate the emission would space items by a gap the pre-measured wrapper never
+        // grew for → overflow + following-sibling overlap. column-gap's inline base is
+        // always definite for a block-level flex container, so it needs no gate.
+        var inlineGapBase = _contentInlineSize;
+        var blockGapBase = _rootBox.IsHeightAuto() ? double.NaN : _contentBlockSize;
         var mainGap = _rootBox.Style.ReadFlexGridGapOrZero(
-            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap);
+            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap,
+            isColumn ? blockGapBase : inlineGapBase);
         var crossGap = _rootBox.Style.ReadFlexGridGapOrZero(
-            isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
+            isColumn ? PropertyId.ColumnGap : PropertyId.RowGap,
+            isColumn ? inlineGapBase : blockGapBase);
 
         // Per Phase 3 Task 15 L10 — compute the effective flex order
         // ONCE per AttemptLayout entry; both PackLines (line packing)
@@ -2048,8 +2062,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             hypotheticals[i] = hypothetical;
             resolved[i] = hypothetical;
 
+            // Pass the container main size so a PERCENTAGE main min/max-* resolves
+            // against it (mirrors the hypothetical main-size resolution above, which
+            // already threads containerMainSize for percentage flex-basis / main size).
             var (min, max) = item.ResolveFlexItemMinMaxMainSize(
-                minSizeProperty, maxSizeProperty);
+                minSizeProperty, maxSizeProperty, containerMainSize);
             mins[i] = min;
             maxs[i] = max;
         }

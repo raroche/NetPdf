@@ -1372,8 +1372,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var borderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
                 child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
             // §10.7 — min-height / max-height clamp the explicit height. No-op when unset.
+            // A `%` min/max-height resolves against the SAME base as `% height` above
+            // (the fragmentainer's definite content height — min-max-percentage-sizing).
             borderBoxBlockSize = child.ClampBorderBoxToMinMax(
-                borderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight);
+                borderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight,
+                fragmentainer.BlockSize);
 
             // Per Phase 3 Task 8 cycle 2 — flow around floats. The
             // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
@@ -4784,8 +4787,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var childBorderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
                 child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
             // §10.7 — min-height / max-height clamp the explicit height. No-op when unset.
+            // A `%` min/max-height resolves against the same base as `% height` above.
             childBorderBoxBlockSize = child.ClampBorderBoxToMinMax(
-                childBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight);
+                childBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight,
+                parentContentBlockSize);
             // Per the body-explicit-width gap fix — same §10.3.3 subset
             // as the outer dispatch path (explicit `width` on a plain
             // block container overrides the fill), so a nested div
@@ -6371,7 +6376,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var borderBoxInlineSize = DeclaredWidthToBorderBox(
             child.Style, contentInline, floatInlineInsets);
         borderBoxInlineSize = child.ClampBorderBoxToMinMax(
-            borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth);
+            borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth, bfcInlineSizePx);
         return new(
             MarginStart: marginStart,
             MarginInlineStart: marginInlineStart,
@@ -6872,7 +6877,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // ComputeInlineOnlyBlockLayout applies to the emitted width (PR #203
             // Copilot review: the two must use the same border-box width).
             borderBox = block.ClampBorderBoxToMinMax(
-                borderBox, PropertyId.MinWidth, PropertyId.MaxWidth);
+                borderBox, PropertyId.MinWidth, PropertyId.MaxWidth, containingInlinePx);
             ResolveAutoInlineMargins(
                 block, borderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
         }
@@ -6978,7 +6983,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // §10.4 — min-width / max-width clamp the explicit width (max first,
                 // then min so min wins when min > max). A no-op when neither is set.
                 return child.ClampBorderBoxToMinMax(
-                    borderBoxWidth, PropertyId.MinWidth, PropertyId.MaxWidth);
+                    borderBoxWidth, PropertyId.MinWidth, PropertyId.MaxWidth, containingInlinePx);
             }
             // §10.3.3 — `width: auto` on a plain block fills the available range
             // (minus margins); §10.4 — min-width/max-width then clamp that USED
@@ -6989,7 +6994,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var autoFillWidth = Math.Max(0,
                 availableInlineSize - marginInlineStart - marginInlineEnd);
             return child.ClampBorderBoxToMinMax(
-                autoFillWidth, PropertyId.MinWidth, PropertyId.MaxWidth);
+                autoFillWidth, PropertyId.MinWidth, PropertyId.MaxWidth, containingInlinePx);
         }
         return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
     }
@@ -7112,7 +7117,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 inlineOnlyBlock.Style, metrics.DeclaredWidthPx, inlineInsets);
             // §10.4 — min-width / max-width clamp the explicit width.
             borderBoxInlineSize = inlineOnlyBlock.ClampBorderBoxToMinMax(
-                borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth);
+                borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth, containingInlineSize);
         }
         else
         {
@@ -7122,7 +7127,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 containingInlineSize
                 - metrics.MarginInlineStart - metrics.MarginInlineEnd);
             borderBoxInlineSize = inlineOnlyBlock.ClampBorderBoxToMinMax(
-                borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth);
+                borderBoxInlineSize, PropertyId.MinWidth, PropertyId.MaxWidth, containingInlineSize);
         }
         // Inline-pass available size = the content-box inline range.
         var contentInlineSize = Math.Max(0,
@@ -8610,7 +8615,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var parentBorderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
             parent.Style, pHeight, pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd);
         parentBorderBoxBlockSize = parent.ClampBorderBoxToMinMax(
-            parentBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight);
+            parentBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight,
+            parentContentBlockSize);
 
         // Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening review
         // Finding #2 — inline-only blocks contribute their wrapped-
@@ -9340,7 +9346,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the §9.7 free space, so the pre-measure resolves each item's width at the
         // SAME flex-resolved value FlexLayouter emits at (an item pre-measured too wide
         // under-counts its wrapped height → mis-skips the row-nowrap pagination gate).
-        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
+        // PR #206 review [P1] — a `%` column-gap resolves against the inline content
+        // size (definite here = flexContentInlineSize), matching the emission's
+        // inlineGapBase; without the base a `%` gap collapsed to 0 in pre-measure only.
+        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
+            PropertyId.ColumnGap, flexContentInlineSize);
         var resolvedMain = lineItems.Count > 0
             ? FlexLayouter.ResolveFlexLineMainSizes(
                 lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
@@ -9538,6 +9548,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the N-1 gutters add to the natural main extent (emission advances the main
         // cursor by mainGap between items, AttemptLayout ~L1550), so the overflow /
         // pagination trigger must count them too rather than under-reporting the height.
+        // PR #206 review [P1] — no base is passed: a `%` row-gap resolves against the
+        // BLOCK content size, which this pre-measure is itself deriving (indefinite), so
+        // it resolves to 0. That matches the emission's blockGapBase gate (this path runs
+        // only for auto-height columns, where the block axis is indefinite at emission too).
         var columnMainGap = flexContainer.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
         totalMain += System.Math.Max(0, blockLevelCount - 1) * columnMainGap;
         return totalMain;
@@ -9636,9 +9650,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // §8 — pass the gap gutters so the pre-measure wrap decision + cross
         // extent match emission (FlexLayouter). Row: main=column-gap, cross=row-gap;
         // column swaps. No-op when no gap is set.
+        // PR #206 review [P1] — a `%` MAIN gutter drives the wrap boundary, so it must
+        // resolve against the same base emission uses or pre-measure packs different
+        // lines. For row the main gutter is column-gap → the definite inline content
+        // size (= containerMainSize, the line-packing budget). For column the main
+        // gutter is row-gap → the block axis, which is still being derived here
+        // (indefinite), so it resolves to 0 — matching the emission's blockGapBase
+        // gate for an auto-height container. The cross (row-gap) gutter likewise
+        // resolves against the indefinite block extent → 0.
         var isColumn = direction.IsFlexColumnDirection();
         var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
-            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap);
+            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap,
+            isColumn ? double.NaN : containerMainSize);
         var crossGap = flexContainer.Style.ReadFlexGridGapOrZero(
             isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
         return FlexLinePacker.SumCrossExtent(

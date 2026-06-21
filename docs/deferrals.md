@@ -369,94 +369,6 @@ grepping the ID).
 
 ---
 
-## min-max-percentage-sizing
-
-- **ID** — `min-max-percentage-sizing`
-- **Status** — `approximated`.
-- **Behavior** — `min-width` / `max-width` / `min-height` / `max-height` clamp an
-  element's used size (explicit OR auto/fill, box-sizing-aware, max-then-min)
-  when the value is a `LengthPx`. A PERCENTAGE min/max (e.g. `min-width: 50%`) is
-  IGNORED — `ClampBorderBoxToMinMax` reads `LengthPx` slots only, so the size
-  passes through unclamped.
-- **Missing** — CSS 2.1 §10.4/§10.7 percentage resolution of min/max against the
-  containing block, including the indefinite-axis rule (a `%` max-height against
-  an indefinite containing height computes to `none`; a `%` min-height to `0`).
-- **Trigger** — a corpus/user case using a percentage min/max constraint.
-- **Owner files** — `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
-  (`ClampBorderBoxToMinMax` — needs a containing-size parameter + `Percentage`
-  slot handling with the indefinite-axis rule) + its call sites in
-  `BlockLayouter.cs` (thread the inline / block percentage base already used for
-  the corresponding width/height read).
-- **Added** — Phase 3 PR (CSS 2.2 box-model gaps) — length min/max shipped; the
-  percentage cut was scoped out (containing-size + indefinite-axis subtleties).
-- **Removal condition** — `ClampBorderBoxToMinMax` resolves percentage min/max
-  against the containing block AND the `css22-min-width-percentage` conformance
-  case passes.
-
----
-
-## grid-gap-fr-track-sizing
-
-- **ID** — `grid-gap-fr-track-sizing`
-- **Status** — `approximated`.
-- **Behavior** — Grid `column-gap` / `row-gap` / `gap` gutters are POSITIONED
-  between tracks (the track offsets include the gaps), so fixed / auto / intrinsic
-  track grids lay out correctly. But the gaps are NOT subtracted from the free
-  space `fr` (flexible) tracks distribute — so `grid-template-columns: 1fr 1fr;
-  column-gap: 20px` in a 400px container sizes each fr track at 200 (should be
-  190 = (400-20)/2) and the second track overflows by the gap.
-- **Missing** — CSS Grid L1 §7.2.3 + §11.5 — the leftover space the fr flex factor
-  resolves against is the container extent MINUS the fixed/percentage track bases
-  AND the gutters. Percentage tracks (§7.2.1) still resolve against the FULL
-  content area, so the gap must be threaded as a separate fr-only free-space
-  reduction (not a global content-size reduction).
-- **Trigger** — a corpus/user grid using `fr` (or auto-fill/auto-fit) tracks
-  together with a non-zero gap.
-- **Owner files** — `src/NetPdf.Layout/Layouters/GridSizing.cs` —
-  `ResolveFrTracks` (the multiple call sites at ~lines 170/288/292/310 thread
-  `contentInlineSize` / `contentBlockSize`); the fr free-space derivation needs
-  the gutter total `(trackCount - 1) * gap` subtracted, kept separate from the
-  percentage-track resolution.
-- **Added** — Phase 3 PR (flex/grid gap) — track POSITIONING gap shipped; the fr
-  free-space subtraction was scoped out (intertwined with the grid track-sizing
-  passes).
-- **Removal condition** — fr tracks subtract the gutters from their distributed
-  free space AND the `grid-fr-columns-with-gap` conformance case passes.
-
----
-
-## gap-percentage-sizing
-
-- **ID** — `gap-percentage-sizing`
-- **Status** — `approximated` (a `%` gutter is treated as a 0 gutter — no gap).
-- **Behavior** — `column-gap` / `row-gap` / `gap` on FLEX + GRID containers honor
-  only `<length>` | `normal` today. A PERCENTAGE gutter (`display:flex; gap:10%`)
-  lays out with NO gutter: the property is registered as `Length` (not
-  `LengthPercentage`) in `properties.json`, so a percentage value is rejected at
-  resolution + falls back to `normal`, and `ReadFlexGridGapOrZero` floors any
-  non-`LengthPx` slot to 0 — so the used gutter is 0 rather than the resolved
-  percentage.
-- **Missing** — CSS Box Alignment L3 §8.3 — `row-gap` / `column-gap` are
-  `<length-percentage>`; a percentage resolves against the corresponding dimension
-  of the container content box (column-gap → inline size, row-gap → block size).
-  Two changes are needed: upgrade the property type + resolution path (so a `%`
-  parses instead of being rejected), and resolve the percentage at layout time
-  against the already-known container content extent (kept separate from track /
-  flex sizing, like `grid-gap-fr-track-sizing`).
-- **Trigger** — a corpus/user flex or grid container using a `%` gap.
-- **Owner files** — `src/NetPdf.Css/properties.json` (the `column-gap` / `row-gap`
-  property type), `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
-  (`ReadFlexGridGapOrZero` — add a percentage-resolving overload taking the
-  container content extent), and the gap read sites (`FlexLayouter` ~L636,
-  `GridSizing` gap reads) which must pass the relevant container content dimension.
-- **Added** — Phase 3 PR (flex/grid gap) review [P3] — length gaps shipped;
-  percentage gaps scoped out (property-type change + a layout-time resolution seam).
-- **Removal condition** — `column-gap` / `row-gap` resolve a percentage against the
-  container content box on both axes AND a percentage-gap unit/conformance pin is
-  added (and turns green).
-
----
-
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`
@@ -1210,7 +1122,10 @@ grepping the ID).
   approximations are enumerated under **Missing** below (baseline alignment, the
   `flex` shorthand parser, intrinsic `flex-basis` keywords, margin-box in the
   alignment / justify-content free-space math, RTL column cross-axis + vertical
-  writing modes, percentage gaps — see `gap-percentage-sizing`).
+  writing modes). Percentage gaps + percentage item min/max main-size resolve
+  against the container content box in BOTH emission and the BlockLayouter
+  pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
+  row-gap on an auto-height column resolves to 0 per the indefinite-reference rule.
 - **Behavior** — A block container with `display: flex` (=
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level

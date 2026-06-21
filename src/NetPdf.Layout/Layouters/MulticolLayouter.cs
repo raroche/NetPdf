@@ -412,8 +412,10 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         }
 
         // Re-read column-gap first; ComputeUsedColumnCount needs it to
-        // derive N from column-width.
-        var columnGap = _rootBox.Style.ReadColumnGap();
+        // derive N from column-width. PR #206 review (Copilot) — pass the content
+        // inline size so a PERCENTAGE column-gap resolves against it (§8.3) instead of
+        // silently falling back to the `normal` 1em default.
+        var columnGap = _rootBox.Style.ReadColumnGap(_contentInlineSize);
         if (!double.IsFinite(columnGap) || columnGap < 0)
         {
             // Defensive — the resolver should already reject negative

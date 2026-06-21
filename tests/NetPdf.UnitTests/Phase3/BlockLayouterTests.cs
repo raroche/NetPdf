@@ -671,6 +671,68 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Min_and_max_width_percentage_clamp_against_the_containing_inline_size()
+    {
+        // §10.4 — a `%` min/max-width resolves against the containing block inline
+        // size (600 here). min-width:50% raises a 50px width to 300; max-width:50%
+        // lowers a 500px width to 300. (sizing-residuals PR — min-max-percentage-sizing.)
+        foreach (var (declared, minPct, maxPct, expected) in new (double, double?, double?, double)[]
+        {
+            (50, 50.0, null, 300),    // min-width 50% of 600 = 300 raises
+            (500, null, 50.0, 300),   // max-width 50% of 600 = 300 lowers
+        })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, declared);
+            SetLengthPx(style, PropertyId.Height, 20);
+            if (minPct is not null) style.Set(PropertyId.MinWidth, ComputedSlot.FromPercentage(minPct.Value));
+            if (maxPct is not null) style.Set(PropertyId.MaxWidth, ComputedSlot.FromPercentage(maxPct.Value));
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].InlineSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Min_and_max_height_percentage_clamp_against_the_fragmentainer_block_size()
+    {
+        // §10.7 — a `%` min/max-height resolves against the same definite base as a
+        // `% height` (the fragmentainer's 800px content height here). min-height:50%
+        // raises a 20px height to 400; max-height:25% lowers a 600px height to 200.
+        foreach (var (declared, minPct, maxPct, expected) in new (double, double?, double?, double)[]
+        {
+            (20, 50.0, null, 400),    // min-height 50% of 800 = 400 raises
+            (600, null, 25.0, 200),   // max-height 25% of 800 = 200 lowers
+        })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, declared);
+            if (minPct is not null) style.Set(PropertyId.MinHeight, ComputedSlot.FromPercentage(minPct.Value));
+            if (maxPct is not null) style.Set(PropertyId.MaxHeight, ComputedSlot.FromPercentage(maxPct.Value));
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
     public void Float_border_box_sizing_makes_the_declared_height_the_border_box()
     {
         // PR #189 review (extra coverage) — the FLOAT border-box-block-size path honors

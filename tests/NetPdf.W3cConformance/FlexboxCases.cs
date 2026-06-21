@@ -191,5 +191,17 @@ internal static class FlexboxCases
                 new BoxExpectation("b", X: 80, Width: 80),
                 new BoxExpectation("c", X: 160, Width: 80),
             }),
+
+        // §8.3 — a PERCENTAGE column-gap resolves against the container content inline
+        // size: column-gap:10% of the 300px container = 30, so item b lands at
+        // 50 + 30 = 80. (gap-percentage-sizing closed by the sizing-residuals PR.)
+        new ConformanceCase("flex-percentage-column-gap", "CSS Box Alignment L3 §8.3",
+            Doc("<div style='display:flex;width:300px;column-gap:10%'>"
+                + Item("a", 50, 20) + Item("b", 50, 20) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0),
+                new BoxExpectation("b", X: 80), // 50 + 30
+            }),
     };
 }

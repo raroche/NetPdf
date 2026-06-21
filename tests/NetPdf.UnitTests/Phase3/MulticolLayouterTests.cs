@@ -584,6 +584,75 @@ public sealed class MulticolLayouterTests
     }
 
     [Fact]
+    public void Multicol_percentage_column_gap_resolves_against_the_content_inline_size()
+    {
+        // PR #206 review (Copilot) — a `%` column-gap on a multicol container resolves
+        // against the content inline size (§8.3), not the `normal` 1em fallback. 2
+        // columns in 200px with column-gap:10% (= 20): per-column = (200 - 20) / 2 = 90;
+        // column 1's inline offset = 90 + 20 = 110. Pre-fix ReadColumnGap returned 16
+        // for any non-length slot, so the gap silently behaved like `normal`.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        multicol.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromPercentage(10)); // 20 of 200
+        for (var i = 0; i < 2; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 90);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Equal(2, childFragments.Count);
+        Assert.Equal(0, childFragments[0].InlineOffset);
+        Assert.Equal(110, childFragments[1].InlineOffset); // 90 + 20% gap
+    }
+
+    [Fact]
+    public void ReadColumnGap_resolves_percentage_against_inline_size_else_normal()
+    {
+        // PR #206 review (Copilot) — unit-level: a `%` column-gap resolves against the
+        // passed inline size; with no definite base it falls back to the `normal` 1em
+        // (16px) multicol default (NOT 0 — multicol `normal` is 1em, unlike flex/grid).
+        var pct = MakeStyle();
+        pct.Set(PropertyId.ColumnGap, ComputedSlot.FromPercentage(10));
+        Assert.Equal(20.0, pct.ReadColumnGap(200), precision: 3);   // 10% of 200
+        Assert.Equal(16.0, pct.ReadColumnGap(), precision: 3);       // no base → normal 1em
+        Assert.Equal(16.0, pct.ReadColumnGap(double.NaN), precision: 3);
+
+        var len = MakeStyle();
+        len.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(25));
+        Assert.Equal(25.0, len.ReadColumnGap(200), precision: 3);    // length wins, ignores base
+
+        var normal = MakeStyle(); // unset → normal
+        Assert.Equal(16.0, normal.ReadColumnGap(200), precision: 3);
+    }
+
+    [Fact]
     public void Multicol_empty_container_emits_outer_only()
     {
         // A multicol container with NO children should emit only the

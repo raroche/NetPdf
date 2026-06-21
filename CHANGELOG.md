@@ -6,7 +6,13 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 ## [Unreleased]
 
-The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.)
+The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
+
+### Fixed — CSS sizing residuals (conformance raised past the `0.7.0-beta` baseline)
+
+- **Grid `fr` tracks subtract the gutters from their distributed free space** (CSS Grid L1 §7.2.3/§11.5) — `grid-template-columns: 1fr 1fr; column-gap: 20px` in a 400px container now sizes each fr track at 190 (= (400-20)/2), not 200; percentage tracks still resolve against the full content area. Grid conformance → **100%** (15/15).
+- **Percentage `min-width` / `max-width` / `min-height` / `max-height` resolve against the containing block** (CSS 2.1 §10.4/§10.7), box-sizing-aware, with the indefinite-axis rule (a `%` max against an indefinite base → `none`, a `%` min → `0`). CSS 2.2 conformance → **96.7%** (29/30).
+- **Percentage `column-gap` / `row-gap` resolve against the container content box** (CSS Box Alignment L3 §8.3) — the properties are now `<length-percentage>` (column-gap → inline size, row-gap → block size), on flex AND grid containers.
 
 [Unreleased]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...HEAD
 

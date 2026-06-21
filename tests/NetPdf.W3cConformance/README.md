@@ -15,19 +15,20 @@ a **pass-rate**.
 
 | Category | Pass-rate | Roadmap target | Status |
 |---|---|---|---|
-| CSS 2.2 layout | **93.3%** (28/30) | ≥ 90% | ✅ met |
+| CSS 2.2 layout | **96.7%** (29/30) | ≥ 90% | ✅ met |
 | Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
-| Flexbox L1 | **100%** (18/18) | ≥ 85% | ✅ met |
-| Grid L1 | **93.3%** (14/15) | ≥ 70% | ✅ met |
+| Flexbox L1 | **100%** (19/19) | ≥ 85% | ✅ met |
+| Grid L1 | **100%** (15/15) | ≥ 70% | ✅ met |
 
-**All four conformance exit criteria are now met.** The flex/grid gap PR took
-Flexbox to 100% (gap gutters + the flex container honoring its own explicit
-`width`) and Grid to 93.3% (gap gutters incl. spanned-item + auto-height extent;
-one residual: `fr` tracks + gap). CSS 2.2
-rose to 93.3% earlier from the box-model gap fixes (`box-sizing: border-box` on the
-block axis + the measure pass + floats; min/max-width/height clamping on explicit
-AND auto/fill sizes). The remaining CSS 2.2 gaps are auto-height shrink-to-fit and
-percentage min/max (see below).
+**All four conformance exit criteria are met.** The post-`0.7.0-beta` sizing-residuals
+PR raised three categories: Grid to **100%** (`fr` tracks now subtract the gutters
+from their free space), CSS 2.2 to **96.7%** (percentage min/max-width/height resolve
+against the containing block), and Flexbox stays **100%** with a new percentage-gap
+case (`column-gap`/`row-gap` percentages resolve against the container content box).
+Earlier: the flex/grid gap PR took Flexbox to 100% + Grid fixed-track gaps to 100%,
+and the box-model PR took CSS 2.2 to 93.3% (`box-sizing: border-box` block axis +
+`LengthPx` min/max). The one remaining CSS 2.2 gap is auto-height shrink-to-fit
+(see below).
 
 ## How the gate works — per-case baseline, not a pass-rate floor
 
@@ -80,23 +81,17 @@ metrics) so they're deterministic without a font dependency.
   multi-page block-flow pagination (forced-overflow instead of clean splits), so
   it stays deferred — see `auto-height-emit-vs-pagination` in
   [docs/deferrals.md](../../docs/deferrals.md).
-- **percentage min/max sizing** (§10.4/§10.7) — a `LengthPx` `min/max-width/height`
-  clamps (explicit and auto/fill, box-sizing-aware); a PERCENTAGE min/max
-  (`min-width: 50%`) is ignored — see `min-max-percentage-sizing` in
-  [docs/deferrals.md](../../docs/deferrals.md).
 - **`break-before: page`** (Fragmentation §3.1) — forced-break metadata isn't
   propagated from the box yet.
-- **grid `fr` tracks + gap** (Grid §7.2.3/§10.1) — gap gutters are positioned, but
-  the gaps aren't subtracted from the free space `fr` tracks distribute, so
-  `1fr 1fr; column-gap:20` over-sizes each fr — see `grid-gap-fr-track-sizing` in
-  [docs/deferrals.md](../../docs/deferrals.md).
 
-**Closed by the flex/grid gap PR:** flex + grid `gap` / `column-gap` / `row-gap`
-gutters (Flexbox → 100%, Grid fixed-track gaps → 100%) and an explicit `width` on
-a flex/grid container (alignment / shrink / wrap / track sizing now run against
-the declared width). **Closed earlier (box-model PR):** `box-sizing: border-box`
-(block-axis emit + subtree measure + floats) and `LengthPx` min/max-width/height
-clamping on explicit AND auto/fill sizes.
+**Closed by the sizing-residuals PR (post-`0.7.0-beta`):** grid `fr` tracks subtract
+the gutters from their distributed free space (Grid → 100%); percentage min/max-width/
+height resolve against the containing block (CSS 2.2 → 96.7%); percentage `column-gap`/
+`row-gap` resolve against the container content box (the new `flex-percentage-column-gap`
+case). **Closed by the flex/grid gap PR:** flex + grid `gap` / `column-gap` / `row-gap`
+length gutters + an explicit `width` on a flex/grid container. **Closed earlier
+(box-model PR):** `box-sizing: border-box` (block-axis emit + subtree measure + floats)
+and `LengthPx` min/max-width/height clamping on explicit AND auto/fill sizes.
 
 These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 [docs/compatibility-matrix.md](../../docs/compatibility-matrix.md).

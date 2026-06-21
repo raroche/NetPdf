@@ -1122,7 +1122,10 @@ grepping the ID).
   approximations are enumerated under **Missing** below (baseline alignment, the
   `flex` shorthand parser, intrinsic `flex-basis` keywords, margin-box in the
   alignment / justify-content free-space math, RTL column cross-axis + vertical
-  writing modes, percentage gaps — see `gap-percentage-sizing`).
+  writing modes). Percentage gaps + percentage item min/max main-size resolve
+  against the container content box in BOTH emission and the BlockLayouter
+  pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
+  row-gap on an auto-height column resolves to 0 per the indefinite-reference rule.
 - **Behavior** — A block container with `display: flex` (=
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level

@@ -1439,16 +1439,25 @@ internal static class ComputedStyleLayoutExtensions
     /// <list type="bullet">
     ///   <item><c>min</c> = the resolved <c>min-width</c> (row) or
     ///   <c>min-height</c> (column) length in pixels; 0 when the
-    ///   slot is auto / unset / non-LengthPx (= the L12 floor;
+    ///   slot is auto / unset / non-length (= the L12 floor;
     ///   spec-correct `min-width: auto` for flex items resolves to
     ///   the item's intrinsic content size per CSS Sizing §5.5,
     ///   which is L13+ scope pending intrinsic-sizing integration).</item>
     ///   <item><c>max</c> = the resolved <c>max-width</c> /
     ///   <c>max-height</c> length in pixels; <see cref="double.PositiveInfinity"/>
-    ///   when the slot is none / unset / non-LengthPx (= no upper
-    ///   bound). Percentages are L13+ scope (need container main-size
-    ///   resolution at the per-item site).</item>
+    ///   when the slot is none / unset / non-length (= no upper
+    ///   bound).</item>
     /// </list>
+    ///
+    /// <para>A PERCENTAGE min/max resolves against
+    /// <paramref name="containerMainSize"/> — the flex container's MAIN-axis
+    /// content extent (CSS Flexbox L1 §9.7 reads the item's used min/max main
+    /// size, and a percentage main min/max resolves against the container's
+    /// inner main size per CSS Sizing §5). When the container main size is
+    /// INDEFINITE (the default <see cref="double.NaN"/> — callers that don't
+    /// pass one, e.g. an auto-height column container's indefinite main axis),
+    /// a <c>%</c> max computes to <c>none</c> and a <c>%</c> min to <c>0</c>,
+    /// so percentages are skipped + those callers stay byte-identical.</para>
     ///
     /// <para><b>Used by</b> <c>FlexLayouter.ResolveFlexibleMainSizes</c>
     /// per CSS Flexbox L1 §9.7 step 4: after the initial grow/shrink
@@ -1458,22 +1467,39 @@ internal static class ComputedStyleLayoutExtensions
     public static (double Min, double Max) ResolveFlexItemMinMaxMainSize(
         this Boxes.Box item,
         PropertyId minSizeProperty,
-        PropertyId maxSizeProperty)
+        PropertyId maxSizeProperty,
+        double containerMainSize = double.NaN)
     {
         // Flex box-sizing cycle — an EXPLICIT min/max length is mapped to a BORDER box
         // (honoring `box-sizing`, same chrome as the hypothetical) so it clamps the
-        // border-box-resolved main size on the same axis. An unset min (→ 0 floor) / max
-        // (→ no bound) keeps its prior value (the `auto` min-width intrinsic resolution is
-        // still L13+ scope; percentages still L13+).
+        // border-box-resolved main size on the same axis. A PERCENTAGE resolves against
+        // the container main size (mirroring ClampBorderBoxToMinMax's CSS 2.2 path) when
+        // that base is definite. An unset min (→ 0 floor) / max (→ no bound) keeps its
+        // prior value (the `auto` min-width intrinsic resolution is still L13+ scope).
+        var definiteContaining =
+            double.IsFinite(containerMainSize) && containerMainSize >= 0;
         var chrome = item.Style.AxisBorderPaddingPx(minSizeProperty);
         var minSlot = item.Style.Get(minSizeProperty);
         var maxSlot = item.Style.Get(maxSizeProperty);
-        var min = minSlot.Tag == ComputedSlotTag.LengthPx
-            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, minSlot.AsLengthPx()), chrome)
-            : 0.0;
-        var max = maxSlot.Tag == ComputedSlotTag.LengthPx
-            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, maxSlot.AsLengthPx()), chrome)
-            : double.PositiveInfinity;
+
+        double min;
+        if (minSlot.Tag == ComputedSlotTag.LengthPx)
+            min = BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, minSlot.AsLengthPx()), chrome);
+        else if (minSlot.Tag == ComputedSlotTag.Percentage && definiteContaining)
+            min = BoxSizingHelper.DeclaredToBorderBox(
+                item.Style, Math.Max(0, minSlot.AsPercentage() / 100.0 * containerMainSize), chrome);
+        else
+            min = 0.0;
+
+        double max;
+        if (maxSlot.Tag == ComputedSlotTag.LengthPx)
+            max = BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, maxSlot.AsLengthPx()), chrome);
+        else if (maxSlot.Tag == ComputedSlotTag.Percentage && definiteContaining)
+            max = BoxSizingHelper.DeclaredToBorderBox(
+                item.Style, Math.Max(0, maxSlot.AsPercentage() / 100.0 * containerMainSize), chrome);
+        else
+            max = double.PositiveInfinity;
+
         return (min, max);
     }
 

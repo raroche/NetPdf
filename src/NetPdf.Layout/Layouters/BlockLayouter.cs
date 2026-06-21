@@ -9346,7 +9346,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the §9.7 free space, so the pre-measure resolves each item's width at the
         // SAME flex-resolved value FlexLayouter emits at (an item pre-measured too wide
         // under-counts its wrapped height → mis-skips the row-nowrap pagination gate).
-        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
+        // PR #206 review [P1] — a `%` column-gap resolves against the inline content
+        // size (definite here = flexContentInlineSize), matching the emission's
+        // inlineGapBase; without the base a `%` gap collapsed to 0 in pre-measure only.
+        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
+            PropertyId.ColumnGap, flexContentInlineSize);
         var resolvedMain = lineItems.Count > 0
             ? FlexLayouter.ResolveFlexLineMainSizes(
                 lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
@@ -9544,6 +9548,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the N-1 gutters add to the natural main extent (emission advances the main
         // cursor by mainGap between items, AttemptLayout ~L1550), so the overflow /
         // pagination trigger must count them too rather than under-reporting the height.
+        // PR #206 review [P1] — no base is passed: a `%` row-gap resolves against the
+        // BLOCK content size, which this pre-measure is itself deriving (indefinite), so
+        // it resolves to 0. That matches the emission's blockGapBase gate (this path runs
+        // only for auto-height columns, where the block axis is indefinite at emission too).
         var columnMainGap = flexContainer.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
         totalMain += System.Math.Max(0, blockLevelCount - 1) * columnMainGap;
         return totalMain;
@@ -9642,9 +9650,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // §8 — pass the gap gutters so the pre-measure wrap decision + cross
         // extent match emission (FlexLayouter). Row: main=column-gap, cross=row-gap;
         // column swaps. No-op when no gap is set.
+        // PR #206 review [P1] — a `%` MAIN gutter drives the wrap boundary, so it must
+        // resolve against the same base emission uses or pre-measure packs different
+        // lines. For row the main gutter is column-gap → the definite inline content
+        // size (= containerMainSize, the line-packing budget). For column the main
+        // gutter is row-gap → the block axis, which is still being derived here
+        // (indefinite), so it resolves to 0 — matching the emission's blockGapBase
+        // gate for an auto-height container. The cross (row-gap) gutter likewise
+        // resolves against the indefinite block extent → 0.
         var isColumn = direction.IsFlexColumnDirection();
         var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
-            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap);
+            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap,
+            isColumn ? double.NaN : containerMainSize);
         var crossGap = flexContainer.Style.ReadFlexGridGapOrZero(
             isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
         return FlexLinePacker.SumCrossExtent(

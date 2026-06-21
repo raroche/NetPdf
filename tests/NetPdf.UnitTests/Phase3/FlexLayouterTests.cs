@@ -214,6 +214,217 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void Flex_percentage_column_gap_drives_the_wrap_boundary_and_premeasured_height()
+    {
+        // PR #206 review [P1] — a `%` column-gap must resolve in the BlockLayouter flex
+        // PRE-MEASURE, not just emission, or the auto-height wrapper packs different
+        // lines than emission → the wrapper is measured too short + a following sibling
+        // overlaps the wrapped line. Row-wrap, width:300, column-gap:10% (= 30), three
+        // 100×50 flex-shrink:0 items:
+        //   line 0 = [i0, i1] (100 + 30 + 100 = 230 ≤ 300); adding i2 needs 360 → i2
+        //   wraps to line 1. Auto cross-extent = 2 lines × 50 = 100, so the sibling sits
+        //   at y=100. Pre-fix the pre-measure read column-gap with no base → 0 → all
+        //   three packed on one line → wrapper measured at 50 → sibling overlapped i2.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        flex.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromPercentage(10)); // 30 of 300
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        // Following sibling — a plain 20px block; its block offset reveals the flex
+        // wrapper's pre-measured height (100 for two lines, not 50 for one).
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 20);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+
+        root.AppendChild(flex);
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment Frag(Box b)
+        {
+            foreach (var f in sink.Fragments) if (f.Box == b) return f;
+            throw new System.InvalidOperationException("fragment not found");
+        }
+
+        // i0, i1 share line 0; i2 wrapped to line 1 — the wrap boundary the 30px % gap forced.
+        Assert.Equal(0.0, Frag(items[0]).InlineOffset, precision: 3);
+        Assert.Equal(0.0, Frag(items[0]).BlockOffset, precision: 3);
+        Assert.Equal(130.0, Frag(items[1]).InlineOffset, precision: 3); // 100 + 30
+        Assert.Equal(0.0, Frag(items[1]).BlockOffset, precision: 3);
+        Assert.Equal(0.0, Frag(items[2]).InlineOffset, precision: 3);
+        Assert.Equal(50.0, Frag(items[2]).BlockOffset, precision: 3); // wrapped to line 1
+        // The following sibling clears the 2-line (100px) wrapper — the pre-measure fix.
+        Assert.Equal(100.0, Frag(sibling).BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_percentage_row_gap_resolves_to_zero_on_auto_height_column()
+    {
+        // PR #206 review [P1] — a `%` row-gap resolves against the BLOCK content size,
+        // which is INDEFINITE for an auto-height column → the gap resolves to 0 (the
+        // indefinite-reference rule, matching browsers). Emission + pre-measure agree, so
+        // the wrapper is the bare item-sum and a following sibling doesn't overlap.
+        // Column, auto height, row-gap:50%, two 100×50 items → items at y=0 + y=50
+        // (gap 0); wrapper height 100; sibling at y=100. Pre-fix the emission resolved
+        // row-gap:50% against the auto-derived 100 → a 50px gap → i1 spilled to y=100,
+        // overlapping the sibling the pre-measure placed at the gap-less height.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Width, 100);
+        flex.Style.Set(PropertyId.RowGap, ComputedSlot.FromPercentage(50));
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 20);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+
+        root.AppendChild(flex);
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment Frag(Box b)
+        {
+            foreach (var f in sink.Fragments) if (f.Box == b) return f;
+            throw new System.InvalidOperationException("fragment not found");
+        }
+
+        Assert.Equal(0.0, Frag(items[0]).BlockOffset, precision: 3);
+        Assert.Equal(50.0, Frag(items[1]).BlockOffset, precision: 3); // gap 0, NOT 50%
+        Assert.Equal(100.0, Frag(sibling).BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_percentage_row_gap_resolves_against_a_definite_height_column()
+    {
+        // PR #206 review [P1] — the flip side: a `%` row-gap DOES resolve when the
+        // column's block size is DEFINITE. height:200, row-gap:50% (= 100), two 100×50
+        // items → item0 at y=0, item1 at y = 50 + 100 = 150 (bottom at 200, fills the
+        // container exactly). Confirms the definiteness gate only zeroes the AUTO case.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Width, 100);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.RowGap, ComputedSlot.FromPercentage(50)); // 100 of 200
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment Frag(Box b)
+        {
+            foreach (var f in sink.Fragments) if (f.Box == b) return f;
+            throw new System.InvalidOperationException("fragment not found");
+        }
+
+        Assert.Equal(0.0, Frag(items[0]).BlockOffset, precision: 3);
+        Assert.Equal(150.0, Frag(items[1]).BlockOffset, precision: 3); // 50 + 100% gap
+    }
+
+    [Fact]
+    public void Flex_item_percentage_max_width_clamps_against_the_container_main_size()
+    {
+        // PR #206 review [P2] — §9.7 clamps each item to [min, max]; a `%` max-* now
+        // resolves against the container main size. Row, width:300, one fixed 250-wide
+        // item with max-width:50% (= 150) → the item is clamped down to 150. Pre-fix the
+        // flex min/max helper ignored percentages (max → none) so it emitted at 250.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 250);
+        SetLengthPx(style, PropertyId.Height, 50);
+        style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+        style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        style.Set(PropertyId.MaxWidth, ComputedSlot.FromPercentage(50)); // 150 of 300
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment Frag(Box b)
+        {
+            foreach (var f in sink.Fragments) if (f.Box == b) return f;
+            throw new System.InvalidOperationException("fragment not found");
+        }
+
+        Assert.Equal(150.0, Frag(item).InlineSize, precision: 3);
+    }
+
+    [Fact]
     public void Flex_gap_grow_sizes_items_so_gutter_does_not_overflow()
     {
         // PR #204 review [P1] — two `Width: 0; flex-grow: 1` items in a 300px row with
@@ -5350,6 +5561,39 @@ public sealed class FlexLayouterTests
             mainGap: 20, cancellationToken: default);
         Assert.Equal(140.0, shrunk[0], precision: 3);
         Assert.Equal(140.0, shrunk[1], precision: 3);
+    }
+
+    [Fact]
+    public void ResolveFlexLineMainSizes_resolves_percentage_min_max_against_container()
+    {
+        // PR #206 review [P2] — §9.7 step-4 clamps each item to [min, max]; a `%` main
+        // min/max-* resolves against the container main size (here 300), mirroring the
+        // hypothetical-main-size percentage resolution. Pre-fix the helper handled only
+        // LengthPx, so a `%` min was a 0 floor + a `%` max was no bound (no-op).
+
+        // (a) max — a fixed 250-wide item with max-width:50% (= 150) clamps DOWN to 150.
+        var maxStyle = MakeStyle();
+        SetLengthPx(maxStyle, PropertyId.Width, 250);
+        maxStyle.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+        maxStyle.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        maxStyle.Set(PropertyId.MaxWidth, ComputedSlot.FromPercentage(50));
+        var maxItems = new[] { Box.ForElement(BoxKind.BlockContainer, maxStyle, MakeElement()) };
+        var maxResolved = FlexLayouter.ResolveFlexLineMainSizes(
+            maxItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            mainGap: 0, cancellationToken: default);
+        Assert.Equal(150.0, maxResolved[0], precision: 3);
+
+        // (b) min — a fixed 50-wide item with min-width:50% (= 150) floors UP to 150.
+        var minStyle = MakeStyle();
+        SetLengthPx(minStyle, PropertyId.Width, 50);
+        minStyle.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+        minStyle.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        minStyle.Set(PropertyId.MinWidth, ComputedSlot.FromPercentage(50));
+        var minItems = new[] { Box.ForElement(BoxKind.BlockContainer, minStyle, MakeElement()) };
+        var minResolved = FlexLayouter.ResolveFlexLineMainSizes(
+            minItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            mainGap: 0, cancellationToken: default);
+        Assert.Equal(150.0, minResolved[0], precision: 3);
     }
 
     [Fact]

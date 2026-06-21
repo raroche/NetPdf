@@ -480,13 +480,25 @@ internal static class ComputedStyleLayoutExtensions
     /// <c>normal</c> initial value resolves to 1em (≈ 16 px at the
     /// initial font size). Cycle 1 hard-codes 16 px regardless of
     /// font-size; sub-cycle 2+ will resolve against the cascaded
-    /// <c>font-size</c>.</summary>
-    public static double ReadColumnGap(this ComputedStyle style)
+    /// <c>font-size</c>.
+    ///
+    /// <para>PR #206 review (Copilot) — a PERCENTAGE <c>column-gap</c> on a multicol
+    /// container resolves against <paramref name="containerInlineSize"/> (the content-box
+    /// inline size) per CSS Box Alignment L3 §8.3, matching the flex/grid gutter path
+    /// (<see cref="ReadFlexGridGapOrZero"/>). Without a definite inline size (the default
+    /// <see cref="double.NaN"/>) a <c>%</c> falls back to the <c>normal</c> 1em default —
+    /// so callers that don't pass one stay byte-identical, and a <c>%</c> can't silently
+    /// be ZERO either (multicol's <c>normal</c> is 1em, not 0).</para></summary>
+    public static double ReadColumnGap(
+        this ComputedStyle style, double containerInlineSize = double.NaN)
     {
         var slot = style.Get(PropertyId.ColumnGap);
-        return slot.Tag == ComputedSlotTag.LengthPx
-            ? slot.AsLengthPx()
-            : 16.0;
+        if (slot.Tag == ComputedSlotTag.LengthPx)
+            return slot.AsLengthPx();
+        if (slot.Tag == ComputedSlotTag.Percentage
+            && double.IsFinite(containerInlineSize) && containerInlineSize >= 0)
+            return System.Math.Max(0, slot.AsPercentage() / 100.0 * containerInlineSize);
+        return 16.0;
     }
 
     /// <summary>Per Phase 3 — flex/grid gutter for <see cref="PropertyId.ColumnGap"/>

@@ -108,6 +108,32 @@ internal static class Css22Cases
             Doc("<div id='f' style='float:right;width:100px;height:50px'></div>"),
             new[] { new BoxExpectation("f", X: 500, Y: 0, Width: 100, Height: 50) }), // 600-100
 
+        // ---- box-sizing (CSS3-UI) — width/height honor border-box on BOTH axes ----
+
+        // border-box: the declared width/height ARE the border box (padding folds
+        // inside), on both axes — pre-fix the BLOCK axis added padding outside.
+        new ConformanceCase("css22-box-sizing-border-box", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:200px;height:50px;padding:20px;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 200, Height: 50) }), // content 160×10, +40 chrome inside
+
+        // border-box folds BOTH padding + border into the declared size.
+        new ConformanceCase("css22-box-sizing-border-box-with-border", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:200px;height:60px;padding:10px;"
+                + "border:5px solid #000;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 200, Height: 60) }), // 30px chrome/axis, inside
+
+        // content-box (the initial) ADDS padding+border to the declared size — the
+        // control proving the border-box mapping is conditional, not blanket.
+        new ConformanceCase("css22-box-sizing-content-box", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:100px;height:40px;padding:15px;box-sizing:content-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 130, Height: 70) }), // +30 chrome/axis
+
+        // border-box floors at the chrome when the declared size is smaller than
+        // padding+border (the content area bottoms out at 0), on both axes.
+        new ConformanceCase("css22-box-sizing-border-box-floor", "CSS3-UI box-sizing",
+            Doc("<div id='a' style='width:30px;height:20px;padding:20px;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 40, Height: 40) }), // max(declared, 40 chrome)
+
         // ---- features NetPdf approximates (honest gap cases) ----
 
         // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow
@@ -117,12 +143,6 @@ internal static class Css22Cases
             Doc("<div id='p' style='padding:20px'><div id='c' style='height:30px'></div></div>"),
             new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
             KnownGap: "auto-height resolves to 0+chrome — no shrink-to-fit to in-flow children"),
-
-        // CSS3-UI — box-sizing:border-box (width/height include padding+border).
-        new ConformanceCase("css22-box-sizing-border-box", "CSS3-UI box-sizing",
-            Doc("<div id='a' style='width:200px;height:50px;padding:20px;box-sizing:border-box'></div>"),
-            new[] { new BoxExpectation("a", Width: 200, Height: 50) },
-            KnownGap: "box-sizing:border-box treated as content-box"),
 
         // §10.4 — min-width raises a smaller explicit width.
         new ConformanceCase("css22-min-width-on-explicit", "CSS 2.1 §10.4",

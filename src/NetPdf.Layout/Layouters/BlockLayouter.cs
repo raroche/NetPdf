@@ -4770,8 +4770,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // auto, CSS 2.2 §10.5 — percent-height cycle).
             var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
 
-            var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
-                + paddingEnd + borderEnd;
+            // Box-sizing audit (CSS Basic UI 4 §10) — an explicit `height` under
+            // `box-sizing: border-box` IS the border box (chrome inside), floored at
+            // the chrome; `content-box` (the initial) adds it, byte-identical to the
+            // pre-fix `declared + chrome`. Mirrors the outer dispatch (line ~1372) +
+            // the float path: pre-fix this recursive emitter added chrome
+            // unconditionally, so a border-box block over-sized on the BLOCK axis
+            // while the inline axis already routed through
+            // ResolveInFlowBorderBoxInlineSize → BoxSizingHelper.
+            var childBorderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
+                child.Style, contentBlock, borderStart + paddingStart + paddingEnd + borderEnd);
             // Per the body-explicit-width gap fix — same §10.3.3 subset
             // as the outer dispatch path (explicit `width` on a plain
             // block container overrides the fill), so a nested div

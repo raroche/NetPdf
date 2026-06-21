@@ -574,6 +574,42 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Border_box_sizing_height_is_border_box_in_a_nested_subtree()
+    {
+        // The test above covers the depth-1 MAIN dispatch path. A block nested one
+        // level deeper (root > wrapper > child) is emitted via the RECURSIVE
+        // subtree emitter, whose BLOCK-axis size pre-fix added padding OUTSIDE the
+        // declared border-box height (only the inline axis routed through the
+        // box-sizing helper). Child height 100 + 15px top/bottom padding →
+        // border-box → block size IS 100 (content 70); content-box (initial) → 130.
+        foreach (var (borderBox, expected) in new[] { (true, 100.0), (false, 130.0) })
+        {
+            var sink = new RecordingFragmentSink();
+            var childStyle = MakeStyle();
+            SetLengthPx(childStyle, PropertyId.Width, 200);
+            SetLengthPx(childStyle, PropertyId.Height, 100);
+            SetLengthPx(childStyle, PropertyId.PaddingTop, 15);
+            SetLengthPx(childStyle, PropertyId.PaddingBottom, 15);
+            if (borderBox) SetKeyword(childStyle, PropertyId.BoxSizing, 1);   // border-box
+
+            var root = Box.CreateRoot(MakeStyle());
+            var wrapper = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            wrapper.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+            root.AppendChild(wrapper);
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            // The child fragment is the one sized to the explicit 200px width
+            // (the auto-width wrapper fills the 600px content area).
+            var child = Assert.Single(sink.Fragments, f => Math.Abs(f.InlineSize - 200) < 0.001);
+            Assert.Equal(expected, child.BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
     public void Float_border_box_sizing_makes_the_declared_height_the_border_box()
     {
         // PR #189 review (extra coverage) — the FLOAT border-box-block-size path honors

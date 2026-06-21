@@ -3498,6 +3498,42 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
+    public void Grid_container_explicit_width_auto_margins_center_it()
+    {
+        // PR #204 review [P2] — a grid container is a block-level box in normal flow, so
+        // `display:grid; width:200px; margin:0 auto` centers it: offset (600-200)/2 = 200.
+        // Mirrors the flex case; both kinds now participate in §10.3.3 auto-margin
+        // distribution (BlockLayouter.ResolveAutoInlineMargins) like a plain block.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 40.0 }, colsPx: new[] { 100.0, 100.0 });
+        SetExplicitWidth(grid, 200);
+        SetExplicitHeight(grid, 40);
+        grid.Style.Set(PropertyId.MarginLeft, ComputedSlot.FromKeyword(0));   // authored `auto`
+        grid.Style.Set(PropertyId.MarginRight, ComputedSlot.FromKeyword(0));
+        grid.AppendChild(BuildItemWithExplicitPlacement(row: 1, col: 1));
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        foreach (var f in sink.Fragments)
+            if (f.Box == grid) { wrapper = f; break; }
+        Assert.NotNull(wrapper);
+        Assert.Equal(200.0, wrapper!.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, wrapper.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
     public void Cycle5b_F4_resume_with_different_inline_size_preserves_RowIndex_no_duplication()
     {
         // Per PR-#97 review F4 — pre-fix: when cache rejected for

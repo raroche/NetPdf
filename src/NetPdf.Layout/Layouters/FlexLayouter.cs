@@ -811,13 +811,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             for (var i = resumeLineIndex; i < lines.Count; i++)
             {
                 var isFirstOnPage = i == resumeLineIndex;
+                // §8 — a cross-axis gutter precedes every NON-first line on the page;
+                // include it in the fit cursor so the slice can't approve more lines
+                // than emission (which advances by LineCrossSize + crossGap, ~L1591)
+                // will actually fit on the page (PR #204 review [P1]). The "first line
+                // always commits" rule is preserved: both the gutter and the overflow
+                // check are gated on !isFirstOnPage, so a lone over-tall first line
+                // still lands rather than deferring forever.
+                var lineAdvance = isFirstOnPage
+                    ? lines[i].LineCrossSize
+                    : crossGap + lines[i].LineCrossSize;
                 if (!isFirstOnPage
-                    && rawCursor + lines[i].LineCrossSize > _contentBlockSize)
+                    && rawCursor + lineAdvance > _contentBlockSize)
                 {
                     fragmentEndIndex = i;
                     break;
                 }
-                rawCursor += lines[i].LineCrossSize;
+                rawCursor += lineAdvance;
             }
         }
 
@@ -999,7 +1009,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var (minSizeProperty, maxSizeProperty) = GetMinMaxMainAxisProperties(flexDirection);
         var resolvedItemMainSizes = ResolveFlexibleMainSizes(
             lines, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, cancellationToken);
+            containerMainSize, mainGap, cancellationToken);
 
         // Non-block-pagination arc (flex item CONTENT layout) — lay out each
         // flex item's INNER content (text / nested blocks) via a nested
@@ -1903,6 +1913,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty,
         double containerMainSize,
+        double mainGap,
         CancellationToken cancellationToken)
     {
         var resolved = new double[_rootBox.Children.Count];
@@ -1913,7 +1924,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ResolveLineWithMinMaxClamping(
                 line, resolved, mainSizeProperty,
                 minSizeProperty, maxSizeProperty,
-                containerMainSize, cancellationToken);
+                containerMainSize, mainGap, cancellationToken);
         }
 
         return resolved;
@@ -1965,6 +1976,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty,
         double containerMainSize,
+        double mainGap,
         CancellationToken cancellationToken)
     {
         // Resolve via the shared static §9.7 helper (position-keyed), then scatter
@@ -1975,7 +1987,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             lineItems[i] = _rootBox.Children[_sortedFlexChildIndices[line.FirstItemIndex + i]];
         var lineResolved = ResolveFlexLineMainSizes(
             lineItems, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, cancellationToken);
+            containerMainSize, mainGap, cancellationToken);
         for (var i = 0; i < count; i++)
             resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
     }
@@ -1997,10 +2009,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty,
         double containerMainSize,
+        double mainGap,
         CancellationToken cancellationToken)
     {
         var itemCount = lineItems.Count;
         var resolved = new double[itemCount];
+
+        // CSS Box Alignment L3 §8 — the N-1 main-axis gutters consume free space
+        // BEFORE flex grow/shrink distributes the remainder (PR #204 review [P1]).
+        // The gutter total is removed from the distributable free space only; a
+        // percentage flex-basis still resolves against the FULL container main size
+        // (ResolveHypotheticalMainSize below is unchanged), exactly mirroring the
+        // emission site where mainGap is subtracted before justify-content
+        // distributes (AttemptLayout ~L1224). Without this, `gap` + flex-grow/shrink
+        // sized items as if the gap didn't exist, then still inserted the gap at
+        // emission → overflow / wrong widths.
+        var mainGutterTotal = System.Math.Max(0, itemCount - 1) * mainGap;
 
         // Stack-friendly per-item state: hypothetical + (min, max) +
         // frozen flag, keyed by sorted-position within the line.
@@ -2065,7 +2089,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
             }
 
-            var remainingFreeSpace = containerMainSize - sumFrozenResolved - sumUnfrozenHypothetical;
+            var remainingFreeSpace = containerMainSize - mainGutterTotal - sumFrozenResolved - sumUnfrozenHypothetical;
 
             // Distribute remainingFreeSpace among unfrozen items.
             if (remainingFreeSpace > 0 && sumFlexGrow > 0)

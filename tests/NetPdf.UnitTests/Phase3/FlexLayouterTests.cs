@@ -171,6 +171,141 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void Flex_gap_grow_sizes_items_so_gutter_does_not_overflow()
+    {
+        // PR #204 review [P1] — two `Width: 0; flex-grow: 1` items in a 300px row with
+        // column-gap:20 → the gutter consumes free space first (300-20=280), so each
+        // grows to 140 (not 150). Emitted: item0 at 0, item1 at 140+20=160; the row
+        // fills exactly 140 + 20 + 140 = 300 with no overflow.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        SetLengthPx(flex.Style, PropertyId.ColumnGap, 20);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 0);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            for (var i = 0; i < items.Length; i++)
+                if (f.Box == items[i]) { itemFragments.Add(f); break; }
+
+        Assert.Equal(2, itemFragments.Count);
+        Assert.Equal(140.0, itemFragments[0].InlineSize, precision: 3);
+        Assert.Equal(140.0, itemFragments[1].InlineSize, precision: 3);
+        Assert.Equal(0.0, itemFragments[0].InlineOffset, precision: 3);
+        Assert.Equal(160.0, itemFragments[1].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_gap_shrink_sizes_items_so_gutter_does_not_overflow()
+    {
+        // PR #204 review [P1] — two `Width: 200; flex-shrink: 1` items in a 300px row
+        // with column-gap:20 → deficit = (200+200) - (300-20) = 120, split evenly so
+        // each shrinks to 140. Emitted: item0 at 0, item1 at 140+20=160; the row fills
+        // exactly 140 + 20 + 140 = 300 instead of overflowing to 320.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        SetLengthPx(flex.Style, PropertyId.ColumnGap, 20);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 200);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            for (var i = 0; i < items.Length; i++)
+                if (f.Box == items[i]) { itemFragments.Add(f); break; }
+
+        Assert.Equal(2, itemFragments.Count);
+        Assert.Equal(140.0, itemFragments[0].InlineSize, precision: 3);
+        Assert.Equal(140.0, itemFragments[1].InlineSize, precision: 3);
+        Assert.Equal(0.0, itemFragments[0].InlineOffset, precision: 3);
+        Assert.Equal(160.0, itemFragments[1].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Flex_container_explicit_width_auto_margins_center_it()
+    {
+        // PR #204 review [P2] — a flex container is a block-level box in normal flow, so
+        // `display:flex; width:200px; margin:0 auto` centers it: offset (600-200)/2 = 200.
+        // The container-width cycle made the 200px width honored; this makes the auto
+        // margins distribute the leftover too, matching a plain block / centered image.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+        SetLengthPx(flex.Style, PropertyId.Height, 40);
+        flex.Style.Set(PropertyId.MarginLeft, ComputedSlot.FromKeyword(0));  // authored `auto`
+        flex.Style.Set(PropertyId.MarginRight, ComputedSlot.FromKeyword(0));
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 50);
+        SetLengthPx(itemStyle, PropertyId.Height, 40);
+        flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement()));
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        foreach (var f in sink.Fragments)
+            if (f.Box == flex) { wrapper = f; break; }
+        Assert.NotNull(wrapper);
+        Assert.Equal(200.0, wrapper!.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, wrapper.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
     public void Flex_container_single_item_emits_at_origin()
     {
         // A single flex item should emit at the container's content-
@@ -5104,7 +5239,8 @@ public sealed class FlexLayouterTests
             Box.ForElement(BoxKind.BlockContainer, growing, MakeElement()),
         };
         var resolvedAB = FlexLayouter.ResolveFlexLineMainSizes(
-            itemsAB, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, default);
+            itemsAB, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            mainGap: 0, cancellationToken: default);
         Assert.Equal(100.0, resolvedAB[0], precision: 3);
         Assert.Equal(200.0, resolvedAB[1], precision: 3);
 
@@ -5118,8 +5254,59 @@ public sealed class FlexLayouterTests
             thirds[i] = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
         }
         var resolvedThirds = FlexLayouter.ResolveFlexLineMainSizes(
-            thirds, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, default);
+            thirds, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            mainGap: 0, cancellationToken: default);
         Assert.All(resolvedThirds, w => Assert.Equal(100.0, w, precision: 3));
+    }
+
+    [Fact]
+    public void ResolveFlexLineMainSizes_subtracts_gap_from_grow_and_shrink_free_space()
+    {
+        // PR #204 review [P1] — the N-1 main-axis gutters consume free space BEFORE
+        // flex grow/shrink distributes the remainder (CSS Box Alignment L3 §8), so the
+        // helper resolves item main sizes at the SAME values the emission loop places
+        // (which inserts the gutter). gap + grow/shrink no longer overflows.
+
+        // (a) grow — two `Width: 0; flex-grow: 1` items in 300 with a 20px gutter:
+        //     free space = 300 - 20 = 280 → 140 each (NOT 150, which would overflow
+        //     by the 20px gutter once the gutter is emitted between them).
+        var growA = MakeStyle();
+        SetLengthPx(growA, PropertyId.Width, 0);
+        growA.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+        var growB = MakeStyle();
+        SetLengthPx(growB, PropertyId.Width, 0);
+        growB.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+        var growItems = new[]
+        {
+            Box.ForElement(BoxKind.BlockContainer, growA, MakeElement()),
+            Box.ForElement(BoxKind.BlockContainer, growB, MakeElement()),
+        };
+        var grown = FlexLayouter.ResolveFlexLineMainSizes(
+            growItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            mainGap: 20, cancellationToken: default);
+        Assert.Equal(140.0, grown[0], precision: 3);
+        Assert.Equal(140.0, grown[1], precision: 3);
+
+        // (b) shrink — two `Width: 200; flex-shrink: 1` items in 300 with a 20px
+        //     gutter: deficit = (200+200) - (300-20) = 120, split evenly → 140 each,
+        //     so 140 + 20 + 140 = 300 fits exactly (without the gutter term each would
+        //     shrink only to 150 and overflow by the 20px gutter).
+        var shrinkA = MakeStyle();
+        SetLengthPx(shrinkA, PropertyId.Width, 200);
+        shrinkA.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(1.0));
+        var shrinkB = MakeStyle();
+        SetLengthPx(shrinkB, PropertyId.Width, 200);
+        shrinkB.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(1.0));
+        var shrinkItems = new[]
+        {
+            Box.ForElement(BoxKind.BlockContainer, shrinkA, MakeElement()),
+            Box.ForElement(BoxKind.BlockContainer, shrinkB, MakeElement()),
+        };
+        var shrunk = FlexLayouter.ResolveFlexLineMainSizes(
+            shrinkItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            mainGap: 20, cancellationToken: default);
+        Assert.Equal(140.0, shrunk[0], precision: 3);
+        Assert.Equal(140.0, shrunk[1], precision: 3);
     }
 
     [Fact]
@@ -8746,6 +8933,63 @@ public sealed class FlexLayouterTests
         {
             if (f.Box.Kind == BoxKind.BlockContainer) pageOneItems++;
         }
+        Assert.Equal(2, pageOneItems);
+    }
+
+    [Fact]
+    public void Row_wrap_pagination_accounts_for_row_gap_when_slicing_lines()
+    {
+        // PR #204 review [P1] — the line-slicing fit loop must count the row-gap that
+        // emission inserts between wrapped lines, or it approves more lines than fit.
+        // 4 items 100×50 wrap to 2 lines (cross 50 each) with row-gap:30. Page budget
+        // 120: WITHOUT counting the gap, line0(0..50) + line1(50..100) "fits" (100 ≤
+        // 120), yet emission advances by 50+30 = 80 → line1 lands at 80..130, 10px
+        // past the page. Counting the gap, line1's fit check is 50 + 30 + 50 = 130 >
+        // 120, so it correctly defers to page 2.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        SetLengthPx(flex.Style, PropertyId.RowGap, 30);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 120, // 2 lines fit by cross alone (100) but NOT with the 30px gap (130)
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // The second line defers: PageComplete with FlexContinuation{LineIndex=1}.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        Assert.Equal(1, flexCont.LineIndex);
+
+        // First page emitted only the first line (2 items).
+        var pageOneItems = 0;
+        foreach (var f in sink.Fragments)
+            if (f.Box.Kind == BoxKind.BlockContainer) pageOneItems++;
         Assert.Equal(2, pageOneItems);
     }
 

@@ -1,6 +1,6 @@
 # Phase 3 — Fragmentainer-Aware Layout + Pagination
 
-**Status:** 🚧 In progress — engine feature-complete + multi-page rendering live; finishing conformance measurement, perf gates, a feature/polish backlog, and the `0.7.0-beta` release. **The bottleneck phase.** Remaining work + ordered 3-task PR groups: see the roadmap at the top of [../../PROGRESS.md](../../PROGRESS.md).
+**Status:** ✅ Engine complete + multi-page rendering live; all four conformance exit criteria MET (CSS 2.2 93.3% / Flexbox 100% / Grid 93.3% / Fragmentation 90%); perf + memory signed off measured-with-documented-residuals. **The `0.7.0-beta` release is staged** (CHANGELOG written + exit criteria signed off below) — the git tag is the only remaining step, created by the maintainer after the release PR merges. **The bottleneck phase, cleared.** History: the ordered 3-task PR groups at the top of [../../PROGRESS.md](../../PROGRESS.md).
 **Time:** team estimate 16 wk → Claude Opus 4.7 high: **8–12 wk**.
 **Tagged release:** `0.7.0-beta` — most business documents render correctly. The first user-useful release.
 
@@ -283,25 +283,29 @@ Mark `src/NetPdf.Layout/Grid/` files with a one-line note like:
 ## Exit criteria
 
 Phase 3 is complete when (status MEASURED by the curated conformance suite as of
-PR 1 — the rates below are the honest engine measurement, not aspiration; see
+the `0.7.0-beta` release — post-#202 measurement, #203 box-model, #204 flex/grid
+gap; the rates below are the honest engine measurement, not aspiration; see
 [tests/NetPdf.W3cConformance/README.md](../../tests/NetPdf.W3cConformance/README.md)):
 
 1. ✅ All 4 invoice corpus files render to a valid PDF (visual fidelity polish lands in Phase 4).
 2. ✅ The Anvil sample (`04-anvil-running-elements.html`) renders with the footer + "Page N of M" appearing on every page.
-3. ✅ W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 96.3%** (26/27); MET after the box-model fixes (`box-sizing: border-box` block axis + min/max-width/height clamping). One residual gap deferred: auto-height shrink-to-fit of the emitted box (`auto-height-emit-vs-pagination` — growing it regresses multi-page pagination).
-4. 📊 W3C Flexbox test pass-rate ≥ 85% — **MEASURED 83.3%** (10/12); below target after counting the explicit-container-width gap head-on (PR 1 review). Documented gaps: flex `gap`, container ignores own `width`. **Criterion OPEN**.
-5. ✅ W3C Grid Level 1 test pass-rate ≥ 70% — **MEASURED 80.0%** (8/10) (Grid is genuinely hard; raise the bar in v1.x).
+3. ✅ W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 93.3%** (28/30); MET after the box-model fixes (`box-sizing: border-box` on the block axis + emit/measure consistency + floats; `LengthPx` min/max-width/height clamping on explicit AND auto/fill sizes). Two residual gaps deferred: auto-height shrink-to-fit of the emitted box (`auto-height-emit-vs-pagination`) + percentage min/max (`min-max-percentage-sizing`).
+4. ✅ W3C Flexbox test pass-rate ≥ 85% — **MEASURED 100%** (18/18); MET after `gap` / `column-gap` / `row-gap` gutters (consuming free space before grow/shrink + justify-content) + the container honoring its own explicit `width` (+ `margin: 0 auto` centering). Residual: percentage gaps (`gap-percentage-sizing`).
+5. ✅ W3C Grid Level 1 test pass-rate ≥ 70% — **MEASURED 93.3%** (14/15); MET after the gap gutters (incl. spanned items + auto-height extent). Residual: `fr` tracks + gap (`grid-gap-fr-track-sizing`).
 6. ✅ W3C Fragmentation test pass-rate ≥ 80% — **MEASURED 90.0%** (9/10).
-7. 🟡 Performance: 3-page invoice ≤ 200 ms p50; 20-page report ≤ 1.5 s p50 — layout-pipeline smoke-gated; full-pipeline (images + web fonts) benchmark is not yet a build gate.
-8. 🟡 Memory: linear growth with page count — retained heap flat (gated); per-page allocation linearity still open (`multi-page-allocation-churn`).
+7. 🟡 Performance: 3-page invoice ≤ 200 ms p50; 20-page report ≤ 1.5 s p50 — **signed off measured-with-documented-residuals**: layout-pipeline smoke-gated (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms, synthetic fonts + table content); the full-pipeline (images + web fonts) BenchmarkDotNet flow is not yet a build gate.
+8. 🟡 Memory: linear growth with page count — **signed off measured-with-documented-residuals**: retained heap flat (gated); per-page ALLOCATION linearity still open (`multi-page-allocation-churn` — super-linear transient allocations; a slope gate is large-doc hardening).
 9. ✅ AOT smoke test still passes.
 10. ✅ Determinism: byte-equal output for byte-equal input.
-11. ❌ CHANGELOG updated, `0.7.0-beta` tagged — pending the release PR.
+11. 🟡 CHANGELOG updated, `0.7.0-beta` tagged — CHANGELOG entry staged in the release PR (this PR); the `0.7.0-beta` git tag is created by the maintainer after merge (per the CHANGELOG staging convention).
 
-**Release gating:** criterion 3 is now MET (CSS 2.2 96.3%). Only criterion 4
-(Flexbox 83.3%) remains OPEN — the container-own-width + `gap` gaps. The critical
-path is to either clear or formally accept-with-documented-gaps the Flexbox
-container-width gap, then tag `0.7.0-beta`.
+**Release sign-off (`0.7.0-beta`):** all four conformance criteria (3–6) are **MET** —
+CSS 2.2 93.3%, Flexbox 100%, Grid 93.3%, Fragmentation 90%. Criteria 7–8 (perf +
+memory) are signed off **measured-with-documented-residuals** — smoke-gated, NOT the
+full-pipeline / allocation-slope standard (the residuals are tracked in
+[../deferrals.md](../deferrals.md), e.g. `multi-page-allocation-churn`). Criteria
+1–2 + 9–10 hold. The only remaining step is the `0.7.0-beta` tag (criterion 11),
+staged here + applied by the maintainer after merge.
 
 ## Common pitfalls
 

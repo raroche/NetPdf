@@ -636,6 +636,45 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
+    public void Maximize_non_fr_minmax_tracks_subtract_the_gutter()
+    {
+        // PR #206 review [P2] — §11.6 "Maximize Tracks" grows NON-fr growable tracks
+        // (here `minmax(50px,500px)`) toward their growth limits using the leftover
+        // space, which must EXCLUDE the gutters (mirrors the fr free-space subtraction).
+        //   minmax(50,500) minmax(50,500); column-gap:20 in 400px:
+        //   bases 50/50; gutterTotal = (2-1)*20 = 20; free = 400 - 100 - 20 = 280.
+        //   equal-share 140 each → 190/190 (both < 500, no freeze); itemB at 190+20=210.
+        // Pre-fix the free space ignored the gutter (300 → 200/200) so the row spanned
+        // 200 + 20 + 200 = 420 and overflowed the 400px container.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(50), TrackEntry.ForLength(500))),
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(50), TrackEntry.ForLength(500)))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 190, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 210, blockOffset: 0, inlineSize: 190, blockSize: 50);
+    }
+
+    [Fact]
     public void Cycle2_fixed_plus_two_unequal_fr_distributes_per_flex_factor()
     {
         // grid-template-columns: 100px 1fr 2fr in 400px:
@@ -4700,6 +4739,85 @@ public sealed class GridLayouterTests
         AssertFragmentEquals(sink, item,
             inlineOffset: 200, blockOffset: 0,
             inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
+    public void Auto_fill_count_accounts_for_the_column_gap()
+    {
+        // PR #206 review [P1] — §7.2.3.1 derives the auto-fill count "taking gutters
+        // into account". repeat(auto-fill, 100px); column-gap:20px in 400px:
+        //   (400 - (0-1)*20) / (100 + 1*20) = 420/120 → 3 columns (NOT 4).
+        //   3 cols span 100+20+100+20+100 = 340 ≤ 400; a 4th would need 460.
+        // Pre-fix floor(400/100) = 4 columns overflowed by the gutters.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0, // auto-fill
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 400);
+        grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
+
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            items[i] = BuildAutoPlacedItem();
+            grid.AppendChild(items[i]);
+        }
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 400, contentBlockSize: 400);
+
+        Assert.Equal(4, sink.Fragments.Count);
+        // 3 columns at x = 0, 120, 240 (100 track + 20 gutter); the 4th item wraps.
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 120, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[2],
+            inlineOffset: 240, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        // Row 1 — confirms only 3 columns were generated (item 4 wrapped).
+        AssertFragmentEquals(sink, items[3],
+            inlineOffset: 0, blockOffset: 50, inlineSize: 100, blockSize: 0);
+    }
+
+    [Fact]
+    public void Auto_fit_count_accounts_for_the_column_gap_like_auto_fill()
+    {
+        // PR #206 review [P1] — auto-fit derives the same gutter-aware count as
+        // auto-fill (= 3 columns in the gap example), so an item placed at column 3
+        // lands at the 3rd track origin (x = 240) rather than spilling to a 4th track.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: -1, // auto-fit
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 400);
+        grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
+
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 400, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // Column 3 (0-based col 2) → inlineOffset 240 (= 2 * (100 + 20)).
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 240, blockOffset: 0, inlineSize: 100, blockSize: 50);
     }
 
     [Fact]

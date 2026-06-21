@@ -220,11 +220,11 @@ internal static class GridSizing
         // iteration counts + named lines inside auto-repeats agree.
         var rowNamedLines = BuildNamedLineMap(
             gridBox.Style.ReadGridTemplateRows(), gridAreas, isRow: true,
-            containerExtent: contentBlockSize,
+            containerExtent: contentBlockSize, gap: rowGap,
             ctx, cancellationToken);
         var colNamedLines = BuildNamedLineMap(
             gridBox.Style.ReadGridTemplateColumns(), gridAreas, isRow: false,
-            containerExtent: contentInlineSize,
+            containerExtent: contentInlineSize, gap: columnGap,
             ctx, cancellationToken);
 
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
@@ -340,8 +340,8 @@ internal static class GridSizing
         // reaches its growth limit. Per CSS Grid §11.5.1 + §11.6 (NOT
         // proportional-to-headroom; cycle-4 initial impl had it wrong
         // and matched flexbox semantics instead of grid).
-        MaximizeTracks(rowInfos, contentBlockSize);
-        MaximizeTracks(colInfos, contentInlineSize);
+        MaximizeTracks(rowInfos, contentBlockSize, rowGap);
+        MaximizeTracks(colInfos, contentInlineSize, columnGap);
 
         // Per PR-#95 review P3 — single materialization pass (was 2x;
         // ResolveTrackSizes used to materialize prematurely then we
@@ -521,8 +521,9 @@ internal static class GridSizing
         // Per Phase 3 Task 18 cycle 7c — defer to the container-aware
         // overload with extent 0 so auto-fill / auto-fit fall back to
         // their 1-iteration default. Callers with container geometry
-        // call the overload directly.
-        return ExpandTrackList(trackList, ctx, ct, containerExtent: 0.0);
+        // call the overload directly. Gap is irrelevant at extent 0 (the
+        // count derivation short-circuits to 1).
+        return ExpandTrackList(trackList, ctx, ct, containerExtent: 0.0, gap: 0.0);
     }
 
     /// <summary>Per Phase 3 Task 18 cycle 7c + post-PR-#107 review —
@@ -545,7 +546,7 @@ internal static class GridSizing
     /// <see cref="PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001"/>.</para></summary>
     private static List<TrackListItem> ExpandTrackList(
         TrackList trackList, SizingContext ctx, CancellationToken ct,
-        double containerExtent)
+        double containerExtent, double gap)
     {
         var expanded = new List<TrackListItem>(trackList.Items.Length);
         var truncated = false;
@@ -553,9 +554,11 @@ internal static class GridSizing
         // Pre-compute the auto-repeat iteration count once. Per
         // §7.2.3.1 at most one auto-fill or auto-fit repeat is allowed
         // per track list; if multiple appear we use the cap for the
-        // first and pass the rest through as 1 iteration.
+        // first and pass the rest through as 1 iteration. The axis gap
+        // is threaded in so the count accounts for the inter-track
+        // gutters per §7.2.3.1 ("taking gutters into account").
         int autoIterations = ComputeAutoRepeatIterations(
-            trackList, containerExtent);
+            trackList, containerExtent, gap);
 
         // Per PR-#107 review F2 #4 — emit a one-shot auto-fit
         // approximation diagnostic when the track list contains an
@@ -675,22 +678,25 @@ internal static class GridSizing
     /// derived). Returns the spec-derived count otherwise; the outer
     /// expansion loop enforces the global cap.</para></summary>
     private static int ComputeAutoRepeatIterations(
-        TrackList trackList, double containerExtent)
+        TrackList trackList, double containerExtent, double gap)
     {
         if (!double.IsFinite(containerExtent) || containerExtent <= 0)
             return 1;
 
         // Find the first auto-fill / auto-fit repeat and compute its
-        // pattern's fixed size. Also accumulate the fixed size of
-        // other items to subtract from the available extent.
+        // pattern's fixed size. Also accumulate the fixed size + TRACK
+        // COUNT of the other (non-auto-repeat) items — both the size and
+        // the count of inter-track gutters depend on them.
         TrackRepeat? autoRepeat = null;
         double otherSize = 0;
+        var otherTrackCount = 0;
         foreach (var item in trackList.Items)
         {
             switch (item)
             {
                 case TrackListEntry te:
                     otherSize += GetTrackFixedSize(te.Entry, containerExtent);
+                    otherTrackCount++;
                     break;
                 case TrackListRepeat tr when tr.Repeat.Count > 0:
                     foreach (var p in tr.Repeat.Pattern)
@@ -699,6 +705,7 @@ internal static class GridSizing
                         {
                             otherSize += tr.Repeat.Count
                                 * GetTrackFixedSize(re.Entry, containerExtent);
+                            otherTrackCount += tr.Repeat.Count;
                         }
                     }
                     break;
@@ -712,18 +719,32 @@ internal static class GridSizing
         if (autoRepeat is null) return 1;
 
         double patternSize = 0;
+        var patternTrackCount = 0;
         foreach (var p in autoRepeat.Pattern)
         {
             if (p is TrackRepeatEntry re)
             {
                 patternSize += GetTrackFixedSize(re.Entry, containerExtent);
+                patternTrackCount++;
             }
         }
         if (patternSize <= 0) return 1;
 
-        var available = containerExtent - otherSize;
-        if (available < patternSize) return 1;
-        var iterations = (int)Math.Floor(available / patternSize);
+        // CSS Grid L1 §7.2.3.1 — "taking gutters into account". For N
+        // repetitions the total tracks are (otherTrackCount + N×patternTrackCount)
+        // and the gutters between them number (totalTracks − 1), so the
+        // largest N that does not overflow the content box satisfies:
+        //   otherSize + N×patternSize + (otherTrackCount + N×patternTrackCount − 1)×gap ≤ containerExtent
+        // Solving for N:
+        //   N ≤ (available − (otherTrackCount − 1)×gap) / (patternSize + patternTrackCount×gap)
+        // where available = containerExtent − otherSize. With gap 0 this collapses to
+        // the prior floor(available / patternSize). Example: width:400; repeat(auto-fill,100);
+        // column-gap:20 → (400 − (−1)×20) / (100 + 1×20) = 420/120 → 3 columns (not 4).
+        var denom = patternSize + patternTrackCount * gap;
+        if (denom <= 0) return 1;
+        var numer = containerExtent - otherSize - (otherTrackCount - 1) * gap;
+        var iterations = (int)Math.Floor(numer / denom);
+        // Per §7.2.3.1 — if even one repetition overflows, fall back to 1.
         if (iterations < 1) iterations = 1;
         return iterations;
     }
@@ -812,7 +833,7 @@ internal static class GridSizing
         // containing block (= BlockLayouter passes finite content
         // size even when the Width slot is Keyword). Dropped.
         var expanded = ExpandTrackList(
-            trackList, ctx, ct, containerExtent);
+            trackList, ctx, ct, containerExtent, gap);
         foreach (var item in expanded)
         {
             if (item is TrackListEntry entry)
@@ -1266,12 +1287,22 @@ internal static class GridSizing
     /// BaseSize for FitContent), so Maximize correctly leaves them
     /// alone.</para></summary>
     private static void MaximizeTracks(
-        List<TrackSizingInfo> infos, double containerExtent)
+        List<TrackSizingInfo> infos, double containerExtent, double gap)
     {
         if (!double.IsFinite(containerExtent) || containerExtent <= 0) return;
 
         var span = CollectionsMarshal.AsSpan(infos);
         if (span.Length == 0) return;
+
+        // CSS Grid L1 §11.6 — the N-1 inter-track gutters occupy real space, so the
+        // free space the §11.6 "Maximize Tracks" pass distributes to non-fr growable
+        // tracks is the container extent MINUS the base sum AND the gutters. Mirrors the
+        // fr free-space subtraction in ResolveFrTracks (grid-gap-fr-track-sizing); the
+        // fr path was fixed first but this non-fr path could still grow tracks past the
+        // gutters and overflow (e.g., `minmax(50,500) minmax(50,500); column-gap:20`
+        // in 400 grew to 200/200 + a 20px gutter = 420). The gutter total is constant
+        // across the freeze passes (it does not depend on which tracks freeze).
+        var gutterTotal = System.Math.Max(0, span.Length - 1) * gap;
 
         // Per PR-#95 review P1+P2 — Span ref-access + stackalloc for
         // small-track-count case.
@@ -1302,7 +1333,7 @@ internal static class GridSizing
         {
             double totalBase = 0;
             for (var i = 0; i < span.Length; i++) totalBase += span[i].BaseSize;
-            var freeSpace = containerExtent - totalBase;
+            var freeSpace = containerExtent - totalBase - gutterTotal;
             if (freeSpace <= SizeEpsilon || !double.IsFinite(freeSpace)) return;
 
             // Count currently unfrozen.
@@ -2560,7 +2591,7 @@ internal static class GridSizing
     /// is gone.</para></summary>
     private static Dictionary<string, List<int>> BuildNamedLineMap(
         TrackList trackList, GridTemplateAreas areas, bool isRow,
-        double containerExtent,
+        double containerExtent, double gap,
         SizingContext ctx, CancellationToken cancellationToken)
     {
         var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
@@ -2568,9 +2599,10 @@ internal static class GridSizing
         // Walk authored items via the shared container-aware expansion
         // (= same auto-fill / auto-fit iteration count as sizing, so
         // names inside auto-repeats land at line numbers matching the
-        // actual track positions).
+        // actual track positions). The axis gap must match the sizing
+        // pass so the gutter-aware count agrees.
         var expanded = ExpandTrackList(
-            trackList, ctx, cancellationToken, containerExtent);
+            trackList, ctx, cancellationToken, containerExtent, gap);
         int currentLine = 1;
         foreach (var item in expanded)
         {

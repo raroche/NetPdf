@@ -134,6 +134,39 @@ internal static class Css22Cases
             Doc("<div id='a' style='width:30px;height:20px;padding:20px;box-sizing:border-box'></div>"),
             new[] { new BoxExpectation("a", Width: 40, Height: 40) }), // max(declared, 40 chrome)
 
+        // ---- min/max sizing (§10.4 width, §10.7 height) — clamp an explicit size ----
+
+        // min-width raises a smaller explicit width.
+        new ConformanceCase("css22-min-width-on-explicit", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:50px;min-width:150px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 150) }),
+
+        // max-width lowers a larger explicit width.
+        new ConformanceCase("css22-max-width-on-explicit", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:300px;max-width:120px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 120) }),
+
+        // min-height raises a smaller explicit height.
+        new ConformanceCase("css22-min-height-on-explicit", "CSS 2.1 §10.7",
+            Doc("<div id='a' style='width:100px;height:20px;min-height:90px'></div>"),
+            new[] { new BoxExpectation("a", Height: 90) }),
+
+        // max-height lowers a larger explicit height.
+        new ConformanceCase("css22-max-height-on-explicit", "CSS 2.1 §10.7",
+            Doc("<div id='a' style='width:100px;height:200px;max-height:80px'></div>"),
+            new[] { new BoxExpectation("a", Height: 80) }),
+
+        // §10.4 — min-width wins when min > max (max applied first, then min).
+        new ConformanceCase("css22-min-width-beats-max-width", "CSS 2.1 §10.4",
+            Doc("<div id='a' style='width:50px;min-width:150px;max-width:100px;height:20px'></div>"),
+            new[] { new BoxExpectation("a", Width: 150) }), // min > max → min wins
+
+        // min-width under box-sizing:border-box refers to the BORDER box.
+        new ConformanceCase("css22-min-width-border-box", "CSS 2.1 §10.4 / CSS3-UI",
+            Doc("<div id='a' style='width:60px;min-width:200px;padding:20px;"
+                + "height:20px;box-sizing:border-box'></div>"),
+            new[] { new BoxExpectation("a", Width: 200) }), // border-box min-width
+
         // ---- features NetPdf approximates (honest gap cases) ----
 
         // §10.6.3 — an AUTO-height block should shrink-to-fit its in-flow
@@ -143,11 +176,5 @@ internal static class Css22Cases
             Doc("<div id='p' style='padding:20px'><div id='c' style='height:30px'></div></div>"),
             new[] { new BoxExpectation("p", Height: 70) }, // 30 + 20 + 20
             KnownGap: "auto-height resolves to 0+chrome — no shrink-to-fit to in-flow children"),
-
-        // §10.4 — min-width raises a smaller explicit width.
-        new ConformanceCase("css22-min-width-on-explicit", "CSS 2.1 §10.4",
-            Doc("<div id='a' style='width:50px;min-width:150px;height:20px'></div>"),
-            new[] { new BoxExpectation("a", Width: 150) },
-            KnownGap: "min/max-width don't clamp an explicit width"),
     };
 }

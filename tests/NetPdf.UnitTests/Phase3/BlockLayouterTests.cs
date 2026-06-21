@@ -610,6 +610,67 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Min_and_max_width_clamp_an_explicit_width()
+    {
+        // §10.4 — min raises a smaller width, max lowers a larger one, and min
+        // wins when min > max (max applied first, then min). Pre-fix the block
+        // path never read min/max-width, so the explicit width passed through.
+        foreach (var (declared, min, max, expected) in new (double, double?, double?, double)[]
+        {
+            (50, 150, null, 150),    // min raises
+            (300, null, 120, 120),   // max lowers
+            (50, 150, 100, 150),     // min > max → min wins
+        })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, declared);
+            SetLengthPx(style, PropertyId.Height, 20);
+            if (min is not null) SetLengthPx(style, PropertyId.MinWidth, min.Value);
+            if (max is not null) SetLengthPx(style, PropertyId.MaxWidth, max.Value);
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].InlineSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Min_and_max_height_clamp_an_explicit_height()
+    {
+        // §10.7 — min-height raises a smaller height, max-height lowers a larger one.
+        foreach (var (declared, min, max, expected) in new (double, double?, double?, double)[]
+        {
+            (20, 90, null, 90),     // min raises
+            (200, null, 80, 80),    // max lowers
+        })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, declared);
+            if (min is not null) SetLengthPx(style, PropertyId.MinHeight, min.Value);
+            if (max is not null) SetLengthPx(style, PropertyId.MaxHeight, max.Value);
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
     public void Float_border_box_sizing_makes_the_declared_height_the_border_box()
     {
         // PR #189 review (extra coverage) — the FLOAT border-box-block-size path honors

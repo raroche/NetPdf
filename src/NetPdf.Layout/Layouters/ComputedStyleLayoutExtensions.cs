@@ -1451,6 +1451,38 @@ internal static class ComputedStyleLayoutExtensions
         return (min, max);
     }
 
+    /// <summary>CSS 2.2 §10.4 (width) / §10.7 (height) — clamp a resolved BORDER-box
+    /// size by the box's <c>min-*</c> / <c>max-*</c> on the SAME axis (chosen by
+    /// <paramref name="minProperty"/>). An explicit min/max <c>LengthPx</c> maps to
+    /// the border box via the same chrome (honoring <c>box-sizing</c>, mirroring
+    /// <see cref="ResolveFlexItemMinMaxMainSize"/>); <c>max</c> is applied first then
+    /// <c>min</c>, so min wins when min &gt; max (§10.4). <c>min: auto</c> (unset) →
+    /// 0 floor (a no-op past the chrome); <c>max: none</c> (unset) → no upper bound.
+    /// Percentage min/max are out of this cut (LengthPx only). When neither is an
+    /// explicit length this is the IDENTITY, so non-min/max block layout stays
+    /// byte-identical.</summary>
+    public static double ClampBorderBoxToMinMax(
+        this Boxes.Box box, double borderBoxSize,
+        PropertyId minProperty, PropertyId maxProperty)
+    {
+        var chrome = box.Style.AxisBorderPaddingPx(minProperty);
+        var maxSlot = box.Style.Get(maxProperty);
+        if (maxSlot.Tag == ComputedSlotTag.LengthPx)
+        {
+            var maxBorderBox = BoxSizingHelper.DeclaredToBorderBox(
+                box.Style, Math.Max(0, maxSlot.AsLengthPx()), chrome);
+            borderBoxSize = Math.Min(borderBoxSize, maxBorderBox);
+        }
+        var minSlot = box.Style.Get(minProperty);
+        if (minSlot.Tag == ComputedSlotTag.LengthPx)
+        {
+            var minBorderBox = BoxSizingHelper.DeclaredToBorderBox(
+                box.Style, Math.Max(0, minSlot.AsLengthPx()), chrome);
+            borderBoxSize = Math.Max(borderBoxSize, minBorderBox);
+        }
+        return borderBoxSize;
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
     /// hardening (Finding #7) — predicate distinguishing <c>height:
     /// auto</c> from any EXPLICIT sizing on a box's computed style.

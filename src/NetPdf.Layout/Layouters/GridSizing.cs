@@ -173,8 +173,10 @@ internal static class GridSizing
         // free-space resolution (grid-gap-fr-track-sizing — the gutters reduce the
         // space fr tracks distribute) AND reused for the position pass below. `normal`
         // / unset → 0 for grid.
-        var columnGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
-        var rowGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
+        // §8.3 — a `%` column-gap resolves against the inline content size, a `%`
+        // row-gap against the block content size (gap-percentage-sizing).
+        var columnGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap, contentInlineSize);
+        var rowGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.RowGap, contentBlockSize);
 
         // Per PR-#95 review Q1 — kindsOut/rowKinds/colKinds were dead
         // code (populated but never read; TrackSizingInfo.Kind already

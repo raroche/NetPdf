@@ -50,7 +50,6 @@ public sealed class DeferralsParityTests
         "inline-only-block-line-splitting",
         "multi-page-allocation-churn",
         "auto-height-emit-vs-pagination",
-        "gap-percentage-sizing",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
         "inline-atomic-boxes",

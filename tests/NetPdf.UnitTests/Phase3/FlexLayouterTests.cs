@@ -171,6 +171,49 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void Flex_percentage_column_gap_resolves_against_the_container_inline_size()
+    {
+        // §8.3 — column-gap:10% of the 300px row container = 30. 2 items 50 wide →
+        // item0 at 0, item1 at 50 + 30 = 80. (gap-percentage-sizing closed.)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        flex.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromPercentage(10));
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            for (var i = 0; i < items.Length; i++)
+                if (f.Box == items[i]) { itemFragments.Add(f); break; }
+
+        Assert.Equal(2, itemFragments.Count);
+        Assert.Equal(0.0, itemFragments[0].InlineOffset, precision: 3);
+        Assert.Equal(80.0, itemFragments[1].InlineOffset, precision: 3); // 50 + 30
+    }
+
+    [Fact]
     public void Flex_gap_grow_sizes_items_so_gutter_does_not_overflow()
     {
         // PR #204 review [P1] — two `Width: 0; flex-grow: 1` items in a 300px row with

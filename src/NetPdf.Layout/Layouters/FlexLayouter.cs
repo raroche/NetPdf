@@ -633,10 +633,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // items in a line (column-gap for row direction, row-gap for column); the
         // CROSS-axis gutter sits between wrapped lines (the swapped pair). `normal`
         // / unset → 0 for flex (ReadFlexGridGapOrZero).
+        // §8.3 — a `%` gutter resolves against the matching content dimension: the
+        // main-axis gutter (column-gap for row, row-gap for column) against the main
+        // extent; the cross-axis gutter against the cross extent. (column-gap% always
+        // resolves against inline, row-gap% against block — which line up with
+        // main/cross here, so containerMainSize / the cross content size are correct.)
+        var crossContentSize = isColumn ? _contentInlineSize : _contentBlockSize;
         var mainGap = _rootBox.Style.ReadFlexGridGapOrZero(
-            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap);
+            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap, containerMainSize);
         var crossGap = _rootBox.Style.ReadFlexGridGapOrZero(
-            isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
+            isColumn ? PropertyId.ColumnGap : PropertyId.RowGap, crossContentSize);
 
         // Per Phase 3 Task 15 L10 — compute the effective flex order
         // ONCE per AttemptLayout entry; both PackLines (line packing)

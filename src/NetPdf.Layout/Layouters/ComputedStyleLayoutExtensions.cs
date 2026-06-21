@@ -494,13 +494,25 @@ internal static class ComputedStyleLayoutExtensions
     /// multicol's <see cref="ReadColumnGap"/> (where <c>normal</c> ≈ 1em), for
     /// FLEX + GRID containers <c>normal</c> (and unset / non-length) computes to 0
     /// (§8.1) — so an explicit length is the gutter and everything else is no
-    /// gap. Negative lengths floor at 0.</summary>
-    public static double ReadFlexGridGapOrZero(this ComputedStyle style, PropertyId gapProperty)
+    /// gap. Negative lengths floor at 0.
+    ///
+    /// <para>A PERCENTAGE gutter resolves against <paramref name="containerContentExtent"/>
+    /// — the corresponding dimension of the container content box (CSS Box Alignment
+    /// L3 §8.3: column-gap → inline size, row-gap → block size; the caller passes the
+    /// matching extent). An INDEFINITE extent (the default <see cref="double.NaN"/>,
+    /// + callers that don't pass one) keeps the gutter at 0, byte-identical to the
+    /// length-only behavior.</para></summary>
+    public static double ReadFlexGridGapOrZero(
+        this ComputedStyle style, PropertyId gapProperty,
+        double containerContentExtent = double.NaN)
     {
         var slot = style.Get(gapProperty);
-        return slot.Tag == ComputedSlotTag.LengthPx
-            ? System.Math.Max(0, slot.AsLengthPx())
-            : 0.0;
+        if (slot.Tag == ComputedSlotTag.LengthPx)
+            return System.Math.Max(0, slot.AsLengthPx());
+        if (slot.Tag == ComputedSlotTag.Percentage
+            && double.IsFinite(containerContentExtent) && containerContentExtent >= 0)
+            return System.Math.Max(0, slot.AsPercentage() / 100.0 * containerContentExtent);
+        return 0.0;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 4 — decode

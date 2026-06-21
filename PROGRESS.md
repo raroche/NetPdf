@@ -1,8 +1,8 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-20):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. **PR 7 (table/grid/float hardening) just landed:** table intra-cell row splitting (a tall row's stacked-block cell content breaks across pages — task 17), grid cross-page row-extent memo (task 18), and float content atomicity (nested grid/flex in floats stop truncating — task 19). What's left to *finish* Phase 3: (a) W3C conformance **measurement** (PR 1, still awaits the A/B decision), (b) remaining hardening residuals (nested table/multicol in floats, recursive consumed-extent accounting, `multi-page-allocation-churn` — all latent/documented), (c) the `0.7.0-beta` release. Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
+> **Current state (2026-06-20):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. **PR 1 (W3C conformance MEASUREMENT) just landed:** a curated NetPdf assertion suite (Roland's call over vendored WPT) replaced the smoke stub — exit criteria 3–6 are now measured (CSS 2.2 84.2%, Fragmentation 90%, Flexbox 83.3%, Grid 80%; **2 of 4 MET** — Fragmentation + Grid; CSS 2.2 + Flexbox below target with documented gaps). PR 7 (table/grid/float hardening — tasks 17–19) merged before it ([#201](https://github.com/raroche/NetPdf/pull/201)). What's left to *finish* Phase 3: (a) **close the CSS 2.2 gaps** (auto-height shrink-to-fit, box-sizing, min/max) to clear criterion 3 — the critical path, next PR; (b) niche residuals (`inline-only-block-line-splitting`, `multi-page-allocation-churn`, nested table/multicol in floats, flex/grid container-own-width); (c) the **`0.7.0-beta` release** (PR 8). Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
 >
-> Last merged: PR [#200](https://github.com/raroche/NetPdf/pull/200) (task 16: prose pagination). This branch `phase3-table-grid-float-hardening`: **tasks 17–19** (3 commits, one per task). `git log --oneline -1` shows the exact commit.
+> Last merged: PR [#201](https://github.com/raroche/NetPdf/pull/201) (tasks 17–19: table/grid/float hardening). This branch `phase3-conformance-measurement`: **PR 1 tasks 1–3** (3 commits — harness + CSS 2.2 / Fragmentation / Flexbox+Grid). `git log --oneline -1` shows the exact commit.
 >
 > This file was consolidated from a 1.1 MB chronological log on 2026-06-18; the full per-subtask history is archived in [docs/progress-archive.md](docs/progress-archive.md). **Keep this file compact** — roll the roadmap as each PR lands; don't grow a blow-by-blow log here.
 
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-20):** 7133 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · W3cConformance (smoke only) · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-20):** 7140 unit / 4 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · **W3cConformance (4 per-case-baseline gates; published rates CSS 2.2 84% / Frag 90% / Flex 83% / Grid 80%)** · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -36,26 +36,26 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 |---|---|---|
 | 1 | 4 invoice corpus files render to a valid PDF | ✅ |
 | 2 | Anvil sample: footer + "Page N of M" on every page | ✅ (multi-page + counters live) |
-| 3 | W3C CSS 2.2 layout pass-rate ≥ 90% | ⚠️ **not measured** (harness is a smoke stub) |
-| 4 | W3C Flexbox pass-rate ≥ 85% | ⚠️ **not measured** |
-| 5 | W3C Grid L1 pass-rate ≥ 70% | ⚠️ **not measured** |
-| 6 | W3C Fragmentation pass-rate ≥ 80% | ⚠️ **not measured** |
+| 3 | W3C CSS 2.2 layout pass-rate ≥ 90% | 📊 **MEASURED 84.2%** (16/19) — OPEN, below target; gaps: auto-height shrink-to-fit, box-sizing, min/max-on-explicit (curated suite, PR 1) |
+| 4 | W3C Flexbox pass-rate ≥ 85% | 📊 **MEASURED 83.3%** (10/12) — OPEN, below target; gaps: flex `gap`, container ignores own `width` (explicit-width case counted head-on per PR 1 review) |
+| 5 | W3C Grid L1 pass-rate ≥ 70% | ✅ **MEASURED 80.0%** (8/10) — MET (gap: column-gap/row-gap) |
+| 6 | W3C Fragmentation pass-rate ≥ 80% | ✅ **MEASURED 90.0%** (9/10) — MET (gap: break-before:page) |
 | 7 | Perf: 3-pg ≤ 200 ms, 20-pg ≤ 1.5 s p50 | 🟡 **layout-pipeline smoke-gated** (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms — synthetic fonts + table content). The FULL-pipeline target (tables + **images + web fonts**, docs/design/performance.md) is the BenchmarkDotNet flow, not yet a build gate. |
 | 8 | Memory linear with page count | 🟡 **partial** — RETAINED heap flat (gated); ALLOCATION linearity NOT met: multi-page churn is super-linear (`multi-page-allocation-churn` — the `[MemoryDiagnoser]` standard would flag it). |
 | 9 | AOT smoke passes | ✅ |
 | 10 | Determinism | ✅ |
 | 11 | CHANGELOG + `0.7.0-beta` tagged | ❌ |
 
-**Bottom line:** the big multi-page gap is closed — **prose now paginates** (task 16, block-granularity). Remaining: line-level paragraph splitting (`inline-only-block-line-splitting`, niche), super-linear allocation churn on long docs (`multi-page-allocation-churn`), conformance measurement, and table/grid hardening. The critical path is now **conformance measurement → hardening → release.**
+**Bottom line:** conformance is now **MEASURED** (PR 1 — curated assertion suite replaced the smoke stub): 2 of 4 exit criteria MET (Fragmentation 90% / Grid 80%); CSS 2.2 84.2% and Flexbox 83.3% are below target with documented gaps (CSS 2.2: auto-height shrink-to-fit, box-sizing, min/max-on-explicit; Flexbox: flex `gap`, container ignores own `width`). Criteria 3 + 4 are **OPEN** — so the critical path is **closing the CSS 2.2 gaps** (the next PR, clears criterion 3), then deciding whether to clear or formally accept-with-documented-gaps the Flexbox container-width gap, *then* the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag). Release is NOT "all criteria met, ship now."
 
 ## Phase 3 — remaining-work roadmap
 
-Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order. **PR 1 is the recommended next.** PRs 2–6 are firmer once conformance measurement (PR 1) shows which feature gaps actually move the pass-rates — treat them as a structured pool, reprioritized by findings.
+Worked as **3-task PRs** (complete 3 → review → merge → next 3), in order. PRs 1–7 are DONE. **The recommended next PR closes the CSS 2.2 gaps** (auto-height shrink-to-fit, box-sizing, min/max-on-explicit) to clear criterion 3 — criteria 3 + 4 are OPEN (below target), so release (PR 8) is NOT the immediate next step. Each gap fix flips its `KnownGap` conformance case to passing + raises the published CSS 2.2 rate.
 
-### ▶ PR 1 — Conformance measurement  [criteria 3–6] — DO NEXT
-1. **WPT harness** — replace the `NetPdf.W3cConformance` smoke stub with a vendored-WPT loader that renders HTML→PDF and asserts (assertion-/reftest-based); start with a curated CSS 2.2 layout subset.
-2. **CSS 2.2 + Fragmentation pass-rates** — wire those two subsets, compute pass-rates, gate ≥ 90% / ≥ 80%.
-3. **Flexbox + Grid pass-rates** — wire those subsets, gate ≥ 85% / ≥ 70%, publish the four numbers in the README.
+### PR 1 — Conformance measurement  [criteria 3–6] ✅ DONE (PR [#202])
+1. ✅ **Harness** — replaced the `NetPdf.W3cConformance` smoke stub with a CURATED assertion suite (Roland's A/B call: curated NetPdf cases over vendored WPT). Drives the internal pipeline (`Phase2Pipeline`→`BlockLayouter`) + asserts `BoxFragment` geometry. CSS 2.2 subset (19 cases) → **84.2%**.
+2. ✅ **CSS 2.2 + Fragmentation pass-rates** — gated at regression floors met today; Fragmentation (10 cases) → **90.0%** (MET ≥80%).
+3. ✅ **Flexbox + Grid pass-rates** — Flexbox (12) → **83.3%** (below ≥85%, container-width gap counted head-on per review); Grid (10) → **80.0%** (MET ≥70%); four numbers published in `tests/NetPdf.W3cConformance/README.md`. Gates assert a **per-case baseline** (every non-`KnownGap` case must pass; every `KnownGap` case must still fail) — not a pass-rate floor (PR 1 review [P1]); the published rates sit next to their roadmap targets.
 
 ### PR 2 — Direction / bidi pipeline  [feature; several deferrals block on this]
 4. ✅ A shared `direction` resolution pipeline — `DirectionStyleExtensions` (`ReadDirection`/`IsRtl`/`ReadParagraphDirection`); `direction` registered (inherited, `ltr`/`rtl`); bidi base direction now CSS-driven at the inline-layout seam. Writing-mode stays horizontal-tb (the seam composes vertical modes later).

@@ -9,6 +9,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <!-- Per Phase 3 PR 1 — the curated conformance suite drives the INTERNAL
+         layout pipeline (Phase2Pipeline in the NetPdf facade → BlockLayouter)
+         and asserts BoxFragment geometry directly. These assemblies already
+         grant InternalsVisibleTo("NetPdf.W3cConformance"). -->
+    <ProjectReference Include="..\..\src\NetPdf.Layout\NetPdf.Layout.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Paginate\NetPdf.Paginate.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Css\NetPdf.Css.csproj" />
     <ProjectReference Include="..\NetPdf.TestKit\NetPdf.TestKit.csproj" />
   </ItemGroup>
 

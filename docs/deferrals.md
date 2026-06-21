@@ -1198,9 +1198,19 @@ grepping the ID).
 ## flex-layouter-features
 
 - **ID** — `flex-layouter-features`
-- **Status** — `approximated`. Phase 3 Task 15 L1 ships single-line
-  `flex-direction: row` with `flex-start` packing. Most Flexbox L1
-  features are deferred to sub-cycles.
+- **Status** — `approximated`. CSS Flexbox L1 is feature-complete for the common
+  cases (W3C Flexbox conformance **100%**, 18/18 as of the `0.7.0-beta` audit): all
+  four `flex-direction` values, `flex-wrap` (incl. `wrap-reverse`),
+  `justify-content` / `align-items` / `align-self` / `align-content` (positional +
+  safe/unsafe overflow), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto)
+  with the §9.7 step-4 min/max clamping iteration, `order`, `gap` / `column-gap` /
+  `row-gap` gutters (consuming free space before grow/shrink + justify-content),
+  explicit container `width` + `margin: 0 auto` centering, RTL `row` main-axis flip,
+  anonymous-item wrapping, and multi-page container splitting. The residual
+  approximations are enumerated under **Missing** below (baseline alignment, the
+  `flex` shorthand parser, intrinsic `flex-basis` keywords, margin-box in the
+  alignment / justify-content free-space math, RTL column cross-axis + vertical
+  writing modes, percentage gaps — see `gap-percentage-sizing`).
 - **Behavior** — A block container with `display: flex` (=
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level

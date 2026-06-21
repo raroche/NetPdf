@@ -163,5 +163,28 @@ internal static class GridCases
                 new BoxExpectation("a", X: 0, Width: 100),
                 new BoxExpectation("b", X: 100, Width: 100),
             }),
+
+        // §8.3 + §10.1 — a column-spanning item's extent includes the gap gutter
+        // BETWEEN the spanned tracks (PR #204 Copilot review): span 2 of two 100px
+        // columns with column-gap:20 → 100 + 20 + 100 = 220.
+        new ConformanceCase("grid-column-span-with-gap", "CSS Grid L1 §8.3/§10.1",
+            Doc("<div style='display:grid;grid-template-columns:100px 100px;"
+                + "column-gap:20px;grid-auto-rows:40px'>"
+                + "<div id='a' style='grid-column:1 / span 2'></div></div>"),
+            new[] { new BoxExpectation("a", X: 0, Width: 220) }),
+
+        // §10.1 — an AUTO-height grid reserves the row-gap gutters in its block
+        // extent, so a following sibling clears the full grid height (PR #204
+        // Copilot review): 2 × 50px rows + row-gap:30 → grid 130 tall, sibling at
+        // Y=130.
+        new ConformanceCase("grid-row-gap-auto-height-sibling", "CSS Grid L1 §10.1",
+            Doc("<div id='g' style='display:grid;grid-template-columns:100px;"
+                + "grid-template-rows:50px 50px;row-gap:30px'>"
+                + "<div></div><div></div></div><div id='s' style='height:20px'></div>"),
+            new[]
+            {
+                new BoxExpectation("g", Height: 130), // 50 + 30 + 50
+                new BoxExpectation("s", Y: 130),
+            }),
     };
 }

@@ -1,6 +1,6 @@
 # NetPdf — Progress Status
 
-> **Current state (2026-06-21):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. Conformance is MEASURED (curated suite, PR 1 [#202](https://github.com/raroche/NetPdf/pull/202)). **ALL FOUR conformance exit criteria are now MET** — CSS 2.2 93.3% (28/30), Fragmentation 90% (9/10), Flexbox 100% (18/18), Grid 92.3% (12/13). The CSS 2.2 box-model gaps closed first ([#203](https://github.com/raroche/NetPdf/pull/203): box-sizing block-axis + emit/measure consistency + floats; min/max clamping explicit + auto/fill). Then the **flex/grid gap PR** closed: `gap`/`column-gap`/`row-gap` gutters (flex + grid) + flex/grid containers honoring their own explicit `width` — taking Flexbox 83.3% → 100% (criterion 4 MET) + Grid 80% → 92.3%. Residuals DEFERRED (none block a criterion): auto-height emit (`auto-height-emit-vs-pagination`), percentage min/max (`min-max-percentage-sizing`), grid fr+gap (`grid-gap-fr-track-sizing`), `inline-only-block-line-splitting`, `multi-page-allocation-churn`. What's left to *finish* Phase 3: the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag). Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
+> **Current state (2026-06-21):** Phase 3's layout + pagination engine drives multi-page rendering for tables, flex, grid, multicol, prose, empty/explicit-height blocks. Conformance is MEASURED (curated suite, PR 1 [#202](https://github.com/raroche/NetPdf/pull/202)). **ALL FOUR conformance exit criteria are now MET** — CSS 2.2 93.3% (28/30), Fragmentation 90% (9/10), Flexbox 100% (18/18), Grid 93.3% (14/15). The CSS 2.2 box-model gaps closed first ([#203](https://github.com/raroche/NetPdf/pull/203): box-sizing block-axis + emit/measure consistency + floats; min/max clamping explicit + auto/fill). Then the **flex/grid gap PR** closed: `gap`/`column-gap`/`row-gap` gutters (flex + grid) + flex/grid containers honoring their own explicit `width` — taking Flexbox 83.3% → 100% (criterion 4 MET) + Grid 80% → 93.3%. Residuals DEFERRED (none block a criterion): auto-height emit (`auto-height-emit-vs-pagination`), percentage min/max (`min-max-percentage-sizing`), grid fr+gap (`grid-gap-fr-track-sizing`), `inline-only-block-line-splitting`, `multi-page-allocation-churn`. What's left to *finish* Phase 3: the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag). Perf/memory exit criteria 7–8 are layout-pipeline smoke-gated (PR 5).
 >
 > Last merged: PR [#203](https://github.com/raroche/NetPdf/pull/203) (CSS 2.2 box-model gaps — criterion 3 MET). Current branch `phase3-flex-grid-gap-and-container-width`: flex gap, grid gap, flex/grid container width (criteria 4 + 5 raised; all 4 met). `git log --oneline -1` shows the exact commit.
 >
@@ -17,7 +17,7 @@
 | 4 | Visual parity (gradients, shadows, filters, SVG) | ⏸️ Not started |
 | 5 | Packaging + release | 🔵 Interleaved — layout→PDF wiring done |
 
-**Gates (all green, 2026-06-21):** 7149 unit / 3 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · **W3cConformance (4 per-case-baseline gates; published rates CSS 2.2 93% / Frag 90% / Flex 100% / Grid 92%)** · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
+**Gates (all green, 2026-06-21):** 7149 unit / 3 skip (+ the 3 perf/memory gates) · 30 LayoutSnapshots · 97 RealDocuments · **W3cConformance (4 per-case-baseline gates; published rates CSS 2.2 93% / Frag 90% / Flex 100% / Grid 93%)** · PaginationGolden · RenderingCorpus · 0-warning Release · AOT/JIT parity · determinism.
 
 ## Phase 3 — what's shipped (consolidated)
 
@@ -38,7 +38,7 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 | 2 | Anvil sample: footer + "Page N of M" on every page | ✅ (multi-page + counters live) |
 | 3 | W3C CSS 2.2 layout pass-rate ≥ 90% | ✅ **MEASURED 93.3%** (28/30) — MET (box-sizing + min/max fixed, emit/measure consistent); 2 residual gaps: auto-height emit (`auto-height-emit-vs-pagination`), percentage min/max (`min-max-percentage-sizing`) |
 | 4 | W3C Flexbox pass-rate ≥ 85% | ✅ **MEASURED 100%** (18/18) — MET (gap gutters + container honors own `width`) |
-| 5 | W3C Grid L1 pass-rate ≥ 70% | ✅ **MEASURED 92.3%** (12/13) — MET (gap gutters; residual: fr+gap `grid-gap-fr-track-sizing`) |
+| 5 | W3C Grid L1 pass-rate ≥ 70% | ✅ **MEASURED 93.3%** (14/15) — MET (gap gutters; residual: fr+gap `grid-gap-fr-track-sizing`) |
 | 6 | W3C Fragmentation pass-rate ≥ 80% | ✅ **MEASURED 90.0%** (9/10) — MET (gap: break-before:page) |
 | 7 | Perf: 3-pg ≤ 200 ms, 20-pg ≤ 1.5 s p50 | 🟡 **layout-pipeline smoke-gated** (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms — synthetic fonts + table content). The FULL-pipeline target (tables + **images + web fonts**, docs/design/performance.md) is the BenchmarkDotNet flow, not yet a build gate. |
 | 8 | Memory linear with page count | 🟡 **partial** — RETAINED heap flat (gated); ALLOCATION linearity NOT met: multi-page churn is super-linear (`multi-page-allocation-churn` — the `[MemoryDiagnoser]` standard would flag it). |
@@ -46,7 +46,7 @@ Phase 3 is "complete" per [phase-3 §Exit criteria](docs/phases/phase-3-layout-a
 | 10 | Determinism | ✅ |
 | 11 | CHANGELOG + `0.7.0-beta` tagged | ❌ |
 
-**Bottom line:** **ALL FOUR conformance exit criteria are MET** (CSS 2.2 93.3% / Fragmentation 90% / Flexbox 100% / Grid 92.3%). The flex/grid gap PR cleared the last open one — flex/grid `gap`/`column-gap`/`row-gap` gutters + flex/grid containers honoring their own explicit `width` took Flexbox to 100% (criterion 4) + Grid to 92.3%. Residuals (none block a criterion): `auto-height-emit-vs-pagination`, `min-max-percentage-sizing`, `grid-gap-fr-track-sizing`, `inline-only-block-line-splitting`, `multi-page-allocation-churn`. Critical path now: the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag); the conformance story is clean (all criteria met, residuals documented).
+**Bottom line:** **ALL FOUR conformance exit criteria are MET** (CSS 2.2 93.3% / Fragmentation 90% / Flexbox 100% / Grid 93.3%). The flex/grid gap PR cleared the last open one — flex/grid `gap`/`column-gap`/`row-gap` gutters + flex/grid containers honoring their own explicit `width` took Flexbox to 100% (criterion 4) + Grid to 93.3%. Residuals (none block a criterion): `auto-height-emit-vs-pagination`, `min-max-percentage-sizing`, `grid-gap-fr-track-sizing`, `inline-only-block-line-splitting`, `multi-page-allocation-churn`. Critical path now: the **`0.7.0-beta` release** (PR 8 — deferral audit + CHANGELOG + tag); the conformance story is clean (all criteria met, residuals documented).
 
 ## Phase 3 — remaining-work roadmap
 

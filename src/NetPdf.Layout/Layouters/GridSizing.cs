@@ -88,6 +88,10 @@ internal static class GridSizing
         public required List<double> RowPositions { get; init; }
         public required List<double> ColPositions { get; init; }
         public required List<PlacedItem> PlacedItems { get; init; }
+        /// <summary>CSS Grid L1 §10.1 row-gap gutter (0 when none) — folded into
+        /// <see cref="RowExtentSum"/> so the auto-height wrapper reserves the
+        /// gutters too (the positions already include them).</summary>
+        public double RowGap { get; init; }
         /// <summary>True when cumulative positions + per-track right/
         /// bottom edges are all finite. Caller skips emission when
         /// false (= protect downstream paint from non-finite geometry).</summary>
@@ -106,6 +110,10 @@ internal static class GridSizing
             {
                 double sum = 0;
                 foreach (var s in RowSizes) sum += s;
+                // §10.1 — the row-gap gutters between the row tracks are part of
+                // the block extent (the row positions already include them), so
+                // an auto-height wrapper must reserve them too.
+                if (RowSizes.Count > 1) sum += (RowSizes.Count - 1) * RowGap;
                 return sum;
             }
         }
@@ -363,6 +371,7 @@ internal static class GridSizing
             RowPositions = rowPositions,
             ColPositions = colPositions,
             PlacedItems = placedItems,
+            RowGap = rowGap,
             IsGeometryFinite = isFinite,
         };
     }

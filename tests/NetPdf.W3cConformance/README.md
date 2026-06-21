@@ -18,11 +18,12 @@ a **pass-rate**.
 | CSS 2.2 layout | **93.3%** (28/30) | ≥ 90% | ✅ met |
 | Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
 | Flexbox L1 | **100%** (18/18) | ≥ 85% | ✅ met |
-| Grid L1 | **92.3%** (12/13) | ≥ 70% | ✅ met |
+| Grid L1 | **93.3%** (14/15) | ≥ 70% | ✅ met |
 
 **All four conformance exit criteria are now met.** The flex/grid gap PR took
 Flexbox to 100% (gap gutters + the flex container honoring its own explicit
-`width`) and Grid to 92.3% (gap gutters; one residual: `fr` tracks + gap). CSS 2.2
+`width`) and Grid to 93.3% (gap gutters incl. spanned-item + auto-height extent;
+one residual: `fr` tracks + gap). CSS 2.2
 rose to 93.3% earlier from the box-model gap fixes (`box-sizing: border-box` on the
 block axis + the measure pass + floats; min/max-width/height clamping on explicit
 AND auto/fill sizes). The remaining CSS 2.2 gaps are auto-height shrink-to-fit and

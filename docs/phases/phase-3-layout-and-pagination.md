@@ -2,7 +2,7 @@
 
 **Status:** ✅ Engine complete + multi-page rendering live; all four conformance exit criteria MET (CSS 2.2 93.3% / Flexbox 100% / Grid 93.3% / Fragmentation 90%); perf + memory signed off measured-with-documented-residuals. **The `0.7.0-beta` release is staged** (CHANGELOG written + exit criteria signed off below) — the git tag is the only remaining step, created by the maintainer after the release PR merges. **The bottleneck phase, cleared.** History: the ordered 3-task PR groups at the top of [../../PROGRESS.md](../../PROGRESS.md).
 **Time:** team estimate 16 wk → Claude Opus 4.7 high: **8–12 wk**.
-**Tagged release:** `0.7.0-beta` — most business documents render correctly. The first user-useful release.
+**Staged release:** `0.7.0-beta` (tag pending — created by the maintainer after the release PR merges) — most business documents render correctly. The first user-useful release.
 
 ## Goal
 

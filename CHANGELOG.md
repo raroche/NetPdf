@@ -8,7 +8,7 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.)
 
-[Unreleased]: https://example.invalid/NetPdf/compare/0.7.0-beta...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...HEAD
 
 ## [0.7.0-beta] — staged for 2026-06-21 (tag pending PR merge)
 
@@ -43,7 +43,7 @@ Phase 3 — fragmentainer-aware layout + pagination. NetPdf now runs an HTML+CSS
 
 ### Test counts
 
-- **7,156 unit tests** (+3 skipped), 30 layout snapshots, 97 real-document goldens, 4 W3C conformance gates, pagination golden, rendering corpus, PDF validation, AOT/JIT byte-parity, and determinism — all green at **0 warnings** in Release.
+- **7,157 unit tests** (+3 skipped), 30 layout snapshots, 97 real-document goldens, 4 W3C conformance gates, pagination golden, rendering corpus, PDF validation, AOT/JIT byte-parity, and determinism — all green at **0 warnings** in Release.
 
 ### Notes / known limitations
 
@@ -281,6 +281,6 @@ Phase 1 — PDF writer + text foundation. NetPdf can now produce well-formed, by
 - NuGet package ID `NetPdf` reserved on nuget.org via `0.0.1-phase0` placeholder (unlisted).
 - `NUGET_API_KEY` set up as GitHub Actions repository secret with `NetPdf*` glob scope.
 
-[0.1.0-alpha]: https://example.invalid/NetPdf/compare/0.0.1-phase0...0.1.0-alpha
-[0.3.0-alpha]: https://example.invalid/NetPdf/compare/0.1.0-alpha...0.3.0-alpha
-[0.7.0-beta]: https://example.invalid/NetPdf/compare/0.3.0-alpha...0.7.0-beta
+[0.1.0-alpha]: https://github.com/raroche/NetPdf/compare/0.0.1-phase0...0.1.0-alpha
+[0.3.0-alpha]: https://github.com/raroche/NetPdf/compare/0.1.0-alpha...0.3.0-alpha
+[0.7.0-beta]: https://github.com/raroche/NetPdf/compare/0.3.0-alpha...0.7.0-beta

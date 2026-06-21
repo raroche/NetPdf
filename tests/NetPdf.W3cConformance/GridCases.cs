@@ -85,8 +85,7 @@ internal static class GridCases
             {
                 new BoxExpectation("a", X: 0),
                 new BoxExpectation("b", X: 120), // 100 + 20 gap
-            },
-            KnownGap: "column-gap gutter isn't inserted between grid tracks"),
+            }),
 
         // §10.1 — row-gap inserts a gutter between row tracks.
         new ConformanceCase("grid-row-gap", "CSS Grid L1 §10.1",
@@ -97,8 +96,35 @@ internal static class GridCases
             {
                 new BoxExpectation("a", Y: 0),
                 new BoxExpectation("b", Y: 80), // 50 + 30 gap
+            }),
+
+        // §10.1 — the `gap` shorthand sets both row-gap + column-gap; three fixed
+        // columns gutter-spaced.
+        new ConformanceCase("grid-gap-shorthand-columns", "CSS Grid L1 §10.1",
+            Doc("<div style='display:grid;grid-template-columns:60px 60px 60px;"
+                + "gap:15px;grid-auto-rows:40px'>"
+                + "<div id='a'></div><div id='b'></div><div id='c'></div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0),
+                new BoxExpectation("b", X: 75),  // 60 + 15
+                new BoxExpectation("c", X: 150), // 60 + 15 + 60 + 15
+            }),
+
+        // §10.1 + §7.2.3 — column-gap reduces the space `fr` tracks distribute:
+        // 2 fr in a 400px parent with column-gap:20 → each fr = (400-20)/2 = 190.
+        // (NetPdf positions the gutters but doesn't yet subtract them from the fr
+        // free space — `grid-gap-fr-track-sizing` deferral; EXPECTED is spec.)
+        new ConformanceCase("grid-fr-columns-with-gap", "CSS Grid L1 §7.2.3/§10.1",
+            Doc(400, "<div style='display:grid;grid-template-columns:1fr 1fr;"
+                + "column-gap:20px;grid-auto-rows:40px'>"
+                + "<div id='a'></div><div id='b'></div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Width: 190),
+                new BoxExpectation("b", X: 210, Width: 190), // 190 + 20 gap
             },
-            KnownGap: "row-gap gutter isn't inserted between grid tracks"),
+            KnownGap: "fr tracks don't subtract gaps from their distributed free space"),
 
         // §8.3 — line-based placement (grid-column / grid-row) drops an item
         // into a specific cell.

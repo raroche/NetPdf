@@ -395,6 +395,36 @@ grepping the ID).
 
 ---
 
+## grid-gap-fr-track-sizing
+
+- **ID** — `grid-gap-fr-track-sizing`
+- **Status** — `approximated`.
+- **Behavior** — Grid `column-gap` / `row-gap` / `gap` gutters are POSITIONED
+  between tracks (the track offsets include the gaps), so fixed / auto / intrinsic
+  track grids lay out correctly. But the gaps are NOT subtracted from the free
+  space `fr` (flexible) tracks distribute — so `grid-template-columns: 1fr 1fr;
+  column-gap: 20px` in a 400px container sizes each fr track at 200 (should be
+  190 = (400-20)/2) and the second track overflows by the gap.
+- **Missing** — CSS Grid L1 §7.2.3 + §11.5 — the leftover space the fr flex factor
+  resolves against is the container extent MINUS the fixed/percentage track bases
+  AND the gutters. Percentage tracks (§7.2.1) still resolve against the FULL
+  content area, so the gap must be threaded as a separate fr-only free-space
+  reduction (not a global content-size reduction).
+- **Trigger** — a corpus/user grid using `fr` (or auto-fill/auto-fit) tracks
+  together with a non-zero gap.
+- **Owner files** — `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+  `ResolveFrTracks` (the multiple call sites at ~lines 170/288/292/310 thread
+  `contentInlineSize` / `contentBlockSize`); the fr free-space derivation needs
+  the gutter total `(trackCount - 1) * gap` subtracted, kept separate from the
+  percentage-track resolution.
+- **Added** — Phase 3 PR (flex/grid gap) — track POSITIONING gap shipped; the fr
+  free-space subtraction was scoped out (intertwined with the grid track-sizing
+  passes).
+- **Removal condition** — fr tracks subtract the gutters from their distributed
+  free space AND the `grid-fr-columns-with-gap` conformance case passes.
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`

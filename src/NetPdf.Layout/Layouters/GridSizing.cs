@@ -332,9 +332,13 @@ internal static class GridSizing
         var rowSizes = MaterializeSizes(rowInfos);
         var colSizes = MaterializeSizes(colInfos);
 
-        // Compute positions + finite check.
-        var rowPositions = ComputeTrackPositions(rowSizes, contentBlockOffset);
-        var colPositions = ComputeTrackPositions(colSizes, contentInlineOffset);
+        // Compute positions + finite check. CSS Grid L1 §10.1 — gutters between
+        // tracks (column-gap between columns, row-gap between rows). `normal` /
+        // unset → 0 for grid.
+        var columnGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
+        var rowGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
+        var rowPositions = ComputeTrackPositions(rowSizes, contentBlockOffset, rowGap);
+        var colPositions = ComputeTrackPositions(colSizes, contentInlineOffset, columnGap);
         var isFinite = IsTrackGeometryFinite(rowPositions, rowSizes)
             && IsTrackGeometryFinite(colPositions, colSizes);
         if (!isFinite)
@@ -2926,14 +2930,16 @@ internal static class GridSizing
     // =====================================================================
 
     private static List<double> ComputeTrackPositions(
-        List<double> sizes, double originOffset)
+        List<double> sizes, double originOffset, double gap)
     {
         var positions = new List<double>(sizes.Count);
         var cursor = originOffset;
-        foreach (var size in sizes)
+        for (var i = 0; i < sizes.Count; i++)
         {
             positions.Add(cursor);
-            cursor += size;
+            cursor += sizes[i];
+            // CSS Grid L1 §10.1 — a gutter follows every track except the last.
+            if (i < sizes.Count - 1) cursor += gap;
         }
         return positions;
     }

@@ -95,6 +95,36 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
+    public void Column_and_row_gap_offset_the_second_track_per_cell()
+    {
+        // §10.1 — column-gap:20 + row-gap:30 on the 2×2 grid above shift the
+        // second column to X=70 (50+20) and the second row to Y=130 (100+30).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0, 200.0 }, colsPx: new[] { 50.0, 150.0 });
+        grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
+        grid.Style.Set(PropertyId.RowGap, ComputedSlot.FromLengthPx(30));
+        var item11 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item12 = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var item21 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var item22 = BuildItemWithExplicitPlacement(row: 2, col: 2);
+        grid.AppendChild(item11);
+        grid.AppendChild(item12);
+        grid.AppendChild(item21);
+        grid.AppendChild(item22);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(4, sink.Fragments.Count);
+        AssertFragmentEquals(sink, item11, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
+        AssertFragmentEquals(sink, item12, inlineOffset: 70, blockOffset: 0, inlineSize: 150, blockSize: 100);
+        AssertFragmentEquals(sink, item21, inlineOffset: 0, blockOffset: 130, inlineSize: 50, blockSize: 200);
+        AssertFragmentEquals(sink, item22, inlineOffset: 70, blockOffset: 130, inlineSize: 150, blockSize: 200);
+    }
+
+    [Fact]
     public void Negative_minus_two_selects_last_explicit_track_per_spec()
     {
         // Per §8.3 + PR-#92 review F3 — negative line numbers count

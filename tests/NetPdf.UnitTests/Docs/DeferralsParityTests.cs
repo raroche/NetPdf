@@ -51,6 +51,7 @@ public sealed class DeferralsParityTests
         "multi-page-allocation-churn",
         "auto-height-emit-vs-pagination",
         "min-max-percentage-sizing",
+        "grid-gap-fr-track-sizing",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
         "inline-atomic-boxes",

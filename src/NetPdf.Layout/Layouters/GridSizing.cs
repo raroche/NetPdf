@@ -169,6 +169,13 @@ internal static class GridSizing
 
         var ctx = new SizingContext(emit);
 
+        // CSS Grid L1 §10.1 gutters — read ONCE here; threaded into the fr
+        // free-space resolution (grid-gap-fr-track-sizing — the gutters reduce the
+        // space fr tracks distribute) AND reused for the position pass below. `normal`
+        // / unset → 0 for grid.
+        var columnGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
+        var rowGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
+
         // Per PR-#95 review Q1 — kindsOut/rowKinds/colKinds were dead
         // code (populated but never read; TrackSizingInfo.Kind already
         // carries the value). Removed to drop 2 List allocations + the
@@ -178,11 +185,11 @@ internal static class GridSizing
         ResolveTrackSizes(
             gridBox.Style.ReadGridTemplateRows(),
             contentBlockSize, isBlockIndefinite,
-            rowInfos, ctx, cancellationToken);
+            rowInfos, ctx, cancellationToken, rowGap);
         ResolveTrackSizes(
             gridBox.Style.ReadGridTemplateColumns(),
             contentInlineSize, isInlineIndefinite,
-            colInfos, ctx, cancellationToken);
+            colInfos, ctx, cancellationToken, columnGap);
 
         // Per Phase 3 Task 18 cycle 6 + PR-#103 review F1+F2 — capture
         // the explicit-grid extents NOW (before any implicit growth)
@@ -293,11 +300,11 @@ internal static class GridSizing
         // base sum). Re-resolve fr for both axes if the grid grew.
         if (rowInfos.Count > rowCountBeforePlacement)
         {
-            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
+            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken, rowGap);
         }
         if (colInfos.Count > colCountBeforePlacement)
         {
-            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken);
+            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken, columnGap);
         }
         _ = grownOccupancy;
 
@@ -315,14 +322,14 @@ internal static class GridSizing
             widthMeasurer, otherAxisInfos: null, cancellationToken);
         if (colIntrinsicChanged)
         {
-            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken);
+            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken, columnGap);
         }
         var rowIntrinsicChanged = ResolveIntrinsicTracks(
             rowInfos, placedItems, isRowAxis: true,
             contentMeasurer, colInfos, cancellationToken);
         if (rowIntrinsicChanged)
         {
-            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
+            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken, rowGap);
         }
 
         // Per Phase 3 Task 17 cycle 4 + post-PR-#95 review C1 — §11.6
@@ -340,11 +347,8 @@ internal static class GridSizing
         var rowSizes = MaterializeSizes(rowInfos);
         var colSizes = MaterializeSizes(colInfos);
 
-        // Compute positions + finite check. CSS Grid L1 §10.1 — gutters between
-        // tracks (column-gap between columns, row-gap between rows). `normal` /
-        // unset → 0 for grid.
-        var columnGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
-        var rowGap = gridBox.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
+        // Compute positions + finite check (CSS Grid L1 §10.1 gutters — column-gap
+        // between columns, row-gap between rows; both read early above + reused here).
         var rowPositions = ComputeTrackPositions(rowSizes, contentBlockOffset, rowGap);
         var colPositions = ComputeTrackPositions(colSizes, contentInlineOffset, columnGap);
         var isFinite = IsTrackGeometryFinite(rowPositions, rowSizes)
@@ -796,7 +800,7 @@ internal static class GridSizing
     private static void ResolveTrackSizes(
         TrackList trackList, double containerExtent, bool isAxisIndefinite,
         List<TrackSizingInfo> infoOut, SizingContext ctx,
-        CancellationToken ct)
+        CancellationToken ct, double gap)
     {
         // Per Phase 3 Task 18 cycle 7c + post-PR-#107 review F1 #1 —
         // pass container extent so auto-fill / auto-fit derive their
@@ -840,7 +844,7 @@ internal static class GridSizing
         }
 
         // §11.7 fr distribution (cycle 4 — with iterative removal step).
-        ResolveFrTracks(infoOut, containerExtent, ctx, ct);
+        ResolveFrTracks(infoOut, containerExtent, ctx, ct, gap);
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 4 — classify one
@@ -1069,7 +1073,7 @@ internal static class GridSizing
     /// removal step now matters.</para></summary>
     private static void ResolveFrTracks(
         List<TrackSizingInfo> infos, double containerExtent,
-        SizingContext ctx, CancellationToken ct)
+        SizingContext ctx, CancellationToken ct, double gap)
     {
         // Per PR-#95 review P1 — single Span aliasing the List for
         // zero-copy ref-mutation across the rest of the method.
@@ -1093,6 +1097,16 @@ internal static class GridSizing
             }
         }
         if (!hasFr) return;
+
+        // CSS Grid L1 §11.5 + §7.2.3 — the N-1 inter-track gutters consume real
+        // space, so the free space `fr` tracks distribute is the container extent
+        // MINUS the non-flex bases AND the gutters (grid-gap-fr-track-sizing). The
+        // gutter total is constant across the §11.7 removal passes (it does not depend
+        // on which tracks freeze). Percentage tracks still resolve against the FULL
+        // container extent (ResolvePercentage at the ClassifyEntry site is unchanged)
+        // — only the fr leftover loses the gutters, so `1fr 1fr; column-gap:20` in 400
+        // sizes each fr at 190 (= (400-20)/2), not 200.
+        var gutterTotal = System.Math.Max(0, span.Length - 1) * gap;
 
         // Per-track "frozen" flag — fr tracks whose base exceeds
         // their proportional share get treated as fixed for the
@@ -1119,7 +1133,7 @@ internal static class GridSizing
                 // baseSize to the non-flex sum.
                 nonFlexBase += span[i].BaseSize;
             }
-            var leftover = containerExtent - nonFlexBase;
+            var leftover = containerExtent - nonFlexBase - gutterTotal;
             if (leftover <= 0 || !double.IsFinite(leftover))
             {
                 // No room for the unfrozen fr tracks to grow above

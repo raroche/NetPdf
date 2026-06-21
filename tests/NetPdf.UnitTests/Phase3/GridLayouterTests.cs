@@ -539,6 +539,72 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
+    public void Fr_tracks_subtract_column_gap_from_free_space()
+    {
+        // grid-template-columns: 1fr 1fr; column-gap:20 in 400px container.
+        //   gutterTotal = (2-1)*20 = 20; leftover = 400 - 0 - 20 = 380.
+        //   hypoFr = 190, each track = 190; itemB at 190 + 20 gap = 210.
+        // (sizing-residuals PR — grid-gap-fr-track-sizing closed.)
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(1)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 190, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 210, blockOffset: 0, inlineSize: 190, blockSize: 50);
+    }
+
+    [Fact]
+    public void Fr_track_with_fixed_track_and_gap_subtracts_the_gutter_too()
+    {
+        // grid-template-columns: 100px 1fr; column-gap:20 in 400px:
+        //   nonFlexBase = 100, gutterTotal = 20, leftover = 400 - 100 - 20 = 280.
+        //   The fr track is 280; the FIXED track stays 100 (the gutter is reserved
+        //   in addition to the fixed base, not taken from it). itemB at 100 + 20 = 120.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 120, blockOffset: 0, inlineSize: 280, blockSize: 50);
+    }
+
+    [Fact]
     public void Cycle2_fixed_plus_two_unequal_fr_distributes_per_flex_factor()
     {
         // grid-template-columns: 100px 1fr 2fr in 400px:

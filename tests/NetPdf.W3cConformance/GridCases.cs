@@ -113,8 +113,9 @@ internal static class GridCases
 
         // §10.1 + §7.2.3 — column-gap reduces the space `fr` tracks distribute:
         // 2 fr in a 400px parent with column-gap:20 → each fr = (400-20)/2 = 190.
-        // (NetPdf positions the gutters but doesn't yet subtract them from the fr
-        // free space — `grid-gap-fr-track-sizing` deferral; EXPECTED is spec.)
+        // (Closed by the sizing-residuals PR: ResolveFrTracks subtracts the gutter
+        // total from the fr leftover; percentage tracks still resolve against the
+        // full extent.)
         new ConformanceCase("grid-fr-columns-with-gap", "CSS Grid L1 §7.2.3/§10.1",
             Doc(400, "<div style='display:grid;grid-template-columns:1fr 1fr;"
                 + "column-gap:20px;grid-auto-rows:40px'>"
@@ -123,8 +124,7 @@ internal static class GridCases
             {
                 new BoxExpectation("a", X: 0, Width: 190),
                 new BoxExpectation("b", X: 210, Width: 190), // 190 + 20 gap
-            },
-            KnownGap: "fr tracks don't subtract gaps from their distributed free space"),
+            }),
 
         // §8.3 — line-based placement (grid-column / grid-row) drops an item
         // into a specific cell.

@@ -6,9 +6,50 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 ## [Unreleased]
 
-The `0.3.0-alpha` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria verified — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release.
+The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.)
 
-[Unreleased]: https://example.invalid/NetPdf/compare/0.1.0-alpha...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...HEAD
+
+## [0.7.0-beta] — staged for 2026-06-21 (tag pending PR merge)
+
+Phase 3 — fragmentainer-aware layout + pagination. NetPdf now runs an HTML+CSS document **end-to-end to a multi-page PDF**: the Phase-2 box tree flows through block / inline / flex / grid / table / multicol / absolute layout, a pagination optimizer chooses the page breaks, paged media (`@page` + the 16 margin boxes + generated content) frames each page, and text shaping + painting + image embedding (Phase-5-interleaved) write the bytes. This is the first user-useful release — most business documents render correctly. The repository remains **private through Phase 5**; this is a git-tag-only milestone (no NuGet publication — that lands at v1.0).
+
+### Added
+
+#### Layout engine (`NetPdf.Layout`)
+- **Block formatting** — margin collapsing, block formatting contexts, floats + `clear`, min/max/fit-content sizing, `box-sizing: content-box|border-box` on **both** axes (via the shared `BoxSizingHelper`), `LengthPx` min/max-width/height clamping (explicit + auto/fill), and §10.3.3 auto-margin centering (`margin: 0 auto`) — block, list-item, replaced, **and** flex/grid containers.
+- **Inline + line layout** (`LineBuilder`) — UAX #9 bidi, HarfBuzz shaping, UAX #14 line breaking, `white-space`, `text-align` (incl. `justify` / `justify-all`), the full `vertical-align` set (incl. line-edge keyword line growth), the `line-height` cascade grammar, inline-block baseline metrics, `::first-line` / `::first-letter`.
+- **Flexbox L1** — W3C subset **100%**: all four `flex-direction` values + `flex-wrap` (incl. `wrap-reverse`), `justify-content` / `align-items` / `align-self` / `align-content` (positional + safe/unsafe overflow), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto) with the §9.7 step-4 min/max clamping iteration, `order`, `gap` / `column-gap` / `row-gap` gutters (consuming free space before grow/shrink + justify-content), explicit container `width` + `margin: 0 auto` centering, RTL `row` main-axis flip, anonymous-item wrapping, and multi-page container splitting.
+- **CSS Grid L1** — W3C subset **93.3%**: track sizing (`auto` / `fr` / `minmax` / `fit-content` / `repeat` / `auto-fill` / `auto-fit`), sparse + dense auto-placement, `grid-template-areas`, `column-gap` / `row-gap` / `gap` gutters (incl. spanned items + auto-height extent), and cross-page row splitting with a row-extent memo.
+- **Tables** — auto + fixed layout, collapse/separate borders, row/colspan, `<thead>`/`<tfoot>` repeat, intra-cell row splitting across pages. **Multicol**, **absolute** + `position: fixed`.
+
+#### Pagination engine (`NetPdf.Paginate`)
+- Break resolver, a documented cost model, a bounded-DP optimizer (≤2-page lookahead), continuation tokens, checkpoint/rewind, and a bounded-retry coordinator. Prose paginates at block granularity (a text block whose margin box overflows breaks whole to the next page).
+
+#### Multi-page driver
+- The page-emitting driver loop with nested-container fragmentation, per-page counters, cross-page running content, per-page `@page :first` / `:left` / `:right` / `:blank`, named pages, and font de-duplication across pages.
+
+#### Paged media + generated content
+- `@page` rules + the 16 margin boxes (style / border / padding / background / border-radius / overflow), `string()` / `string-set` (incl. the `content()` form), `element()` / `position: running()`, and `counter(page)` / `counter(pages)` with counter styles.
+
+#### Paint + PDF emission (Phase-5-interleaved)
+- `TextPainter` (shape → subset → embed), `FragmentPainter` (background-color/-image, borders, outline, border-radius, tiling patterns), the image pipeline (`<img>` + `background-*`, `object-fit` / `-position`, `data:` URIs, Skia raster fallback), all writing through **our** PDF byte writer (`NetPdf.Pdf`).
+
+#### W3C conformance suite (`tests/NetPdf.W3cConformance`)
+- A **curated assertion suite** (not vendored WPT) that drives the internal pipeline (`Phase2Pipeline` → `BlockLayouter`) and asserts `BoxFragment` geometry, gated per-case (every non-`KnownGap` case must pass; every `KnownGap` case must still fail). Published pass-rates: **CSS 2.2 93.3%** (28/30), **Fragmentation 90.0%** (9/10), **Flexbox 100%** (18/18), **Grid 93.3%** (14/15).
+
+#### Performance + memory gates
+- `PerformanceGateTests` enforce a 3-page invoice (~42 ms) + a 22-page report (~400 ms) on the synthetic-font layout pipeline, and a retained-heap gate (flat across page count).
+
+### Test counts
+
+- **7,157 unit tests** (+3 skipped), 30 layout snapshots, 97 real-document goldens, 4 W3C conformance gates, pagination golden, rendering corpus, PDF validation, AOT/JIT byte-parity, and determinism — all green at **0 warnings** in Release.
+
+### Notes / known limitations
+
+- **Perf + memory exit criteria are smoke-gated / partial, not fully met.** The perf gate exercises a synthetic-font layout pipeline (no images / web fonts); the full-pipeline BenchmarkDotNet target is not yet a build gate. Retained heap is flat, but allocation scaling across pages is super-linear (`multi-page-allocation-churn`).
+- **Documented deferrals** (none block a conformance criterion): auto-height shrink-to-fit of the emitted box (`auto-height-emit-vs-pagination`), percentage min/max sizing (`min-max-percentage-sizing`), grid `fr` tracks + gap (`grid-gap-fr-track-sizing`), percentage gaps (`gap-percentage-sizing`), and single-paragraph line splitting (`inline-only-block-line-splitting`). Full inventory: `docs/deferrals.md`.
+- **Tagged PDF / PDF/UA / PDF/A are post-v1.** The semantic IR is built alongside layout but tagged structure is not emitted in v1.
 
 ## [0.3.0-alpha] — staged for 2026-05-07 (tag pending PR merge)
 
@@ -240,5 +281,6 @@ Phase 1 — PDF writer + text foundation. NetPdf can now produce well-formed, by
 - NuGet package ID `NetPdf` reserved on nuget.org via `0.0.1-phase0` placeholder (unlisted).
 - `NUGET_API_KEY` set up as GitHub Actions repository secret with `NetPdf*` glob scope.
 
-[0.1.0-alpha]: https://example.invalid/NetPdf/compare/0.0.1-phase0...0.1.0-alpha
-[0.3.0-alpha]: https://example.invalid/NetPdf/compare/0.1.0-alpha...0.3.0-alpha
+[0.1.0-alpha]: https://github.com/raroche/NetPdf/compare/0.0.1-phase0...0.1.0-alpha
+[0.3.0-alpha]: https://github.com/raroche/NetPdf/compare/0.1.0-alpha...0.3.0-alpha
+[0.7.0-beta]: https://github.com/raroche/NetPdf/compare/0.3.0-alpha...0.7.0-beta

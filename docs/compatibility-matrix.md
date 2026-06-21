@@ -199,4 +199,4 @@ See [docs/design/determinism.md](design/determinism.md) for the full contract an
 
 ---
 
-Last updated: 2026-05-05 (Phase 2 Task 8 review cycle 1 — `var()` substitution row expanded with implementation details + known gap on var()-bearing shorthands. Cycle invalidation, empty-fallback semantics, depth + output safety limits all wired and tested.).
+Last updated: 2026-06-21 (Phase 3 `0.7.0-beta` deferral audit — Flexbox + Grid rows reconciled with live state: `gap`/`column-gap`/`row-gap` gutters, explicit container `width` + `margin: 0 auto` centering, and (grid) spanned-item + auto-height gap extents all shipped; percentage gaps + grid `fr`+gap documented as known gaps. Earlier — 2026-05-05: Phase 2 Task 8 `var()` substitution row expanded with implementation details + known gap on var()-bearing shorthands.).

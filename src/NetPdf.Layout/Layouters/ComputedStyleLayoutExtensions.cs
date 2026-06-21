@@ -489,6 +489,20 @@ internal static class ComputedStyleLayoutExtensions
             : 16.0;
     }
 
+    /// <summary>Per Phase 3 — flex/grid gutter for <see cref="PropertyId.ColumnGap"/>
+    /// / <see cref="PropertyId.RowGap"/> (CSS Box Alignment L3 §8). Unlike
+    /// multicol's <see cref="ReadColumnGap"/> (where <c>normal</c> ≈ 1em), for
+    /// FLEX + GRID containers <c>normal</c> (and unset / non-length) computes to 0
+    /// (§8.1) — so an explicit length is the gutter and everything else is no
+    /// gap. Negative lengths floor at 0.</summary>
+    public static double ReadFlexGridGapOrZero(this ComputedStyle style, PropertyId gapProperty)
+    {
+        var slot = style.Get(gapProperty);
+        return slot.Tag == ComputedSlotTag.LengthPx
+            ? System.Math.Max(0, slot.AsLengthPx())
+            : 0.0;
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 4 — decode
     /// <see cref="PropertyId.ColumnWidth"/> as a CSS px length. Returns
     /// <see langword="null"/> when the slot is <c>auto</c> / unset OR

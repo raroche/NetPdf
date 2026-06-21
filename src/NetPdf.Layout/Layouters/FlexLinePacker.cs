@@ -102,6 +102,8 @@ internal static class FlexLinePacker
     /// <param name="isWrapping">True for <c>flex-wrap: wrap</c> or
     /// <c>wrap-reverse</c>; false for <c>nowrap</c>.</param>
     /// <param name="cancellationToken">Honored once per item.</param>
+    /// <param name="mainGap">CSS Box Alignment L3 §8 main-axis gutter between
+    /// items on a line (0 = none); the wrap decision accounts for it.</param>
     /// <returns>The packed lines. Empty when
     /// <paramref name="sortedChildIndices"/> is empty (= no items to
     /// pack; the caller short-circuits emission).</returns>
@@ -111,7 +113,8 @@ internal static class FlexLinePacker
         FlexDirectionValue direction,
         double containerMainSize,
         bool isWrapping,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        double mainGap = 0.0)
     {
         var lines = new List<FlexLine>();
         // Per PR-#84 review P3 #5 — axis mapping comes from the
@@ -165,7 +168,13 @@ internal static class FlexLinePacker
                 mainProp, containerMainSize);
             var itemCross = CrossBorderBoxSize(item, crossProp);
 
-            if (currentCount > 0 && currentMain + itemMain > containerMainSize)
+            // §8 — adding this item to the current line costs `currentCount`
+            // gutters (one before each of the existing items' successor); the line
+            // wraps when items + their gutters exceed the budget. `currentMain`
+            // tracks item sizes only (gaps excluded), matching the caller's
+            // freeSpace = container - LineMainSize - (ItemCount-1)*gap math.
+            if (currentCount > 0
+                && currentMain + itemMain + currentCount * mainGap > containerMainSize)
             {
                 lines.Add(new FlexLine(
                     FirstItemIndex: currentFirstSortedPos,
@@ -237,7 +246,9 @@ internal static class FlexLinePacker
         FlexDirectionValue direction,
         double containerMainSize,
         bool isWrapping,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        double mainGap = 0.0,
+        double crossGap = 0.0)
     {
         var (mainProp, crossProp) = direction.GetAxisProperties();
 
@@ -266,6 +277,7 @@ internal static class FlexLinePacker
         // a new line starts (current line's items would overflow),
         // commit the current line's cross-extent to the sum + reset.
         var sumLineCross = 0.0;
+        var lineCount = 0;
         var currentCount = 0;
         var currentMain = 0.0;
         var currentCross = 0.0;
@@ -278,9 +290,14 @@ internal static class FlexLinePacker
                 mainProp, containerMainSize);
             var itemCross = CrossBorderBoxSize(item, crossProp);
 
-            if (currentCount > 0 && currentMain + itemMain > containerMainSize)
+            // §8 — wrap accounts for the main-axis gutters (currentCount of them
+            // once this item joins the line). Mirrors Pack so the pre-measure
+            // line count matches emission.
+            if (currentCount > 0
+                && currentMain + itemMain + currentCount * mainGap > containerMainSize)
             {
                 sumLineCross += currentCross;
+                lineCount++;
                 currentCount = 0;
                 currentMain = 0;
                 currentCross = 0;
@@ -294,9 +311,12 @@ internal static class FlexLinePacker
         if (currentCount > 0)
         {
             sumLineCross += currentCross;
+            lineCount++;
         }
 
-        return sumLineCross;
+        // §8 — cross-axis gutters between the wrapped lines add to the extent
+        // (matches FlexLayouter.ResolveContainerCrossSize's emit-side sum).
+        return sumLineCross + System.Math.Max(0, lineCount - 1) * crossGap;
     }
 
     /// <summary>Flex box-sizing cycle — the item's BORDER-box cross size for line packing,

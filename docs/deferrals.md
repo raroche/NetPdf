@@ -395,6 +395,68 @@ grepping the ID).
 
 ---
 
+## grid-gap-fr-track-sizing
+
+- **ID** — `grid-gap-fr-track-sizing`
+- **Status** — `approximated`.
+- **Behavior** — Grid `column-gap` / `row-gap` / `gap` gutters are POSITIONED
+  between tracks (the track offsets include the gaps), so fixed / auto / intrinsic
+  track grids lay out correctly. But the gaps are NOT subtracted from the free
+  space `fr` (flexible) tracks distribute — so `grid-template-columns: 1fr 1fr;
+  column-gap: 20px` in a 400px container sizes each fr track at 200 (should be
+  190 = (400-20)/2) and the second track overflows by the gap.
+- **Missing** — CSS Grid L1 §7.2.3 + §11.5 — the leftover space the fr flex factor
+  resolves against is the container extent MINUS the fixed/percentage track bases
+  AND the gutters. Percentage tracks (§7.2.1) still resolve against the FULL
+  content area, so the gap must be threaded as a separate fr-only free-space
+  reduction (not a global content-size reduction).
+- **Trigger** — a corpus/user grid using `fr` (or auto-fill/auto-fit) tracks
+  together with a non-zero gap.
+- **Owner files** — `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+  `ResolveFrTracks` (the multiple call sites at ~lines 170/288/292/310 thread
+  `contentInlineSize` / `contentBlockSize`); the fr free-space derivation needs
+  the gutter total `(trackCount - 1) * gap` subtracted, kept separate from the
+  percentage-track resolution.
+- **Added** — Phase 3 PR (flex/grid gap) — track POSITIONING gap shipped; the fr
+  free-space subtraction was scoped out (intertwined with the grid track-sizing
+  passes).
+- **Removal condition** — fr tracks subtract the gutters from their distributed
+  free space AND the `grid-fr-columns-with-gap` conformance case passes.
+
+---
+
+## gap-percentage-sizing
+
+- **ID** — `gap-percentage-sizing`
+- **Status** — `approximated` (a `%` gutter is treated as a 0 gutter — no gap).
+- **Behavior** — `column-gap` / `row-gap` / `gap` on FLEX + GRID containers honor
+  only `<length>` | `normal` today. A PERCENTAGE gutter (`display:flex; gap:10%`)
+  lays out with NO gutter: the property is registered as `Length` (not
+  `LengthPercentage`) in `properties.json`, so a percentage value is rejected at
+  resolution + falls back to `normal`, and `ReadFlexGridGapOrZero` floors any
+  non-`LengthPx` slot to 0 — so the used gutter is 0 rather than the resolved
+  percentage.
+- **Missing** — CSS Box Alignment L3 §8.3 — `row-gap` / `column-gap` are
+  `<length-percentage>`; a percentage resolves against the corresponding dimension
+  of the container content box (column-gap → inline size, row-gap → block size).
+  Two changes are needed: upgrade the property type + resolution path (so a `%`
+  parses instead of being rejected), and resolve the percentage at layout time
+  against the already-known container content extent (kept separate from track /
+  flex sizing, like `grid-gap-fr-track-sizing`).
+- **Trigger** — a corpus/user flex or grid container using a `%` gap.
+- **Owner files** — `src/NetPdf.Css/properties.json` (the `column-gap` / `row-gap`
+  property type), `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
+  (`ReadFlexGridGapOrZero` — add a percentage-resolving overload taking the
+  container content extent), and the gap read sites (`FlexLayouter` ~L636,
+  `GridSizing` gap reads) which must pass the relevant container content dimension.
+- **Added** — Phase 3 PR (flex/grid gap) review [P3] — length gaps shipped;
+  percentage gaps scoped out (property-type change + a layout-time resolution seam).
+- **Removal condition** — `column-gap` / `row-gap` resolve a percentage against the
+  container content box on both axes AND a percentage-gap unit/conformance pin is
+  added (and turns green).
+
+---
+
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`
@@ -1403,31 +1465,22 @@ grepping the ID).
     `L3_hardening_known_gap_stretch_ignores_min_max_constraints`
     test — when sub-cycle L4+ ships the clamping, that test
     should fail + this bullet should be removed.
-  - **Explicit-width honoring for flex containers**. Per Phase 3
-    Task 15 L4 post-PR-#64 review F#2 — a `display: flex;
-    flex-direction: column; width: 200px` container in a 600px page
-    currently has `_contentInlineSize = 600` (= the available
-    inline range from `BlockLayouter`'s float-adjusted derivation
-    at BlockLayouter.cs:1138). The FlexLayouter then computes
-    `align-items: center` against the 600 page width, not the
-    declared 200. The fix touches the BlockLayouter
-    width-resolution pipeline (cycle-1 BlockLayouter does NOT
-    honor declared `width` as a shrink-to-fit constraint —
-    `borderBoxInlineSize` is always the float-adjusted available
-    range). Tracked by the
-    `L4_hardening_known_gap_column_flex_ignores_declared_width`
-    pinning test + the Skip'd
+  - ~~**Explicit-width honoring for flex/grid containers**~~ —
+    **shipped in the flex/grid gap PR (container-width cycle).**
+    Added `BoxKind.FlexContainer` + `BoxKind.GridContainer` to the
+    `ResolveInFlowBorderBoxInlineSize` gate, so an explicit `width`
+    on a flex/grid container becomes its border-box width (feeding
+    `FlexGeometryHelper` / `GridGeometryHelper`'s content inline
+    size). Alignment, flex-shrink, flex-wrap, and fr track sizing
+    now run against the declared width, not the page width. The
+    three pins flipped to the spec-correct behavior:
     `L4_hardening_column_explicit_width_smaller_than_page_centers_correctly`
-    test. Per Phase 3 Task 15 L6 post-PR-#66 review F#2 — also
-    tracked by the
-    `L6_hardening_known_gap_narrow_flex_in_wide_page_does_not_wrap_yet`
-    production-pipeline test, which pins the wrap-related symptom:
-    `width: 250px` declared on a `flex-wrap: wrap` container in a
-    600px page → wrap fires against the page width (= 4×100=400 <
-    600 → no wrap) instead of the spec-correct declared width
-    (= 4×100=400 > 250 → 2 lines). When the BlockLayouter
-    width-resolution fix lands ALL THREE tests should flip — at
-    which point remove BOTH this bullet AND all three pins.
+    un-Skip'd (item centers in 200 → X=50); the `..._known_gap_...`
+    pin removed; `L6_narrow_flex_in_wide_page_wraps_per_declared_width`
+    now asserts 2 lines. Conformance `flex-explicit-container-width`
+    + `flex-explicit-width-center` + `flex-explicit-width-shrinks-items`
+    + `grid-explicit-container-width` pass. (No real-document output
+    changed — confirmed by the RealDocuments guard.)
   - ~~`order` property~~ — **shipped in Phase 3 Task 15 L10.** New
     `order` Integer property (default 0, applies_to FlexItems) +
     `ReadOrder` extension + `GetFlexChildrenInOrderSequence` shared

@@ -6946,9 +6946,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   (img-pipeline cycle): the sizing pre-pass writes the §10.3.2 used width/height into
     ///   the slots, so an explicit width here is the image's used size — filling would
     ///   stretch it.</item>
-    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> keep
-    ///   the documented cycle-1 fill behavior (their explicit-width honoring is its own cycle
-    ///   — see <c>docs/deferrals.md</c>).</item>
+    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> now
+    ///   honor an explicit <c>width</c> too (the flex/grid container-width cycle): the declared
+    ///   border-box width feeds <c>FlexGeometryHelper</c> / <c>GridGeometryHelper</c>'s content
+    ///   inline size, so alignment / wrap / track sizing run against the declared width, not the
+    ///   page width. <c>width: auto</c> keeps the fill behavior.</item>
     /// </list>
     /// §10.3.3 margin DISTRIBUTION ships in the auto-margins cycle — see
     /// <see cref="ResolveAutoInlineMargins"/> (the caller applies it right after this).</summary>
@@ -6956,7 +6958,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         Box child, double availableInlineSize, double containingInlinePx,
         double marginInlineStart, double marginInlineEnd)
     {
-        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement)
+        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
+            or BoxKind.FlexContainer or BoxKind.GridContainer)
         {
             // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
             // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available
@@ -7001,15 +7004,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// placement (post-PR-#164 review P1: the outer dispatch passes the FLOAT-ADJUSTED
     /// available range — the engine's cycle-1 model places in-flow blocks within it, so the
     /// distribution must match or a centred box drifts; the recursion passes the parent's
-    /// content box). A box with AUTO width keeps the fill behavior (auto margins read 0), and
-    /// non-plain kinds (tables/flex/grid/anonymous) are untouched like the width override.</summary>
+    /// content box). A box with AUTO width keeps the fill behavior (auto margins read 0).
+    /// <see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> participate
+    /// too (PR #204 review [P2]) now that they honor their own explicit <c>width</c> — a
+    /// flex/grid container is a block-level box in normal flow, so §10.3.3 auto-margins apply;
+    /// table + anonymous kinds stay untouched (they own their inline-size logic).</summary>
     private static void ResolveAutoInlineMargins(
         Box child, double borderBoxInlineSize, double distributionRangePx,
         ref double marginInlineStart, ref double marginInlineEnd)
     {
         // BlockReplacedElement included (img-pipeline cycle) — `display: block; margin: 0 auto`
         // is the canonical image-centering idiom; the pre-pass gave it an explicit used width.
-        if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement)) return;
+        // FlexContainer / GridContainer included (PR #204 review [P2]) — `display: flex;
+        // width: 200px; margin: 0 auto` centers the container, matching the explicit-width
+        // gate in ResolveInFlowBorderBoxInlineSize (both sets must stay in lockstep).
+        if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
+            or BoxKind.FlexContainer or BoxKind.GridContainer)) return;
         // EXPLICIT width only (a tag test, so the legal `width: 0` / `0%` distributes too —
         // post-PR-#164 review P3); auto-width boxes keep the fill (auto margins read 0).
         if (!HasExplicitWidth(child)) return;
@@ -9326,10 +9336,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var lineItems = new List<Box>();
         foreach (var child in flexContainer.Children)
             if (child.IsBlockLevel) lineItems.Add(child);
+        // PR #204 review [P1] — the row-nowrap main-axis gutter (column-gap) consumes
+        // the §9.7 free space, so the pre-measure resolves each item's width at the
+        // SAME flex-resolved value FlexLayouter emits at (an item pre-measured too wide
+        // under-counts its wrapped height → mis-skips the row-nowrap pagination gate).
+        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(PropertyId.ColumnGap);
         var resolvedMain = lineItems.Count > 0
             ? FlexLayouter.ResolveFlexLineMainSizes(
                 lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
-                flexContentInlineSize, cancellationToken)
+                flexContentInlineSize, mainGap, cancellationToken)
             : System.Array.Empty<double>();
 
         Dictionary<Box, double>? measureCache = null;
@@ -9462,10 +9477,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             - flexContainer.Style.ReadLengthPxOrZero(PropertyId.PaddingRight));
         Dictionary<Box, double>? measureCache = null;
         var totalMain = 0.0;
+        var blockLevelCount = 0;
         foreach (var item in flexContainer.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
+            blockLevelCount++;
             // Flex box-sizing cycle — the declared height (main) + width (cross) are
             // BORDER-box sizes; map the height to a border box honoring `box-sizing`, and
             // measure content at the CONTENT width (border box minus the inline chrome).
@@ -9517,6 +9534,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
             totalMain += mainExtent;
         }
+        // PR #204 review [P1] — for column direction the main-axis gutter is row-gap;
+        // the N-1 gutters add to the natural main extent (emission advances the main
+        // cursor by mainGap between items, AttemptLayout ~L1550), so the overflow /
+        // pagination trigger must count them too rather than under-reporting the height.
+        var columnMainGap = flexContainer.Style.ReadFlexGridGapOrZero(PropertyId.RowGap);
+        totalMain += System.Math.Max(0, blockLevelCount - 1) * columnMainGap;
         return totalMain;
     }
 
@@ -9610,9 +9633,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // emission-time call; only the return value differs.
         var sortedChildIndices =
             flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
+        // §8 — pass the gap gutters so the pre-measure wrap decision + cross
+        // extent match emission (FlexLayouter). Row: main=column-gap, cross=row-gap;
+        // column swaps. No-op when no gap is set.
+        var isColumn = direction.IsFlexColumnDirection();
+        var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
+            isColumn ? PropertyId.RowGap : PropertyId.ColumnGap);
+        var crossGap = flexContainer.Style.ReadFlexGridGapOrZero(
+            isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
         return FlexLinePacker.SumCrossExtent(
             flexContainer, sortedChildIndices, direction,
-            containerMainSize, isWrapping: true, cancellationToken);
+            containerMainSize, isWrapping: true, cancellationToken, mainGap, crossGap);
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

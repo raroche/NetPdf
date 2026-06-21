@@ -472,6 +472,22 @@ public sealed class LengthResolverTests
     }
 
     [Fact]
+    public void Row_gap_negative_is_rejected()
+    {
+        // PR #204 review (Copilot) — CSS Box Alignment L3 §8.1: row-gap rejects
+        // negatives exactly like column-gap. A negative value falls back to the initial
+        // keyword (normal) + emits CSS-PROPERTY-VALUE-INVALID-001 (previously it resolved
+        // to a LengthPx the flex/grid gutter reader silently floored to 0).
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-10px", PropertyType.Length,
+            PropertyId.RowGap, "row-gap", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Column_width_negative_is_rejected()
     {
         // CSS Multi-column L1 §3.1 — column-width admits non-negative

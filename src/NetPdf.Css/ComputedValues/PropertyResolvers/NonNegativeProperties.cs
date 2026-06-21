@@ -71,6 +71,12 @@ internal static class NonNegativeProperties
         // back to the property's initial value (auto / normal) + emits
         // CSS-PROPERTY-VALUE-INVALID-001.
         PropertyId.ColumnWidth, PropertyId.ColumnGap,
+        // Per PR #204 review (Copilot) — row-gap is non-negative too (CSS Box Alignment
+        // L3 §8.1: both gap axes reject negative values). Without this entry a negative
+        // `row-gap` resolved silently to a LengthPx the flex/grid gutter reader floored to
+        // 0, inconsistent with `column-gap` (which invalidates + falls back to `normal` +
+        // emits CSS-PROPERTY-VALUE-INVALID-001).
+        PropertyId.RowGap,
         // Per Phase 5 layout→PDF cycle 3 — <line-width> is non-negative (CSS
         // Backgrounds & Borders 3 §4.2). border-*-width + column-rule-width join
         // the resolver dispatch (LineWidthResolver) + this set together so a

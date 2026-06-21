@@ -85,8 +85,7 @@ internal static class GridCases
             {
                 new BoxExpectation("a", X: 0),
                 new BoxExpectation("b", X: 120), // 100 + 20 gap
-            },
-            KnownGap: "column-gap gutter isn't inserted between grid tracks"),
+            }),
 
         // §10.1 — row-gap inserts a gutter between row tracks.
         new ConformanceCase("grid-row-gap", "CSS Grid L1 §10.1",
@@ -97,8 +96,35 @@ internal static class GridCases
             {
                 new BoxExpectation("a", Y: 0),
                 new BoxExpectation("b", Y: 80), // 50 + 30 gap
+            }),
+
+        // §10.1 — the `gap` shorthand sets both row-gap + column-gap; three fixed
+        // columns gutter-spaced.
+        new ConformanceCase("grid-gap-shorthand-columns", "CSS Grid L1 §10.1",
+            Doc("<div style='display:grid;grid-template-columns:60px 60px 60px;"
+                + "gap:15px;grid-auto-rows:40px'>"
+                + "<div id='a'></div><div id='b'></div><div id='c'></div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0),
+                new BoxExpectation("b", X: 75),  // 60 + 15
+                new BoxExpectation("c", X: 150), // 60 + 15 + 60 + 15
+            }),
+
+        // §10.1 + §7.2.3 — column-gap reduces the space `fr` tracks distribute:
+        // 2 fr in a 400px parent with column-gap:20 → each fr = (400-20)/2 = 190.
+        // (NetPdf positions the gutters but doesn't yet subtract them from the fr
+        // free space — `grid-gap-fr-track-sizing` deferral; EXPECTED is spec.)
+        new ConformanceCase("grid-fr-columns-with-gap", "CSS Grid L1 §7.2.3/§10.1",
+            Doc(400, "<div style='display:grid;grid-template-columns:1fr 1fr;"
+                + "column-gap:20px;grid-auto-rows:40px'>"
+                + "<div id='a'></div><div id='b'></div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Width: 190),
+                new BoxExpectation("b", X: 210, Width: 190), // 190 + 20 gap
             },
-            KnownGap: "row-gap gutter isn't inserted between grid tracks"),
+            KnownGap: "fr tracks don't subtract gaps from their distributed free space"),
 
         // §8.3 — line-based placement (grid-column / grid-row) drops an item
         // into a specific cell.
@@ -123,6 +149,42 @@ internal static class GridCases
                 new BoxExpectation("a", X: 0),
                 new BoxExpectation("b", X: 100),
                 new BoxExpectation("c", X: 200),
+            }),
+
+        // §7.2.3 — an explicit `width` on the GRID container sizes the fr tracks:
+        // a 200px grid with 1fr 1fr splits into two 100px columns (against the
+        // declared 200, not the 600px page). No gap → unaffected by the fr-gap
+        // deferral.
+        new ConformanceCase("grid-explicit-container-width", "CSS Grid L1 §7.2.3",
+            Doc("<div style='display:grid;width:200px;grid-template-columns:1fr 1fr;"
+                + "grid-auto-rows:40px'><div id='a'></div><div id='b'></div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Width: 100),
+                new BoxExpectation("b", X: 100, Width: 100),
+            }),
+
+        // §8.3 + §10.1 — a column-spanning item's extent includes the gap gutter
+        // BETWEEN the spanned tracks (PR #204 Copilot review): span 2 of two 100px
+        // columns with column-gap:20 → 100 + 20 + 100 = 220.
+        new ConformanceCase("grid-column-span-with-gap", "CSS Grid L1 §8.3/§10.1",
+            Doc("<div style='display:grid;grid-template-columns:100px 100px;"
+                + "column-gap:20px;grid-auto-rows:40px'>"
+                + "<div id='a' style='grid-column:1 / span 2'></div></div>"),
+            new[] { new BoxExpectation("a", X: 0, Width: 220) }),
+
+        // §10.1 — an AUTO-height grid reserves the row-gap gutters in its block
+        // extent, so a following sibling clears the full grid height (PR #204
+        // Copilot review): 2 × 50px rows + row-gap:30 → grid 130 tall, sibling at
+        // Y=130.
+        new ConformanceCase("grid-row-gap-auto-height-sibling", "CSS Grid L1 §10.1",
+            Doc("<div id='g' style='display:grid;grid-template-columns:100px;"
+                + "grid-template-rows:50px 50px;row-gap:30px'>"
+                + "<div></div><div></div></div><div id='s' style='height:20px'></div>"),
+            new[]
+            {
+                new BoxExpectation("g", Height: 130), // 50 + 30 + 50
+                new BoxExpectation("s", Y: 130),
             }),
     };
 }

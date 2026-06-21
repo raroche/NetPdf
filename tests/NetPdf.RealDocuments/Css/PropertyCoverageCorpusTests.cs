@@ -122,7 +122,10 @@ public sealed class PropertyCoverageCorpusTests
         "grid-column", "grid-column-gap",
         "grid-row", "grid-row-gap",
         "grid-template",
-        "gap", "row-gap",
+        // `gap` is a shorthand AngleSharp expands to row-gap/column-gap — not a
+        // registered longhand. row-gap promoted out of the allowlist by the
+        // flex/grid gap PR (now registered + applied like column-gap below).
+        "gap",
         // column-gap promoted out of the allowlist by Phase 3 Task 14
         // cycle 1 — the property is now registered + resolves via the
         // multicol family. Other column-* properties (column-count,

@@ -777,11 +777,13 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             var inlineOffset = _contentInlineOffset + colPositionsRelative[item.Col];
             var blockOffset = _contentBlockOffset
                 + (rowPositionsRelative[item.Row] - rowOffsetShift);
-            // Per Phase 3 Task 18 cycle 6 — size is the sum of the
-            // item's spanned tracks (= the rectangle's extent). For
-            // span=1 items this collapses to the single-track size.
-            var inlineSize = SumTrackSizes(colSizesRelative, item.Col, colSpan);
-            var blockSize = SumTrackSizes(rowSizesRelative, item.Row, rowSpan);
+            // Per Phase 3 Task 18 cycle 6 — size is the spanned tracks' extent
+            // (= the rectangle). Computed from the track POSITIONS (last spanned
+            // track's end edge − first's start) so the gap gutters BETWEEN spanned
+            // tracks are included (§10.1); for span=1 this is the single-track
+            // size.
+            var inlineSize = SpanExtent(colPositionsRelative, colSizesRelative, item.Col, colSpan);
+            var blockSize = SpanExtent(rowPositionsRelative, rowSizesRelative, item.Row, rowSpan);
             _sink.Emit(new BoxFragment(
                 Box: item.Box,
                 InlineOffset: inlineOffset,
@@ -1186,20 +1188,20 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         return (spanClampedEnd, NeedsContinuation: needsContinuation, DeferEntireGrid: false);
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 6 — sum the contiguous-track
-    /// sizes <c>sizes[start..start+span]</c>. Defends against
-    /// boundary-overrun (= a malformed cache where item.Row + RowSpan
-    /// exceeds rowCount silently clamps to the available extent
-    /// instead of throwing). For span=1 the result is just
-    /// <c>sizes[start]</c>.</summary>
-    private static double SumTrackSizes(
-        IReadOnlyList<double> sizes, int start, int span)
+    /// <summary>Per Phase 3 Task 18 cycle 6 + the flex/grid gap PR — the extent of
+    /// the contiguous tracks <c>[start, start+span)</c>, taken as the last spanned
+    /// track's END edge minus the first's START. Because the track
+    /// <paramref name="positions"/> already include the §10.1 gap gutters, this
+    /// span extent covers the gutters BETWEEN spanned tracks (a plain size-sum
+    /// would omit them, leaving a spanning item too small). Defends against
+    /// boundary-overrun (a malformed cache where start+span exceeds the track
+    /// count silently clamps). For span=1 this is just <c>sizes[start]</c>.</summary>
+    private static double SpanExtent(
+        IReadOnlyList<double> positions, IReadOnlyList<double> sizes, int start, int span)
     {
         if (start < 0 || start >= sizes.Count) return 0;
-        var endExclusive = Math.Min(start + Math.Max(1, span), sizes.Count);
-        double sum = 0;
-        for (var i = start; i < endExclusive; i++) sum += sizes[i];
-        return sum;
+        var last = Math.Min(start + Math.Max(1, span), sizes.Count) - 1;
+        return (positions[last] + sizes[last]) - positions[start];
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 +

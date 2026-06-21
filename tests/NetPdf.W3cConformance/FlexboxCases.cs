@@ -112,25 +112,84 @@ internal static class FlexboxCases
                 new BoxExpectation("c", X: 0, Y: 50), // wraps under the first line
             }),
 
-        // §8.1 — the `gap` property spaces flex items along the main axis.
-        // (NetPdf does not yet apply flex/grid gap — honest gap; EXPECTED is spec.)
+        // §8.1 — the `gap` shorthand spaces flex items along the main axis.
         new ConformanceCase("flex-gap-main-axis", "CSS Box Alignment L3 §8 / Flexbox L1",
             Doc("<div style='display:flex;gap:20px'>" + Item("a", 100, 50) + Item("b", 100, 50) + "</div>"),
-            new[] { new BoxExpectation("b", X: 120) }, // 100 + 20 gap
-            KnownGap: "flex `gap` gutter isn't inserted between items"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0),
+                new BoxExpectation("b", X: 120), // 100 + 20 gap
+            }),
+
+        // §8 — `column-gap` is the main-axis gutter for row direction (3 items).
+        new ConformanceCase("flex-column-gap-three-items", "CSS Box Alignment L3 §8",
+            Doc("<div style='display:flex;column-gap:10px'>"
+                + Item("a", 80, 50) + Item("b", 80, 50) + Item("c", 80, 50) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("b", X: 90),  // 80 + 10
+                new BoxExpectation("c", X: 180), // 80 + 10 + 80 + 10
+            }),
+
+        // §8 — the main-axis gaps consume free space BEFORE justify-content
+        // distributes the remainder: in a 400px parent, gap:20 then flex-end packs
+        // both items (200) + their gap (20) against the end edge.
+        new ConformanceCase("flex-gap-with-justify-end", "CSS Box Alignment L3 §8",
+            Doc(400, "<div style='display:flex;gap:20px;justify-content:flex-end'>"
+                + Item("a", 100, 50) + Item("b", 100, 50) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 180), // freeSpace = 400 - 200 - 20 = 180
+                new BoxExpectation("b", X: 300), // 180 + 100 + 20 gap
+            }),
+
+        // §8 — `row-gap` is the main-axis gutter for COLUMN direction.
+        new ConformanceCase("flex-row-gap-column-direction", "CSS Box Alignment L3 §8",
+            Doc("<div style='display:flex;flex-direction:column;row-gap:15px'>"
+                + Item("a", 100, 40) + Item("b", 100, 60) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", Y: 0),
+                new BoxExpectation("b", Y: 55), // 40 + 15 gap
+            }),
+
+        // §8 — cross-axis gutter (`row-gap`) between WRAPPED lines (row direction).
+        new ConformanceCase("flex-row-gap-wrapped-lines", "CSS Box Alignment L3 §8",
+            Doc(250, "<div style='display:flex;flex-wrap:wrap;row-gap:30px'>"
+                + Item("a", 100, 50) + Item("b", 100, 50) + Item("c", 100, 50) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Y: 0),
+                new BoxExpectation("b", X: 100, Y: 0),
+                new BoxExpectation("c", X: 0, Y: 80), // wraps; 50 line + 30 row-gap
+            }),
 
         // §9.2 — an explicit `width` on the flex container itself sizes its main
-        // axis. NetPdf's flex/grid containers ignore their own `width` and fill
-        // the parent content width instead (the rest of this suite works AROUND
-        // that gap by nesting in a sized parent). This case exercises the gap
-        // HEAD-ON so the published Flexbox rate isn't inflated by avoiding it
-        // (PR 1 review [P1]): a 200px container with justify-content:flex-end
-        // must place the 100px item at X=100; the engine fills the 600px body
-        // and places it at X=500. EXPECTED is spec.
+        // axis: a 200px container with justify-content:flex-end places the 100px
+        // item at X=100 (200 - 100), not X=500 (against the 600px page).
         new ConformanceCase("flex-explicit-container-width", "CSS Flexbox L1 §9.2",
             Doc("<div style='display:flex;width:200px;justify-content:flex-end'>"
                 + Item("a", 100, 50) + "</div>"),
-            new[] { new BoxExpectation("a", X: 100) }, // 200 - 100
-            KnownGap: "flex container ignores its own explicit width, fills the parent"),
+            new[] { new BoxExpectation("a", X: 100) }), // 200 - 100
+
+        // §9.2 — justify-content:center against the DECLARED width (300px), so the
+        // 100px item centers at X=100, not against the 600px page.
+        new ConformanceCase("flex-explicit-width-center", "CSS Flexbox L1 §9.2",
+            Doc("<div style='display:flex;width:300px;justify-content:center'>"
+                + Item("a", 100, 50) + "</div>"),
+            new[] { new BoxExpectation("a", X: 100) }), // (300-100)/2
+
+        // §9.2 — an explicit width narrower than the items triggers flex-shrink
+        // against the DECLARED width: 3×100px items in a 240px container shrink to
+        // 80 each (240/3), packing at 0 / 80 / 160.
+        new ConformanceCase("flex-explicit-width-shrinks-items", "CSS Flexbox L1 §9.2/§9.7",
+            Doc("<div style='display:flex;width:240px'>"
+                + Item("a", 100, 50) + Item("b", 100, 50) + Item("c", 100, 50) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", X: 0, Width: 80),
+                new BoxExpectation("b", X: 80, Width: 80),
+                new BoxExpectation("c", X: 160, Width: 80),
+            }),
     };
 }

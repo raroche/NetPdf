@@ -79,6 +79,10 @@ internal sealed class ImageResourceCache
     /// native axial shading per box.</summary>
     public Dictionary<Box, CssLinearGradient> BackgroundGradientBoxes { get; } = new();
 
+    /// <summary>Phase 4 gradients — element-backed box → its parsed
+    /// <c>background-image: radial-gradient(...)</c> (PDF native radial shading).</summary>
+    public Dictionary<Box, CssRadialGradient> BackgroundRadialGradientBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -128,6 +132,7 @@ internal sealed class ImageResourceCache
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
+            cache.BackgroundRadialGradientBoxes,
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported);
 
@@ -214,6 +219,7 @@ internal sealed class ImageResourceCache
         ResolvedCascadeResult cascade,
         List<(Box, string, bool)> references,
         Dictionary<Box, CssLinearGradient> gradientBoxes,
+        Dictionary<Box, CssRadialGradient> radialGradientBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported)
@@ -250,6 +256,10 @@ internal sealed class ImageResourceCache
                     // parsed spec for the painter to emit as a PDF native axial shading.
                     gradientBoxes[box] = gradient;
                 }
+                else if (CssRadialGradient_Parser.TryParse(bgRaw) is { } radial)
+                {
+                    radialGradientBoxes[box] = radial;
+                }
                 else if (!unsupportedBackgroundReported)
                 {
                     diagnostics.Emit(new Diagnostic(
@@ -264,8 +274,8 @@ internal sealed class ImageResourceCache
         }
         foreach (var child in box.Children)
             CollectReferences(
-                child, cascade, references, gradientBoxes, collectBackgrounds, diagnostics,
-                ref unsupportedBackgroundReported);
+                child, cascade, references, gradientBoxes, radialGradientBoxes, collectBackgrounds,
+                diagnostics, ref unsupportedBackgroundReported);
     }
 
     /// <summary>Parse a CSS <c>url(...)</c> token as ONE COMPLETE token (PR #166 review P2 —

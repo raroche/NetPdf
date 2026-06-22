@@ -172,6 +172,12 @@ internal static class FragmentPainter
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb);
                 }
+                else if (imageCache is not null && document is not null
+                    && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
+                {
+                    PaintRadialGradient(page, document, radial, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                }
             }
 
             // Borders (foreground — always painted regardless of PrintBackgrounds).
@@ -1116,7 +1122,7 @@ internal static class FragmentPainter
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
         uint currentColorArgb)
     {
-        var stops = ResolveGradientStops(gradient, currentColorArgb);
+        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
@@ -1133,15 +1139,16 @@ internal static class FragmentPainter
     /// an unresolvable stop is dropped. Positions follow CSS Images §3.4: a missing first → 0,
     /// missing last → 1, missing interior spread evenly between the nearest positioned stops,
     /// and the running max enforces non-decreasing offsets.</summary>
-    private static List<PdfGradientStop> ResolveGradientStops(CssLinearGradient gradient, uint currentColorArgb)
+    private static List<PdfGradientStop> ResolveGradientStops(
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb)
     {
-        var n = gradient.Stops.Count;
+        var n = gradientStops.Count;
         var rgb = new (double R, double G, double B)[n];
         var pos = new double?[n];
         var ok = new bool[n];
         for (var i = 0; i < n; i++)
         {
-            var s = gradient.Stops[i];
+            var s = gradientStops[i];
             var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
                 s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
             if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
@@ -1198,6 +1205,44 @@ internal static class FragmentPainter
         var hx = len / 2.0 * sin;     // PDF dir = (sinθ, cosθ)
         var hy = len / 2.0 * cos;
         return (cx - hx, cy - hy, cx + hx, cy + hy);
+    }
+
+    /// <summary>Phase 4 gradients — paint a parsed <c>radial-gradient(...)</c> as a PDF native
+    /// radial shading (ISO 32000-2 §8.7.4.5.4) clipped to the box. The center comes from the
+    /// gradient's box-relative fractions; the radius from the ending-shape size keyword
+    /// (closest/farthest side/corner) measured against the box. FIRST CUT: the ending shape is
+    /// painted as a CIRCLE (an <c>ellipse</c> is approximated by the same scalar extent — exact
+    /// for a centered gradient on a square box; a documented residual otherwise).</summary>
+    private static void PaintRadialGradient(
+        PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb)
+    {
+        var stops = ResolveGradientStops(radial.Stops, currentColorArgb);
+        if (stops.Count < 2) return;
+
+        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        // Center in PDF user space (cy is a fraction from the CSS TOP → flip for PDF y-up).
+        var pcx = x + radial.CenterXFraction * w;
+        var pcy = y + (1.0 - radial.CenterYFraction) * h;
+        // Per-axis extents from the center to the near/far sides.
+        var minX = Math.Min(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * w;
+        var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * w;
+        var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * h;
+        var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * h;
+        var radius = radial.Extent switch
+        {
+            RadialExtent.ClosestSide => Math.Min(minX, minY),
+            RadialExtent.FarthestSide => Math.Max(maxX, maxY),
+            RadialExtent.ClosestCorner => Math.Sqrt(minX * minX + minY * minY),
+            _ => Math.Sqrt(maxX * maxX + maxY * maxY), // FarthestCorner (default)
+        };
+        if (!(radius > 0)) return;
+
+        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);
+        var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
+        page.PaintAxialShading(shadingRef, x, y, w, h,
+            radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
     }
 
     /// <summary>The four <c>border-radius</c> corners in CSS px (border-radius-completion cycle): each

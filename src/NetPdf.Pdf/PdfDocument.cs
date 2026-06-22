@@ -339,6 +339,41 @@ internal sealed class PdfDocument
         return shadingRef;
     }
 
+    /// <summary>Phase 4 gradients — register a PDF native RADIAL shading (ISO 32000-2
+    /// §8.7.4.5.4, <c>ShadingType 3</c>) for a CSS <c>radial-gradient</c>. The gradient runs
+    /// between two concentric circles at <c>(<paramref name="cx"/>, <paramref name="cy"/>)</c>
+    /// in PAGE user space: the inner circle (offset 0, radius <paramref name="r0"/>, usually 0)
+    /// and the outer circle (offset 1, radius <paramref name="r1"/>). <c>/Extend [true true]</c>
+    /// fills inside r0 with the first color and outside r1 with the last. Shares the color
+    /// <see cref="BuildGradientFunction"/> with the axial path. Elliptical gradients are painted
+    /// circularly in a CTM-scaled space by the caller; here the shape is always a circle.</summary>
+    public PdfIndirectRef RegisterRadialShading(
+        double cx, double cy, double r0, double r1,
+        IReadOnlyList<PdfGradientStop> stops)
+    {
+        ArgumentNullException.ThrowIfNull(stops);
+        ThrowIfSaved();
+        if (stops.Count == 0)
+            throw new ArgumentException("A radial shading needs at least one color stop.", nameof(stops));
+        if (!double.IsFinite(cx) || !double.IsFinite(cy) || !double.IsFinite(r0) || !double.IsFinite(r1)
+            || r0 < 0 || r1 < 0)
+            throw new ArgumentException($"Radial shading circles must be finite + non-negative; got ({cx},{cy}) r0={r0} r1={r1}.");
+
+        var functionRef = BuildGradientFunction(stops);
+        var coords = new PdfArray()
+            .Add(new PdfReal(cx)).Add(new PdfReal(cy)).Add(new PdfReal(r0))
+            .Add(new PdfReal(cx)).Add(new PdfReal(cy)).Add(new PdfReal(r1));
+        var dict = new PdfDictionary()
+            .Set(PdfNames.ShadingType, new PdfInteger(3)) // radial
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceRGB)
+            .Set(PdfNames.Coords, coords)
+            .Set(PdfNames.Function, functionRef)
+            .Set(PdfNames.Extend, new PdfArray().Add(PdfBoolean.True).Add(PdfBoolean.True));
+        var shadingRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(shadingRef, dict);
+        return shadingRef;
+    }
+
     /// <summary>Phase 4 gradients — build the PDF function mapping the parametric
     /// gradient domain [0, 1] to a DeviceRGB color (ISO 32000-2 §7.10). One stop → a
     /// constant (C0 == C1) <c>FunctionType 2</c>; two stops → a single interpolating

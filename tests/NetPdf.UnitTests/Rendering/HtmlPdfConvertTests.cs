@@ -78,6 +78,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_paints_a_radial_gradient_background_as_a_pdf_radial_shading()
+    {
+        // Phase 4 gradients — `background-image: radial-gradient(...)` emits a PDF native
+        // radial shading (ShadingType 3) with a color function, painted via `sh`.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:80px;" +
+            "background-image:radial-gradient(circle at center, #ffffff, #000000)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/ShadingType 3", text);   // radial shading object
+        Assert.Contains("/FunctionType 2", text);  // the 2-stop color function
+        Assert.Contains(" sh", text);
+        Assert.DoesNotContain(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
     public void Convert_paints_a_solid_border_edge()
     {
         const string html =

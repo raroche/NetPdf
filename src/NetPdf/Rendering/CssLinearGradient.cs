@@ -126,8 +126,8 @@ internal static class CssLinearGradient_Parser
     /// <summary>Parse a color stop: <c>&lt;color&gt; &lt;percentage&gt;?</c>. The color is the
     /// raw text (the painter resolves it); a trailing <c>%</c> token is the position. A trailing
     /// length position (e.g. <c>20px</c>) is unsupported (→ false). A bare color (no position)
-    /// yields a null position (spread evenly later).</summary>
-    private static bool TryParseStop(string arg, out CssGradientStop stop)
+    /// yields a null position (spread evenly later). Shared with the radial parser.</summary>
+    internal static bool TryParseStop(string arg, out CssGradientStop stop)
     {
         stop = default;
         var t = arg.Trim();
@@ -168,8 +168,8 @@ internal static class CssLinearGradient_Parser
     }
 
     /// <summary>Split on commas that are NOT inside parentheses (so <c>rgb(1, 2, 3)</c> stays one
-    /// token). Trims each segment.</summary>
-    private static List<string> SplitTopLevelCommas(string s)
+    /// token). Trims each segment. Shared with the radial parser.</summary>
+    internal static List<string> SplitTopLevelCommas(string s)
     {
         var parts = new List<string>();
         var depth = 0;

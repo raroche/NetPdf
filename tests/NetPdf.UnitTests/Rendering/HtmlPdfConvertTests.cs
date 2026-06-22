@@ -54,6 +54,102 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_paints_a_linear_gradient_background_as_a_pdf_axial_shading()
+    {
+        // Phase 4 gradients — `background-image: linear-gradient(...)` emits a PDF native
+        // axial shading (ShadingType 2) with a color function, painted via the `sh` operator
+        // clipped to the box. End-to-end through the cascade + collection + painter.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;" +
+            "background-image:linear-gradient(to right, #ff0000, #0000ff)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/ShadingType 2", text);   // axial shading object
+        Assert.Contains("/FunctionType 2", text);  // the 2-stop color function
+        Assert.Contains(" sh", text);              // the shading paint operator
+        Assert.Contains("W n", text);              // clipped to the box
+        // No "unsupported background-image" diagnostic — the gradient IS handled now.
+        Assert.DoesNotContain(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Convert_honors_linear_gradient_stop_positions_in_the_color_function()
+    {
+        // Phase 4 gradients (PR #209 Copilot fix) — authored stop positions must be honored:
+        // `red 25%, blue 75%` holds red over [0, .25], transitions over [.25, .75], holds blue
+        // over [.75, 1]. That is a FunctionType 3 stitch (with end holds) — NOT a single
+        // FunctionType 2 spanning the whole axis — with /Bounds at the stop offsets.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(to right, red 25%, blue 75%)\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.Contains("/FunctionType 3", text);  // stitched (end holds + interior transition)
+        Assert.Contains("0.25", text);              // /Bounds carry the authored offsets
+        Assert.Contains("0.75", text);
+    }
+
+    [Fact]
+    public void Convert_handles_terminal_hard_stop_gradients_without_malformed_bounds()
+    {
+        // Phase 4 gradients (PR #209 review [P1]) — repeated TERMINAL stops at 100% used to
+        // ceiling-clamp to duplicate /Bounds at 1.0 (a malformed FunctionType 3). The whole
+        // value must still produce a well-formed, reader-safe PDF.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(red 100%, blue 100%, green 100%)\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.StartsWith("%PDF-", text);
+        Assert.Contains("%%EOF", text);
+        Assert.Contains("/ShadingType 2", text);
+        // Whatever interior /Bounds the stitch emits, they must be strictly inside (0, 1) and
+        // strictly increasing — never the duplicate `1 1` the old clamp produced.
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(text, @"/Bounds \[([^\]]*)\]"))
+        {
+            var nums = m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            double prev = 0.0;
+            foreach (var s in nums)
+            {
+                var b = double.Parse(s, CultureInfo.InvariantCulture);
+                Assert.True(b > prev && b < 1.0, $"bound {s} must be in (prev, 1): prev={prev}");
+                prev = b;
+            }
+        }
+    }
+
+    [Fact]
+    public void Convert_paints_a_radial_gradient_background_as_a_pdf_radial_shading()
+    {
+        // Phase 4 gradients — `background-image: radial-gradient(...)` emits a PDF native
+        // radial shading (ShadingType 3) with a color function, painted via `sh`.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:80px;" +
+            "background-image:radial-gradient(circle at center, #ffffff, #000000)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/ShadingType 3", text);   // radial shading object
+        Assert.Contains("/FunctionType 2", text);  // the 2-stop color function
+        Assert.Contains(" sh", text);
+        Assert.DoesNotContain(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
     public void Convert_paints_a_solid_border_edge()
     {
         const string html =
@@ -5318,18 +5414,21 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Background_image_gradient_is_surfaced_and_skipped()
+    public void Background_image_linear_gradient_paints_as_shading_over_the_color()
     {
-        // A gradient (the Phase 4 shading-pattern work) surfaces CSS-BACKGROUND-IMAGE-
-        // UNSUPPORTED-001 once; the background-color still paints.
+        // Phase 4 gradients — a linear-gradient(...) now paints as a PDF native axial
+        // shading (no longer surfaces CSS-BACKGROUND-IMAGE-UNSUPPORTED-001); the
+        // background-color still paints UNDER it (CSS B&B §14.2 layer order).
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             "<div style=\"width:64px;height:32px;background-image:linear-gradient(red, blue);" +
             "background-color:#3366cc\"></div>" +
             "</body></html>", new HtmlPdfOptions());
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
         var pdf = Latin1(result.Pdf);
-        Assert.Empty(AllImagePlacements(pdf));
+        Assert.Contains("/ShadingType 2", pdf);          // the gradient shading
+        Assert.Contains(" sh", pdf);                     // painted
+        Assert.Contains("0.2 0.4 0.8 rg", pdf);          // #3366cc background-color underneath
         Assert.Contains(" re f", pdf);
     }
 

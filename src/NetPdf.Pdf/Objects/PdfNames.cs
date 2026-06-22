@@ -40,6 +40,22 @@ internal static class PdfNames
     public static readonly PdfName YStep = new("YStep");
     public static readonly PdfName Matrix = new("Matrix");
 
+    // Shadings + functions (Phase 4 gradients, ISO 32000-2 §8.7.4.5 + §7.10)
+    public static readonly PdfName Shading = new("Shading");
+    public static readonly PdfName ShadingType = new("ShadingType");
+    public static readonly PdfName Coords = new("Coords");
+    public static readonly PdfName Extend = new("Extend");
+    public static readonly PdfName Function = new("Function");
+    public static readonly PdfName FunctionType = new("FunctionType");
+    public static readonly PdfName Domain = new("Domain");
+    public static readonly PdfName Range = new("Range");
+    public static readonly PdfName C0 = new("C0");
+    public static readonly PdfName C1 = new("C1");
+    public static readonly PdfName N = new("N");
+    public static readonly PdfName Functions = new("Functions");
+    public static readonly PdfName Bounds = new("Bounds");
+    public static readonly PdfName Encode = new("Encode");
+
     // Streams
     public static readonly PdfName Length = new("Length");
     public static readonly PdfName Filter = new("Filter");

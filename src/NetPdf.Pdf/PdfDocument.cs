@@ -4,6 +4,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using NetPdf.Pdf.Fonts;
 using NetPdf.Pdf.Images;
 using NetPdf.Pdf.Objects;
@@ -207,6 +208,13 @@ internal sealed class PdfDocument
 
     private readonly Dictionary<string, PdfIndirectRef> _patternCache = [];
 
+    // Phase 4 gradients (PR #209 review [P3]) — N boxes painting the SAME gradient (repeated
+    // cards / table rows) reuse one color function (position-independent — keyed on the stops)
+    // and, when their axis/circle geometry also coincides, one shading object, instead of
+    // allocating a fresh function + shading graph per painted fragment.
+    private readonly Dictionary<string, PdfIndirectRef> _gradientFunctionCache = [];
+    private readonly Dictionary<string, PdfIndirectRef> _gradientShadingCache = [];
+
     /// <summary>
     /// Register a TILING PATTERN (ISO 32000-2 §8.7.3, PatternType 1) that repeats one
     /// registered Image XObject on a <paramref name="tileWidthPt"/> ×
@@ -300,6 +308,201 @@ internal sealed class PdfDocument
             System.Text.Encoding.ASCII.GetBytes(content), dict));
         _patternCache[key] = patternRef;
         return patternRef;
+    }
+
+    /// <summary>Phase 4 gradients — register a PDF native AXIAL shading (ISO 32000-2
+    /// §8.7.4.5.3, <c>ShadingType 2</c>) for a CSS <c>linear-gradient</c>. The gradient
+    /// axis runs from <c>(<paramref name="x0"/>, <paramref name="y0"/>)</c> (offset 0) to
+    /// <c>(<paramref name="x1"/>, <paramref name="y1"/>)</c> (offset 1) in PAGE user space
+    /// (PDF points, bottom-left origin); the caller derives the axis endpoints from the box
+    /// geometry + gradient angle. <c>/Extend [true true]</c> paints the end colors past the
+    /// axis (CSS gradients fill the whole box). Returns the shading's indirect ref for
+    /// <see cref="PdfPage.PaintShadingInRect"/>.
+    /// <para>Colors are DeviceRGB; per-stop alpha is dropped (opaque) — soft-mask alpha
+    /// shadings are a documented follow-up. Stops must be sorted with strictly increasing
+    /// offsets in [0, 1]; the caller (gradient parser) normalizes per CSS Images §3.4.</para></summary>
+    public PdfIndirectRef RegisterAxialShading(
+        double x0, double y0, double x1, double y1,
+        IReadOnlyList<PdfGradientStop> stops)
+    {
+        ArgumentNullException.ThrowIfNull(stops);
+        ThrowIfSaved();
+        if (stops.Count == 0)
+            throw new ArgumentException("An axial shading needs at least one color stop.", nameof(stops));
+        if (!double.IsFinite(x0) || !double.IsFinite(y0) || !double.IsFinite(x1) || !double.IsFinite(y1))
+            throw new ArgumentException($"Axial shading coords must be finite; got ({x0},{y0})-({x1},{y1}).");
+
+        // Reuse an identical axial shading (same axis + stops) — PR #209 review [P3].
+        var shadingKey = string.Concat(
+            "A|", Canon(x0), ",", Canon(y0), ",", Canon(x1), ",", Canon(y1), "|", GradientStopsKey(stops));
+        if (_gradientShadingCache.TryGetValue(shadingKey, out var cachedShading)) return cachedShading;
+
+        var functionRef = BuildGradientFunction(stops);
+        var coords = new PdfArray()
+            .Add(new PdfReal(x0)).Add(new PdfReal(y0))
+            .Add(new PdfReal(x1)).Add(new PdfReal(y1));
+        var dict = new PdfDictionary()
+            .Set(PdfNames.ShadingType, new PdfInteger(2)) // axial
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceRGB)
+            .Set(PdfNames.Coords, coords)
+            .Set(PdfNames.Function, functionRef)
+            .Set(PdfNames.Extend, new PdfArray().Add(PdfBoolean.True).Add(PdfBoolean.True));
+        var shadingRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(shadingRef, dict);
+        _gradientShadingCache[shadingKey] = shadingRef;
+        return shadingRef;
+    }
+
+    /// <summary>Phase 4 gradients — register a PDF native RADIAL shading (ISO 32000-2
+    /// §8.7.4.5.4, <c>ShadingType 3</c>) for a CSS <c>radial-gradient</c>. The gradient runs
+    /// between two concentric circles at <c>(<paramref name="cx"/>, <paramref name="cy"/>)</c>
+    /// in PAGE user space: the inner circle (offset 0, radius <paramref name="r0"/>, usually 0)
+    /// and the outer circle (offset 1, radius <paramref name="r1"/>). <c>/Extend [true true]</c>
+    /// fills inside r0 with the first color and outside r1 with the last. Shares the color
+    /// <see cref="BuildGradientFunction"/> with the axial path. Elliptical gradients are painted
+    /// circularly in a CTM-scaled space by the caller; here the shape is always a circle.</summary>
+    public PdfIndirectRef RegisterRadialShading(
+        double cx, double cy, double r0, double r1,
+        IReadOnlyList<PdfGradientStop> stops)
+    {
+        ArgumentNullException.ThrowIfNull(stops);
+        ThrowIfSaved();
+        if (stops.Count == 0)
+            throw new ArgumentException("A radial shading needs at least one color stop.", nameof(stops));
+        if (!double.IsFinite(cx) || !double.IsFinite(cy) || !double.IsFinite(r0) || !double.IsFinite(r1)
+            || r0 < 0 || r1 < 0)
+            throw new ArgumentException($"Radial shading circles must be finite + non-negative; got ({cx},{cy}) r0={r0} r1={r1}.");
+
+        // Reuse an identical radial shading (same circles + stops) — PR #209 review [P3].
+        var shadingKey = string.Concat(
+            "R|", Canon(cx), ",", Canon(cy), ",", Canon(r0), ",", Canon(r1), "|", GradientStopsKey(stops));
+        if (_gradientShadingCache.TryGetValue(shadingKey, out var cachedShading)) return cachedShading;
+
+        var functionRef = BuildGradientFunction(stops);
+        var coords = new PdfArray()
+            .Add(new PdfReal(cx)).Add(new PdfReal(cy)).Add(new PdfReal(r0))
+            .Add(new PdfReal(cx)).Add(new PdfReal(cy)).Add(new PdfReal(r1));
+        var dict = new PdfDictionary()
+            .Set(PdfNames.ShadingType, new PdfInteger(3)) // radial
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceRGB)
+            .Set(PdfNames.Coords, coords)
+            .Set(PdfNames.Function, functionRef)
+            .Set(PdfNames.Extend, new PdfArray().Add(PdfBoolean.True).Add(PdfBoolean.True));
+        var shadingRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(shadingRef, dict);
+        _gradientShadingCache[shadingKey] = shadingRef;
+        return shadingRef;
+    }
+
+    /// <summary>Phase 4 gradients — build the PDF function mapping the parametric
+    /// gradient domain [0, 1] to a DeviceRGB color (ISO 32000-2 §7.10). One stop → a
+    /// constant (C0 == C1) <c>FunctionType 2</c>; otherwise a <c>FunctionType 3</c>
+    /// stitching function whose <c>/Bounds</c> are the STOP OFFSETS so each interpolation
+    /// happens only between its two stops (an authored `red 10%, blue 90%` holds red over
+    /// [0, .1], transitions over [.1, .9], holds blue over [.9, 1]). Leading/trailing
+    /// constant segments are added when the first/last offset isn't 0/1, and the bounds are
+    /// forced strictly increasing (an equal/hard-stop offset becomes a near-instant
+    /// transition) so the PDF function contract holds (ISO 32000-2 §7.10.4).</summary>
+    private PdfIndirectRef BuildGradientFunction(IReadOnlyList<PdfGradientStop> stops)
+    {
+        // Cache the color function by its normalized stops (PR #209 review [P3]) — the function
+        // is position-independent, so every box painting the same gradient shares one graph.
+        var key = GradientStopsKey(stops);
+        if (_gradientFunctionCache.TryGetValue(key, out var cached)) return cached;
+        var built = BuildGradientFunctionUncached(stops);
+        _gradientFunctionCache[key] = built;
+        return built;
+    }
+
+    /// <summary>A canonical cache key for a gradient's normalized stops (PR #209 review [P3]):
+    /// each stop's offset + RGB serialized with the SAME canonical real format the PDF writer
+    /// emits, so two stop lists that would produce a byte-identical function share one slot.</summary>
+    private static string GradientStopsKey(IReadOnlyList<PdfGradientStop> stops)
+    {
+        var sb = new StringBuilder(stops.Count * 24);
+        foreach (var s in stops)
+            sb.Append(Canon(s.Offset)).Append(':')
+              .Append(Canon(s.R)).Append(',').Append(Canon(s.G)).Append(',').Append(Canon(s.B)).Append(';');
+        return sb.ToString();
+    }
+
+    private static string Canon(double v) =>
+        v.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+
+    private PdfIndirectRef BuildGradientFunctionUncached(IReadOnlyList<PdfGradientStop> stops)
+    {
+        static PdfArray Rgb(PdfGradientStop s) => new PdfArray()
+            .Add(new PdfReal(System.Math.Clamp(s.R, 0, 1)))
+            .Add(new PdfReal(System.Math.Clamp(s.G, 0, 1)))
+            .Add(new PdfReal(System.Math.Clamp(s.B, 0, 1)));
+
+        PdfIndirectRef ExpFunction(PdfGradientStop a, PdfGradientStop b)
+        {
+            var fn = new PdfDictionary()
+                .Set(PdfNames.FunctionType, new PdfInteger(2))
+                .Set(PdfNames.Domain, new PdfArray().Add(new PdfReal(0)).Add(new PdfReal(1)))
+                .Set(PdfNames.C0, Rgb(a))
+                .Set(PdfNames.C1, Rgb(b))
+                .Set(PdfNames.N, new PdfReal(1)); // linear interpolation
+            var r = _writer.Objects.Allocate();
+            _writer.Objects.Assign(r, fn);
+            return r;
+        }
+
+        if (stops.Count == 1)
+            return ExpFunction(stops[0], stops[0]);
+
+        // Control points spanning the full [0, 1] domain: the stops at their offsets, plus a
+        // leading/trailing constant hold when the first/last offset isn't 0/1.
+        var pts = new List<(double T, PdfGradientStop S)>(stops.Count + 2);
+        var first = stops[0];
+        var last = stops[stops.Count - 1];
+        if (System.Math.Clamp(first.Offset, 0, 1) > 0) pts.Add((0.0, first));
+        for (var i = 0; i < stops.Count; i++) pts.Add((System.Math.Clamp(stops[i].Offset, 0, 1), stops[i]));
+        if (System.Math.Clamp(last.Offset, 0, 1) < 1) pts.Add((1.0, last));
+
+        // Normalize the control-point boundaries to a STRICTLY INCREASING sequence inside the
+        // OPEN interval (0, 1) so the FunctionType 3 /Bounds contract holds (ISO 32000-2 §7.10.4
+        // — interior bounds must be strictly increasing AND strictly between the domain
+        // endpoints). PR #209 review [P1]: the old `Min(1, prev+eps)` ceiling-clamped TERMINAL
+        // hard stops (e.g. `red 100%, blue 100%, green 100%`) to DUPLICATE /Bounds at 1.0 → a
+        // malformed, reader-dependent PDF. Now the endpoints pin to 0 / 1 and each interior
+        // point is clamped above its predecessor (+eps) but below 1 with eps headroom per
+        // remaining interior point, so the points after it still fit. Non-degenerate gradients
+        // are untouched (their offsets already sit well inside the window) ⇒ byte-identical.
+        const double eps = 1e-6;
+        var n = pts.Count;
+        pts[0] = (0.0, pts[0].S);
+        pts[n - 1] = (1.0, pts[n - 1].S);
+        for (var i = 1; i < n - 1; i++)
+        {
+            var lo = pts[i - 1].T + eps;
+            var hi = 1.0 - eps * (n - 1 - i); // reserve room for the remaining interior pts + the 1.0 endpoint
+            pts[i] = (System.Math.Clamp(pts[i].T, lo, System.Math.Max(lo, hi)), pts[i].S);
+        }
+
+        // A single segment over [0, 1] (two stops at exactly 0 and 1) needs no stitch.
+        if (pts.Count == 2)
+            return ExpFunction(pts[0].S, pts[1].S);
+
+        var functions = new PdfArray();
+        var bounds = new PdfArray();
+        var encode = new PdfArray();
+        for (var i = 0; i < pts.Count - 1; i++)
+        {
+            functions.Add(ExpFunction(pts[i].S, pts[i + 1].S));
+            encode.Add(new PdfReal(0)).Add(new PdfReal(1));
+            if (i > 0) bounds.Add(new PdfReal(pts[i].T)); // interior boundaries only
+        }
+        var stitch = new PdfDictionary()
+            .Set(PdfNames.FunctionType, new PdfInteger(3))
+            .Set(PdfNames.Domain, new PdfArray().Add(new PdfReal(0)).Add(new PdfReal(1)))
+            .Set(PdfNames.Functions, functions)
+            .Set(PdfNames.Bounds, bounds)
+            .Set(PdfNames.Encode, encode);
+        var stitchRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(stitchRef, stitch);
+        return stitchRef;
     }
 
     // ───── Embedded font registration (the deferred Phase 1 Task 22) ─────────

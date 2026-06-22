@@ -28,6 +28,7 @@ internal sealed class PdfPage
     private readonly PdfDictionary _fontsResource = new();
     private readonly PdfDictionary _xobjectsResource = new();
     private readonly PdfDictionary _patternsResource = new();   // tiling-patterns cycle.
+    private readonly PdfDictionary _shadingResource = new();     // Phase 4 gradients.
     private readonly PdfDictionary _extGStateResource = new();
     // Content-stream payload is built byte-oriented from the start: PDF content streams
     // are byte sequences (operators are ASCII, but text-show operands and inline-image
@@ -272,6 +273,69 @@ internal sealed class PdfPage
         AppendNumber(sb, y); sb.Append(' ');
         AppendNumber(sb, width); sb.Append(' ');
         AppendNumber(sb, height); sb.Append(" re f Q\n");
+        AppendContent(sb.ToString());
+        return resourceName;
+    }
+
+    /// <summary>Phase 4 gradients — paint a registered shading (axial
+    /// <see cref="PdfDocument.RegisterAxialShading"/> OR radial
+    /// <see cref="PdfDocument.RegisterRadialShading"/> — the <c>sh</c> operator is
+    /// shading-type-agnostic) clipped to the rectangle
+    /// <c>(<paramref name="x"/>, <paramref name="y"/>, <paramref name="width"/>,
+    /// <paramref name="height"/>)</c> (PDF points, bottom-left origin). Emits
+    /// <c>q [/GSn gs] &lt;clip path&gt; W n /Shn sh Q</c>: the shading's <c>/Coords</c>
+    /// (baked into the shading object) define the gradient axis in page space, and
+    /// <c>/Extend</c> fills the whole clip. A non-null <paramref name="radii"/> with a
+    /// positive corner clips to a rounded rect (border-radius); otherwise a plain rect.
+    /// <paramref name="alpha"/> &lt; 1 applies a constant-alpha ExtGState. Dedups the
+    /// shading into the page's <c>/Shading</c> resource by target identity. No-op (returns
+    /// empty) for a non-positive rectangle.</summary>
+    public string PaintShadingInRect(
+        PdfIndirectRef shadingRef, double x, double y, double width, double height,
+        CornerRadii? radii = null, double alpha = 1.0)
+    {
+        ArgumentNullException.ThrowIfNull(shadingRef);
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width)
+            || !double.IsFinite(height) || !double.IsFinite(alpha))
+        {
+            throw new ArgumentException(
+                $"PaintShadingInRect args must be finite; got x={x}, y={y}, w={width}, h={height}, alpha={alpha}.");
+        }
+        if (width <= 0 || height <= 0) return string.Empty;
+
+        string? resourceName = null;
+        foreach (var entry in _shadingResource)
+        {
+            if (entry.Value is PdfIndirectRef existing && existing.HasSameTarget(shadingRef))
+            {
+                resourceName = entry.Key.Value;
+                break;
+            }
+        }
+        if (resourceName is null)
+        {
+            resourceName = $"Sh{_shadingResource.Count + 1}";
+            _shadingResource.Set(new PdfName(resourceName), shadingRef);
+        }
+
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var sb = new StringBuilder(160);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        var nr = radii?.NormalizedFor(width, height);
+        if (nr is { AnyPositive: true } rounded)
+        {
+            AppendRoundedRectPath(sb, x, y, width, height, rounded);
+        }
+        else
+        {
+            AppendNumber(sb, x); sb.Append(' ');
+            AppendNumber(sb, y); sb.Append(' ');
+            AppendNumber(sb, width); sb.Append(' ');
+            AppendNumber(sb, height); sb.Append(" re ");
+        }
+        sb.Append("W n /").Append(resourceName).Append(" sh Q\n");
         AppendContent(sb.ToString());
         return resourceName;
     }
@@ -666,6 +730,7 @@ internal sealed class PdfPage
         if (_xobjectsResource.Count > 0) Resources.Set(PdfNames.XObject, _xobjectsResource);
         if (_extGStateResource.Count > 0) Resources.Set(PdfNames.ExtGState, _extGStateResource);
         if (_patternsResource.Count > 0) Resources.Set(PdfNames.Pattern, _patternsResource);
+        if (_shadingResource.Count > 0) Resources.Set(PdfNames.Shading, _shadingResource);
 
         var mediaBox = new PdfArray()
             .Add(new PdfReal(0))

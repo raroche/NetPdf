@@ -31,9 +31,11 @@ namespace NetPdf.Rendering;
 /// </summary>
 /// <remarks>Failures NEVER throw: a fetch failure surfaces <c>RES-LOAD-FAILED-001</c>, an
 /// undecodable payload <c>IMG-DECODE-FAILED-001</c> (CLAUDE.md #7 — the element still lays out
-/// at its declared/attribute size; nothing paints). An unsupported <c>background-image</c> form
-/// (gradient / multi-layer) surfaces <c>CSS-BACKGROUND-IMAGE-UNSUPPORTED-001</c> once per
-/// render.</remarks>
+/// at its declared/attribute size; nothing paints). A single <c>linear-gradient(...)</c> /
+/// <c>radial-gradient(...)</c> is now SUPPORTED (collected as a parsed spec, painted as a PDF
+/// native shading — Phase 4); only an <c>background-image</c> form still beyond the engine (a
+/// conic / repeating gradient, a multi-layer list, or an unrecognized value) surfaces
+/// <c>CSS-BACKGROUND-IMAGE-UNSUPPORTED-001</c> once per render.</remarks>
 internal sealed class ImageResourceCache
 {
     /// <summary>One decoded image: the intrinsic pixel size (CSS px at 1:1, the first-cut
@@ -72,6 +74,16 @@ internal sealed class ImageResourceCache
     /// <summary>Element-backed box → its <c>background-image</c> spec (bg-image cycle). Only
     /// successfully decoded references appear.</summary>
     public Dictionary<Box, BackgroundSpec> BackgroundImageBoxes { get; } = new();
+
+    /// <summary>Phase 4 gradients — element-backed box → its parsed
+    /// <c>background-image: linear-gradient(...)</c>. Populated during collection (no
+    /// network/decode — a gradient is computed, not fetched); the painter emits a PDF
+    /// native axial shading per box.</summary>
+    public Dictionary<Box, CssLinearGradient> BackgroundGradientBoxes { get; } = new();
+
+    /// <summary>Phase 4 gradients — element-backed box → its parsed
+    /// <c>background-image: radial-gradient(...)</c> (PDF native radial shading).</summary>
+    public Dictionary<Box, CssRadialGradient> BackgroundRadialGradientBoxes { get; } = new();
 
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
@@ -121,7 +133,9 @@ internal sealed class ImageResourceCache
         // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
         CollectReferences(
-            boxRoot, cascade, references, collectBackgrounds: options.PrintBackgrounds,
+            boxRoot, cascade, references, cache.BackgroundGradientBoxes,
+            cache.BackgroundRadialGradientBoxes,
+            collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
@@ -206,6 +220,8 @@ internal sealed class ImageResourceCache
         Box box,
         ResolvedCascadeResult cascade,
         List<(Box, string, bool)> references,
+        Dictionary<Box, CssLinearGradient> gradientBoxes,
+        Dictionary<Box, CssRadialGradient> radialGradientBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported)
@@ -236,14 +252,24 @@ internal sealed class ImageResourceCache
                 {
                     references.Add((box, bgUrl, true));
                 }
+                else if (CssLinearGradient_Parser.TryParse(bgRaw) is { } gradient)
+                {
+                    // Phase 4 gradients — a linear-gradient(...) needs no fetch; store the
+                    // parsed spec for the painter to emit as a PDF native axial shading.
+                    gradientBoxes[box] = gradient;
+                }
+                else if (CssRadialGradient_Parser.TryParse(bgRaw) is { } radial)
+                {
+                    radialGradientBoxes[box] = radial;
+                }
                 else if (!unsupportedBackgroundReported)
                 {
                     diagnostics.Emit(new Diagnostic(
                         DiagnosticCodes.CssBackgroundImageUnsupported001,
-                        "background-image supports a single url(...) this cycle; a gradient "
-                        + "function, multi-layer list, or unrecognized form was ignored "
-                        + "(background-color still paints). Gradients are the Phase 4 "
-                        + "shading-pattern work.",
+                        "background-image supports a single url(...), linear-gradient(...), or "
+                        + "radial-gradient(...) this cycle; a conic/repeating gradient, a "
+                        + "multi-layer list, or an unrecognized form was ignored "
+                        + "(background-color still paints).",
                         DiagnosticSeverity.Warning));
                     unsupportedBackgroundReported = true;
                 }
@@ -251,8 +277,8 @@ internal sealed class ImageResourceCache
         }
         foreach (var child in box.Children)
             CollectReferences(
-                child, cascade, references, collectBackgrounds, diagnostics,
-                ref unsupportedBackgroundReported);
+                child, cascade, references, gradientBoxes, radialGradientBoxes, collectBackgrounds,
+                diagnostics, ref unsupportedBackgroundReported);
     }
 
     /// <summary>Parse a CSS <c>url(...)</c> token as ONE COMPLETE token (PR #166 review P2 —

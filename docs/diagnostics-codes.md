@@ -40,7 +40,7 @@ Severity levels:
 | `CSS-PROPERTY-VALUE-INVALID-001` | Warning | A property's value text could not be parsed into the property's typed value per its declared `PropertyType` (e.g., `color: not-a-color`, `width: nonsense`, `display: foo`). The cascade's "invalid at computed value time" rule applies — the property's initial value (or the inherited value for inherited properties) is used. |
 | `CSS-CONTAINER-QUERY-UNSUPPORTED-001` | Warning | `@container` rule encountered; condition not evaluated, contained rules skipped. Roadmap v1.4. |
 | `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001` | Warning | `:has()` selector parsed but treated as no-match in v1. Roadmap v1.4. |
-| `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` | Warning | A `background-image` value other than a single `url(...)`/`none` (gradient function, multi-layer list, unrecognized form) was ignored; any `background-color` still paints. Once per render. |
+| `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` | Warning | A `background-image` value other than a single `url(...)`, `linear-gradient(...)`, `radial-gradient(...)`, or `none` was ignored — i.e. a conic/repeating gradient, a multi-layer list, or an unrecognized form (single linear & radial gradients ARE painted as PDF native shadings); any `background-color` still paints. Once per render. |
 | `CSS-SUBGRID-UNSUPPORTED-001` | Warning | `subgrid` value used; treated as `none`. Roadmap v1.3. |
 | `CSS-ANCHOR-POSITIONING-UNSUPPORTED-001` | Warning | `anchor()`/`anchor-size()` used; falls back to `auto`. |
 | `CSS-POSITION-STICKY-UNSUPPORTED-001` | Warning | `position: sticky` treated as `relative` in v1. |

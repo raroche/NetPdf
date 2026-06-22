@@ -96,4 +96,31 @@ public sealed class FragmentPainterTests
     {
         Assert.Equal(expected, FragmentPainter.Alpha(argb));
     }
+
+    [Fact]
+    public void CornerAngleDeg_is_the_diagonal_for_a_square_box()
+    {
+        // A SQUARE box keeps the 45° / 135° / 225° / 315° diagonals (the old approximation).
+        Assert.Equal(45.0, FragmentPainter.CornerAngleDeg(LinearGradientCorner.TopRight, 100, 100), precision: 4);
+        Assert.Equal(135.0, FragmentPainter.CornerAngleDeg(LinearGradientCorner.BottomRight, 100, 100), precision: 4);
+        Assert.Equal(225.0, FragmentPainter.CornerAngleDeg(LinearGradientCorner.BottomLeft, 100, 100), precision: 4);
+        Assert.Equal(315.0, FragmentPainter.CornerAngleDeg(LinearGradientCorner.TopLeft, 100, 100), precision: 4);
+    }
+
+    [Fact]
+    public void CornerAngleDeg_top_right_tracks_the_box_aspect_ratio()
+    {
+        // A non-square box angles the gradient line per the aspect ratio (PR #209 review [P2]) —
+        // CSS Images L3 §3.1: the line is perpendicular to the diagonal joining the two NEIGHBORING
+        // corners. `to top right` ⇒ atan2(h, w); a WIDE box pulls toward "to top" (smaller angle),
+        // a TALL box toward "to right" (larger angle).
+        Assert.Equal(26.565051, FragmentPainter.CornerAngleDeg(LinearGradientCorner.TopRight, 200, 100), precision: 4);
+        Assert.Equal(63.434949, FragmentPainter.CornerAngleDeg(LinearGradientCorner.TopRight, 100, 200), precision: 4);
+
+        // The other three corners stay reflections of the wide-box base angle.
+        const double a = 26.565051;
+        Assert.Equal(180.0 - a, FragmentPainter.CornerAngleDeg(LinearGradientCorner.BottomRight, 200, 100), precision: 4);
+        Assert.Equal(180.0 + a, FragmentPainter.CornerAngleDeg(LinearGradientCorner.BottomLeft, 200, 100), precision: 4);
+        Assert.Equal(360.0 - a, FragmentPainter.CornerAngleDeg(LinearGradientCorner.TopLeft, 200, 100), precision: 4);
+    }
 }

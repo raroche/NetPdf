@@ -1550,6 +1550,107 @@ public sealed class FlexLayouterTests
         }
     }
 
+    [Fact]
+    public void Flex_basis_max_content_sizes_row_items_to_their_content_width()
+    {
+        // Flex intrinsic-basis cycle (CSS Flexbox L1 §7.2 + §9.2.3) — two nowrap ROW
+        // items with flex-basis: max-content (keyword index 2), grow 0 / shrink 0. Each
+        // is sized to its content's natural (no-wrap) width, so the item with MORE text
+        // is wider, both are positive, and they pack tightly (item 1 starts exactly where
+        // item 0 ends). The container is wide so there's no shrink pressure.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 60);
+
+        var texts = new[] { "hi", "hello world wide" };
+        var items = new Box[texts.Length];
+        for (var i = 0; i < texts.Length; i++)
+        {
+            var style = MakeStyle();
+            style.Set(PropertyId.FlexBasis, ComputedSlot.FromKeyword(2)); // max-content
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            item.AppendChild(Box.TextRun(texts[i], MakeStyle()));
+            items[i] = item;
+            flex.AppendChild(item);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 1000, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var frags = new BoxFragment[texts.Length];
+        for (var i = 0; i < items.Length; i++)
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, items[i]) && f.InlineLayout is null) { frags[i] = f; break; }
+
+        // Both items measured to a positive content width.
+        Assert.True(frags[0].InlineSize > 0, $"max-content item 0 width {frags[0].InlineSize} should be > 0");
+        // More text → wider max-content size.
+        Assert.True(frags[1].InlineSize > frags[0].InlineSize,
+            $"more text should be wider: item0={frags[0].InlineSize} item1={frags[1].InlineSize}");
+        // Tight packing: item 1 starts exactly at item 0's right edge (content-driven sizes).
+        Assert.Equal(frags[0].InlineSize, frags[1].InlineOffset, precision: 2);
+    }
+
+    [Fact]
+    public void Flex_basis_min_content_is_narrower_than_max_content_for_multiword_text()
+    {
+        // Flex intrinsic-basis cycle — for the SAME multi-word text, min-content (the
+        // widest unbreakable run = the longest word) is narrower than max-content (the
+        // full phrase laid out without wrapping). Both positive.
+        const string text = "aaaa bbbb cccc dddd";
+        var maxContentWidth = LayoutSingleNowrapRowItemWidth(basisKeyword: 2, text); // max-content
+        var minContentWidth = LayoutSingleNowrapRowItemWidth(basisKeyword: 3, text); // min-content
+
+        Assert.True(minContentWidth > 0, $"min-content width {minContentWidth} should be > 0");
+        Assert.True(maxContentWidth > minContentWidth + 1.0,
+            $"max-content ({maxContentWidth}) should exceed min-content ({minContentWidth}) for multi-word text");
+    }
+
+    /// <summary>Lay out one nowrap ROW flex item (grow 0 / shrink 0) with the given
+    /// intrinsic <c>flex-basis</c> keyword (2 = max-content, 3 = min-content) + text,
+    /// in a wide container, and return its resolved inline (main) size.</summary>
+    private static double LayoutSingleNowrapRowItemWidth(int basisKeyword, string text)
+    {
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 60);
+
+        var style = MakeStyle();
+        style.Set(PropertyId.FlexBasis, ComputedSlot.FromKeyword(basisKeyword));
+        style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+        style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        item.AppendChild(Box.TextRun(text, MakeStyle()));
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 2000, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, item) && f.InlineLayout is null) return f.InlineSize;
+        return -1;
+    }
+
     /// <summary>Lay out a single-line ROW flex container whose items each carry one
     /// line of text "A" (so they have a first baseline) and the given per-item
     /// padding-top. Returns the item fragments (the geometry/decoration fragment per
@@ -6725,26 +6826,20 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L8_hardening_known_gap_flex_basis_content_approximates_to_auto()
+    public void Flex_basis_content_uses_intrinsic_content_size_ignoring_declared_width()
     {
-        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#4 — KNOWN GAP
-        // pin. Per CSS Flexbox L1 §7.2.1 `flex-basis: content` forces
-        // the intrinsic content size REGARDLESS of the declared
-        // width/height. L8 approximates Content as Auto (= delegates
-        // to ReadLengthPxOrZero on the main-size property), so an item
-        // with `width: 200` + `flex-basis: content` produces a
-        // hypothetical of 200 instead of the spec-correct intrinsic
-        // content size. When L9+ wires intrinsic sizing through the
-        // BlockLayouter pre-measure, this test should flip — the
-        // hypothetical will be the intrinsic content size (0 in this
-        // fixture with no children).
+        // Flex intrinsic-basis cycle — per CSS Flexbox L1 §7.2.1 + §9.2.3
+        // `flex-basis: content` forces the intrinsic (max-)content size REGARDLESS of the
+        // declared width/height. SHIPPED: the FlexLayouter measures the item's
+        // max-content inline extent up front (nowrap row), so an item with `width: 200` +
+        // `flex-basis: content` ignores the 200 and uses its content size — which is 0
+        // here (the item has no children). This was the deferral pin
+        // `L8_hardening_known_gap_flex_basis_content_approximates_to_auto`, whose own
+        // comment predicted this flip to 0 once intrinsic sizing landed.
         //
-        // Fixture: 1 item, width: 200, flex-basis: content (Keyword 1),
-        // no flex-grow, no flex-shrink, in a 600px container. With the
-        // Content → Auto approximation: hypothetical = 200; no grow/
-        // shrink → resolved = 200. With intrinsic sizing (L9+):
-        // hypothetical = intrinsic content size = 0 (no children); no
-        // grow/shrink → resolved = 0.
+        // Fixture: 1 item, width: 200, flex-basis: content (Keyword 1), no flex-grow,
+        // flex-shrink: 0, in a 600px nowrap row container. Content base size = 0 (no
+        // children) → resolved = 0 (the declared 200 is overridden by the intrinsic basis).
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -6779,11 +6874,9 @@ public sealed class FlexLayouterTests
             if (f.Box == item) { itemFragment = f; break; }
         }
         Assert.NotNull(itemFragment);
-        // L8 Content → Auto approximation: hypothetical = declared
-        // width = 200. Pin the current behavior. When L9+ ships
-        // intrinsic sizing, this assertion should flip to 0 (= the
-        // intrinsic content size of an item with no children).
-        Assert.Equal(200.0, itemFragment!.Value.InlineSize, precision: 3);
+        // Intrinsic content basis: the declared width 200 is overridden by the measured
+        // (max-)content size, which is 0 for a childless item.
+        Assert.Equal(0.0, itemFragment!.Value.InlineSize, precision: 3);
     }
 
     [Fact]

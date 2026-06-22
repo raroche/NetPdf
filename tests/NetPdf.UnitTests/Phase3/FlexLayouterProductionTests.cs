@@ -343,6 +343,47 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_flex_basis_max_content_sizes_item_to_content_then_grows_sibling()
+    {
+        // Flex intrinsic-basis cycle — end-to-end through the CSS cascade:
+        // `flex-basis: max-content` parses + decodes, and a nowrap ROW item sizes to its
+        // content width while a `flex: 1` sibling absorbs the remaining space. The label
+        // item must be WIDER than its declared-0 fallback would be (content-sized), and
+        // the two items tile the 400px container exactly (label + grow = 400).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 400px; height: 40px; }
+                .label { flex-grow: 0; flex-shrink: 0; flex-basis: max-content; }
+                .rest { flex-grow: 1; flex-shrink: 1; flex-basis: 0; }
+            </style></head><body>
+            <div class="flex">
+              <div class="label">A label with several words</div>
+              <div class="rest">x</div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? label = null, rest = null;
+        foreach (var f in sink.Fragments)
+        {
+            var cls = f.Box.SourceElement?.GetAttribute("class");
+            if (cls is null || f.InlineLayout is not null) continue;
+            if (cls.Contains("label")) label = f;
+            else if (cls.Contains("rest")) rest = f;
+        }
+        Assert.NotNull(label);
+        Assert.NotNull(rest);
+        // The label is content-sized (clearly wider than the 0-basis fallback).
+        Assert.True(label!.Value.InlineSize > 20,
+            $"max-content label should be content-sized; got {label.Value.InlineSize}");
+        // The grow sibling starts right after the label and the two tile the container.
+        Assert.Equal(label.Value.InlineSize, rest!.Value.InlineOffset, precision: 2);
+        Assert.Equal(400.0, label.Value.InlineSize + rest.Value.InlineSize, precision: 2);
+    }
+
+    [Fact]
     public async Task Production_html_align_items_baseline_aligns_item_first_baselines()
     {
         // Flex baseline-alignment cycle (CSS Flexbox L1 §8.3) — end-to-end through the

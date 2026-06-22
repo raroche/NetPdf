@@ -9455,10 +9455,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // inlineGapBase; without the base a `%` gap collapsed to 0 in pre-measure only.
         var mainGap = flexContainer.Style.ReadFlexGridGapOrZero(
             PropertyId.ColumnGap, flexContentInlineSize);
+        // Flex intrinsic-basis cycle — build the SAME max-content / min-content base-size
+        // map FlexLayouter's emission builds (via the shared helper) so an item with an
+        // explicit intrinsic `flex-basis` is resolved to the SAME width here as at
+        // emission. Without it the pre-measure would size the item by its declared width
+        // (→ wrong wrapped height → mis-triggered row-nowrap pagination). Null when no
+        // shaper / no intrinsic item → the declared-size path, byte-identical.
+        var intrinsicBaseSizes = FlexLayouter.BuildRowIntrinsicMainBaseSizes(
+            lineItems, _shaperResolver, cancellationToken);
         var resolvedMain = lineItems.Count > 0
             ? FlexLayouter.ResolveFlexLineMainSizes(
                 lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
-                flexContentInlineSize, mainGap, cancellationToken)
+                flexContentInlineSize, mainGap, cancellationToken, intrinsicBaseSizes)
             : System.Array.Empty<double>();
 
         Dictionary<Box, double>? measureCache = null;
@@ -9670,7 +9678,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private static bool IsColumnHeightContentDetermined(Box item)
     {
         var basis = item.Style.ReadFlexBasis();
-        if (basis.Kind == FlexBasisKind.Content) return true;
+        // Flex intrinsic-basis cycle — content / max-content / min-content all size the
+        // COLUMN main (block) axis from the content (the existing block-extent measure).
+        if (basis.Kind is FlexBasisKind.Content or FlexBasisKind.MaxContent or FlexBasisKind.MinContent)
+            return true;
         if (basis.Kind == FlexBasisKind.Auto)
         {
             var slot = item.Style.Get(PropertyId.Height);

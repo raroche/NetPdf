@@ -1308,9 +1308,11 @@ internal static class ComputedStyleLayoutExtensions
         {
             ComputedSlotTag.Keyword => slot.AsKeyword() switch
             {
-                0 => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),       // auto
-                1 => new ResolvedFlexBasis(FlexBasisKind.Content, 0.0),    // content
-                _ => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),       // unknown → auto
+                0 => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),         // auto
+                1 => new ResolvedFlexBasis(FlexBasisKind.Content, 0.0),      // content
+                2 => new ResolvedFlexBasis(FlexBasisKind.MaxContent, 0.0),   // max-content
+                3 => new ResolvedFlexBasis(FlexBasisKind.MinContent, 0.0),   // min-content
+                _ => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),         // unknown → auto
             },
             ComputedSlotTag.LengthPx => new ResolvedFlexBasis(FlexBasisKind.LengthPx, slot.AsLengthPx()),
             ComputedSlotTag.Percentage => new ResolvedFlexBasis(FlexBasisKind.Percentage, slot.AsPercentage()),
@@ -1480,11 +1482,30 @@ internal static class ComputedStyleLayoutExtensions
     /// <see cref="PropertyId.Height"/> for column).</param>
     /// <param name="containerMainSize">The container's main-axis
     /// content extent — used to resolve percentage flex-basis values.</param>
+    /// <param name="precomputedIntrinsicBaseSizes">Flex intrinsic-basis cycle —
+    /// an optional map (item box → BORDER-box base size) of pre-measured
+    /// max-content / min-content main sizes; an item present in the map returns
+    /// that base size verbatim. Null (the default) keeps the flex-basis-driven
+    /// resolution below.</param>
     public static double ResolveFlexItemHypotheticalMainSize(
         this Boxes.Box item,
         PropertyId mainSizeProperty,
-        double containerMainSize)
+        double containerMainSize,
+        System.Collections.Generic.IReadOnlyDictionary<Boxes.Box, double>? precomputedIntrinsicBaseSizes = null)
     {
+        // Flex intrinsic-basis cycle — when the caller (FlexLayouter emission OR the
+        // BlockLayouter row-flex pre-measure) measured this item's max-content /
+        // min-content inline extent up front, use that BORDER-box base size verbatim.
+        // The two sites build the map via the SAME shared helper so pre-measure and
+        // emission can't desync. Absent (no shaper, wrap, or a non-intrinsic basis) the
+        // intrinsic kinds fall back to the declared-size path below — the pre-cycle
+        // behavior, so non-intrinsic flex layouts stay byte-identical.
+        if (precomputedIntrinsicBaseSizes is not null
+            && precomputedIntrinsicBaseSizes.TryGetValue(item, out var intrinsicBorderBox))
+        {
+            return intrinsicBorderBox;
+        }
+
         // Flex box-sizing cycle — the hypothetical (= flex base) main size is returned as a
         // BORDER box honoring `box-sizing` (CSS Basic UI 4 §10, via the shared
         // BoxSizingHelper): for `content-box` (initial) a definite flex-basis / declared
@@ -1517,6 +1538,11 @@ internal static class ComputedStyleLayoutExtensions
                 return BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome);
             case FlexBasisKind.Auto:
             case FlexBasisKind.Content:
+            // MaxContent / MinContent without a precomputed measurement (no shaper, or a
+            // wrap / column container outside the intrinsic-basis cycle's scope) fall back
+            // to the declared main-size — the documented residual.
+            case FlexBasisKind.MaxContent:
+            case FlexBasisKind.MinContent:
             default:
                 return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
         }
@@ -2213,6 +2239,16 @@ internal enum FlexBasisKind : byte
     Content = 1,
     LengthPx = 2,
     Percentage = 3,
+    /// <summary>Flex intrinsic-basis cycle — <c>flex-basis: max-content</c>
+    /// (CSS Sizing L3 §5.1). On the ROW main axis the FlexLayouter measures the item's
+    /// max-content inline extent (content laid out without wrap pressure) as the flex
+    /// base size.</summary>
+    MaxContent = 4,
+    /// <summary>Flex intrinsic-basis cycle — <c>flex-basis: min-content</c>
+    /// (CSS Sizing L3 §5.1). On the ROW main axis the FlexLayouter measures the item's
+    /// min-content inline extent (content laid out at maximal wrap pressure → the widest
+    /// unbreakable run) as the flex base size.</summary>
+    MinContent = 5,
 }
 
 /// <summary>Per Phase 3 Task 15 L8 — resolved <c>flex-basis</c> value

@@ -94,6 +94,17 @@ internal static class LengthResolver
     /// approximates <c>content</c> as <c>auto</c> = delegate to declared
     /// width).</summary>
     public const int KeywordIdContent = 1;
+    /// <summary>Flex intrinsic-basis cycle — the intrinsic-sizing keywords admitted by
+    /// <see cref="PropertyType.FlexBasis"/> per CSS Flexbox L1 §7.2 + CSS Sizing L3 §5.1:
+    /// <c>max-content</c> (KeywordIdMaxContent = 2) / <c>min-content</c>
+    /// (KeywordIdMinContent = 3). The reader (<c>ReadFlexBasis</c>) maps them to the
+    /// matching <c>FlexBasisKind</c>; the FlexLayouter measures the item's max-content /
+    /// min-content inline extent as the flex base size on the ROW main axis (nowrap).
+    /// <c>fit-content</c> stays deferred (still falls through to the length grammar →
+    /// rejected → cascade default).</summary>
+    public const int KeywordIdMaxContent = 2;
+    /// <inheritdoc cref="KeywordIdMaxContent"/>
+    public const int KeywordIdMinContent = 3;
 
     public static ResolverResult Resolve(
         string value,
@@ -283,6 +294,19 @@ internal static class LengthResolver
             if (value.Equals("content", StringComparison.OrdinalIgnoreCase))
             {
                 slot = ComputedSlot.FromKeyword(KeywordIdContent);
+                return true;
+            }
+            // Flex intrinsic-basis cycle — the intrinsic-sizing keywords (CSS Sizing L3
+            // §5.1). The FlexLayouter measures the item's max-content / min-content inline
+            // extent as the ROW main-axis base size; fit-content stays deferred.
+            if (value.Equals("max-content", StringComparison.OrdinalIgnoreCase))
+            {
+                slot = ComputedSlot.FromKeyword(KeywordIdMaxContent);
+                return true;
+            }
+            if (value.Equals("min-content", StringComparison.OrdinalIgnoreCase))
+            {
+                slot = ComputedSlot.FromKeyword(KeywordIdMinContent);
                 return true;
             }
         }

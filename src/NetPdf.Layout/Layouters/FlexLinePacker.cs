@@ -104,6 +104,12 @@ internal static class FlexLinePacker
     /// <param name="cancellationToken">Honored once per item.</param>
     /// <param name="mainGap">CSS Box Alignment L3 §8 main-axis gutter between
     /// items on a line (0 = none); the wrap decision accounts for it.</param>
+    /// <param name="precomputedIntrinsicBaseSizes">Flex intrinsic-basis cycle — an
+    /// optional map (item box → BORDER-box base size) of pre-measured max-content /
+    /// min-content main sizes for ROW items with an explicit intrinsic
+    /// <c>flex-basis</c>; an item present in the map uses that base size as its
+    /// hypothetical main size. Null (the default, and for wrap / column containers)
+    /// keeps the declared-size path.</param>
     /// <returns>The packed lines. Empty when
     /// <paramref name="sortedChildIndices"/> is empty (= no items to
     /// pack; the caller short-circuits emission).</returns>
@@ -114,7 +120,8 @@ internal static class FlexLinePacker
         double containerMainSize,
         bool isWrapping,
         CancellationToken cancellationToken,
-        double mainGap = 0.0)
+        double mainGap = 0.0,
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
     {
         var lines = new List<FlexLine>();
         // Per PR-#84 review P3 #5 — axis mapping comes from the
@@ -138,7 +145,7 @@ internal static class FlexLinePacker
                 cancellationToken.ThrowIfCancellationRequested();
                 var item = flexContainer.Children[idx];
                 totalMain += item.ResolveFlexItemHypotheticalMainSize(
-                    mainProp, containerMainSize);
+                    mainProp, containerMainSize, precomputedIntrinsicBaseSizes);
                 var c = CrossBorderBoxSize(item, crossProp);
                 if (c > maxCross) maxCross = c;
             }
@@ -165,7 +172,7 @@ internal static class FlexLinePacker
             var domIdx = sortedChildIndices[sortedPos];
             var item = flexContainer.Children[domIdx];
             var itemMain = item.ResolveFlexItemHypotheticalMainSize(
-                mainProp, containerMainSize);
+                mainProp, containerMainSize, precomputedIntrinsicBaseSizes);
             var itemCross = CrossBorderBoxSize(item, crossProp);
 
             // §8 — adding this item to the current line costs `currentCount`

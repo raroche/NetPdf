@@ -73,6 +73,12 @@ internal sealed class ImageResourceCache
     /// successfully decoded references appear.</summary>
     public Dictionary<Box, BackgroundSpec> BackgroundImageBoxes { get; } = new();
 
+    /// <summary>Phase 4 gradients — element-backed box → its parsed
+    /// <c>background-image: linear-gradient(...)</c>. Populated during collection (no
+    /// network/decode — a gradient is computed, not fetched); the painter emits a PDF
+    /// native axial shading per box.</summary>
+    public Dictionary<Box, CssLinearGradient> BackgroundGradientBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -121,7 +127,8 @@ internal sealed class ImageResourceCache
         // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
         CollectReferences(
-            boxRoot, cascade, references, collectBackgrounds: options.PrintBackgrounds,
+            boxRoot, cascade, references, cache.BackgroundGradientBoxes,
+            collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
@@ -206,6 +213,7 @@ internal sealed class ImageResourceCache
         Box box,
         ResolvedCascadeResult cascade,
         List<(Box, string, bool)> references,
+        Dictionary<Box, CssLinearGradient> gradientBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported)
@@ -236,14 +244,19 @@ internal sealed class ImageResourceCache
                 {
                     references.Add((box, bgUrl, true));
                 }
+                else if (CssLinearGradient_Parser.TryParse(bgRaw) is { } gradient)
+                {
+                    // Phase 4 gradients — a linear-gradient(...) needs no fetch; store the
+                    // parsed spec for the painter to emit as a PDF native axial shading.
+                    gradientBoxes[box] = gradient;
+                }
                 else if (!unsupportedBackgroundReported)
                 {
                     diagnostics.Emit(new Diagnostic(
                         DiagnosticCodes.CssBackgroundImageUnsupported001,
-                        "background-image supports a single url(...) this cycle; a gradient "
-                        + "function, multi-layer list, or unrecognized form was ignored "
-                        + "(background-color still paints). Gradients are the Phase 4 "
-                        + "shading-pattern work.",
+                        "background-image supports a single url(...) or a linear-gradient(...) "
+                        + "this cycle; a radial/conic/repeating gradient, multi-layer list, or "
+                        + "unrecognized form was ignored (background-color still paints).",
                         DiagnosticSeverity.Warning));
                     unsupportedBackgroundReported = true;
                 }
@@ -251,7 +264,7 @@ internal sealed class ImageResourceCache
         }
         foreach (var child in box.Children)
             CollectReferences(
-                child, cascade, references, collectBackgrounds, diagnostics,
+                child, cascade, references, gradientBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported);
     }
 

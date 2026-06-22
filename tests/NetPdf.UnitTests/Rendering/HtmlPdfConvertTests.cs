@@ -54,6 +54,30 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_paints_a_linear_gradient_background_as_a_pdf_axial_shading()
+    {
+        // Phase 4 gradients — `background-image: linear-gradient(...)` emits a PDF native
+        // axial shading (ShadingType 2) with a color function, painted via the `sh` operator
+        // clipped to the box. End-to-end through the cascade + collection + painter.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;" +
+            "background-image:linear-gradient(to right, #ff0000, #0000ff)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/ShadingType 2", text);   // axial shading object
+        Assert.Contains("/FunctionType 2", text);  // the 2-stop color function
+        Assert.Contains(" sh", text);              // the shading paint operator
+        Assert.Contains("W n", text);              // clipped to the box
+        // No "unsupported background-image" diagnostic — the gradient IS handled now.
+        Assert.DoesNotContain(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
     public void Convert_paints_a_solid_border_edge()
     {
         const string html =
@@ -5318,18 +5342,21 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Background_image_gradient_is_surfaced_and_skipped()
+    public void Background_image_linear_gradient_paints_as_shading_over_the_color()
     {
-        // A gradient (the Phase 4 shading-pattern work) surfaces CSS-BACKGROUND-IMAGE-
-        // UNSUPPORTED-001 once; the background-color still paints.
+        // Phase 4 gradients — a linear-gradient(...) now paints as a PDF native axial
+        // shading (no longer surfaces CSS-BACKGROUND-IMAGE-UNSUPPORTED-001); the
+        // background-color still paints UNDER it (CSS B&B §14.2 layer order).
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             "<div style=\"width:64px;height:32px;background-image:linear-gradient(red, blue);" +
             "background-color:#3366cc\"></div>" +
             "</body></html>", new HtmlPdfOptions());
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
         var pdf = Latin1(result.Pdf);
-        Assert.Empty(AllImagePlacements(pdf));
+        Assert.Contains("/ShadingType 2", pdf);          // the gradient shading
+        Assert.Contains(" sh", pdf);                     // painted
+        Assert.Contains("0.2 0.4 0.8 rg", pdf);          // #3366cc background-color underneath
         Assert.Contains(" re f", pdf);
     }
 

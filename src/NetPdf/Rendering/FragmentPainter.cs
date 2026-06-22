@@ -162,6 +162,16 @@ internal static class FragmentPainter
                         clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB),
                         clipRadiiPx: clipRadiiPx);
                 }
+
+                // Phase 4 gradients — a linear-gradient(...) background-image layer paints
+                // over the background-color, under the borders (same z-order as an image
+                // layer), as a PDF native axial shading clipped to the (rounded) border box.
+                if (imageCache is not null && document is not null
+                    && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
+                {
+                    PaintLinearGradient(page, document, gradient, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                }
             }
 
             // Borders (foreground — always painted regardless of PrintBackgrounds).
@@ -1093,6 +1103,101 @@ internal static class FragmentPainter
             return;
         }
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+    }
+
+    /// <summary>Phase 4 gradients — paint a parsed <c>linear-gradient(...)</c> background layer
+    /// as a PDF native axial shading (ISO 32000-2 §8.7.4.5.3) clipped to the box's (rounded)
+    /// border box. Resolves each stop's color, normalizes the stop positions (CSS Images §3.4),
+    /// derives the gradient-line endpoints in PDF user space from the angle + box, and registers
+    /// + paints the shading. A gradient with &lt; 2 resolvable stops is skipped (the
+    /// background-color already painted underneath).</summary>
+    private static void PaintLinearGradient(
+        PdfPage page, PdfDocument document, CssLinearGradient gradient, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb)
+    {
+        var stops = ResolveGradientStops(gradient, currentColorArgb);
+        if (stops.Count < 2) return;
+
+        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        var (x0, y0, x1, y1) = LinearGradientAxis(gradient.AngleDeg, x, y, w, h);
+        var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
+        var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
+        page.PaintAxialShading(shadingRef, x, y, w, h,
+            radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
+    }
+
+    /// <summary>Phase 4 gradients — resolve a gradient's stops to <see cref="PdfGradientStop"/>
+    /// (DeviceRGB + normalized offset). Colors resolve through the shared CSS color resolver
+    /// (so named / hex / rgb()/hsl() all work; <c>currentColor</c> maps to the element color);
+    /// an unresolvable stop is dropped. Positions follow CSS Images §3.4: a missing first → 0,
+    /// missing last → 1, missing interior spread evenly between the nearest positioned stops,
+    /// and the running max enforces non-decreasing offsets.</summary>
+    private static List<PdfGradientStop> ResolveGradientStops(CssLinearGradient gradient, uint currentColorArgb)
+    {
+        var n = gradient.Stops.Count;
+        var rgb = new (double R, double G, double B)[n];
+        var pos = new double?[n];
+        var ok = new bool[n];
+        for (var i = 0; i < n; i++)
+        {
+            var s = gradient.Stops[i];
+            var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+            if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
+            {
+                ColorChannels(argb, out var r, out var g, out var b);
+                rgb[i] = (r, g, b);
+                ok[i] = true;
+            }
+            pos[i] = s.Position;
+        }
+
+        // §3.4 position defaults + even spread + non-decreasing clamp (over ALL stops first,
+        // so an unresolved stop still anchors positions correctly), then drop the unresolved.
+        if (pos[0] is null) pos[0] = 0.0;
+        if (pos[n - 1] is null) pos[n - 1] = 1.0;
+        for (var i = 1; i < n - 1; i++)
+        {
+            if (pos[i] is not null) continue;
+            var j = i + 1;
+            while (j < n && pos[j] is null) j++;
+            var prev = pos[i - 1]!.Value;
+            var next = pos[j]!.Value;
+            var span = j - (i - 1);
+            for (var k = i; k < j; k++)
+                pos[k] = prev + (next - prev) * (k - (i - 1)) / span;
+            i = j - 1;
+        }
+        var running = 0.0;
+        var result = new List<PdfGradientStop>(n);
+        for (var i = 0; i < n; i++)
+        {
+            var p = Math.Clamp(pos[i]!.Value, 0.0, 1.0);
+            if (p < running) p = running; else running = p;
+            if (ok[i]) result.Add(new PdfGradientStop(p, rgb[i].R, rgb[i].G, rgb[i].B));
+        }
+        return result;
+    }
+
+    /// <summary>Phase 4 gradients — the gradient-line endpoints (offset 0 → 1) in PDF user
+    /// space for a CSS <c>linear-gradient</c> <paramref name="angleDeg"/> (0° = "to top",
+    /// clockwise) over the box rect (<paramref name="x"/>, <paramref name="y"/>,
+    /// <paramref name="w"/>, <paramref name="h"/>, PDF points, bottom-left origin). The line
+    /// passes through the box center with length |w·sinθ| + |h·cosθ| (CSS Images §3.1); the CSS
+    /// y-down direction (sinθ, −cosθ) flips to PDF y-up (sinθ, cosθ).</summary>
+    private static (double X0, double Y0, double X1, double Y1) LinearGradientAxis(
+        double angleDeg, double x, double y, double w, double h)
+    {
+        var theta = angleDeg * Math.PI / 180.0;
+        var sin = Math.Sin(theta);
+        var cos = Math.Cos(theta);
+        var len = Math.Abs(w * sin) + Math.Abs(h * cos);
+        var cx = x + w / 2.0;
+        var cy = y + h / 2.0;
+        var hx = len / 2.0 * sin;     // PDF dir = (sinθ, cosθ)
+        var hy = len / 2.0 * cos;
+        return (cx - hx, cy - hy, cx + hx, cy + hy);
     }
 
     /// <summary>The four <c>border-radius</c> corners in CSS px (border-radius-completion cycle): each

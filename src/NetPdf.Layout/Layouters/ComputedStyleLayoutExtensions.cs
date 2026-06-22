@@ -957,15 +957,16 @@ internal static class ComputedStyleLayoutExtensions
     /// initial value). This decoder therefore maps <c>normal</c> →
     /// <see cref="AlignItemsValue.Stretch"/>.</para>
     ///
-    /// <para><b>L10+ deferrals.</b> Two value families fall through to
-    /// <see cref="AlignItemsValue.Stretch"/> (the safe default) in L3:
-    /// (a) <c>baseline</c> / <c>first baseline</c> / <c>last baseline</c>
-    /// — requires text-shaping integration to align item baselines;
-    /// (b) <c>anchor-center</c> — CSS Anchor Positioning, out of scope
-    /// for Flexbox L1. The <c>align-self</c> per-item override SHIPPED
-    /// in Phase 3 Task 15 L9 (see <see cref="ReadAlignSelf"/>). See
-    /// <c>docs/deferrals.md#flex-layouter-features</c> for the L10+
-    /// pickup criteria for the remaining items.</para>
+    /// <para><b>Baseline + L10+ deferrals.</b> <c>baseline</c> /
+    /// <c>first baseline</c> / <c>last baseline</c> decode to
+    /// <see cref="AlignItemsValue.Baseline"/> (ROW first-baseline
+    /// alignment; COLUMN falls back to flex-start). <c>anchor-center</c>
+    /// still falls through to <see cref="AlignItemsValue.Stretch"/> (CSS
+    /// Anchor Positioning is out of scope for Flexbox L1). The
+    /// <c>align-self</c> per-item override SHIPPED in Phase 3 Task 15 L9
+    /// (see <see cref="ReadAlignSelf"/>). See
+    /// <c>docs/deferrals.md#flex-layouter-features</c> for the remaining
+    /// pickup criteria.</para>
     ///
     /// <para><b>Overflow mode.</b> Mirrors L2's two-channel pattern for
     /// <c>justify-content</c>: the bare <c>safe X</c> / <c>unsafe X</c>
@@ -1005,7 +1006,8 @@ internal static class ComputedStyleLayoutExtensions
     /// <para><b>Grid layout</b> (matches the SelfPositions ordering in
     /// <c>KeywordResolver</c>): 0=normal → Stretch (per CSS Flexbox §8.3),
     /// 1=stretch, 2=anchor-center → Stretch (L10+ scope), 3-5=baseline
-    /// triple → Stretch (L10+ scope), 6-12=&lt;self-position&gt; (center,
+    /// triple → Baseline (first-baseline alignment; see
+    /// <see cref="AlignItemsValue.Baseline"/>), 6-12=&lt;self-position&gt; (center,
     /// start, end, self-start, self-end, flex-start, flex-end), 13-19=
     /// safe + 7 self-positions, 20-26=unsafe + 7 self-positions. Total
     /// = 27 entries.</para>
@@ -1023,9 +1025,12 @@ internal static class ComputedStyleLayoutExtensions
         0 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // normal → stretch (CSS Flexbox §8.3)
         1 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // stretch
         2 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // anchor-center → stretch (L10+ scope)
-        3 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // baseline → stretch (L10+ scope)
-        4 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // first baseline → stretch (L10+ scope)
-        5 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // last baseline → stretch (L10+ scope)
+        // baseline / first baseline / last baseline → Baseline (CSS Box
+        // Alignment L3 §6.2). The FlexLayouter aligns by each item's FIRST
+        // baseline for all three; last-baseline grouping is a later refinement.
+        3 => (AlignItemsValue.Baseline, OverflowAlignmentMode.Default),    // baseline
+        4 => (AlignItemsValue.Baseline, OverflowAlignmentMode.Default),    // first baseline
+        5 => (AlignItemsValue.Baseline, OverflowAlignmentMode.Default),    // last baseline (→ first baseline approximation)
         6 => (AlignItemsValue.Center, OverflowAlignmentMode.Default),
         7 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Default),   // start → flex-start (LTR row)
         8 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),     // end → flex-end (LTR row)
@@ -1115,6 +1120,7 @@ internal static class ComputedStyleLayoutExtensions
             AlignItemsValue.FlexStart => AlignSelfValue.FlexStart,
             AlignItemsValue.FlexEnd => AlignSelfValue.FlexEnd,
             AlignItemsValue.Center => AlignSelfValue.Center,
+            AlignItemsValue.Baseline => AlignSelfValue.Baseline,
             _ => AlignSelfValue.Stretch, // defensive — never reached for known AlignItemsValue values
         };
 
@@ -1136,6 +1142,7 @@ internal static class ComputedStyleLayoutExtensions
             AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode),
             AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode),
             AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode),
+            AlignSelfValue.Baseline => new ResolvedAlignItems(AlignItemsValue.Baseline, alignSelf.Mode),
             _ => containerAlignItems, // defensive — unknown self values fall back to container
         };
     }
@@ -1279,11 +1286,13 @@ internal static class ComputedStyleLayoutExtensions
     ///   <item><c>auto</c> (KeywordIdAuto = 0) → delegate to the item's
     ///   declared main-size (<c>width</c> for row, <c>height</c> for
     ///   column).</item>
-    ///   <item><c>content</c> (KeywordIdContent = 1) → use the item's
-    ///   intrinsic content size. L8 approximates this as
-    ///   <see cref="FlexBasisKind.Auto"/> (= delegate to declared
-    ///   main-size) until intrinsic sizing lands; the Content variant
-    ///   is preserved on the resolved struct for future use.</item>
+    ///   <item><c>content</c> (1) / <c>max-content</c> (2) /
+    ///   <c>min-content</c> (3) → use the item's intrinsic content size
+    ///   (<see cref="FlexBasisKind.Content"/> / <see cref="FlexBasisKind.MaxContent"/> /
+    ///   <see cref="FlexBasisKind.MinContent"/>). SHIPPED on the nowrap ROW main axis: the
+    ///   FlexLayouter measures the item's max-/min-content inline extent (the COLUMN main
+    ///   axis content-sizes via the block-extent measure). Without a caller-supplied
+    ///   measurement (wrap / no shaper) these fall back to the declared main-size.</item>
     ///   <item><c>&lt;length&gt;</c> (LengthPx slot) → use the explicit
     ///   pixel value as the hypothetical main-size.</item>
     ///   <item><c>&lt;percentage&gt;</c> (Percentage slot) → resolve
@@ -1301,9 +1310,11 @@ internal static class ComputedStyleLayoutExtensions
         {
             ComputedSlotTag.Keyword => slot.AsKeyword() switch
             {
-                0 => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),       // auto
-                1 => new ResolvedFlexBasis(FlexBasisKind.Content, 0.0),    // content
-                _ => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),       // unknown → auto
+                0 => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),         // auto
+                1 => new ResolvedFlexBasis(FlexBasisKind.Content, 0.0),      // content
+                2 => new ResolvedFlexBasis(FlexBasisKind.MaxContent, 0.0),   // max-content
+                3 => new ResolvedFlexBasis(FlexBasisKind.MinContent, 0.0),   // min-content
+                _ => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),         // unknown → auto
             },
             ComputedSlotTag.LengthPx => new ResolvedFlexBasis(FlexBasisKind.LengthPx, slot.AsLengthPx()),
             ComputedSlotTag.Percentage => new ResolvedFlexBasis(FlexBasisKind.Percentage, slot.AsPercentage()),
@@ -1458,26 +1469,49 @@ internal static class ComputedStyleLayoutExtensions
     /// line-collection uses the same flex-basis-aware size in both
     /// passes (= line-boundary parity per §9.3).
     ///
-    /// <para><b>Resolution table:</b> <see cref="FlexBasisKind.LengthPx"/>
+    /// <para><b>Resolution table:</b> an entry in
+    /// <paramref name="precomputedIntrinsicBaseSizes"/> (a caller-measured max-/min-content
+    /// BORDER-box size) wins outright; otherwise <see cref="FlexBasisKind.LengthPx"/>
     /// returns the explicit pixel value (floored at 0);
     /// <see cref="FlexBasisKind.Percentage"/> resolves against
     /// <paramref name="containerMainSize"/> (definite 0 yields 0; non-
     /// finite container size falls back to the declared property);
-    /// <see cref="FlexBasisKind.Auto"/> / <see cref="FlexBasisKind.Content"/>
-    /// delegate to the item's declared main-size property
-    /// (Content is approximated as Auto in L8 — intrinsic sizing is
-    /// L10+ scope).</para></summary>
+    /// <see cref="FlexBasisKind.Auto"/> / <see cref="FlexBasisKind.Content"/> /
+    /// <see cref="FlexBasisKind.MaxContent"/> / <see cref="FlexBasisKind.MinContent"/>
+    /// delegate to the item's declared main-size property (the intrinsic kinds are
+    /// content-sized only when the caller supplies a measurement — nowrap ROW; the COLUMN
+    /// axis content-sizes via the block-extent measure, and the wrap / no-shaper paths keep
+    /// the declared fallback).</para></summary>
     /// <param name="item">The flex item box.</param>
     /// <param name="mainSizeProperty">The direction-resolved main-size
     /// property (<see cref="PropertyId.Width"/> for row,
     /// <see cref="PropertyId.Height"/> for column).</param>
     /// <param name="containerMainSize">The container's main-axis
     /// content extent — used to resolve percentage flex-basis values.</param>
+    /// <param name="precomputedIntrinsicBaseSizes">Flex intrinsic-basis cycle —
+    /// an optional map (item box → BORDER-box base size) of pre-measured
+    /// max-content / min-content main sizes; an item present in the map returns
+    /// that base size verbatim. Null (the default) keeps the flex-basis-driven
+    /// resolution below.</param>
     public static double ResolveFlexItemHypotheticalMainSize(
         this Boxes.Box item,
         PropertyId mainSizeProperty,
-        double containerMainSize)
+        double containerMainSize,
+        System.Collections.Generic.IReadOnlyDictionary<Boxes.Box, double>? precomputedIntrinsicBaseSizes = null)
     {
+        // Flex intrinsic-basis cycle — when the caller (FlexLayouter emission OR the
+        // BlockLayouter row-flex pre-measure) measured this item's max-content /
+        // min-content inline extent up front, use that BORDER-box base size verbatim.
+        // The two sites build the map via the SAME shared helper so pre-measure and
+        // emission can't desync. Absent (no shaper, wrap, or a non-intrinsic basis) the
+        // intrinsic kinds fall back to the declared-size path below — the pre-cycle
+        // behavior, so non-intrinsic flex layouts stay byte-identical.
+        if (precomputedIntrinsicBaseSizes is not null
+            && precomputedIntrinsicBaseSizes.TryGetValue(item, out var intrinsicBorderBox))
+        {
+            return intrinsicBorderBox;
+        }
+
         // Flex box-sizing cycle — the hypothetical (= flex base) main size is returned as a
         // BORDER box honoring `box-sizing` (CSS Basic UI 4 §10, via the shared
         // BoxSizingHelper): for `content-box` (initial) a definite flex-basis / declared
@@ -1510,6 +1544,11 @@ internal static class ComputedStyleLayoutExtensions
                 return BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome);
             case FlexBasisKind.Auto:
             case FlexBasisKind.Content:
+            // MaxContent / MinContent without a precomputed measurement (no shaper, or a
+            // wrap / column container outside the intrinsic-basis cycle's scope) fall back
+            // to the declared main-size — the documented residual.
+            case FlexBasisKind.MaxContent:
+            case FlexBasisKind.MinContent:
             default:
                 return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
         }
@@ -1867,6 +1906,18 @@ internal enum AlignItemsValue : byte
     FlexEnd = 1,
     Center = 2,
     Stretch = 3,
+    /// <summary>Per CSS Box Alignment L3 §6.2 + CSS Flexbox L1 §8.3 —
+    /// the three <c>&lt;baseline-position&gt;</c> keywords (<c>baseline</c>
+    /// / <c>first baseline</c> / <c>last baseline</c>) decode to this
+    /// single value (the FlexLayouter aligns by each item's FIRST
+    /// baseline for all three — last-baseline grouping is a later
+    /// refinement). For a ROW container the layouter shifts each
+    /// baseline-aligned item on the block (cross) axis so its first text
+    /// baseline sits on the line's max-baseline; for a COLUMN container
+    /// (cross axis = inline) baseline has no first-baseline to align
+    /// against without vertical text, so it behaves as
+    /// <see cref="FlexStart"/> (the spec's fallback to <c>start</c>).</summary>
+    Baseline = 4,
 }
 
 /// <summary>Per Phase 3 Task 15 L3 — resolved <c>align-items</c> value
@@ -1913,6 +1964,10 @@ internal enum AlignSelfValue : byte
     FlexEnd = 2,
     Center = 3,
     Stretch = 4,
+    /// <summary>Per CSS Box Alignment L3 §6.2 — the per-item
+    /// <c>&lt;baseline-position&gt;</c> override; resolves to
+    /// <see cref="AlignItemsValue.Baseline"/> against the container.</summary>
+    Baseline = 5,
 }
 
 /// <summary>Per Phase 3 Task 15 L9 — resolved <c>align-self</c> value
@@ -2190,6 +2245,16 @@ internal enum FlexBasisKind : byte
     Content = 1,
     LengthPx = 2,
     Percentage = 3,
+    /// <summary>Flex intrinsic-basis cycle — <c>flex-basis: max-content</c>
+    /// (CSS Sizing L3 §5.1). On the ROW main axis the FlexLayouter measures the item's
+    /// max-content inline extent (content laid out without wrap pressure) as the flex
+    /// base size.</summary>
+    MaxContent = 4,
+    /// <summary>Flex intrinsic-basis cycle — <c>flex-basis: min-content</c>
+    /// (CSS Sizing L3 §5.1). On the ROW main axis the FlexLayouter measures the item's
+    /// min-content inline extent (content laid out at maximal wrap pressure → the widest
+    /// unbreakable run) as the flex base size.</summary>
+    MinContent = 5,
 }
 
 /// <summary>Per Phase 3 Task 15 L8 — resolved <c>flex-basis</c> value

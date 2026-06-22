@@ -45,7 +45,13 @@ internal static class NestedContentMeasurer
     /// fragmentainer's block axis (the atomic pass never paginates, so it only
     /// needs to be large enough not to clip — callers pass the outer
     /// fragmentainer's block size). Both extents are clamped to ≥ 1 (the
-    /// <see cref="FragmentainerContext"/> rejects non-positive sizes).</summary>
+    /// <see cref="FragmentainerContext"/> rejects non-positive sizes).
+    /// <para><paramref name="intrinsicSizingMode"/> (PR #208 [P2]) — when true the inner
+    /// line layout downgrades <c>overflow-wrap: break-word</c>'s soft break opportunities
+    /// to Normal per CSS Text L3 §5.1 (they don't reduce min-content), mirroring the table
+    /// min-content measure pass; <c>overflow-wrap: anywhere</c> still breaks. Set it for the
+    /// flex min-content base-size measure so a `break-word` item isn't collapsed to glyph
+    /// width.</para></summary>
     public static BufferingMeasureSink Measure(
         Box box,
         double availInlineContentSize,
@@ -54,7 +60,8 @@ internal static class NestedContentMeasurer
         WritingMode writingMode,
         bool isRtl,
         CancellationToken cancellationToken,
-        IPaginateDiagnosticsSink? diagnostics = null)
+        IPaginateDiagnosticsSink? diagnostics = null,
+        bool intrinsicSizingMode = false)
     {
         // The box is its own content's decoration owner: a content fragment
         // whose box IS this box (the inline-only-root case) paints text only.
@@ -89,6 +96,10 @@ internal static class NestedContentMeasurer
             // opt the nested layouter into emitting the inline-only ROOT's own
             // content (else the block-only child loop skips the box's text).
             layoutRootInlineContent: true);
+        // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
+        // opportunities so they don't collapse min-content to glyph width (mirrors the
+        // table cell min-content pass via TableLayouter.MeasureCellContent).
+        layouter.SetIntrinsicSizingMode(intrinsicSizingMode);
         using var resolver = new BreakResolver();
         _ = layouter.AttemptLayout(
             innerFragmentainer, ref innerLayout, resolver,

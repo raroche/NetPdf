@@ -751,6 +751,13 @@ internal static class CssPreprocessor
                   // The four `border-{corner}-radius` LONGHANDS likewise set both axes (1 value → circular,
                   // 2 values → h v); AngleSharp emits the horizontal, so the recovery co-writes the `-y`.
                   || BorderRadiusShorthandExpander.IsCornerRadiusLonghand(lowerName)
+                  // Flex intrinsic-basis cycle — AngleSharp.Css 1.0.0-beta.144 DROPS a
+                  // `flex-basis: max-content | min-content | content` declaration (it accepts the
+                  // property but not the intrinsic-sizing VALUE), so the canonical form never reaches
+                  // the cascade. Recover it verbatim so the LengthResolver maps it onto the FlexBasis
+                  // slot. Gated to the three intrinsic keywords so the length / percentage / auto forms
+                  // AngleSharp already keeps aren't duplicate-recovered.
+                  || (lowerName == "flex-basis" && IsIntrinsicFlexBasisValue(rawValue))
                   // Per the body-calc cycle — AngleSharp.Css drops/normalizes declarations whose value
                   // carries a CSS math function it can't represent (`width: calc(1in - 24pt)` never
                   // reaches the cascade), so the body-calc first cut would silently see nothing.
@@ -1256,6 +1263,21 @@ internal static class CssPreprocessor
             tok.ReadChar();
         }
         return false;
+    }
+
+    /// <summary>Flex intrinsic-basis cycle — <see langword="true"/> when a
+    /// <c>flex-basis</c> value is one of the three intrinsic-sizing keywords
+    /// (<c>content</c> / <c>max-content</c> / <c>min-content</c>) AngleSharp.Css drops.
+    /// <c>!important</c> is stripped before the comparison; the auto / length /
+    /// percentage forms (which AngleSharp keeps) return <see langword="false"/> so they
+    /// aren't duplicate-recovered.</summary>
+    private static bool IsIntrinsicFlexBasisValue(string rawValue)
+    {
+        var (clean, _) = ImportantParser.Strip(rawValue);
+        var v = clean.Trim();
+        return v.Equals("content", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("max-content", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("min-content", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

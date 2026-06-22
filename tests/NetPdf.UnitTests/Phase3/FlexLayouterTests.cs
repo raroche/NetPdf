@@ -1397,18 +1397,62 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L3_align_items_baseline_falls_back_to_stretch_for_l3()
+    public void Align_items_baseline_aligns_first_baselines_across_row_items()
     {
-        // DEFERRAL PIN — per Phase 3 Task 15 L3 LOCKED scope,
-        // `baseline` / `first baseline` / `last baseline` require
-        // text-shaping integration + are L4+ scope. The L3 decoder
-        // maps all three baseline indices (3, 4, 5) to the safe
-        // default `stretch`.
-        //
-        // 3 items with auto height in a 200px container, align-items:
-        // baseline (= keyword index 3). Stretch resizes auto-sized
-        // items to containerCrossSize = 200; all emit at the
-        // container's content-block-start.
+        // Flex baseline-alignment cycle (CSS Flexbox L1 §8.3) — two ROW items each
+        // carry one line of text but differ in padding-top (0 vs 40). align-items:
+        // baseline (keyword index 3) shifts each item on the cross (block) axis so
+        // their FIRST text baselines coincide. The padded item's baseline is 40px
+        // lower in its own border box, so the UNpadded item is pushed DOWN by exactly
+        // that 40px difference; the padded item stays at the line cross-start. The
+        // ascent value itself cancels (same synthetic font), so the assertion is the
+        // padding delta — independent of the exact font metrics.
+        var (fragments, _) = LayoutBaselineRow(
+            containerHeight: 200,
+            alignItemsKeyword: 3, // baseline
+            paddingTops: new[] { 0.0, 40.0 },
+            alignSelfKeywords: null);
+
+        Assert.Equal(2, fragments.Count);
+        // item 0 (no padding): baseline = ascent; shifted down by (40 + ascent) − ascent = 40.
+        Assert.Equal(40.0, fragments[0].BlockOffset, precision: 3);
+        // item 1 (padding-top 40): the deepest baseline → stays at the line cross-start.
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        // Baseline never resizes: each item keeps its own border-box cross size
+        // (content height 50 + its padding-top).
+        Assert.Equal(50.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(90.0, fragments[1].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Align_self_baseline_overrides_container_align_items_flex_start()
+    {
+        // align-self: baseline (keyword index 4 in the align-self table — the +1
+        // shift past `auto`) on BOTH items makes them participate in baseline
+        // alignment even though the CONTAINER is align-items: flex-start. Same
+        // padding delta (0 vs 40) → same 40px shift of the unpadded item.
+        var (fragments, _) = LayoutBaselineRow(
+            containerHeight: 200,
+            alignItemsKeyword: 11, // container align-items: flex-start (no baseline)
+            paddingTops: new[] { 0.0, 40.0 },
+            alignSelfKeywords: new[] { 4, 4 }); // align-self: baseline on both (index 4 = baseline)
+
+        Assert.Equal(2, fragments.Count);
+        // Without the per-item override both would sit at BlockOffset 0 (flex-start);
+        // align-self: baseline shifts item 0 down by the 40px padding delta.
+        Assert.Equal(40.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Align_items_baseline_synthesizes_baseline_for_item_without_a_line_box()
+    {
+        // CSS Flexbox L1 §8.5 — an item with NO in-flow line box synthesizes its
+        // baseline from its cross-end (bottom) edge. Here item 0 has text (baseline =
+        // ascent ≈ a fraction of 12px) and item 1 is an empty 60px-tall box (no text →
+        // synthesized baseline = 60, its bottom edge). The empty box has the DEEPER
+        // baseline, so it stays at cross-start (0) and the text item is pushed down so
+        // its baseline (ascent) sits on 60 → text item offset = 60 − ascent > 0.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -1417,27 +1461,77 @@ public sealed class FlexLayouterTests
         SetLengthPx(flex.Style, PropertyId.Height, 200);
         flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(3)); // baseline
 
-        var items = new Box[3];
+        var textItem = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetLengthPx(textItem.Style, PropertyId.Width, 100);
+        textItem.AppendChild(Box.TextRun("A", MakeStyle()));
+
+        var emptyItem = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetLengthPx(emptyItem.Style, PropertyId.Width, 100);
+        SetLengthPx(emptyItem.Style, PropertyId.Height, 60);
+
+        flex.AppendChild(textItem);
+        flex.AppendChild(emptyItem);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? textFrag = null, emptyFrag = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, textItem) && f.InlineLayout is null) textFrag = f;
+            else if (ReferenceEquals(f.Box, emptyItem)) emptyFrag = f;
+        }
+        Assert.NotNull(textFrag);
+        Assert.NotNull(emptyFrag);
+        // The empty item's synthesized baseline (60, its bottom edge) is the deepest →
+        // it anchors at the cross-start.
+        Assert.Equal(0.0, emptyFrag!.Value.BlockOffset, precision: 3);
+        // The text item is pushed down so its (shallower) baseline reaches 60.
+        Assert.True(textFrag!.Value.BlockOffset > 0.5,
+            $"text item should shift down to align its baseline with the empty box's bottom; got {textFrag.Value.BlockOffset}");
+    }
+
+    [Fact]
+    public void Align_items_baseline_in_column_falls_back_to_flex_start()
+    {
+        // CSS Box Alignment L3 §9.3 — for a COLUMN container the cross axis is the
+        // inline axis, which has no first baseline without vertical text, so `baseline`
+        // behaves as flex-start (inline cross-start) — NOT stretch. Two items with
+        // explicit widths emit at inline offset 0 keeping their declared widths (NOT
+        // stretched to the container's cross extent).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(3)); // baseline
+
+        var items = new Box[2];
         for (var i = 0; i < items.Length; i++)
         {
             var style = MakeStyle();
-            SetLengthPx(style, PropertyId.Width, 100);
-            // Leave height auto (= itemCrossSize 0 → stretch resizes
-            // to containerCrossSize).
+            SetLengthPx(style, PropertyId.Width, 80);
+            SetLengthPx(style, PropertyId.Height, 50);
             items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
             flex.AppendChild(items[i]);
         }
         root.AppendChild(flex);
 
         using var layouter = new BlockLayouter(
-            rootBox: root, sink: sink,
-            incomingContinuation: null, diagnostics: null,
-            shaperResolver: shaper);
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
         var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
-        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
-            LayoutAttemptStrategy.LastResort);
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
 
         var fragments = new List<BoxFragment>();
         for (var i = 0; i < items.Length; i++)
@@ -1447,17 +1541,316 @@ public sealed class FlexLayouterTests
                 if (f.Box == items[i]) { fragments.Add(f); break; }
             }
         }
-
-        Assert.Equal(3, fragments.Count);
-        // Baseline falls through to stretch — items resize to
-        // containerCrossSize + emit at cross-start. Sub-cycle L4+ will
-        // implement actual baseline alignment + this test should be
-        // updated then.
+        Assert.Equal(2, fragments.Count);
         foreach (var f in fragments)
         {
-            Assert.Equal(0.0, f.BlockOffset, precision: 3);
-            Assert.Equal(200.0, f.BlockSize, precision: 3);
+            // flex-start on the inline cross axis (NOT stretched).
+            Assert.Equal(0.0, f.InlineOffset, precision: 3);
+            Assert.Equal(80.0, f.InlineSize, precision: 3);
         }
+    }
+
+    [Fact]
+    public void Baseline_downshifted_item_grows_the_auto_height_wrapper_so_a_sibling_does_not_overlap()
+    {
+        // PR #208 [P1] — a baseline-aligned item shifted DOWN to align its baseline can
+        // extend BELOW the line's packed cross extent. The auto-height flex wrapper must
+        // grow to contain it so a following sibling block doesn't overlap.
+        //
+        // Item A: height 100, no padding, text → baseline = ascent, cross = 100.
+        // Item B: padding-top 50, auto height, text → baseline = 50 + ascent (deeper).
+        // align-items: baseline shifts A DOWN by (50 + ascent) − ascent = 50, so A's
+        // bottom = 50 + 100 = 150 — well past the packed line size of 100. Pre-fix the
+        // wrapper sized to 100 and the sibling overlapped A; post-fix it grows to 150.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(3)); // baseline
+        // No explicit height → auto (wrapper sizes to content).
+
+        var aStyle = MakeStyle();
+        SetLengthPx(aStyle, PropertyId.Width, 100);
+        SetLengthPx(aStyle, PropertyId.Height, 100);
+        var itemA = Box.ForElement(BoxKind.BlockContainer, aStyle, MakeElement());
+        itemA.AppendChild(Box.TextRun("A", MakeStyle()));
+
+        var bStyle = MakeStyle();
+        SetLengthPx(bStyle, PropertyId.Width, 100);
+        SetLengthPx(bStyle, PropertyId.PaddingTop, 50);
+        var itemB = Box.ForElement(BoxKind.BlockContainer, bStyle, MakeElement());
+        itemB.AppendChild(Box.TextRun("B", MakeStyle()));
+
+        flex.AppendChild(itemA);
+        flex.AppendChild(itemB);
+        root.AppendChild(flex);
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 30);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? aFrag = null, siblingFrag = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, itemA) && f.InlineLayout is null) aFrag = f;
+            else if (ReferenceEquals(f.Box, sibling)) siblingFrag = f;
+        }
+        Assert.NotNull(aFrag);
+        Assert.NotNull(siblingFrag);
+        var aBottom = aFrag!.Value.BlockOffset + aFrag.Value.BlockSize;
+        Assert.Equal(150.0, aBottom, precision: 2); // baseline-shifted item bottom
+        // The sibling must start at or below A's bottom (no overlap).
+        Assert.True(siblingFrag!.Value.BlockOffset >= aBottom - 0.5,
+            $"sibling (BlockOffset {siblingFrag.Value.BlockOffset}) overlaps the baseline-shifted flex item (bottom {aBottom})");
+    }
+
+    [Fact]
+    public void Baseline_downshift_in_a_wrapped_line_pushes_the_next_line_down_no_overlap()
+    {
+        // PR #208 [P1] — in a WRAPPED baseline row, a line-1 item shifted down to align its
+        // baseline can extend below line 1's packed cross size; line 2 must start below it.
+        // Container width 200 fits 2 items/line. Line 1: item0 (height 100, shallow
+        // baseline) + item1 (padding-top 50, deep baseline) → item0 shifts down 50 → bottom
+        // 150 (> packed 100). Line 2 (item2) must start at >= 150.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));   // wrap
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(3)); // baseline
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        Box MakeItem(double width, double? height, double padTop)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Width, width);
+            if (height is { } h) SetLengthPx(s, PropertyId.Height, h);
+            if (padTop > 0) SetLengthPx(s, PropertyId.PaddingTop, padTop);
+            var b = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+            b.AppendChild(Box.TextRun("x", MakeStyle()));
+            return b;
+        }
+
+        var item0 = MakeItem(100, 100, 0);
+        var item1 = MakeItem(100, null, 50);
+        var item2 = MakeItem(100, 30, 0);
+        flex.AppendChild(item0);
+        flex.AppendChild(item1);
+        flex.AppendChild(item2);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? f0 = null, f2 = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, item0) && f.InlineLayout is null) f0 = f;
+            else if (ReferenceEquals(f.Box, item2) && f.InlineLayout is null) f2 = f;
+        }
+        Assert.NotNull(f0);
+        Assert.NotNull(f2);
+        var line1Bottom = f0!.Value.BlockOffset + f0.Value.BlockSize; // = 150
+        Assert.True(f2!.Value.BlockOffset >= line1Bottom - 0.5,
+            $"line 2 item (BlockOffset {f2.Value.BlockOffset}) overlaps line 1's down-shifted item (bottom {line1Bottom})");
+    }
+
+    [Fact]
+    public void Flex_basis_max_content_sizes_row_items_to_their_content_width()
+    {
+        // Flex intrinsic-basis cycle (CSS Flexbox L1 §7.2 + §9.2.3) — two nowrap ROW
+        // items with flex-basis: max-content (keyword index 2), grow 0 / shrink 0. Each
+        // is sized to its content's natural (no-wrap) width, so the item with MORE text
+        // is wider, both are positive, and they pack tightly (item 1 starts exactly where
+        // item 0 ends). The container is wide so there's no shrink pressure.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 60);
+
+        var texts = new[] { "hi", "hello world wide" };
+        var items = new Box[texts.Length];
+        for (var i = 0; i < texts.Length; i++)
+        {
+            var style = MakeStyle();
+            style.Set(PropertyId.FlexBasis, ComputedSlot.FromKeyword(2)); // max-content
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            item.AppendChild(Box.TextRun(texts[i], MakeStyle()));
+            items[i] = item;
+            flex.AppendChild(item);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 1000, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var frags = new BoxFragment[texts.Length];
+        for (var i = 0; i < items.Length; i++)
+            foreach (var f in sink.Fragments)
+                if (ReferenceEquals(f.Box, items[i]) && f.InlineLayout is null) { frags[i] = f; break; }
+
+        // Both items measured to a positive content width.
+        Assert.True(frags[0].InlineSize > 0, $"max-content item 0 width {frags[0].InlineSize} should be > 0");
+        // More text → wider max-content size.
+        Assert.True(frags[1].InlineSize > frags[0].InlineSize,
+            $"more text should be wider: item0={frags[0].InlineSize} item1={frags[1].InlineSize}");
+        // Tight packing: item 1 starts exactly at item 0's right edge (content-driven sizes).
+        Assert.Equal(frags[0].InlineSize, frags[1].InlineOffset, precision: 2);
+    }
+
+    [Fact]
+    public void Flex_basis_min_content_is_narrower_than_max_content_for_multiword_text()
+    {
+        // Flex intrinsic-basis cycle — for the SAME multi-word text, min-content (the
+        // widest unbreakable run = the longest word) is narrower than max-content (the
+        // full phrase laid out without wrapping). Both positive.
+        const string text = "aaaa bbbb cccc dddd";
+        var maxContentWidth = LayoutSingleNowrapRowItemWidth(basisKeyword: 2, text); // max-content
+        var minContentWidth = LayoutSingleNowrapRowItemWidth(basisKeyword: 3, text); // min-content
+
+        Assert.True(minContentWidth > 0, $"min-content width {minContentWidth} should be > 0");
+        Assert.True(maxContentWidth > minContentWidth + 1.0,
+            $"max-content ({maxContentWidth}) should exceed min-content ({minContentWidth}) for multi-word text");
+    }
+
+    [Fact]
+    public void Flex_basis_min_content_with_break_word_is_not_collapsed_to_glyph_width()
+    {
+        // PR #208 [P2] — min-content measurement runs in intrinsic-sizing mode, so
+        // `overflow-wrap: break-word`'s soft break opportunities (CSS Text L3 §5.1) do NOT
+        // count for min-content: a single long word stays its full width instead of
+        // collapsing to a glyph. `overflow-wrap: anywhere`, however, DOES break for
+        // min-content (it is not downgraded), so it collapses below the full word.
+        const string word = "aaaaaaaa"; // one unbreakable word (no spaces)
+        var minNormal = LayoutSingleNowrapRowItemWidth(3, word, overflowWrapKeyword: 0);    // normal
+        var minBreakWord = LayoutSingleNowrapRowItemWidth(3, word, overflowWrapKeyword: 2); // break-word
+        var minAnywhere = LayoutSingleNowrapRowItemWidth(3, word, overflowWrapKeyword: 1);  // anywhere
+
+        Assert.True(minNormal > 0);
+        // break-word does NOT reduce min-content (intrinsic mode downgrades its breaks).
+        Assert.Equal(minNormal, minBreakWord, precision: 2);
+        // anywhere DOES break for min-content → collapses well below the full word.
+        Assert.True(minAnywhere < minNormal - 1.0,
+            $"anywhere should collapse min-content: anywhere={minAnywhere} normal={minNormal}");
+    }
+
+    /// <summary>Lay out one nowrap ROW flex item (grow 0 / shrink 0) with the given
+    /// intrinsic <c>flex-basis</c> keyword (2 = max-content, 3 = min-content) + text,
+    /// in a wide container, and return its resolved inline (main) size. An optional
+    /// <paramref name="overflowWrapKeyword"/> (0 normal / 1 anywhere / 2 break-word) is
+    /// set on the item (inherited by the text).</summary>
+    private static double LayoutSingleNowrapRowItemWidth(int basisKeyword, string text, int? overflowWrapKeyword = null)
+    {
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 60);
+
+        var style = MakeStyle();
+        style.Set(PropertyId.FlexBasis, ComputedSlot.FromKeyword(basisKeyword));
+        style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+        style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        if (overflowWrapKeyword is { } ow) style.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(ow));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        var textStyle = MakeStyle();
+        if (overflowWrapKeyword is { } ow2) textStyle.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(ow2));
+        item.AppendChild(Box.TextRun(text, textStyle));
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 2000, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, item) && f.InlineLayout is null) return f.InlineSize;
+        return -1;
+    }
+
+    /// <summary>Lay out a single-line ROW flex container whose items each carry one
+    /// line of text "A" (so they have a first baseline) and the given per-item
+    /// padding-top. Returns the item fragments (the geometry/decoration fragment per
+    /// item, in DOM order) + the wrapper fragment. Shared by the baseline tests.</summary>
+    private static (List<BoxFragment> Items, BoxFragment Wrapper) LayoutBaselineRow(
+        double containerHeight, int alignItemsKeyword, double[] paddingTops, int[]? alignSelfKeywords)
+    {
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, containerHeight);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(alignItemsKeyword));
+
+        var items = new Box[paddingTops.Length];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            if (paddingTops[i] > 0) SetLengthPx(style, PropertyId.PaddingTop, paddingTops[i]);
+            if (alignSelfKeywords is not null)
+                style.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(alignSelfKeywords[i]));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            item.AppendChild(Box.TextRun("A", MakeStyle()));
+            items[i] = item;
+            flex.AppendChild(item);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment wrapper = default;
+        var itemFrags = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                // The item's geometry fragment (box decoration), not the inline-text fragment.
+                if (ReferenceEquals(f.Box, items[i]) && f.InlineLayout is null) { itemFrags.Add(f); break; }
+            }
+        }
+        foreach (var f in sink.Fragments)
+            if (ReferenceEquals(f.Box, flex)) { wrapper = f; break; }
+        return (itemFrags, wrapper);
     }
 
     [Fact]
@@ -6581,26 +6974,20 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L8_hardening_known_gap_flex_basis_content_approximates_to_auto()
+    public void Flex_basis_content_uses_intrinsic_content_size_ignoring_declared_width()
     {
-        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#4 — KNOWN GAP
-        // pin. Per CSS Flexbox L1 §7.2.1 `flex-basis: content` forces
-        // the intrinsic content size REGARDLESS of the declared
-        // width/height. L8 approximates Content as Auto (= delegates
-        // to ReadLengthPxOrZero on the main-size property), so an item
-        // with `width: 200` + `flex-basis: content` produces a
-        // hypothetical of 200 instead of the spec-correct intrinsic
-        // content size. When L9+ wires intrinsic sizing through the
-        // BlockLayouter pre-measure, this test should flip — the
-        // hypothetical will be the intrinsic content size (0 in this
-        // fixture with no children).
+        // Flex intrinsic-basis cycle — per CSS Flexbox L1 §7.2.1 + §9.2.3
+        // `flex-basis: content` forces the intrinsic (max-)content size REGARDLESS of the
+        // declared width/height. SHIPPED: the FlexLayouter measures the item's
+        // max-content inline extent up front (nowrap row), so an item with `width: 200` +
+        // `flex-basis: content` ignores the 200 and uses its content size — which is 0
+        // here (the item has no children). This was the deferral pin
+        // `L8_hardening_known_gap_flex_basis_content_approximates_to_auto`, whose own
+        // comment predicted this flip to 0 once intrinsic sizing landed.
         //
-        // Fixture: 1 item, width: 200, flex-basis: content (Keyword 1),
-        // no flex-grow, no flex-shrink, in a 600px container. With the
-        // Content → Auto approximation: hypothetical = 200; no grow/
-        // shrink → resolved = 200. With intrinsic sizing (L9+):
-        // hypothetical = intrinsic content size = 0 (no children); no
-        // grow/shrink → resolved = 0.
+        // Fixture: 1 item, width: 200, flex-basis: content (Keyword 1), no flex-grow,
+        // flex-shrink: 0, in a 600px nowrap row container. Content base size = 0 (no
+        // children) → resolved = 0 (the declared 200 is overridden by the intrinsic basis).
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -6635,11 +7022,9 @@ public sealed class FlexLayouterTests
             if (f.Box == item) { itemFragment = f; break; }
         }
         Assert.NotNull(itemFragment);
-        // L8 Content → Auto approximation: hypothetical = declared
-        // width = 200. Pin the current behavior. When L9+ ships
-        // intrinsic sizing, this assertion should flip to 0 (= the
-        // intrinsic content size of an item with no children).
-        Assert.Equal(200.0, itemFragment!.Value.InlineSize, precision: 3);
+        // Intrinsic content basis: the declared width 200 is overridden by the measured
+        // (max-)content size, which is 0 for a childless item.
+        Assert.Equal(0.0, itemFragment!.Value.InlineSize, precision: 3);
     }
 
     [Fact]

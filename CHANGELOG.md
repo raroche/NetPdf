@@ -14,6 +14,12 @@ The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHA
 - **Percentage `min-width` / `max-width` / `min-height` / `max-height` resolve against the containing block** (CSS 2.1 §10.4/§10.7), box-sizing-aware, with the indefinite-axis rule (a `%` max against an indefinite base → `none`, a `%` min → `0`). CSS 2.2 conformance → **96.7%** (29/30).
 - **Percentage `column-gap` / `row-gap` resolve against the container content box** (CSS Box Alignment L3 §8.3) — the properties are now `<length-percentage>` (column-gap → inline size, row-gap → block size), on flex AND grid containers.
 
+### Added — Flexbox L1 completion (`flex-layouter-features`)
+
+- **`align-items: baseline` / `align-self: baseline`** (CSS Flexbox L1 §8.3 + CSS Box Alignment L3 §6.2) — the three `<baseline-position>` keywords now perform real first-baseline alignment on a ROW container's cross axis (each item is shifted so its first text baseline sits on the line's max baseline; an item with no line box synthesizes its baseline from its cross-end edge per §8.5). Previously they decoded to `stretch`. COLUMN baseline falls back to flex-start (no first baseline on the inline axis without vertical text).
+- **`flex-basis: content` / `max-content` / `min-content`** (CSS Flexbox L1 §7.2 + §9.2.3) — intrinsic flex base sizing on the nowrap ROW main axis: the item is measured to its max-content (no wrap pressure) or min-content (maximal wrap pressure) inline extent, fed through the §9.7 flexibility resolution. The keyword (which AngleSharp.Css drops) is recovered through `CssPreprocessor`; the FlexLayouter emission and the BlockLayouter row-flex pre-measure build the base sizes via one shared helper so they stay in lockstep. WRAP rows + `fit-content` remain deferred.
+- The `flex` shorthand (§7.4) was already shipped (`FlexShorthandExpander`); a flex-item-level integration test now pins `flex: 1` → grow 1 / shrink 1 / basis 0 end-to-end.
+
 [Unreleased]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...HEAD
 
 ## [0.7.0-beta] — staged for 2026-06-21 (tag pending PR merge)

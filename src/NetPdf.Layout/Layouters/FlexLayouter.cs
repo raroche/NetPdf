@@ -679,9 +679,28 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // The emission loop below + the ResolveFlexibleMainSizes pass
         // dereference DOM-children indices via
         // <c>_sortedFlexChildIndices[firstItemIndex + i]</c>.
+        // Flex intrinsic-basis cycle — for a single-line (nowrap) ROW container, measure
+        // up front the max-content / min-content inline base size of each item with an
+        // explicit intrinsic `flex-basis`. The same map threads through line packing +
+        // the §9.7 resolution below (so totalMain, free space, grow/shrink + justify all
+        // agree). Built only for nowrap rows; the BlockLayouter row-flex height
+        // pre-measure builds an identical map via the same shared helper so the wrapper
+        // height stays in lockstep. Null for column / wrap / no-shaper / no-intrinsic-item
+        // → the declared-size path (byte-identical to the pre-cycle behavior).
+        IReadOnlyDictionary<Box, double>? intrinsicBaseSizes = null;
+        if (!isColumn && !isWrapping)
+        {
+            var blockLevelItems = new List<Box>(_sortedFlexChildIndices.Count);
+            foreach (var idx in _sortedFlexChildIndices)
+                blockLevelItems.Add(_rootBox.Children[idx]);
+            intrinsicBaseSizes = BuildRowIntrinsicMainBaseSizes(
+                blockLevelItems, _shaperResolver, cancellationToken);
+        }
+
         var lines = PackLines(
             _rootBox, _sortedFlexChildIndices, flexDirection,
-            containerMainSize, isWrapping, cancellationToken, mainGap);
+            containerMainSize, isWrapping, cancellationToken, mainGap,
+            intrinsicBaseSizes);
 
         // Per Phase 3 Task 16 cycle 1 (Hello World) — multi-page flex
         // split fragment range determination per CSS Flexbox L1 §10
@@ -1023,7 +1042,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var (minSizeProperty, maxSizeProperty) = GetMinMaxMainAxisProperties(flexDirection);
         var resolvedItemMainSizes = ResolveFlexibleMainSizes(
             lines, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, mainGap, cancellationToken);
+            containerMainSize, mainGap, cancellationToken, intrinsicBaseSizes);
 
         // Non-block-pagination arc (flex item CONTENT layout) — lay out each
         // flex item's INNER content (text / nested blocks) via a nested
@@ -1059,6 +1078,25 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             mainSizeProperty, crossSizeProperty, containerCrossSize, isWrapping,
             fragmentainer, layout.WritingMode, layout.IsRtl,
             effectiveDiagnostics, contentMeasureBudget, cancellationToken);
+
+        // Flex baseline-alignment cycle (CSS Flexbox L1 §8.3 + §8.5) — for a ROW
+        // container (cross axis = block) precompute, per flex item, (a) the
+        // alignment baseline = the item's first text baseline measured from its
+        // border-box cross-start (synthesized from the cross-end edge when the item
+        // has no line box) and (b) the cross size a baseline-aligned item uses
+        // (content height for an auto-cross item, else the declared cross size).
+        // The per-line MAX of (a) over baseline-aligned items anchors them so their
+        // first baselines coincide. Computed only for row (COLUMN baseline falls back
+        // to flex-start — the inline cross axis has no first baseline without vertical
+        // text); the arrays are otherwise unused so non-baseline layouts stay
+        // byte-identical.
+        double[]? itemBaselineOffsets = null;
+        double[]? itemBaselineCrossSizes = null;
+        if (!isColumn)
+        {
+            (itemBaselineOffsets, itemBaselineCrossSizes) =
+                ComputeRowBaselineData(itemContentBuffers, flexDirection, crossSizeProperty);
+        }
 
         // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
         // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
@@ -1233,6 +1271,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 ? line.LineCrossSize
                 : containerCrossSize;
 
+            // Flex baseline-alignment cycle — the line's baseline reference: the MAX
+            // first-baseline over the line's baseline-aligned items (CSS Box Alignment
+            // L3 §6.2 "baseline-sharing group"). Each baseline-aligned item is then
+            // shifted so its own baseline sits on this reference. NaN when no item on
+            // the line is baseline-aligned (the per-item baseline branch is gated on the
+            // item's effective align, so the value is read only when it's finite).
+            var lineMaxBaseline = itemBaselineOffsets is null
+                ? double.NaN
+                : ComputeLineMaxBaseline(line, itemBaselineOffsets, alignItems);
+
+            // PR #208 [P1] — a baseline-aligned item shifted DOWN to align its baseline can
+            // extend below the line's packed cross extent (`line.LineCrossSize`). Track the
+            // deepest such item bottom RELATIVE to the line's cross-start so the cursor
+            // advance + the wrapper extent grow to contain it (else following lines /
+            // siblings overlap). 0 for lines with no down-shifted baseline item → the
+            // effective line cross size stays `line.LineCrossSize` (byte-identical).
+            var lineBaselineOverflowBottom = 0.0;
+
             // L2 — resolve justify-content + compute the main-axis
             // start-offset + between-spacing per CSS Box Alignment L3
             // §4.5. Per Phase 3 Task 15 L6 each line runs its own
@@ -1340,13 +1396,45 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // origin in both modes; the swap parameter only
                 // affects which END of the line FlexStart/FlexEnd
                 // anchor to.
-                var (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
-                    ComputeAlignItemsPlacement(
-                        effectiveAlign.Value, effectiveAlign.Mode,
-                        lineCrossExtent, itemCrossSize,
-                        itemIsCrossSizeAuto,
-                        lineCrossCursor,
-                        isCrossAxisReversed: isWrapReverse);
+                double itemCrossOffsetWithinLine, itemEffectiveCrossSize;
+                if (effectiveAlign.Value == AlignItemsValue.Baseline
+                    && itemBaselineOffsets is not null && itemBaselineCrossSizes is not null
+                    && !isWrapReverse)
+                {
+                    // Flex baseline alignment (ROW, non-wrap-reverse; CSS Flexbox L1 §8.3).
+                    // Shift the item on the cross axis so its first baseline coincides with
+                    // the line's max baseline (`lineMaxBaseline`); the item keeps its own
+                    // cross size (baseline never resizes). A baseline item is never
+                    // stretched, so this bypasses the stretch / positional helper.
+                    // wrap-reverse baseline (the line's cross axis is swapped) falls through
+                    // to the helper's flex-start fallback (PR #208 Copilot review — the
+                    // mirrored shift is a documented residual, see deferrals.md).
+                    var itemBaseline = itemBaselineOffsets[itemIdx];
+                    itemEffectiveCrossSize = itemBaselineCrossSizes[itemIdx];
+                    itemCrossOffsetWithinLine = lineCrossCursor + (lineMaxBaseline - itemBaseline);
+                    // [P1] track this item's bottom relative to the line cross-start.
+                    var itemBaselineBottom = (itemCrossOffsetWithinLine - lineCrossCursor) + itemEffectiveCrossSize;
+                    if (itemBaselineBottom > lineBaselineOverflowBottom)
+                        lineBaselineOverflowBottom = itemBaselineBottom;
+                }
+                else
+                {
+                    // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — under
+                    // wrap-reverse the cross-axis is swapped uniformly:
+                    // each LINE's cross-start = the line's PHYSICAL-
+                    // BOTTOM edge (for row + horizontal-tb LTR). Pass
+                    // `isWrapReverse` to ComputeAlignItemsPlacement so
+                    // flex-start/flex-end positional values swap within
+                    // the line. Column `baseline` reaches here too and
+                    // falls back to flex-start in the helper.
+                    (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
+                        ComputeAlignItemsPlacement(
+                            effectiveAlign.Value, effectiveAlign.Mode,
+                            lineCrossExtent, itemCrossSize,
+                            itemIsCrossSizeAuto,
+                            lineCrossCursor,
+                            isCrossAxisReversed: isWrapReverse);
+                }
 
                 // Per Phase 3 Task 15 L5 — for reversed directions,
                 // flip the main-axis offset around the container's
@@ -1596,7 +1684,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // robust to future sub-cycle changes (e.g., should
             // wrap-reverse ever join the paginatable set, the same
             // accumulator works).
-            var lineBottom = swappedAxisCursor + line.LineCrossSize;
+            // PR #208 [P1] — the line's EFFECTIVE cross extent is the larger of its packed
+            // cross size and the deepest baseline-down-shifted item bottom, so a shifted
+            // item is contained by the cursor advance + the wrapper extent.
+            var effectiveLineCrossSize = System.Math.Max(line.LineCrossSize, lineBaselineOverflowBottom);
+            var lineBottom = swappedAxisCursor + effectiveLineCrossSize;
             if (lineBottom > maxEmittedCrossBottom)
             {
                 maxEmittedCrossBottom = lineBottom;
@@ -1612,7 +1704,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // the last line) only advances the discarded cursor — the container's
             // cross extent reads maxEmittedCrossBottom (the true last-line bottom),
             // mirroring the lineBetweenSpacing handling.
-            swappedAxisCursor += line.LineCrossSize + lineBetweenSpacing + crossGap;
+            swappedAxisCursor += effectiveLineCrossSize + lineBetweenSpacing + crossGap;
         }
 
         // Per Phase 3 Task 16 cycle 1 → cycle 4b — multi-page flex
@@ -1767,6 +1859,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// per-item loops.</param>
     /// <param name="mainGap">CSS Box Alignment L3 §8 main-axis gutter between
     /// items on a line (0 = none); folded into the wrap decision.</param>
+    /// <param name="precomputedIntrinsicBaseSizes">Flex intrinsic-basis cycle —
+    /// optional pre-measured max-content / min-content base sizes for ROW items with
+    /// an explicit intrinsic <c>flex-basis</c> (null for column / wrap / no-shaper).</param>
     /// <returns>The packed flex lines; never null. Returns an empty list
     /// when the container has no block-level children (matches the L1-L5
     /// behavior of emitting no item fragments). Per Phase 3 Task 15 L10,
@@ -1799,10 +1894,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         double containerMainSize,
         bool isWrapping,
         CancellationToken cancellationToken,
-        double mainGap)
+        double mainGap,
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
         => FlexLinePacker.Pack(
             flexContainer, sortedChildIndices, direction,
-            containerMainSize, isWrapping, cancellationToken, mainGap);
+            containerMainSize, isWrapping, cancellationToken, mainGap,
+            precomputedIntrinsicBaseSizes);
 
     /// <summary>Per Phase 3 Task 15 L6 — resolve the container's cross-
     /// axis extent for the L1-L5 single-line case + the L6 wrap case.
@@ -1928,7 +2025,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId maxSizeProperty,
         double containerMainSize,
         double mainGap,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
     {
         var resolved = new double[_rootBox.Children.Count];
 
@@ -1938,7 +2036,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ResolveLineWithMinMaxClamping(
                 line, resolved, mainSizeProperty,
                 minSizeProperty, maxSizeProperty,
-                containerMainSize, mainGap, cancellationToken);
+                containerMainSize, mainGap, cancellationToken,
+                precomputedIntrinsicBaseSizes);
         }
 
         return resolved;
@@ -1991,7 +2090,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId maxSizeProperty,
         double containerMainSize,
         double mainGap,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
     {
         // Resolve via the shared static §9.7 helper (position-keyed), then scatter
         // back to the DOM-children-keyed `resolved` array the emission loop reads.
@@ -2001,7 +2101,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             lineItems[i] = _rootBox.Children[_sortedFlexChildIndices[line.FirstItemIndex + i]];
         var lineResolved = ResolveFlexLineMainSizes(
             lineItems, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, mainGap, cancellationToken);
+            containerMainSize, mainGap, cancellationToken, precomputedIntrinsicBaseSizes);
         for (var i = 0; i < count; i++)
             resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
     }
@@ -2024,7 +2124,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId maxSizeProperty,
         double containerMainSize,
         double mainGap,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
     {
         var itemCount = lineItems.Count;
         var resolved = new double[itemCount];
@@ -2058,7 +2159,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             var item = lineItems[i];
 
             var hypothetical = ResolveHypotheticalMainSize(
-                item, mainSizeProperty, containerMainSize);
+                item, mainSizeProperty, containerMainSize, precomputedIntrinsicBaseSizes);
             hypotheticals[i] = hypothetical;
             resolved[i] = hypothetical;
 
@@ -2199,6 +2300,72 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return resolved;
     }
 
+    /// <summary>Flex intrinsic-basis cycle (CSS Flexbox L1 §7.2 + §9.2.3 + CSS Sizing L3
+    /// §5.1) — for a single-line (nowrap) ROW flex container, measure the intrinsic main
+    /// (inline) base size of every item with an EXPLICIT intrinsic <c>flex-basis</c>
+    /// (<c>max-content</c> / <c>min-content</c> / <c>content</c>) and return a map from
+    /// item box to its BORDER-box base size; <see langword="null"/> when no shaper is
+    /// available or no item qualifies.
+    ///
+    /// <para><b>Why a shared static helper.</b> The base size feeds the §9.7 flexibility
+    /// resolution, which the FlexLayouter emission AND the
+    /// <c>BlockLayouter.PreMeasureFlexCrossExtent</c> row-flex height pre-measure BOTH
+    /// run through <see cref="ResolveFlexLineMainSizes"/>. Building the map HERE (one
+    /// place, called from both sites with the same items + shaper) guarantees the
+    /// pre-measure resolves each item at the SAME flex-resolved width the emission uses,
+    /// so the wrapper height + the row-nowrap pagination gate can't desync.</para>
+    ///
+    /// <para><b>Scope.</b> Only the EXPLICIT intrinsic keywords trigger a measurement
+    /// (<c>content</c> ≡ max-content per §9.2.3); <c>auto</c> keeps the declared-size
+    /// path, so existing auto-basis layouts stay byte-identical. Restricted to nowrap
+    /// rows by the callers — wrap line-breaking depends on the base size in the
+    /// (shaper-less) multi-line pre-measure, so it stays a documented residual. The
+    /// max-content measure lays the content out with no wrap pressure
+    /// (<see cref="MaxContentMeasureInlinePx"/>); min-content at minimal width so the
+    /// widest line is the longest unbreakable run.</para></summary>
+    internal static IReadOnlyDictionary<Box, double>? BuildRowIntrinsicMainBaseSizes(
+        IReadOnlyList<Box> blockLevelItems,
+        IShaperResolver? shaperResolver,
+        CancellationToken cancellationToken)
+    {
+        if (shaperResolver is null) return null;
+        Dictionary<Box, double>? map = null;
+        for (var i = 0; i < blockLevelItems.Count; i++)
+        {
+            var item = blockLevelItems[i];
+            var basisKind = item.Style.ReadFlexBasis().Kind;
+            // content ≡ max-content per §9.2.3; the explicit max-content/min-content
+            // keywords map to their own measure. auto / length / percentage are NOT here.
+            var isMinContent = basisKind == FlexBasisKind.MinContent;
+            var isMaxContent = basisKind is FlexBasisKind.MaxContent or FlexBasisKind.Content;
+            if (!isMinContent && !isMaxContent) continue;
+
+            var availInline = isMinContent ? 1.0 : MaxContentMeasureInlinePx;
+            var buffer = NestedContentMeasurer.Measure(
+                item, availInline,
+                blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                shaperResolver: shaperResolver,
+                writingMode: WritingMode.HorizontalTb, isRtl: false,
+                cancellationToken: cancellationToken,
+                // [P2] min-content ignores break-word's soft opportunities (CSS Text L3
+                // §5.1) so a `break-word` item isn't collapsed to glyph width; max-content
+                // has no wrap pressure so the flag is moot there.
+                intrinsicSizingMode: isMinContent);
+            // ContentInlineExtent is the widest shaped LINE advance (the natural content
+            // width). The flex base size is a BORDER box → add the item's inline chrome.
+            var borderBox = buffer.ContentInlineExtent
+                + item.Style.AxisBorderPaddingPx(PropertyId.Width);
+            (map ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance))[item] = borderBox;
+        }
+        return map;
+    }
+
+    /// <summary>Flex intrinsic-basis cycle — the available inline size the max-content
+    /// pre-measure lays content out at: large enough that text never wraps, so the
+    /// widest line advance equals the content's natural (max-content) width. Mirrors the
+    /// table/grid max-content idiom (<c>1e6</c>).</summary>
+    private const double MaxContentMeasureInlinePx = 1_000_000.0;
+
     /// <summary>Per Phase 3 Task 15 L8 + post-PR-#68 hardening F#1 —
     /// compute one flex item's hypothetical main-size. Delegates to the
     /// shared <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>
@@ -2215,8 +2382,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private static double ResolveHypotheticalMainSize(
         Box item,
         PropertyId mainSizeProperty,
-        double containerMainSize) =>
-        item.ResolveFlexItemHypotheticalMainSize(mainSizeProperty, containerMainSize);
+        double containerMainSize,
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null) =>
+        item.ResolveFlexItemHypotheticalMainSize(
+            mainSizeProperty, containerMainSize, precomputedIntrinsicBaseSizes);
 
     // Per Phase 3 Task 16 cycle 4c (P3 #8) — <c>FlexLine</c> promoted
     // to an internal type in <see cref="FlexLinePacker"/> + the
@@ -2616,6 +2785,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             (AlignItemsValue.Center, _) => contentCrossOffset + crossSpace / 2.0,
             (AlignItemsValue.FlexStart, false) => contentCrossOffset,
             (AlignItemsValue.FlexStart, true) => contentCrossOffset + crossSpace,
+            // Baseline reaches this helper for a COLUMN container (no first baseline on
+            // the inline cross axis without vertical text) OR a wrap-reverse ROW (the
+            // mirrored shift is a documented residual). Either way it behaves as
+            // flex-start per CSS Box Alignment L3 §9.3's fallback to `start` — which under
+            // wrap-reverse anchors to the line's PHYSICAL cross-end (PR #208 Copilot review:
+            // mirror FlexStart's swap so the fallback matches the stated behavior).
+            (AlignItemsValue.Baseline, false) => contentCrossOffset,
+            (AlignItemsValue.Baseline, true) => contentCrossOffset + crossSpace,
             _ => contentCrossOffset, // defensive — unknown value
         };
 
@@ -2647,6 +2824,171 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         }
 
         return (natural, itemCrossSize);
+    }
+
+    /// <summary>Flex baseline-alignment cycle (CSS Flexbox L1 §8.3 + §8.5) — for a ROW
+    /// container, precompute per DOM-child-index two parallel arrays: the item's
+    /// alignment BASELINE (distance from its border-box cross-start to its first text
+    /// baseline) and the cross SIZE a baseline-aligned item uses.
+    ///
+    /// <para><b>Baseline</b> — when the item has an in-flow line box, its first baseline
+    /// comes from the measured content (<see cref="BufferingMeasureSink.FirstBaselineFromOrigin"/>):
+    /// the buffer origin is the item's BORDER-box cross-start for an inline-only ROOT
+    /// buffer (so the value is used as-is) or its CONTENT-box cross-start for a
+    /// block-child buffer (so the item's own block-start border+padding is added) — the
+    /// same origin split <see cref="MeasureFlexItemContents"/> uses for content sizing.
+    /// When the item has NO line box its baseline is SYNTHESIZED from its cross-end edge
+    /// (= the cross size) per CSS Flexbox L1 §8.5.</para>
+    ///
+    /// <para><b>Cross size</b> — an auto-cross-sized item with measured content uses its
+    /// content border-box block extent (so a baseline-aligned `&lt;div&gt;text&lt;/div&gt;`
+    /// is content-height, not 0); an explicitly-sized item keeps its declared cross
+    /// size. Indices for non-flex children stay NaN (never read — the emission loop only
+    /// reads an index it is emitting).</para></summary>
+    private (double[] Baselines, double[] CrossSizes) ComputeRowBaselineData(
+        BufferingMeasureSink?[] buffers,
+        FlexDirectionValue flexDirection,
+        PropertyId crossSizeProperty)
+    {
+        var count = _rootBox.Children.Count;
+        var baselines = new double[count];
+        var crossSizes = new double[count];
+        System.Array.Fill(baselines, double.NaN);
+        System.Array.Fill(crossSizes, double.NaN);
+
+        foreach (var itemIdx in _sortedFlexChildIndices)
+        {
+            var item = _rootBox.Children[itemIdx];
+            var (baseline, crossSize) = ComputeItemBaselineAndCrossSize(
+                item, buffers[itemIdx], flexDirection, crossSizeProperty);
+            baselines[itemIdx] = baseline;
+            crossSizes[itemIdx] = crossSize;
+        }
+
+        return (baselines, crossSizes);
+    }
+
+    /// <summary>Flex baseline-alignment cycle — for ONE ROW flex item, compute its
+    /// alignment baseline (distance from its border-box cross-start to its first text
+    /// baseline) + the cross SIZE a baseline-aligned item uses, from its content
+    /// <paramref name="buffer"/> (null when the item was not measured). SHARED by the
+    /// FlexLayouter emission (<see cref="ComputeRowBaselineData"/>) and the
+    /// BlockLayouter row-flex height pre-measure so the baseline-adjusted wrapper extent
+    /// matches the emitted geometry (PR #208 [P1]).
+    /// <list type="bullet">
+    ///   <item><b>Cross size</b> — a definite cross is its declared border box; an auto
+    ///   cross is the measured content border box (an inline-only ROOT buffer's extent
+    ///   already folds in the chrome; a block-child buffer adds it), or just the block
+    ///   border+padding when there is no content (a text-less auto item is NOT 0 —
+    ///   Copilot review).</item>
+    ///   <item><b>Baseline</b> — the item's first line baseline (the buffer origin is the
+    ///   item's border-box cross-start for an inline-only ROOT buffer, else its content-box
+    ///   cross-start so the item's own block-start chrome is added), or SYNTHESIZED from
+    ///   the cross-end edge (= the cross size) per §8.5 when the item has no line box.</item>
+    /// </list></summary>
+    internal static (double Baseline, double CrossSize) ComputeItemBaselineAndCrossSize(
+        Box item, BufferingMeasureSink? buffer,
+        FlexDirectionValue direction, PropertyId crossSizeProperty)
+    {
+        var itemCrossSize = item.Style.CrossBorderBoxSizePx(crossSizeProperty);
+        var itemIsCrossSizeAuto = IsCrossSizeAuto(item, direction);
+
+        double crossSize;
+        if (itemIsCrossSizeAuto)
+        {
+            var blockChrome = item.Style.BlockBorderPaddingPx();
+            crossSize = buffer is not null && buffer.ContentBlockExtent > 0
+                ? (buffer.ContainsDecorationOwnerFragment
+                    ? buffer.ContentBlockExtent
+                    : buffer.ContentBlockExtent + blockChrome)
+                : blockChrome;
+        }
+        else
+        {
+            crossSize = itemCrossSize; // definite → already a border box
+        }
+
+        double baseline;
+        if (buffer is not null && buffer.HasFirstBaseline)
+        {
+            baseline = buffer.ContainsDecorationOwnerFragment
+                ? buffer.FirstBaselineFromOrigin
+                : item.Style.BlockStartBorderPaddingPx() + buffer.FirstBaselineFromOrigin;
+        }
+        else
+        {
+            // No line box → synthesize the baseline at the cross-end edge (§8.5).
+            baseline = crossSize;
+        }
+
+        return (baseline, crossSize);
+    }
+
+    /// <summary>Flex baseline-alignment cycle — true when a ROW flex container's own
+    /// <c>align-items</c> resolves to baseline OR any in-order item's <c>align-self</c>
+    /// does. Lets the BlockLayouter row-flex pre-measure skip the baseline-adjusted extent
+    /// path entirely (byte-identical) for the overwhelmingly common non-baseline case.</summary>
+    internal static bool ContainerUsesBaselineAlignment(Box flexContainer, IReadOnlyList<Box> blockLevelItems)
+    {
+        var containerAlign = flexContainer.Style.ReadAlignItems();
+        if (containerAlign.Value == AlignItemsValue.Baseline) return true;
+        for (var i = 0; i < blockLevelItems.Count; i++)
+        {
+            var effective = blockLevelItems[i].Style.ReadAlignSelf()
+                .ResolveAgainstContainerAlignItems(containerAlign);
+            if (effective.Value == AlignItemsValue.Baseline) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Flex baseline-alignment cycle [P1] — the baseline-adjusted cross extent of
+    /// ONE nowrap ROW line: the deepest of (a) each item's plain cross size and (b) each
+    /// BASELINE-aligned item's down-shifted bottom (the shift = lineMaxBaseline − itemBaseline,
+    /// so its baseline meets the line's max baseline). When no item is baseline-aligned the
+    /// result is just <c>max(crossSize)</c> (the pre-cycle extent). SHARED by emission +
+    /// pre-measure. Each tuple is <c>(baseline, crossSize, isBaselineAligned)</c>.</summary>
+    internal static double ComputeBaselineAdjustedLineExtent(
+        IReadOnlyList<(double Baseline, double CrossSize, bool IsBaselineAligned)> items)
+    {
+        var maxBaseline = double.NaN;
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (!items[i].IsBaselineAligned) continue;
+            var b = items[i].Baseline;
+            if (double.IsNaN(maxBaseline) || b > maxBaseline) maxBaseline = b;
+        }
+        var extent = 0.0;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var (baseline, crossSize, isBaseline) = items[i];
+            var bottom = isBaseline && !double.IsNaN(maxBaseline)
+                ? (maxBaseline - baseline) + crossSize
+                : crossSize;
+            if (bottom > extent) extent = bottom;
+        }
+        return extent;
+    }
+
+    /// <summary>Flex baseline-alignment cycle — the line's baseline reference: the MAX
+    /// first-baseline (from <paramref name="alignmentBaselines"/>) over the line's
+    /// items whose effective <c>align-self</c>/<c>align-items</c> resolves to
+    /// <see cref="AlignItemsValue.Baseline"/> (CSS Box Alignment L3 §6.2 baseline-sharing
+    /// group). NaN when the line has no baseline-aligned item.</summary>
+    private double ComputeLineMaxBaseline(
+        FlexLine line, double[] alignmentBaselines, ResolvedAlignItems alignItems)
+    {
+        var maxBaseline = double.NaN;
+        var endSortedPos = line.FirstItemIndex + line.ItemCount;
+        for (var sortedPos = line.FirstItemIndex; sortedPos < endSortedPos; sortedPos++)
+        {
+            var itemIdx = _sortedFlexChildIndices[sortedPos];
+            var item = _rootBox.Children[itemIdx];
+            var effectiveAlign = item.Style.ReadAlignSelf().ResolveAgainstContainerAlignItems(alignItems);
+            if (effectiveAlign.Value != AlignItemsValue.Baseline) continue;
+            var b = alignmentBaselines[itemIdx];
+            if (double.IsNaN(maxBaseline) || b > maxBaseline) maxBaseline = b;
+        }
+        return maxBaseline;
     }
 
     /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 +
@@ -2914,7 +3256,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private static bool IsMainSizeContentDetermined(Box item, PropertyId mainSizeProperty)
     {
         var basis = item.Style.ReadFlexBasis();
-        if (basis.Kind == FlexBasisKind.Content) return true;
+        // Flex intrinsic-basis cycle — content / max-content / min-content are all
+        // content-determined (the COLUMN block axis sizes from the measured content;
+        // the ROW inline axis uses the precomputed intrinsic base size).
+        if (basis.Kind is FlexBasisKind.Content or FlexBasisKind.MaxContent or FlexBasisKind.MinContent)
+            return true;
         if (basis.Kind == FlexBasisKind.Auto)
         {
             var slot = item.Style.Get(mainSizeProperty);

@@ -343,6 +343,129 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_flex_1_shorthand_grows_items_from_zero_basis_at_layout_level()
+    {
+        // Flex shorthand at the LAYOUT level (CSS Flexbox L1 §7.4) — `flex: 1` expands to
+        // flex-grow: 1 / flex-shrink: 1 / flex-basis: 0, so the items size purely by their
+        // grow ratio from a 0 base. `flex: 2` grows twice as fast. In a 600px container the
+        // 1:2 ratio with basis 0 gives widths 200 / 400 at offsets 0 / 200 — confirming the
+        // FlexShorthandExpander → cascade → §9.7 path end-to-end (the shorthand parser was
+        // covered at the preprocessor layer but never at the flex-item layout level).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 600px; height: 40px; }
+                .one { flex: 1; }
+                .two { flex: 2; }
+            </style></head><body>
+            <div class="flex">
+              <div class="one a"></div>
+              <div class="two b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? one = null, two = null;
+        foreach (var f in sink.Fragments)
+        {
+            var cls = f.Box.SourceElement?.GetAttribute("class");
+            if (cls is null) continue;
+            if (cls.Contains("one")) one = f;
+            else if (cls.Contains("two")) two = f;
+        }
+        Assert.NotNull(one);
+        Assert.NotNull(two);
+        // basis 0 + grow ratio 1:2 over 600 → 200 / 400.
+        Assert.Equal(200.0, one!.Value.InlineSize, precision: 2);
+        Assert.Equal(400.0, two!.Value.InlineSize, precision: 2);
+        Assert.Equal(0.0, one.Value.InlineOffset, precision: 2);
+        Assert.Equal(200.0, two.Value.InlineOffset, precision: 2);
+    }
+
+    [Fact]
+    public async Task Production_html_flex_basis_max_content_sizes_item_to_content_then_grows_sibling()
+    {
+        // Flex intrinsic-basis cycle — end-to-end through the CSS cascade:
+        // `flex-basis: max-content` parses + decodes, and a nowrap ROW item sizes to its
+        // content width while a `flex: 1` sibling absorbs the remaining space. The label
+        // item must be WIDER than its declared-0 fallback would be (content-sized), and
+        // the two items tile the 400px container exactly (label + grow = 400).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 400px; height: 40px; }
+                .label { flex-grow: 0; flex-shrink: 0; flex-basis: max-content; }
+                .rest { flex-grow: 1; flex-shrink: 1; flex-basis: 0; }
+            </style></head><body>
+            <div class="flex">
+              <div class="label">A label with several words</div>
+              <div class="rest">x</div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? label = null, rest = null;
+        foreach (var f in sink.Fragments)
+        {
+            var cls = f.Box.SourceElement?.GetAttribute("class");
+            if (cls is null || f.InlineLayout is not null) continue;
+            if (cls.Contains("label")) label = f;
+            else if (cls.Contains("rest")) rest = f;
+        }
+        Assert.NotNull(label);
+        Assert.NotNull(rest);
+        // The label is content-sized (clearly wider than the 0-basis fallback).
+        Assert.True(label!.Value.InlineSize > 20,
+            $"max-content label should be content-sized; got {label.Value.InlineSize}");
+        // The grow sibling starts right after the label and the two tile the container.
+        Assert.Equal(label.Value.InlineSize, rest!.Value.InlineOffset, precision: 2);
+        Assert.Equal(400.0, label.Value.InlineSize + rest.Value.InlineSize, precision: 2);
+    }
+
+    [Fact]
+    public async Task Production_html_align_items_baseline_aligns_item_first_baselines()
+    {
+        // Flex baseline-alignment cycle (CSS Flexbox L1 §8.3) — end-to-end through the
+        // CSS cascade: `align-items: baseline` parses + decodes, and two ROW items that
+        // carry text but differ in padding-top (0 vs 30) get their FIRST text baselines
+        // aligned. The padded item's baseline is 30px deeper in its border box, so the
+        // unpadded item is shifted DOWN by exactly 30px while the padded item anchors at
+        // the cross-start. The ascent cancels (same synthetic font), so the delta is the
+        // 30px padding difference — robust against the exact font metrics.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; align-items: baseline; width: 400px; height: 100px; }
+                .item { width: 120px; }
+                .b { padding-top: 30px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a">Ag</div>
+              <div class="item b">Ag</div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? a = null, b = null;
+        foreach (var f in sink.Fragments)
+        {
+            var cls = f.Box.SourceElement?.GetAttribute("class");
+            if (cls is null || f.InlineLayout is not null) continue; // geometry fragment only
+            if (cls.Contains("a")) a = f;
+            else if (cls.Contains("b")) b = f;
+        }
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        // Padded item (deeper baseline) anchors at the line cross-start; unpadded item
+        // shifts down by the 30px padding delta so the baselines coincide.
+        Assert.Equal(0.0, b!.Value.BlockOffset, precision: 2);
+        Assert.Equal(30.0, a!.Value.BlockOffset, precision: 2);
+    }
+
+    [Fact]
     public async Task L2_production_html_justify_content_unsafe_flex_end_with_overflow_honors_alignment()
     {
         // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —

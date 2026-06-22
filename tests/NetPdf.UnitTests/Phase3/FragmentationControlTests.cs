@@ -18,8 +18,19 @@ namespace NetPdf.UnitTests.Phase3;
 /// page-placement (forced breaks split fitting ancestors) is covered by the
 /// W3cConformance Fragmentation cases (frag-break-before-page, frag-break-after-page,
 /// frag-page-break-before-always); these are the unit-level parse + reader + wiring tests.</summary>
-public sealed class FragmentationControlTests
+public sealed class FragmentationControlTests : System.IDisposable
 {
+    // PR #207 Copilot review — Phase2Result.Dispose() pool-returns the box-owned
+    // ComputedStyles, but a test reads box.Style AFTER parsing, so the result can't be
+    // disposed mid-test. Track parsed results + dispose them all in Dispose() (xUnit runs it
+    // after each test, when nothing else holds the boxes) — no leak, no re-rental race.
+    private readonly System.Collections.Generic.List<System.IDisposable> _parsed = new();
+
+    public void Dispose()
+    {
+        foreach (var d in _parsed) d.Dispose();
+    }
+
     [Fact]
     public async Task Break_before_page_parses_to_a_keyword_slot_and_forces()
     {
@@ -128,6 +139,7 @@ public sealed class FragmentationControlTests
         // the body box. This guards that resolution: synthetic root == 2, body == authored.
         var html = "<!doctype html><html><body style='orphans:4;widows:3'><p>x</p></body></html>";
         var result = await Phase2Pipeline.RunFromHtmlAsync(html, new NetPdf.HtmlPdfOptions());
+        _parsed.Add(result);
         Assert.Equal(2, result.BoxRoot.Style.ReadOrphansOrDefault());   // synthetic root → default
         Assert.Equal(2, result.BoxRoot.Style.ReadWidowsOrDefault());
         var body = FindByLocalName(result.BoxRoot, "body");
@@ -174,6 +186,29 @@ public sealed class FragmentationControlTests
             + "<p style='break-before:page'>second paragraph</p></section>"));
     }
 
+    [Theory]
+    [InlineData("display:flex")]
+    [InlineData("display:grid")]
+    [InlineData("display:table")]
+    public void Forced_break_before_a_nested_non_block_flow_container_creates_a_new_page(string display)
+    {
+        // PR #207 Copilot review [P1] — break-before on a nested table/flex/grid container
+        // (NOT block-flow-owned) is honored too: the metadata is computed at the recursion
+        // loop top for EVERY in-flow block-level child, not just block-flow ones.
+        Assert.Equal(2, Pages(
+            "<div>first</div><div style='" + display + ";break-before:page'><div>x</div></div>"));
+    }
+
+    [Fact]
+    public void Break_after_a_nested_non_block_flow_container_moves_the_next_sibling()
+    {
+        // PR #207 Copilot review [P2] — break-after on a nested flex container is remembered
+        // (prevInFlowChild is tracked for all child types at the loop top), so the next
+        // sibling moves to page 2.
+        Assert.Equal(2, Pages(
+            "<div style='display:flex;break-after:page'><div>x</div></div><div>second</div>"));
+    }
+
     private static int Pages(string bodyHtml)
     {
         var html = "<!doctype html><html><body style='margin:0'>" + bodyHtml + "</body></html>";
@@ -195,13 +230,11 @@ public sealed class FragmentationControlTests
 
     // --- Helpers -------------------------------------------------------------
 
-    private static async Task<Box> ParseBox(string bodyHtml)
+    private async Task<Box> ParseBox(string bodyHtml)
     {
         var html = "<!doctype html><html><body style='margin:0'>" + bodyHtml + "</body></html>";
-        // NOT disposed: Phase2Result.Dispose() pool-returns the box-owned ComputedStyles,
-        // and the caller reads box.Style after this returns. Box-owned styles are never
-        // re-rented (only RETURNED styles are), so leaving them is safe in a short-lived test.
         var result = await Phase2Pipeline.RunFromHtmlAsync(html, new NetPdf.HtmlPdfOptions());
+        _parsed.Add(result); // disposed in Dispose(), after this test reads box.Style.
         var box = FindById(result.BoxRoot, "x");
         Assert.NotNull(box);
         return box!;

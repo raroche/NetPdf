@@ -3282,12 +3282,19 @@ flags the categories):
      the `PAINT-*-ALPHA-APPROXIMATED-001` diagnostics are retired). Background images +
      border-radius shipped; **Phase 4 native gradients shipped** — `linear-gradient` (PDF
      ShadingType 2) + `radial-gradient` (ShadingType 3) backgrounds via
-     `PdfDocument.RegisterAxialShading` / `RegisterRadialShading` + `PdfPage.PaintAxialShading`.
+     `PdfDocument.RegisterAxialShading` / `RegisterRadialShading` + `PdfPage.PaintShadingInRect`.
+     (PR #209 review hardened these: FunctionType 3 `/Bounds` are strictly increasing for
+     terminal/leading hard stops; `to <corner>` is aspect-ratio correct; radial `at <position>`
+     classifies axes + rejects duplicate/misordered pairs; identical gradients share one color
+     function/shading; multi-layer lists are rejected.)
      **Gradient residuals (Phase 4 follow-ups):** `box-shadow` (sharp → native offset path,
      blurred → Skia raster), elliptical radial shaping via a CTM scale (the first cut paints
      ellipses circularly by their scalar extent), `repeating-linear/radial-gradient`, conic
      gradients (Skia raster), length-positioned color stops + color hints, per-stop alpha (a
-     soft-mask alpha shading), and multi-layer background-image lists. The `NetPdf.Paint`
+     soft-mask alpha shading), multi-layer background-image lists, and **gradient
+     `background-clip` / `background-origin` insets** (PR #209 Copilot — gradients paint/clip
+     against the border box; the `url()` image path already honors origin/clip + inset radii, so
+     `background-clip: padding-box` affects images but not yet gradients). The `NetPdf.Paint`
      `DisplayCommand` IR still has no fragment→command or command→PDF consumer — the
      bridge emits straight to `IContentStream`.
   3. **Facade** — DONE for the single-page path (cycle 2:

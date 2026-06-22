@@ -112,4 +112,16 @@ public sealed class CssLinearGradientParserTests
     {
         Assert.Null(CssLinearGradient_Parser.TryParse(value));
     }
+
+    [Theory]
+    // A multi-layer background-image list must NOT mis-terminate on a later layer's `)` and parse
+    // as one gradient — it falls through to the unsupported-form path (PR #209 Copilot).
+    [InlineData("linear-gradient(red, blue), url(bg.png)")]
+    [InlineData("linear-gradient(red, blue), linear-gradient(lime, yellow)")]
+    [InlineData("url(bg.png), linear-gradient(red, blue)")]
+    [InlineData("linear-gradient(red, blue) extra")]     // trailing junk after the function
+    public void Multi_layer_lists_are_rejected(string value)
+    {
+        Assert.Null(CssLinearGradient_Parser.TryParse(value));
+    }
 }

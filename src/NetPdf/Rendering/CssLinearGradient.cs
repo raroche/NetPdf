@@ -44,12 +44,13 @@ internal static class CssLinearGradient_Parser
         if (string.IsNullOrWhiteSpace(rawBackgroundImage)) return null;
         var value = rawBackgroundImage.Trim();
 
-        // Only a single, non-repeating linear-gradient() layer (no commas BETWEEN layers — the
-        // commas inside are the arg separators; a multi-LAYER background is a documented residual).
+        // Only a SINGLE, non-repeating linear-gradient() layer: the function's opening paren must
+        // be matched by a closing paren at the very end of the value (PR #209 Copilot) — a
+        // multi-layer list like `linear-gradient(...), url(...)` must NOT mis-terminate on a later
+        // layer's `)` and parse as one gradient (which would suppress the unsupported diagnostic).
         const string prefix = "linear-gradient(";
         if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
-        if (!value.EndsWith(")", StringComparison.Ordinal)) return null;
-        var inner = value.Substring(prefix.Length, value.Length - prefix.Length - 1).Trim();
+        if (!TryExtractSingleFunctionBody(value, prefix, out var inner)) return null;
         if (inner.Length == 0) return null;
 
         var args = SplitTopLevelCommas(inner);
@@ -179,6 +180,35 @@ internal static class CssLinearGradient_Parser
                     CultureInfo.InvariantCulture, out _))
                 return true;
         return false;
+    }
+
+    /// <summary>Confirm <paramref name="value"/> is a SINGLE function token whose opening paren
+    /// (the last char of <paramref name="prefix"/>, e.g. <c>"linear-gradient("</c>) is matched by
+    /// a closing paren at the very end (only trailing whitespace after) — so a multi-layer list
+    /// such as <c>linear-gradient(...), url(...)</c> is rejected rather than mis-terminated on a
+    /// later layer's <c>)</c> (PR #209 Copilot). Returns the trimmed body between the outer
+    /// parens. Shared with the radial parser.</summary>
+    internal static bool TryExtractSingleFunctionBody(string value, string prefix, out string inner)
+    {
+        inner = string.Empty;
+        var open = prefix.Length - 1; // index of '(' within "<name>("
+        var depth = 0;
+        var close = -1;
+        for (var i = open; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (c == '(') depth++;
+            else if (c == ')')
+            {
+                depth--;
+                if (depth == 0) { close = i; break; }
+            }
+        }
+        if (close < 0) return false; // unbalanced parens
+        for (var i = close + 1; i < value.Length; i++)
+            if (!char.IsWhiteSpace(value[i])) return false; // a trailing layer / extra tokens
+        inner = value.Substring(prefix.Length, close - prefix.Length).Trim();
+        return true;
     }
 
     /// <summary>Split on commas that are NOT inside parentheses (so <c>rgb(1, 2, 3)</c> stays one

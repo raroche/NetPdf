@@ -35,10 +35,12 @@ internal static class CssRadialGradient_Parser
     {
         if (string.IsNullOrWhiteSpace(rawBackgroundImage)) return null;
         var value = rawBackgroundImage.Trim();
+        // A SINGLE radial-gradient() layer only — the same paren-balance guard as the linear
+        // parser, so a multi-layer value (`radial-gradient(...), url(...)`) is rejected instead
+        // of mis-terminating on a later layer's `)` (PR #209 Copilot).
         const string prefix = "radial-gradient(";
         if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
-        if (!value.EndsWith(")", StringComparison.Ordinal)) return null;
-        var inner = value.Substring(prefix.Length, value.Length - prefix.Length - 1).Trim();
+        if (!CssLinearGradient_Parser.TryExtractSingleFunctionBody(value, prefix, out var inner)) return null;
         if (inner.Length == 0) return null;
 
         var args = CssLinearGradient_Parser.SplitTopLevelCommas(inner);

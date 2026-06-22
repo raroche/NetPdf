@@ -1305,9 +1305,10 @@ grepping the ID).
   **Per Phase 3 Task 15 L8** — `flex-grow` / `flex-shrink` /
   `flex-basis` ship the §7 + §9.7 flexibility algorithm. Per line:
   compute each item's hypothetical main-size from its `flex-basis`
-  (Auto/Content delegate to declared main-size; LengthPx uses the
-  explicit pixel value; Percentage resolves against the container's
-  main-size); compute `freeMainSpace = containerMainSize -
+  (Auto delegates to the declared main-size; Content/MaxContent/MinContent
+  are content-sized — measured on the nowrap ROW main axis, block-extent on
+  the COLUMN axis; LengthPx uses the explicit pixel value; Percentage
+  resolves against the container's main-size); compute `freeMainSpace = containerMainSize -
   sum(hypothetical)`; if positive AND any item has `flex-grow > 0`,
   each item grows by `(item.flexGrow / sumFlexGrow) * freeMainSpace`;
   if negative AND any item has `flex-shrink > 0`, each item shrinks
@@ -1477,8 +1478,19 @@ grepping the ID).
     `content` ≡ max-content per §9.2.3. The COLUMN axis content-sizes
     `content`/`max-content`/`min-content` via the existing block-extent measure.
     **Still deferred**: the WRAP row main axis (line-breaking depends on the base
-    size in the shaper-less multi-line pre-measure) and `fit-content` /
-    `fit-content(<length-percentage>)`.
+    size in the shaper-less multi-line pre-measure), `fit-content` /
+    `fit-content(<length-percentage>)`, and a **perf follow-up** (PR #208 [P3]) —
+    the intrinsic measure lays each item into a full `BufferingMeasureSink`
+    fragment list when only `ContentInlineExtent` is read, and the emission +
+    pre-measure measure the same items twice; an extent-only sink or a
+    measure-share across the two passes would trim allocations for documents with
+    many intrinsic-basis flex items (low impact — the path is opt-in + rare).
+  - Also baseline + `flex-wrap: wrap-reverse` (PR #208 Copilot review): a ROW
+    baseline item under wrap-reverse falls back to flex-start rather than mirroring
+    the baseline shift relative to the swapped cross-start, and a baseline
+    down-shift in a WRAP auto-height container can under-size the wrapper (the
+    multi-line cross-extent pre-measure is shaper-less, so it can't mirror the
+    baseline-adjusted extent the nowrap pre-measure does).
   - **§9.7 step-4 min/max clamping** ✅ **shipped in L12** (CSS Flexbox L1
     §9.7 + §9.5) — `ResolveFlexibleMainSizes` now delegates per line
     to `ResolveLineWithMinMaxClamping`, which implements the full
@@ -1512,16 +1524,15 @@ grepping the ID).
     + making the §9.7 step-4 min/max-clamp iteration easier to add.
     L9+ scope; the L8 extension is sufficient to close line-boundary
     drift but the struct unification is a follow-up optimization.
-  - **`flex-basis: content` proper implementation** (CSS Flexbox L1
-    §7.2.1): post-PR-#68 F#4 — currently `Content` is approximated as
-    `Auto` (= delegate to declared main-size). Per spec, Content should
-    force the intrinsic content size REGARDLESS of declared
-    width/height; e.g., `width: 200; flex-basis: content` should
-    produce hypothetical = intrinsic content size (NOT 200). Requires
-    intrinsic-sizing integration with the BlockLayouter pre-measure
-    (= same prerequisite as `min-content` / `max-content` /
-    `fit-content` flex-basis keywords + the §9.7 step-4 min-clamp).
-    Pinned by `L8_hardening_known_gap_flex_basis_content_approximates_to_auto`.
+  - ~~**`flex-basis: content` proper implementation** (CSS Flexbox L1
+    §7.2.1)~~ — **shipped (Flex L1 completion).** `Content` (≡ max-content per
+    §9.2.3) now forces the intrinsic content size REGARDLESS of the declared
+    width/height on the nowrap ROW main axis (measured via
+    `FlexLayouter.BuildRowIntrinsicMainBaseSizes`) and the COLUMN axis (block
+    extent); e.g. `width: 200; flex-basis: content` produces the intrinsic
+    content size (NOT 200). The old pin flipped to
+    `Flex_basis_content_uses_intrinsic_content_size_ignoring_declared_width`.
+    **Still deferred**: the WRAP row main axis + `fit-content`.
   - ~~Anonymous flex-item wrapping for inline-level / text children~~
     ✅ shipped in Phase 3 Task 15 L15 (PR #75). The L1-L14 cycle-1
     skip was replaced by `BoxBuilder.FixupFlexAnonymousItems`

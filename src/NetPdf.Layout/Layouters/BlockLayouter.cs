@@ -9469,7 +9469,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 flexContentInlineSize, mainGap, cancellationToken, intrinsicBaseSizes)
             : System.Array.Empty<double>();
 
-        Dictionary<Box, double>? measureCache = null;
+        // Flex baseline-alignment cycle [P1] — when the container uses align-items /
+        // align-self: baseline, a down-shifted item can extend below the packed line cross
+        // size, so the auto-height wrapper extent must be the baseline-ADJUSTED extent (the
+        // SAME formula the FlexLayouter emission uses). Gated so the common non-baseline
+        // path is byte-identical. Per item we collect (baseline, cross, isBaselineAligned)
+        // via the shared helpers; baseline items also need a content measurement EVEN when
+        // explicit-height (to read their first baseline).
+        var baselineActive = _shaperResolver is not null
+            && FlexLayouter.ContainerUsesBaselineAlignment(flexContainer, lineItems);
+        var containerAlign = flexContainer.Style.ReadAlignItems();
+        List<(double Baseline, double CrossSize, bool IsBaselineAligned)>? baselineItems =
+            baselineActive ? new List<(double, double, bool)>(lineItems.Count) : null;
+
+        Dictionary<Box, BufferingMeasureSink>? measureCache = null;
         var maxCross = 0.0;
         var itemPos = 0;
         foreach (var item in flexContainer.Children)
@@ -9486,15 +9499,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var blockChrome = item.Style.BlockBorderPaddingPx();
             var itemCross = BoxSizingHelper.DeclaredToBorderBox(
                 item.Style, item.Style.ReadLengthPxOrZero(PropertyId.Height), blockChrome);
-            // An AUTO-HEIGHT (content-determined cross-size) row item contributes its
-            // measured content BLOCK extent (+ its block chrome) instead of just the chrome,
-            // so an auto-height row whose items are content-sized overflows the wrapper + the
-            // row-nowrap intra-item split engages (completing PR #188's explicit-height-only
-            // first cut). Mirrors PreMeasureFlexMainExtent (column). Explicit-height items
-            // keep their (box-sizing-mapped) declared height. Skipped without a shaper.
-            if (_shaperResolver is not null
-                && item.Children.Count > 0
-                && IsRowCrossSizeContentDetermined(item))
+            var itemIsBaseline = baselineActive
+                && item.Style.ReadAlignSelf().ResolveAgainstContainerAlignItems(containerAlign).Value
+                    == AlignItemsValue.Baseline;
+
+            // Measure the item's content when (a) it is an auto-height content-determined
+            // row item (so its measured block extent sizes the wrapper — mirrors
+            // PreMeasureFlexMainExtent / column; the row-nowrap intra-item split engages on
+            // overflow), OR (b) it is baseline-aligned (so its first baseline is known even
+            // for an explicit-height item). Skipped without a shaper or for childless items.
+            BufferingMeasureSink? buffer = null;
+            var needsMeasure = _shaperResolver is not null && item.Children.Count > 0
+                && (IsRowCrossSizeContentDetermined(item) || itemIsBaseline);
+            if (needsMeasure)
             {
                 // Measure at the flex-RESOLVED main (inline) CONTENT width (border box minus
                 // the item's inline chrome); a non-positive resolution falls back to the
@@ -9502,8 +9519,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var itemInline = resolvedItemMain > inlineChrome
                     ? resolvedItemMain - inlineChrome
                     : flexContentInlineSize;
-                measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
-                if (!measureCache.TryGetValue(item, out var measuredBorderBox))
+                measureCache ??= new Dictionary<Box, BufferingMeasureSink>(ReferenceEqualityComparer.Instance);
+                if (!measureCache.TryGetValue(item, out buffer))
                 {
                     // Effectively-unbounded block budget (not the page size) — the point
                     // of this pre-measure is to detect a row item TALLER than the page so
@@ -9511,25 +9528,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // CLIP the content + under-report the natural cross extent (so the
                     // wrapper wouldn't overflow + never paginate). See the budget const doc
                     // for the (no-real-document) cap.
-                    var buf = NestedContentMeasurer.Measure(
+                    buffer = NestedContentMeasurer.Measure(
                         item, itemInline,
                         blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
                         shaperResolver: _shaperResolver,
                         writingMode: WritingMode.HorizontalTb, isRtl: false,
                         cancellationToken: cancellationToken);
+                    measureCache[item] = buffer;
+                }
+                if (IsRowCrossSizeContentDetermined(item))
+                {
                     // The item's cross BORDER box = measured content + its block chrome for
                     // BLOCK-CHILD content; an inline-only-root buffer's extent already folds
                     // in the item's own border + padding (flex box-sizing cycle).
-                    measuredBorderBox = buf.ContainsDecorationOwnerFragment
-                        ? buf.ContentBlockExtent
-                        : buf.ContentBlockExtent + blockChrome;
-                    measureCache[item] = measuredBorderBox;
+                    var measuredBorderBox = buffer.ContainsDecorationOwnerFragment
+                        ? buffer.ContentBlockExtent
+                        : buffer.ContentBlockExtent + blockChrome;
+                    if (measuredBorderBox > itemCross) itemCross = measuredBorderBox;
                 }
-                if (measuredBorderBox > itemCross) itemCross = measuredBorderBox;
             }
             if (itemCross > maxCross) maxCross = itemCross;
+
+            if (baselineItems is not null)
+            {
+                // SHARED with the FlexLayouter emission (ComputeItemBaselineAndCrossSize) so
+                // the pre-measured wrapper extent matches the emitted item geometry.
+                var (baseline, crossSize) = FlexLayouter.ComputeItemBaselineAndCrossSize(
+                    item, buffer, FlexDirectionValue.Row, PropertyId.Height);
+                baselineItems.Add((baseline, crossSize, itemIsBaseline));
+            }
         }
-        return maxCross;
+
+        return baselineItems is not null
+            ? System.Math.Max(maxCross, FlexLayouter.ComputeBaselineAdjustedLineExtent(baselineItems))
+            : maxCross;
     }
 
     /// <summary>Row-nowrap intra-item fragmentation (auto-height) — whether a flex

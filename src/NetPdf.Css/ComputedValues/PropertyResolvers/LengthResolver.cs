@@ -274,16 +274,14 @@ internal static class LengthResolver
             slot = ComputedSlot.FromKeyword(KeywordIdNormal);
             return true;
         }
-        // Per Phase 3 Task 15 L8 — flex-basis grammar per CSS Flexbox L1
-        // §7.2: `content | <'width'>` where <'width'> admits
-        // `<length-percentage> | auto | min-content | max-content |
-        // fit-content(...)`. L8 Hello World admits `auto` + `content` +
-        // the generic length-percentage path; the three intrinsic-sizing
-        // keywords (min-content / max-content / fit-content) are L9+
-        // scope. The reader (ReadFlexBasis) decodes Keyword(0) → Auto
-        // and Keyword(1) → Content; the FlexLayouter currently
-        // approximates Content as Auto (= delegate to declared
-        // width/height) until intrinsic sizing lands.
+        // flex-basis grammar per CSS Flexbox L1 §7.2: `content | <'width'>` where
+        // <'width'> admits `<length-percentage> | auto | min-content | max-content |
+        // fit-content(...)`. Admitted: `auto` (Keyword 0) / `content` (1) / `max-content`
+        // (2) / `min-content` (3) + the generic length-percentage path. The reader
+        // (ReadFlexBasis) decodes them to FlexBasisKind; the FlexLayouter measures the
+        // max-/min-content inline extent on the nowrap ROW main axis (content ≡
+        // max-content per §9.2.3). `fit-content` / `fit-content(<length-percentage>)`
+        // stay deferred (fall through to the length grammar → rejected).
         if (type is PropertyType.FlexBasis)
         {
             if (value.Equals("auto", StringComparison.OrdinalIgnoreCase))

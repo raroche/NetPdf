@@ -1286,11 +1286,13 @@ internal static class ComputedStyleLayoutExtensions
     ///   <item><c>auto</c> (KeywordIdAuto = 0) → delegate to the item's
     ///   declared main-size (<c>width</c> for row, <c>height</c> for
     ///   column).</item>
-    ///   <item><c>content</c> (KeywordIdContent = 1) → use the item's
-    ///   intrinsic content size. L8 approximates this as
-    ///   <see cref="FlexBasisKind.Auto"/> (= delegate to declared
-    ///   main-size) until intrinsic sizing lands; the Content variant
-    ///   is preserved on the resolved struct for future use.</item>
+    ///   <item><c>content</c> (1) / <c>max-content</c> (2) /
+    ///   <c>min-content</c> (3) → use the item's intrinsic content size
+    ///   (<see cref="FlexBasisKind.Content"/> / <see cref="FlexBasisKind.MaxContent"/> /
+    ///   <see cref="FlexBasisKind.MinContent"/>). SHIPPED on the nowrap ROW main axis: the
+    ///   FlexLayouter measures the item's max-/min-content inline extent (the COLUMN main
+    ///   axis content-sizes via the block-extent measure). Without a caller-supplied
+    ///   measurement (wrap / no shaper) these fall back to the declared main-size.</item>
     ///   <item><c>&lt;length&gt;</c> (LengthPx slot) → use the explicit
     ///   pixel value as the hypothetical main-size.</item>
     ///   <item><c>&lt;percentage&gt;</c> (Percentage slot) → resolve
@@ -1467,15 +1469,19 @@ internal static class ComputedStyleLayoutExtensions
     /// line-collection uses the same flex-basis-aware size in both
     /// passes (= line-boundary parity per §9.3).
     ///
-    /// <para><b>Resolution table:</b> <see cref="FlexBasisKind.LengthPx"/>
+    /// <para><b>Resolution table:</b> an entry in
+    /// <paramref name="precomputedIntrinsicBaseSizes"/> (a caller-measured max-/min-content
+    /// BORDER-box size) wins outright; otherwise <see cref="FlexBasisKind.LengthPx"/>
     /// returns the explicit pixel value (floored at 0);
     /// <see cref="FlexBasisKind.Percentage"/> resolves against
     /// <paramref name="containerMainSize"/> (definite 0 yields 0; non-
     /// finite container size falls back to the declared property);
-    /// <see cref="FlexBasisKind.Auto"/> / <see cref="FlexBasisKind.Content"/>
-    /// delegate to the item's declared main-size property
-    /// (Content is approximated as Auto in L8 — intrinsic sizing is
-    /// L10+ scope).</para></summary>
+    /// <see cref="FlexBasisKind.Auto"/> / <see cref="FlexBasisKind.Content"/> /
+    /// <see cref="FlexBasisKind.MaxContent"/> / <see cref="FlexBasisKind.MinContent"/>
+    /// delegate to the item's declared main-size property (the intrinsic kinds are
+    /// content-sized only when the caller supplies a measurement — nowrap ROW; the COLUMN
+    /// axis content-sizes via the block-extent measure, and the wrap / no-shaper paths keep
+    /// the declared fallback).</para></summary>
     /// <param name="item">The flex item box.</param>
     /// <param name="mainSizeProperty">The direction-resolved main-size
     /// property (<see cref="PropertyId.Width"/> for row,

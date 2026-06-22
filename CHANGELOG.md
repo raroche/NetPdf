@@ -8,6 +8,12 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: native PDF gradients
+
+- **`background-image: linear-gradient(...)`** now paints as a PDF native axial shading (ISO 32000-2 ShadingType 2) instead of being skipped: a greenfield shading foundation (`PdfDocument.RegisterAxialShading` + a Type-2 / Type-3-stitching color function + `PdfPage.PaintAxialShading` clip-and-`sh`), a `linear-gradient()` parser (default `to bottom`, `to <side>`/`<corner>`, `<angle>` in deg/grad/rad/turn, percentage stops, function colors), and the painter axis math (CSS Images §3.1 gradient line). Border-radius clips the gradient.
+- **`background-image: radial-gradient(...)`** paints as a PDF native radial shading (ShadingType 3), reusing the foundation: shape (`circle`/`ellipse`), the four extent keywords, and `at <position>` (center / sides / percentages). FIRST CUT: the ending shape is painted circularly (an `ellipse` is approximated by its scalar extent — exact for a centered gradient on a square box).
+- Both are gated — non-gradient rendering is byte-identical. Deferred (documented): `box-shadow`, elliptical radial shaping via CTM, `repeating-*` / conic gradients, length-positioned stops, per-stop alpha (soft-mask).
+
 ### Fixed — CSS sizing residuals (conformance raised past the `0.7.0-beta` baseline)
 
 - **Grid `fr` tracks subtract the gutters from their distributed free space** (CSS Grid L1 §7.2.3/§11.5) — `grid-template-columns: 1fr 1fr; column-gap: 20px` in a 400px container now sizes each fr track at 190 (= (400-20)/2), not 200; percentage tracks still resolve against the full content area. Grid conformance → **100%** (15/15).

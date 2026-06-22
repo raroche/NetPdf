@@ -1149,18 +1149,21 @@ grepping the ID).
 
 - **ID** — `flex-layouter-features`
 - **Status** — `approximated`. CSS Flexbox L1 is feature-complete for the common
-  cases (W3C Flexbox conformance **100%**, 18/18 as of the `0.7.0-beta` audit): all
-  four `flex-direction` values, `flex-wrap` (incl. `wrap-reverse`),
-  `justify-content` / `align-items` / `align-self` / `align-content` (positional +
-  safe/unsafe overflow), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto)
-  with the §9.7 step-4 min/max clamping iteration, `order`, `gap` / `column-gap` /
-  `row-gap` gutters (consuming free space before grow/shrink + justify-content),
-  explicit container `width` + `margin: 0 auto` centering, RTL `row` main-axis flip,
-  anonymous-item wrapping, and multi-page container splitting. The residual
-  approximations are enumerated under **Missing** below (baseline alignment, the
-  `flex` shorthand parser, intrinsic `flex-basis` keywords, margin-box in the
-  alignment / justify-content free-space math, RTL column cross-axis + vertical
-  writing modes). Percentage gaps + percentage item min/max main-size resolve
+  cases (W3C Flexbox conformance **100%**, 19/19 as of the post-`0.7.0-beta`
+  sizing-residuals PR): all four `flex-direction` values, `flex-wrap` (incl.
+  `wrap-reverse`), `justify-content` / `align-items` / `align-self` / `align-content`
+  (positional + safe/unsafe overflow + **`align-items`/`align-self: baseline`** on the
+  row cross axis), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto +
+  **`content` / `max-content` / `min-content` intrinsic keywords on the nowrap row main
+  axis**) with the §9.7 step-4 min/max clamping iteration, the **`flex` shorthand** (§7.4
+  grammar, via `FlexShorthandExpander`), `order`, `gap` / `column-gap` / `row-gap`
+  gutters (consuming free space before grow/shrink + justify-content), explicit container
+  `width` + `margin: 0 auto` centering, RTL `row` main-axis flip, anonymous-item
+  wrapping, and multi-page container splitting. The residual approximations are enumerated
+  under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
+  `align-content: baseline`, margin-box in the alignment / justify-content free-space
+  math, RTL column cross-axis + vertical writing modes). Percentage gaps + percentage
+  item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
   pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
   row-gap on an auto-height column resolves to 0 per the indefinite-reference rule.
@@ -1338,11 +1341,10 @@ grepping the ID).
     keywords (`baseline` / `first baseline` / `last baseline`) into
     BuildAlignContentTable but the reader maps all three to `stretch`
     as a safe approximation. Proper baseline alignment requires
-    text-shaping integration to align item baselines on the cross
-    axis (= the cross-axis cursor advances to the line's baseline
-    position rather than the line's cross-start, computed from
-    HarfBuzz-shaped runs); L8+ scope alongside `align-items: baseline`.
-    The cascade slot is lossless so pre-authored
+    text-shaping integration to align the LINES (not the items) by their
+    baselines on the cross axis; the companion **`align-items: baseline`
+    SHIPPED** (Flex L1 completion — see below) but `align-content: baseline`
+    still maps to `stretch`. The cascade slot is lossless so pre-authored
     `align-content: baseline` declarations activate the new behavior
     without a re-author.
   - Writing-mode + column-cross-axis `direction` integration for
@@ -1370,14 +1372,18 @@ grepping the ID).
     `justify-content` (L2 maps both to `flex-start` / `flex-end`
     under the L1 default LTR + `flex-direction: row`; L3+ will
     resolve against the box's writing-mode + direction)
-  - `align-items: baseline` / `first baseline` / `last baseline`
-    (CSS Box Alignment L3 §6.2 + CSS Flexbox L1 §8.3) — requires
-    text-shaping integration to align item baselines. L3 decodes
-    all three baseline indices (3 / 4 / 5) to the safe default
-    `stretch`; sub-cycle L4+ scope. Authoring `baseline` today
-    behaves as `stretch` for layout but the cascade still records
-    the requested value, so when L4+ ships the deferred behavior
-    activates without a re-author.
+  - ~~`align-items: baseline` / `first baseline` / `last baseline`~~ —
+    **shipped (Flex L1 completion).** Per CSS Box Alignment L3 §6.2 + CSS
+    Flexbox L1 §8.3 the three `<baseline-position>` keywords decode to
+    `AlignItemsValue.Baseline` (first-baseline alignment for all three —
+    last-baseline grouping is a later refinement) and `align-self: baseline`
+    folds + resolves against the container. For a ROW container each
+    baseline-aligned item is shifted on the block (cross) axis so its first
+    text baseline sits on the line's max baseline (the item's first baseline
+    comes from `BufferingMeasureSink.FirstBaselineFromOrigin`; an item with no
+    line box synthesizes from its cross-end edge per §8.5). **Still deferred**:
+    the COLUMN cross axis (inline) falls back to flex-start — a first baseline
+    on the inline axis needs vertical-text metrics.
   - `align-items: anchor-center` (CSS Anchor Positioning) — out of
     scope for Flexbox L1; the L3 decoder maps it to `stretch`. Sub-
     cycle L4+ (or later — anchor positioning is a separate spec)
@@ -1455,18 +1461,24 @@ grepping the ID).
     Negative orders + equal-order DOM-stable ordering both supported.
     Fast-path short-circuit returns DOM order when no item declares
     a non-zero order, preserving L1-L9 behavior verbatim.
-  - **`flex` shorthand parser** (CSS Flexbox L1 §7.4) — the shorthand
-    `flex: <flex-grow> <flex-shrink> <flex-basis>` (with sentinel
-    values `none` / `auto` / `<number>` per §7.4) is not yet parsed.
-    Authors writing `flex: 1` will see the declaration silently dropped
-    (AngleSharp.Css doesn't expand the shorthand to longhands either).
-    L9+ scope. Workaround until then: use the three longhand
-    properties (`flex-grow: 1; flex-shrink: 1; flex-basis: 0`).
-  - **`flex-basis: min-content` / `max-content` / `fit-content`**
-    intrinsic-sizing keywords (CSS Flexbox L1 §7.2 + CSS Sizing L3
-    §5.1). L8 admits `auto` + `content` + `<length-percentage>` only;
-    the three intrinsic keywords are L9+ scope (depend on intrinsic
-    sizing integration with the BlockLayouter pre-measure).
+  - ~~**`flex` shorthand parser** (CSS Flexbox L1 §7.4)~~ — **shipped in
+    Phase 3 Task 15 L13** (`FlexShorthandExpander`, wired into
+    `CssPreprocessor`). The full §7.4 grammar expands to the three longhands:
+    `none` / `auto` / `<number>` / `<basis>` / the two- and three-value forms.
+    `flex: 1` → `flex-grow: 1; flex-shrink: 1; flex-basis: 0` end-to-end.
+  - **`flex-basis: min-content` / `max-content` / `content`** intrinsic-sizing
+    keywords (CSS Flexbox L1 §7.2 + §9.2.3 + CSS Sizing L3 §5.1) — **shipped
+    (Flex L1 completion) for the NOWRAP ROW main axis.** `LengthResolver` admits
+    the keywords (recovered through `CssPreprocessor` since AngleSharp.Css drops
+    the value); `FlexLayouter.BuildRowIntrinsicMainBaseSizes` measures each
+    item's max-content (no wrap pressure) / min-content (maximal wrap pressure)
+    inline extent as the §9.7 flex base size, built identically by the emission
+    and the BlockLayouter row-flex height pre-measure so they can't desync.
+    `content` ≡ max-content per §9.2.3. The COLUMN axis content-sizes
+    `content`/`max-content`/`min-content` via the existing block-extent measure.
+    **Still deferred**: the WRAP row main axis (line-breaking depends on the base
+    size in the shaper-less multi-line pre-measure) and `fit-content` /
+    `fit-content(<length-percentage>)`.
   - **§9.7 step-4 min/max clamping** ✅ **shipped in L12** (CSS Flexbox L1
     §9.7 + §9.5) — `ResolveFlexibleMainSizes` now delegates per line
     to `ResolveLineWithMinMaxClamping`, which implements the full

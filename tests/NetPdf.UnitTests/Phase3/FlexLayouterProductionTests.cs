@@ -343,6 +343,47 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_flex_1_shorthand_grows_items_from_zero_basis_at_layout_level()
+    {
+        // Flex shorthand at the LAYOUT level (CSS Flexbox L1 §7.4) — `flex: 1` expands to
+        // flex-grow: 1 / flex-shrink: 1 / flex-basis: 0, so the items size purely by their
+        // grow ratio from a 0 base. `flex: 2` grows twice as fast. In a 600px container the
+        // 1:2 ratio with basis 0 gives widths 200 / 400 at offsets 0 / 200 — confirming the
+        // FlexShorthandExpander → cascade → §9.7 path end-to-end (the shorthand parser was
+        // covered at the preprocessor layer but never at the flex-item layout level).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 600px; height: 40px; }
+                .one { flex: 1; }
+                .two { flex: 2; }
+            </style></head><body>
+            <div class="flex">
+              <div class="one a"></div>
+              <div class="two b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? one = null, two = null;
+        foreach (var f in sink.Fragments)
+        {
+            var cls = f.Box.SourceElement?.GetAttribute("class");
+            if (cls is null) continue;
+            if (cls.Contains("one")) one = f;
+            else if (cls.Contains("two")) two = f;
+        }
+        Assert.NotNull(one);
+        Assert.NotNull(two);
+        // basis 0 + grow ratio 1:2 over 600 → 200 / 400.
+        Assert.Equal(200.0, one!.Value.InlineSize, precision: 2);
+        Assert.Equal(400.0, two!.Value.InlineSize, precision: 2);
+        Assert.Equal(0.0, one.Value.InlineOffset, precision: 2);
+        Assert.Equal(200.0, two.Value.InlineOffset, precision: 2);
+    }
+
+    [Fact]
     public async Task Production_html_flex_basis_max_content_sizes_item_to_content_then_grows_sibling()
     {
         // Flex intrinsic-basis cycle — end-to-end through the CSS cascade:

@@ -90,6 +90,11 @@ internal sealed class ImageResourceCache
     /// as a native filled (rounded) rect, blurred via the Skia raster bridge.</summary>
     public Dictionary<Box, IReadOnlyList<CssBoxShadow>> BoxShadowBoxes { get; } = new();
 
+    /// <summary>Phase 4 shadows — element-backed box → its parsed <c>text-shadow</c> layers (the
+    /// box's OWN declared value; inheritance to descendant text is a documented first-cut residual).
+    /// The text painter draws the glyph run offset in the shadow color UNDER the main text.</summary>
+    public Dictionary<Box, IReadOnlyList<CssTextShadow>> TextShadowBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -138,11 +143,13 @@ internal sealed class ImageResourceCache
         // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
         var boxShadowUnsupportedReported = false;
+        var textShadowUnsupportedReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
-            cache.BackgroundRadialGradientBoxes, cache.BoxShadowBoxes,
+            cache.BackgroundRadialGradientBoxes, cache.BoxShadowBoxes, cache.TextShadowBoxes,
             collectBackgrounds: options.PrintBackgrounds,
-            diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported);
+            diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
+            ref textShadowUnsupportedReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
         {
@@ -229,13 +236,36 @@ internal sealed class ImageResourceCache
         Dictionary<Box, CssLinearGradient> gradientBoxes,
         Dictionary<Box, CssRadialGradient> radialGradientBoxes,
         Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
+        Dictionary<Box, IReadOnlyList<CssTextShadow>> textShadowBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported,
-        ref bool boxShadowUnsupportedReported)
+        ref bool boxShadowUnsupportedReported,
+        ref bool textShadowUnsupportedReported)
     {
         if (box.SourceElement is { } element)
         {
+            // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
+            // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
+            // sharp offset (CSS-TEXTSHADOW-UNSUPPORTED-001); an unparseable value surfaces the same
+            // code. Inheritance to descendant text is a documented first-cut residual.
+            var textShadowRaw = cascade.TryGetStylesFor(element)?.GetWinner("text-shadow")?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(textShadowRaw)
+                && !textShadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                var textShadows = CssTextShadow_Parser.TryParse(textShadowRaw);
+                if (textShadows is not null)
+                {
+                    textShadowBoxes[box] = textShadows;
+                    var hasBlur = false;
+                    foreach (var s in textShadows) if (s.BlurPx > 0) { hasBlur = true; break; }
+                    if (hasBlur) ReportTextShadowUnsupported(diagnostics, ref textShadowUnsupportedReported);
+                }
+                else
+                {
+                    ReportTextShadowUnsupported(diagnostics, ref textShadowUnsupportedReported);
+                }
+            }
             // box-shadow (Phase 4 shadows) — the raw cascade winner, parsed into layers. Gated by
             // PrintBackgrounds like the other decoration. A list whose every paintable layer is
             // outset stores cleanly; an unparseable value or any INSET layer (outset-only first
@@ -310,8 +340,9 @@ internal sealed class ImageResourceCache
         foreach (var child in box.Children)
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, boxShadowBoxes,
-                collectBackgrounds, diagnostics,
-                ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported);
+                textShadowBoxes, collectBackgrounds, diagnostics,
+                ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
+                ref textShadowUnsupportedReported);
     }
 
     private static void ReportBoxShadowUnsupported(IDiagnosticsSink diagnostics, ref bool reported)
@@ -322,6 +353,18 @@ internal sealed class ImageResourceCache
             "A box-shadow form not painted yet was ignored — an inset shadow (the first cut "
             + "paints OUTSET shadows only) or an offset/blur/spread in a unit the parser can't "
             + "resolve (px + absolute units supported; em/rem/% not). Other layers still paint.",
+            DiagnosticSeverity.Warning));
+        reported = true;
+    }
+
+    private static void ReportTextShadowUnsupported(IDiagnosticsSink diagnostics, ref bool reported)
+    {
+        if (reported) return;
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssTextShadowUnsupported001,
+            "A text-shadow was approximated or ignored — a non-zero blur was painted as a sharp "
+            + "offset (glyph blur is a tracked follow-up) or an offset/blur used a unit the parser "
+            + "can't resolve (px + absolute units supported; em/rem/% not).",
             DiagnosticSeverity.Warning));
         reported = true;
     }

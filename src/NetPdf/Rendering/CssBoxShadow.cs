@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 
 namespace NetPdf.Rendering;
 
@@ -52,15 +51,13 @@ internal static class CssBoxShadow_Parser
         Span<double> lengths = stackalloc double[4];
         var lengthCount = 0;
 
-        foreach (var token in SplitTopLevelSpaces(layer))
+        foreach (var token in CssLengthParsing.SplitTopLevelSpaces(layer))
         {
             if (token.Equals("inset", StringComparison.OrdinalIgnoreCase)) { inset = true; continue; }
 
-            var c0 = token[0];
-            var looksNumeric = char.IsDigit(c0) || c0 is '-' or '+' or '.';
-            if (looksNumeric)
+            if (CssLengthParsing.LooksNumeric(token))
             {
-                if (!TryLengthPx(token, out var px) || lengthCount >= 4) return false;
+                if (!CssLengthParsing.TryLengthPx(token, out var px) || lengthCount >= 4) return false;
                 lengths[lengthCount++] = px;
                 continue;
             }
@@ -74,60 +71,5 @@ internal static class CssBoxShadow_Parser
         var spread = lengthCount >= 4 ? lengths[3] : 0.0;
         shadow = new CssBoxShadow(inset, lengths[0], lengths[1], blur, spread, colorRaw);
         return true;
-    }
-
-    /// <summary>A CSS length to CSS px — <c>px</c> + the absolute units (96px = 1in). A bare
-    /// <c>0</c> is zero; a font-relative / percentage / unitless-non-zero token returns false
-    /// (the caller treats it as an unsupported layer).</summary>
-    private static bool TryLengthPx(string token, out double px)
-    {
-        px = 0;
-        var t = token.Trim();
-        if (t.Length == 0) return false;
-        if (t == "0") return true;
-
-        // Longest units first so "mm"/"cm" win over a hypothetical "m"; all unambiguous here.
-        ReadOnlySpan<(string Unit, double PerUnitPx)> units =
-        [
-            ("px", 1.0), ("pt", 96.0 / 72.0), ("pc", 16.0), ("in", 96.0),
-            ("cm", 96.0 / 2.54), ("mm", 96.0 / 25.4), ("q", 96.0 / 101.6),
-        ];
-        var lower = t.ToLowerInvariant();
-        foreach (var (unit, perUnitPx) in units)
-        {
-            if (lower.EndsWith(unit, StringComparison.Ordinal))
-            {
-                var num = lower.AsSpan(0, lower.Length - unit.Length);
-                if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
-                {
-                    px = v * perUnitPx;
-                    return true;
-                }
-                return false;
-            }
-        }
-        return false; // unitless non-zero, em/rem/%, or garbage
-    }
-
-    /// <summary>Split a layer on spaces that are NOT inside parentheses, so a function color like
-    /// <c>rgb(1, 2, 3)</c> stays one token. Trims + drops empties.</summary>
-    private static List<string> SplitTopLevelSpaces(string s)
-    {
-        var parts = new List<string>();
-        var depth = 0;
-        var start = 0;
-        for (var i = 0; i < s.Length; i++)
-        {
-            var c = s[i];
-            if (c == '(') depth++;
-            else if (c == ')') { if (depth > 0) depth--; }
-            else if (char.IsWhiteSpace(c) && depth == 0)
-            {
-                if (i > start) parts.Add(s.Substring(start, i - start));
-                start = i + 1;
-            }
-        }
-        if (s.Length > start) parts.Add(s.Substring(start));
-        return parts;
     }
 }

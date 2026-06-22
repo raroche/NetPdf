@@ -403,7 +403,8 @@ internal static class PdfRenderPipeline
         // background/border/image painting stays per page inside the loop; the per-page text replay in
         // Finish() appends AFTER it, preserving the "text over backgrounds" layering.
         var textSession = new TextPainter.TextPaintSession(
-            shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics);
+            shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics,
+            imageCache.TextShadowBoxes);
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();

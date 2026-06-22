@@ -127,6 +127,16 @@ internal static class DiagnosticCodes
     public const string CssBoxShadowUnsupported001 = "CSS-BOXSHADOW-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>text-shadow</c> form NetPdf does not paint exactly yet was approximated or
+    /// ignored: a non-zero BLUR was painted as a SHARP offset (the Gaussian blur is not yet applied
+    /// to glyph runs — the offset shadow still shows), or an offset/blur used a unit the parser
+    /// can't resolve (px + absolute units supported; <c>em</c>/<c>rem</c>/<c>%</c> not — the whole
+    /// value is dropped). Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssTextShadowUnsupported001 = "CSS-TEXTSHADOW-UNSUPPORTED-001";
+
+    /// <summary>
     /// An unrecognized at-rule was preserved in the AST but had no rendering effect — the
     /// cascade resolver couldn't decompose its body or its conditions weren't evaluable.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.

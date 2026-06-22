@@ -7337,6 +7337,61 @@ public sealed class BlockLayouterTests
         return (root, children);
     }
 
+    [Fact]
+    public void Nested_break_inside_avoid_box_sets_AvoidBreak_on_the_recursive_boundary()
+    {
+        // PR #207 review [P2] — a `break-inside: avoid` box's INTERNAL boundary (between its
+        // children, reached in EmitBlockSubtreeRecursive) now carries AvoidBreak. A capturing
+        // resolver records the opportunity flags; the recursive boundary before the 2nd child
+        // (whose container is the avoid box) must be flagged AvoidBreak. The greedy resolver
+        // ignores the flag for its DECISION — this proves the metadata REACHES the opportunity
+        // (honored by the optimizing / future cost-aware resolver).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+        var avoidStyle = MakeStyle();
+        SetKeyword(avoidStyle, PropertyId.BreakInside, 1); // avoid
+        var avoidDiv = Box.ForElement(BoxKind.BlockContainer, avoidStyle, MakeElement());
+        for (var i = 0; i < 2; i++)
+        {
+            var cs = MakeStyle();
+            SetLengthPx(cs, PropertyId.Height, 200);
+            avoidDiv.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        }
+        root.AppendChild(avoidDiv);
+
+        using var resolver = new CapturingResolver();
+        using var layouter = new BlockLayouter(root, sink);
+        // Page 300: the avoid box (400) overflows, so its content paginates in the recursion —
+        // the 2nd child's boundary is offered with the avoid box as its container.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Contains(resolver.Seen, o => o.AvoidBreak);
+    }
+
+    /// <summary>Records every <see cref="BreakOpportunity"/> the layouter offers, delegating
+    /// the decision + checkpoint lifecycle to a real (greedy) <see cref="BreakResolver"/>.</summary>
+    private sealed class CapturingResolver : IBreakResolver
+    {
+        private readonly BreakResolver _inner = new();
+        public List<BreakOpportunity> Seen { get; } = new();
+
+        public BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx)
+        {
+            Seen.Add(opportunity);
+            return _inner.ConsiderBreakAt(opportunity, ctx);
+        }
+
+        public OptimizerResult ResolveBreaks(
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx,
+            CancellationToken cancellationToken = default) => OptimizerResult.Empty;
+
+        public void RegisterCheckpoint(CheckpointLease lease) => _inner.RegisterCheckpoint(lease);
+        public LayoutCheckpoint? GetLastCheckpoint() => _inner.GetLastCheckpoint();
+        public void Dispose() => _inner.Dispose();
+    }
+
     // =====================================================================
     //  Phase 3 Task 19 cycle 1 — position: absolute. Explicit-only
     //  placement anchored to the establishing block's content box

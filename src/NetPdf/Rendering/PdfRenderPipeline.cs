@@ -181,6 +181,15 @@ internal static class PdfRenderPipeline
         // re-shaping per site + per page. A measured CONTENT extent is deterministic for its
         // keyed inputs, so output is byte-identical.
         var gridMeasureCache = new GridMeasurementCache();
+        // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; resolved ONCE here as
+        // the document-level defaults for the resolver (per-paragraph overrides await line
+        // splitting — `inline-only-block-line-splitting`). BoxBuilder roots the tree at a
+        // SYNTHETIC box carrying the initial default 2, so reading IT would always yield 2
+        // (PR #207 review [P2]) — read the BODY box instead (it inherits html/:root + its own
+        // value, the usual place print CSS sets orphans/widows), falling back to <html> then 2.
+        var fragRoot = ResolveDocumentRootForInheritedProps(phase2.BoxRoot);
+        var documentOrphans = fragRoot.Style.ReadOrphansOrDefault();
+        var documentWidows = fragRoot.Style.ReadWidowsOrDefault();
         try
         {
             for (var pageIndex = 0; ; pageIndex++)
@@ -204,14 +213,11 @@ internal static class PdfRenderPipeline
                     {
                         GridMeasureCache = gridMeasureCache,
                     };
-                    // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; the
-                    // root box carries the document's effective values (default 2),
-                    // threaded into the resolver so a CSS-set orphans/widows drives the
-                    // line-break cost instead of the hardcoded 2/2. (Per-paragraph
-                    // overrides await line-level splitting — `inline-only-block-line-splitting`.)
+                    // Document-level orphans/widows (resolved once above) drive the resolver
+                    // instead of the hardcoded 2/2.
                     using var breaks = new BreakResolver(
-                        orphansRequired: phase2.BoxRoot.Style.ReadOrphansOrDefault(),
-                        widowsRequired: phase2.BoxRoot.Style.ReadWidowsOrDefault());
+                        orphansRequired: documentOrphans,
+                        widowsRequired: documentWidows);
                     // Drive each page through the retry coordinator: Strict (clean breaks)
                     // first, only escalating (DropAvoidInside → LastResort) when a constraint
                     // genuinely can't be met. A single direct LastResort attempt would instead
@@ -534,6 +540,29 @@ internal static class PdfRenderPipeline
         if (box.SourceElement is not null) return box;
         foreach (var child in box.Children)
             if (FindRootElementBox(child) is { } found) return found;
+        return null;
+    }
+
+    /// <summary>PR #207 review [P2] — the box whose computed style carries the document-level
+    /// value of an INHERITED property (e.g. <c>orphans</c> / <c>widows</c>). BoxBuilder roots
+    /// the tree at a SYNTHETIC box with the property's initial value, so reading it would never
+    /// see authored CSS. Prefers the <c>&lt;body&gt;</c> box (it inherits <c>&lt;html&gt;</c> /
+    /// <c>:root</c> and its own declaration — the usual place these are authored), falls back to
+    /// the root element (<c>&lt;html&gt;</c>), then the synthetic root (initial default).</summary>
+    private static Box ResolveDocumentRootForInheritedProps(Box syntheticRoot)
+    {
+        var rootEl = FindRootElementBox(syntheticRoot);
+        if (rootEl is null) return syntheticRoot;
+        return FindBodyBox(rootEl) ?? rootEl;
+    }
+
+    private static Box? FindBodyBox(Box box)
+    {
+        if (box.SourceElement is { } el
+            && el.LocalName.Equals("body", System.StringComparison.OrdinalIgnoreCase))
+            return box;
+        foreach (var child in box.Children)
+            if (FindBodyBox(child) is { } found) return found;
         return null;
     }
 

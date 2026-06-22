@@ -240,7 +240,8 @@ grepping the ID).
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
   `orphans` / `widows` flow to the resolver but have no visible effect until line-level
   paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
-  the document root, so per-paragraph overrides aren't honored yet.
+  the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
+  default), so per-paragraph overrides aren't honored yet.
 - **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion); (2) parsing for
   `recto` / `verso` / `all` (AngleSharp upgrade or a CssPreprocessor recovery entry);
   (3) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;

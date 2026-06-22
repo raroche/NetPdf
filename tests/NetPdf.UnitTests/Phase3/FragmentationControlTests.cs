@@ -110,13 +110,87 @@ public sealed class FragmentationControlTests
     public async Task Orphans_widows_drive_the_break_resolver()
     {
         // The cascade→resolver wiring: the CSS-read values feed BreakResolver's
-        // OrphansRequired / WidowsRequired (PdfRenderPipeline reads them off the root box).
+        // OrphansRequired / WidowsRequired (PdfRenderPipeline reads them off the body box).
         var b = await ParseBox("<div id='x' style='orphans:5;widows:4'></div>");
         using var resolver = new BreakResolver(
             orphansRequired: b.Style.ReadOrphansOrDefault(),
             widowsRequired: b.Style.ReadWidowsOrDefault());
         Assert.Equal(5, resolver.OrphansRequired);
         Assert.Equal(4, resolver.WidowsRequired);
+    }
+
+    [Fact]
+    public async Task Orphans_widows_on_body_read_from_the_body_box_not_the_synthetic_root()
+    {
+        // PR #207 review [P2] — BoxBuilder roots the tree at a SYNTHETIC box carrying the
+        // initial default 2; authored body orphans/widows live on the body box (inherited).
+        // Reading the synthetic root (the pre-fix bug) always returns 2; the pipeline now reads
+        // the body box. This guards that resolution: synthetic root == 2, body == authored.
+        var html = "<!doctype html><html><body style='orphans:4;widows:3'><p>x</p></body></html>";
+        var result = await Phase2Pipeline.RunFromHtmlAsync(html, new NetPdf.HtmlPdfOptions());
+        Assert.Equal(2, result.BoxRoot.Style.ReadOrphansOrDefault());   // synthetic root → default
+        Assert.Equal(2, result.BoxRoot.Style.ReadWidowsOrDefault());
+        var body = FindByLocalName(result.BoxRoot, "body");
+        Assert.NotNull(body);
+        Assert.Equal(4, body!.Style.ReadOrphansOrDefault());            // authored, what the pipeline reads
+        Assert.Equal(3, body.Style.ReadWidowsOrDefault());
+    }
+
+    // ── End-to-end forced breaks on TEXT-bearing blocks (real shaper + pipeline) ──
+    // The W3cConformance harness uses shaperResolver: null + empty fixed-height divs, so it
+    // can't exercise inline-only (text) blocks. These drive HtmlPdf.ConvertDetailed (the real
+    // PdfRenderPipeline + shaper) and assert PDF PAGE COUNT — proving forced breaks reach
+    // text-bearing blocks through the production path (PR #207 review [P1] / [P2#4]).
+
+    [Fact]
+    public void Two_text_blocks_without_a_break_stay_on_one_page()
+    {
+        // Control: both small text blocks fit one (Letter-sized) page.
+        Assert.Equal(1, Pages("<div>first</div><div>second</div>"));
+    }
+
+    [Fact]
+    public void Forced_break_before_a_text_block_creates_a_new_page()
+    {
+        // PR #207 review [P1] — break-before:page on a TEXT div forces page 2 even though
+        // both fit one page. Pre-fix the inline-only dispatch ignored the metadata.
+        Assert.Equal(2, Pages("<div>first</div><div style='break-before:page'>second</div>"));
+    }
+
+    [Fact]
+    public void Forced_break_after_a_text_block_creates_a_new_page()
+    {
+        // break-after:page on the FIRST text div pushes the next sibling to page 2.
+        Assert.Equal(2, Pages("<div style='break-after:page'>first</div><div>second</div>"));
+    }
+
+    [Fact]
+    public void Forced_break_on_grandchild_prose_propagates_through_a_fitting_ancestor()
+    {
+        // PR #207 review [P2#4] — a forced break on nested PROSE splits its fitting
+        // <section> ancestor: the <p> with break-before lands on page 2.
+        Assert.Equal(2, Pages(
+            "<section><p>first paragraph</p>"
+            + "<p style='break-before:page'>second paragraph</p></section>"));
+    }
+
+    private static int Pages(string bodyHtml)
+    {
+        var html = "<!doctype html><html><body style='margin:0'>" + bodyHtml + "</body></html>";
+        return NetPdf.HtmlPdf.ConvertDetailed(html).PageCount;
+    }
+
+    private static Box? FindByLocalName(Box root, string localName)
+    {
+        if (root.SourceElement is { } el
+            && el.LocalName.Equals(localName, System.StringComparison.OrdinalIgnoreCase))
+            return root;
+        foreach (var child in root.Children)
+        {
+            var hit = FindByLocalName(child, localName);
+            if (hit is not null) return hit;
+        }
+        return null;
     }
 
     // --- Helpers -------------------------------------------------------------

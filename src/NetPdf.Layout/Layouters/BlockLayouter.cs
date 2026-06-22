@@ -2403,14 +2403,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var prevEmittedChild = lastEmittedIdx >= 0 && lastEmittedIdx < _rootBox.Children.Count
                 ? _rootBox.Children[lastEmittedIdx]
                 : null;
-            var forceBreakBefore = !atFragmentainerStart
-                && (child.Style.ForcesPageBreakBefore()
-                    || (prevEmittedChild is not null
-                        && prevEmittedChild.Style.ForcesPageBreakAfter()));
-            var avoidBreakHere = _rootBox.Style.AvoidsBreakInside()
-                || child.Style.AvoidsPageBreakBefore()
-                || (prevEmittedChild is not null
-                    && prevEmittedChild.Style.AvoidsPageBreakAfter());
+            var (forceBreakBefore, avoidBreakHere) = ResolveChildBreakMetadata(
+                _rootBox, child, prevEmittedChild, suppressForce: atFragmentainerStart);
             var opportunity = BreakOpportunity.Block(
                 usedBlockSize: fragmentainer.UsedBlockSize,
                 chunkBlockSize: chunkForBreakCheck,
@@ -4598,10 +4592,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the next child even if it would fit. Initialized to the container's own page name (so the first
         // child only breaks once there's prior content — guarded by the forward-progress check below).
         var prevPageName = parent.PageName;
-        // CSS Fragmentation L3 §3.1 — `break-after` of the previously-emitted in-flow
-        // sibling forces a page break before the next child (mirrors prevPageName). Reset
-        // each recursion entry, so a forced break at a fragmentainer start is a no-op.
-        var prevForcedBreakAfter = false;
+        // CSS Fragmentation L3 §3.1/§3.2 — the previously-emitted in-flow block-level
+        // sibling (block-flow OR inline-only); its `break-after` forces a page break before
+        // the next child + its `break-after: avoid` marks the boundary AvoidBreak (mirrors
+        // prevPageName). Reset each recursion entry, so a forced break at a fragmentainer
+        // start is a no-op (the forward-progress guard below also enforces this).
+        Box? prevInFlowChild = null;
         for (var childIdx = startIdx; childIdx < parent.Children.Count; childIdx++)
         {
             var child = parent.Children[childIdx];
@@ -4720,6 +4716,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     && propagatingFragmentainer is { SuppressBlockPagination: false } pfInline
                     && _sink.Cursor > sinkCursorAtRecursionEntry)
                 {
+                    // PR #207 review [P1] — a text-bearing / inline-only block honors author
+                    // forced + avoid breaks too (`<p style='break-before:page'>` / a text
+                    // `<div break-after>`). Same shared calculation as the block-flow path.
+                    var (inlineForce, inlineAvoid) = ResolveChildBreakMetadata(
+                        parent, child, prevInFlowChild, suppressForce: false);
+                    // A FORCED break applies regardless of the child's extent (the extent
+                    // guard below is only for the overflow-driven break — a near-empty
+                    // inline-only block still honors break-before:page).
+                    if (inlineForce)
+                    {
+                        return new BlockContinuation(ResumeAtChild: childIdx, ConsumedBlockSize: 0);
+                    }
                     _ = MeasureInlineOnlyBlockExtent(
                         child, contentInlineSize, out var inlineVisualChunk, cancellationToken);
                     if (inlineVisualChunk > InlineOnlyBreakMinExtentPx)
@@ -4729,7 +4737,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         pfInline.UsedBlockSize = inlineChildStart;
                         var inlineDecision = propagatingResolver.ConsiderBreakAt(
                             BreakOpportunity.Block(
-                                usedBlockSize: inlineChildStart, chunkBlockSize: inlineVisualChunk),
+                                usedBlockSize: inlineChildStart, chunkBlockSize: inlineVisualChunk,
+                                avoidBreak: inlineAvoid),
                             pfInline);
                         pfInline.UsedBlockSize = savedUsedBlockSizeInline;
                         if (inlineDecision.Action == BreakAction.BreakHere)
@@ -4758,6 +4767,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // per CSS 2.1 §8.3.1 (the line box breaks adjacency).
                 hasPrior = false;
                 prevMarginEnd = 0;
+                // PR #207 review [P1] — track this inline-only block as the previous in-flow
+                // sibling so ITS `break-after` forces a break before the next child (a text
+                // `<div break-after:page>` followed by a sibling).
+                prevInFlowChild = child;
                 // Advance the recursive cursor by the block's full
                 // margin-box extent (marginTop + borderBox +
                 // marginBottom). EmitInlineOnlyBlockInRecursion
@@ -4939,10 +4952,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // UsedBlockSize per child — so set it transiently to this child's
             // block-start before asking, then restore it (the top-level loop
             // owns that accounting; we're single-threaded, so the mutation is
-            // fully contained). DEFERRED at nested boundaries this cycle:
-            // checkpoint registration + BreakAction.Rewind (the greedy resolver
-            // never rewinds; the recursion holds no checkpoint to roll back to)
-            // and break-before/-after/-inside metadata on the opportunity.
+            // fully contained). CSS Fragmentation `break-before`/`-after`/`-inside`
+            // metadata IS now carried on the opportunity (PR #207 review [P2] — see the
+            // ResolveChildBreakMetadata call below). STILL deferred at nested boundaries:
+            // checkpoint registration + BreakAction.Rewind (the greedy resolver never
+            // rewinds; the recursion holds no checkpoint to roll back to).
             if (propagatingResolver is not null
                 && propagatingFragmentainer is { SuppressBlockPagination: false } pf
                 && IsBlockFlowContainerOwnedByBlockLayouter(child)
@@ -4958,27 +4972,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         ResumeAtChild: childIdx,
                         ConsumedBlockSize: 0);
                 }
-                // CSS Fragmentation L3 §3.1 — author FORCED page break (the deferred case
-                // this site's comment named): `break-before: page` (etc.) on THIS child OR
-                // `break-after: page` on the previous in-flow sibling forces a page break
-                // here, even when the child would fit. This is what propagates a forced
-                // break out of a fitting ancestor (a `break-before:page` on a grandchild
-                // splits its body/html ancestors here in the recursion). The forward-
-                // progress guard above ensures the page already has content, so per §3.1
-                // a forced break at a fragmentainer start is ignored (no empty fragment).
-                if (child.Style.ForcesPageBreakBefore() || prevForcedBreakAfter)
-                {
-                    return new BlockContinuation(
-                        ResumeAtChild: childIdx,
-                        ConsumedBlockSize: 0);
-                }
+                // CSS Fragmentation L3 §3.1/§3.2 (PR #207 review [P2]) — the recursive
+                // nested-block boundary now carries the SAME forced + avoid metadata as the
+                // top-level loop (shared helper, the deferred case this site's comment named).
+                // A FORCED break propagates out of a fitting ancestor (a `break-before:page`
+                // on a grandchild splits its body/html ancestors here — `break-before` on this
+                // child OR `break-after` on the prior sibling → ConsiderBreakAt returns
+                // BreakHere). AVOID is set from `parent`'s `break-inside:avoid` / this child's
+                // `break-before:avoid` / the prior sibling's `break-after:avoid` (optimizer-
+                // honored). The forward-progress guard above ensures prior content, so a forced
+                // break at a fragmentainer start is a no-op (§3.1, no empty fragment).
+                var (nestedForce, nestedAvoid) = ResolveChildBreakMetadata(
+                    parent, child, prevInFlowChild, suppressForce: false);
                 var childStart = Math.Max(0, childBlockOffset);
                 var savedUsedBlockSize = pf.UsedBlockSize;
                 pf.UsedBlockSize = childStart;
                 var nestedDecision = propagatingResolver.ConsiderBreakAt(
                     BreakOpportunity.Block(
                         usedBlockSize: childStart,
-                        chunkBlockSize: childEffectiveBlockSize),
+                        chunkBlockSize: childEffectiveBlockSize,
+                        forceBreak: nestedForce,
+                        avoidBreak: nestedAvoid),
                     pf);
                 pf.UsedBlockSize = savedUsedBlockSize;
                 if (nestedDecision.Action == BreakAction.BreakHere)
@@ -4995,7 +5009,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             if (IsBlockFlowContainerOwnedByBlockLayouter(child))
             {
                 prevPageName = child.PageName;
-                prevForcedBreakAfter = child.Style.ForcesPageBreakAfter();
+                prevInFlowChild = child;
             }
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
@@ -7798,6 +7812,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <see cref="BreakAction.BreakHere"/> / clean
     /// <see cref="BreakAction.BreakHere"/> paths — the outer loop
     /// must return immediately.</para></summary>
+
+    /// <summary>Per CSS Fragmentation L3 §3.1 / §3.2 (PR #207 review [P1]/[P2]) — the
+    /// SHARED forced / avoid break-metadata calculation for a child boundary, used by
+    /// ALL four block break-decision sites: the top-level loop's block + inline-only
+    /// dispatch and <see cref="EmitBlockSubtreeRecursive"/>'s block + inline-only paths.
+    /// A FORCED page break is offered when this child's <c>break-before</c> OR the
+    /// previous in-flow sibling's <c>break-after</c> forces one (suppressed at a
+    /// fragmentainer start, where a forced break would make an empty fragment). The
+    /// boundary is marked AVOID when <paramref name="container"/> has <c>break-inside:
+    /// avoid</c> (every between-children boundary is an internal break of it), or this
+    /// child has <c>break-before: avoid</c>, or the previous sibling has
+    /// <c>break-after: avoid</c>.</summary>
+    private static (bool Force, bool Avoid) ResolveChildBreakMetadata(
+        Box container, Box child, Box? prevSibling, bool suppressForce)
+    {
+        var force = !suppressForce
+            && (child.Style.ForcesPageBreakBefore()
+                || (prevSibling is not null && prevSibling.Style.ForcesPageBreakAfter()));
+        var avoid = container.Style.AvoidsBreakInside()
+            || child.Style.AvoidsPageBreakBefore()
+            || (prevSibling is not null && prevSibling.Style.AvoidsPageBreakAfter());
+        return (force, avoid);
+    }
+
     private LayoutAttemptResult? DispatchInlineOnlyBlock(
         Box inlineOnlyBlock,
         int childIdx,
@@ -7934,9 +7972,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         resolver.RegisterCheckpoint(newLease);
         _activeLease = newLease;
 
+        // PR #207 review [P1] — a text-bearing / inline-only block honors author forced +
+        // avoid breaks too (`<p style='break-before:page'>` / a text `<div break-after>`).
+        // Same calculation as the block-flow dispatch (shared helper), keyed off this
+        // inline-only child + its previously-emitted sibling.
+        var inlineAtFragmentainerStart = emittedThisAttempt == 0
+            && fragmentainer.UsedBlockSize == initialUsed;
+        var inlinePrevEmittedChild = lastEmittedIdx >= 0 && lastEmittedIdx < _rootBox.Children.Count
+            ? _rootBox.Children[lastEmittedIdx]
+            : null;
+        var (inlineForceBreak, inlineAvoidBreak) = ResolveChildBreakMetadata(
+            _rootBox, inlineOnlyBlock, inlinePrevEmittedChild,
+            suppressForce: inlineAtFragmentainerStart);
         var opportunity = BreakOpportunity.Block(
             usedBlockSize: fragmentainer.UsedBlockSize,
-            chunkBlockSize: chunkForBreakCheck);
+            chunkBlockSize: chunkForBreakCheck,
+            forceBreak: inlineForceBreak,
+            avoidBreak: inlineAvoidBreak);
         var decision = resolver.ConsiderBreakAt(opportunity, fragmentainer);
 
         if (decision.Action == BreakAction.Rewind)

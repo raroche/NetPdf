@@ -957,15 +957,16 @@ internal static class ComputedStyleLayoutExtensions
     /// initial value). This decoder therefore maps <c>normal</c> →
     /// <see cref="AlignItemsValue.Stretch"/>.</para>
     ///
-    /// <para><b>L10+ deferrals.</b> Two value families fall through to
-    /// <see cref="AlignItemsValue.Stretch"/> (the safe default) in L3:
-    /// (a) <c>baseline</c> / <c>first baseline</c> / <c>last baseline</c>
-    /// — requires text-shaping integration to align item baselines;
-    /// (b) <c>anchor-center</c> — CSS Anchor Positioning, out of scope
-    /// for Flexbox L1. The <c>align-self</c> per-item override SHIPPED
-    /// in Phase 3 Task 15 L9 (see <see cref="ReadAlignSelf"/>). See
-    /// <c>docs/deferrals.md#flex-layouter-features</c> for the L10+
-    /// pickup criteria for the remaining items.</para>
+    /// <para><b>Baseline + L10+ deferrals.</b> <c>baseline</c> /
+    /// <c>first baseline</c> / <c>last baseline</c> decode to
+    /// <see cref="AlignItemsValue.Baseline"/> (ROW first-baseline
+    /// alignment; COLUMN falls back to flex-start). <c>anchor-center</c>
+    /// still falls through to <see cref="AlignItemsValue.Stretch"/> (CSS
+    /// Anchor Positioning is out of scope for Flexbox L1). The
+    /// <c>align-self</c> per-item override SHIPPED in Phase 3 Task 15 L9
+    /// (see <see cref="ReadAlignSelf"/>). See
+    /// <c>docs/deferrals.md#flex-layouter-features</c> for the remaining
+    /// pickup criteria.</para>
     ///
     /// <para><b>Overflow mode.</b> Mirrors L2's two-channel pattern for
     /// <c>justify-content</c>: the bare <c>safe X</c> / <c>unsafe X</c>
@@ -1005,7 +1006,8 @@ internal static class ComputedStyleLayoutExtensions
     /// <para><b>Grid layout</b> (matches the SelfPositions ordering in
     /// <c>KeywordResolver</c>): 0=normal → Stretch (per CSS Flexbox §8.3),
     /// 1=stretch, 2=anchor-center → Stretch (L10+ scope), 3-5=baseline
-    /// triple → Stretch (L10+ scope), 6-12=&lt;self-position&gt; (center,
+    /// triple → Baseline (first-baseline alignment; see
+    /// <see cref="AlignItemsValue.Baseline"/>), 6-12=&lt;self-position&gt; (center,
     /// start, end, self-start, self-end, flex-start, flex-end), 13-19=
     /// safe + 7 self-positions, 20-26=unsafe + 7 self-positions. Total
     /// = 27 entries.</para>
@@ -1023,9 +1025,12 @@ internal static class ComputedStyleLayoutExtensions
         0 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // normal → stretch (CSS Flexbox §8.3)
         1 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // stretch
         2 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // anchor-center → stretch (L10+ scope)
-        3 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // baseline → stretch (L10+ scope)
-        4 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // first baseline → stretch (L10+ scope)
-        5 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // last baseline → stretch (L10+ scope)
+        // baseline / first baseline / last baseline → Baseline (CSS Box
+        // Alignment L3 §6.2). The FlexLayouter aligns by each item's FIRST
+        // baseline for all three; last-baseline grouping is a later refinement.
+        3 => (AlignItemsValue.Baseline, OverflowAlignmentMode.Default),    // baseline
+        4 => (AlignItemsValue.Baseline, OverflowAlignmentMode.Default),    // first baseline
+        5 => (AlignItemsValue.Baseline, OverflowAlignmentMode.Default),    // last baseline (→ first baseline approximation)
         6 => (AlignItemsValue.Center, OverflowAlignmentMode.Default),
         7 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Default),   // start → flex-start (LTR row)
         8 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),     // end → flex-end (LTR row)
@@ -1115,6 +1120,7 @@ internal static class ComputedStyleLayoutExtensions
             AlignItemsValue.FlexStart => AlignSelfValue.FlexStart,
             AlignItemsValue.FlexEnd => AlignSelfValue.FlexEnd,
             AlignItemsValue.Center => AlignSelfValue.Center,
+            AlignItemsValue.Baseline => AlignSelfValue.Baseline,
             _ => AlignSelfValue.Stretch, // defensive — never reached for known AlignItemsValue values
         };
 
@@ -1136,6 +1142,7 @@ internal static class ComputedStyleLayoutExtensions
             AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode),
             AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode),
             AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode),
+            AlignSelfValue.Baseline => new ResolvedAlignItems(AlignItemsValue.Baseline, alignSelf.Mode),
             _ => containerAlignItems, // defensive — unknown self values fall back to container
         };
     }
@@ -1867,6 +1874,18 @@ internal enum AlignItemsValue : byte
     FlexEnd = 1,
     Center = 2,
     Stretch = 3,
+    /// <summary>Per CSS Box Alignment L3 §6.2 + CSS Flexbox L1 §8.3 —
+    /// the three <c>&lt;baseline-position&gt;</c> keywords (<c>baseline</c>
+    /// / <c>first baseline</c> / <c>last baseline</c>) decode to this
+    /// single value (the FlexLayouter aligns by each item's FIRST
+    /// baseline for all three — last-baseline grouping is a later
+    /// refinement). For a ROW container the layouter shifts each
+    /// baseline-aligned item on the block (cross) axis so its first text
+    /// baseline sits on the line's max-baseline; for a COLUMN container
+    /// (cross axis = inline) baseline has no first-baseline to align
+    /// against without vertical text, so it behaves as
+    /// <see cref="FlexStart"/> (the spec's fallback to <c>start</c>).</summary>
+    Baseline = 4,
 }
 
 /// <summary>Per Phase 3 Task 15 L3 — resolved <c>align-items</c> value
@@ -1913,6 +1932,10 @@ internal enum AlignSelfValue : byte
     FlexEnd = 2,
     Center = 3,
     Stretch = 4,
+    /// <summary>Per CSS Box Alignment L3 §6.2 — the per-item
+    /// <c>&lt;baseline-position&gt;</c> override; resolves to
+    /// <see cref="AlignItemsValue.Baseline"/> against the container.</summary>
+    Baseline = 5,
 }
 
 /// <summary>Per Phase 3 Task 15 L9 — resolved <c>align-self</c> value

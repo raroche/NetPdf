@@ -1060,6 +1060,25 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             fragmentainer, layout.WritingMode, layout.IsRtl,
             effectiveDiagnostics, contentMeasureBudget, cancellationToken);
 
+        // Flex baseline-alignment cycle (CSS Flexbox L1 §8.3 + §8.5) — for a ROW
+        // container (cross axis = block) precompute, per flex item, (a) the
+        // alignment baseline = the item's first text baseline measured from its
+        // border-box cross-start (synthesized from the cross-end edge when the item
+        // has no line box) and (b) the cross size a baseline-aligned item uses
+        // (content height for an auto-cross item, else the declared cross size).
+        // The per-line MAX of (a) over baseline-aligned items anchors them so their
+        // first baselines coincide. Computed only for row (COLUMN baseline falls back
+        // to flex-start — the inline cross axis has no first baseline without vertical
+        // text); the arrays are otherwise unused so non-baseline layouts stay
+        // byte-identical.
+        double[]? itemBaselineOffsets = null;
+        double[]? itemBaselineCrossSizes = null;
+        if (!isColumn)
+        {
+            (itemBaselineOffsets, itemBaselineCrossSizes) =
+                ComputeRowBaselineData(itemContentBuffers, flexDirection, crossSizeProperty);
+        }
+
         // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
         // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
         // an item whose measured content REACHES it was clipped by the single atomic pass.
@@ -1233,6 +1252,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 ? line.LineCrossSize
                 : containerCrossSize;
 
+            // Flex baseline-alignment cycle — the line's baseline reference: the MAX
+            // first-baseline over the line's baseline-aligned items (CSS Box Alignment
+            // L3 §6.2 "baseline-sharing group"). Each baseline-aligned item is then
+            // shifted so its own baseline sits on this reference. NaN when no item on
+            // the line is baseline-aligned (the per-item baseline branch is gated on the
+            // item's effective align, so the value is read only when it's finite).
+            var lineMaxBaseline = itemBaselineOffsets is null
+                ? double.NaN
+                : ComputeLineMaxBaseline(line, itemBaselineOffsets, alignItems);
+
             // L2 — resolve justify-content + compute the main-axis
             // start-offset + between-spacing per CSS Box Alignment L3
             // §4.5. Per Phase 3 Task 15 L6 each line runs its own
@@ -1340,13 +1369,37 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // origin in both modes; the swap parameter only
                 // affects which END of the line FlexStart/FlexEnd
                 // anchor to.
-                var (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
-                    ComputeAlignItemsPlacement(
-                        effectiveAlign.Value, effectiveAlign.Mode,
-                        lineCrossExtent, itemCrossSize,
-                        itemIsCrossSizeAuto,
-                        lineCrossCursor,
-                        isCrossAxisReversed: isWrapReverse);
+                double itemCrossOffsetWithinLine, itemEffectiveCrossSize;
+                if (effectiveAlign.Value == AlignItemsValue.Baseline
+                    && itemBaselineOffsets is not null && itemBaselineCrossSizes is not null)
+                {
+                    // Flex baseline alignment (ROW only; CSS Flexbox L1 §8.3). Shift the
+                    // item on the cross axis so its first baseline coincides with the
+                    // line's max baseline (`lineMaxBaseline`); the item keeps its own
+                    // cross size (baseline never resizes). A baseline item is never
+                    // stretched, so this bypasses the stretch / positional helper.
+                    var itemBaseline = itemBaselineOffsets[itemIdx];
+                    itemEffectiveCrossSize = itemBaselineCrossSizes[itemIdx];
+                    itemCrossOffsetWithinLine = lineCrossCursor + (lineMaxBaseline - itemBaseline);
+                }
+                else
+                {
+                    // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — under
+                    // wrap-reverse the cross-axis is swapped uniformly:
+                    // each LINE's cross-start = the line's PHYSICAL-
+                    // BOTTOM edge (for row + horizontal-tb LTR). Pass
+                    // `isWrapReverse` to ComputeAlignItemsPlacement so
+                    // flex-start/flex-end positional values swap within
+                    // the line. Column `baseline` reaches here too and
+                    // falls back to flex-start in the helper.
+                    (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
+                        ComputeAlignItemsPlacement(
+                            effectiveAlign.Value, effectiveAlign.Mode,
+                            lineCrossExtent, itemCrossSize,
+                            itemIsCrossSizeAuto,
+                            lineCrossCursor,
+                            isCrossAxisReversed: isWrapReverse);
+                }
 
                 // Per Phase 3 Task 15 L5 — for reversed directions,
                 // flip the main-axis offset around the container's
@@ -2616,6 +2669,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             (AlignItemsValue.Center, _) => contentCrossOffset + crossSpace / 2.0,
             (AlignItemsValue.FlexStart, false) => contentCrossOffset,
             (AlignItemsValue.FlexStart, true) => contentCrossOffset + crossSpace,
+            // Baseline reaches this helper only for a COLUMN container (the ROW
+            // baseline math is done by the caller); on the inline cross axis there is
+            // no first baseline to align without vertical text, so it behaves as
+            // flex-start per CSS Box Alignment L3 §9.3's fallback to `start`.
+            (AlignItemsValue.Baseline, _) => contentCrossOffset,
             _ => contentCrossOffset, // defensive — unknown value
         };
 
@@ -2647,6 +2705,98 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         }
 
         return (natural, itemCrossSize);
+    }
+
+    /// <summary>Flex baseline-alignment cycle (CSS Flexbox L1 §8.3 + §8.5) — for a ROW
+    /// container, precompute per DOM-child-index two parallel arrays: the item's
+    /// alignment BASELINE (distance from its border-box cross-start to its first text
+    /// baseline) and the cross SIZE a baseline-aligned item uses.
+    ///
+    /// <para><b>Baseline</b> — when the item has an in-flow line box, its first baseline
+    /// comes from the measured content (<see cref="BufferingMeasureSink.FirstBaselineFromOrigin"/>):
+    /// the buffer origin is the item's BORDER-box cross-start for an inline-only ROOT
+    /// buffer (so the value is used as-is) or its CONTENT-box cross-start for a
+    /// block-child buffer (so the item's own block-start border+padding is added) — the
+    /// same origin split <see cref="MeasureFlexItemContents"/> uses for content sizing.
+    /// When the item has NO line box its baseline is SYNTHESIZED from its cross-end edge
+    /// (= the cross size) per CSS Flexbox L1 §8.5.</para>
+    ///
+    /// <para><b>Cross size</b> — an auto-cross-sized item with measured content uses its
+    /// content border-box block extent (so a baseline-aligned `&lt;div&gt;text&lt;/div&gt;`
+    /// is content-height, not 0); an explicitly-sized item keeps its declared cross
+    /// size. Indices for non-flex children stay NaN (never read — the emission loop only
+    /// reads an index it is emitting).</para></summary>
+    private (double[] Baselines, double[] CrossSizes) ComputeRowBaselineData(
+        BufferingMeasureSink?[] buffers,
+        FlexDirectionValue flexDirection,
+        PropertyId crossSizeProperty)
+    {
+        var count = _rootBox.Children.Count;
+        var baselines = new double[count];
+        var crossSizes = new double[count];
+        System.Array.Fill(baselines, double.NaN);
+        System.Array.Fill(crossSizes, double.NaN);
+
+        foreach (var itemIdx in _sortedFlexChildIndices)
+        {
+            var item = _rootBox.Children[itemIdx];
+            var itemCrossSize = item.Style.CrossBorderBoxSizePx(crossSizeProperty);
+            var itemIsCrossSizeAuto = IsCrossSizeAuto(item, flexDirection);
+            var buffer = buffers[itemIdx];
+
+            // A baseline-aligned auto-cross item is content-height (mirrors the column
+            // content-main sizing in MeasureFlexItemContents: an inline-only ROOT buffer's
+            // ContentBlockExtent IS the border box, a block-child buffer adds the chrome).
+            double baselineCrossSize;
+            if (itemIsCrossSizeAuto && buffer is not null && buffer.ContentBlockExtent > 0)
+            {
+                var contentCrossBorderBox = buffer.ContainsDecorationOwnerFragment
+                    ? buffer.ContentBlockExtent
+                    : buffer.ContentBlockExtent + item.Style.BlockBorderPaddingPx();
+                baselineCrossSize = contentCrossBorderBox > 0 ? contentCrossBorderBox : itemCrossSize;
+            }
+            else
+            {
+                baselineCrossSize = itemCrossSize;
+            }
+            crossSizes[itemIdx] = baselineCrossSize;
+
+            if (buffer is not null && buffer.HasFirstBaseline)
+            {
+                baselines[itemIdx] = buffer.ContainsDecorationOwnerFragment
+                    ? buffer.FirstBaselineFromOrigin
+                    : item.Style.BlockStartBorderPaddingPx() + buffer.FirstBaselineFromOrigin;
+            }
+            else
+            {
+                // No line box → synthesize the baseline at the cross-end edge (§8.5).
+                baselines[itemIdx] = baselineCrossSize;
+            }
+        }
+
+        return (baselines, crossSizes);
+    }
+
+    /// <summary>Flex baseline-alignment cycle — the line's baseline reference: the MAX
+    /// first-baseline (from <paramref name="alignmentBaselines"/>) over the line's
+    /// items whose effective <c>align-self</c>/<c>align-items</c> resolves to
+    /// <see cref="AlignItemsValue.Baseline"/> (CSS Box Alignment L3 §6.2 baseline-sharing
+    /// group). NaN when the line has no baseline-aligned item.</summary>
+    private double ComputeLineMaxBaseline(
+        FlexLine line, double[] alignmentBaselines, ResolvedAlignItems alignItems)
+    {
+        var maxBaseline = double.NaN;
+        var endSortedPos = line.FirstItemIndex + line.ItemCount;
+        for (var sortedPos = line.FirstItemIndex; sortedPos < endSortedPos; sortedPos++)
+        {
+            var itemIdx = _sortedFlexChildIndices[sortedPos];
+            var item = _rootBox.Children[itemIdx];
+            var effectiveAlign = item.Style.ReadAlignSelf().ResolveAgainstContainerAlignItems(alignItems);
+            if (effectiveAlign.Value != AlignItemsValue.Baseline) continue;
+            var b = alignmentBaselines[itemIdx];
+            if (double.IsNaN(maxBaseline) || b > maxBaseline) maxBaseline = b;
+        }
+        return maxBaseline;
     }
 
     /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 +

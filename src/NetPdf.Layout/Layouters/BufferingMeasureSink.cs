@@ -103,6 +103,33 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
     /// has no per-RUN metrics.</summary>
     public double LastLineBoxDescentBelowBaselinePx { get; private set; }
 
+    /// <summary>Flex baseline-alignment cycle (CSS Flexbox L1 §8.3 + CSS Box Alignment
+    /// L3 §6.2) — whether any buffered fragment carries an in-flow LINE BOX whose FIRST
+    /// baseline could be observed (= the same condition as <see cref="HasInFlowLineBox"/>;
+    /// a separate flag keeps the baseline read self-documenting). A flex item with a line
+    /// box participates in baseline alignment by its first baseline; one with none has its
+    /// baseline synthesized from its cross-size by the caller.</summary>
+    public bool HasFirstBaseline => HasInFlowLineBox;
+
+    /// <summary>Flex baseline-alignment cycle — the FIRST (topmost) in-flow line box's
+    /// baseline, measured from the buffer's coordinate ORIGIN (= the measured box's
+    /// border-box block-start for an inline-only ROOT buffer, else its content-box
+    /// block-start for a block-child buffer — the same origin convention as
+    /// <see cref="ContentBlockExtent"/>). Computed as the topmost line-bearing fragment's
+    /// <c>BlockOffset</c> + that fragment's OWN block-start border+padding (the line box sits
+    /// inside the fragment's border box) + the first line's baseline offset from the line
+    /// top (the fragment's pinned <c>PerLineBaselineTopPx[0]</c> when finite, else the
+    /// half-leading ascent approximation from the fragment's real metrics). 0 until a line
+    /// box is seen (read only when <see cref="HasFirstBaseline"/>).</summary>
+    public double FirstBaselineFromOrigin { get; private set; }
+
+    /// <summary>The block offset of the topmost line-bearing fragment seen so far, so a
+    /// LATER fragment that happens to sit higher (defensive — block layout emits
+    /// top-to-bottom, but out-of-order emission must not pick a lower line as "first")
+    /// replaces the first-baseline candidate. <see cref="double.PositiveInfinity"/> until
+    /// the first line box is seen.</summary>
+    private double _firstLineFragmentTop = double.PositiveInfinity;
+
     public void Emit(BoxFragment fragment)
     {
         // Out-of-flow (position: absolute / fixed) descendants of a flex / grid
@@ -139,6 +166,20 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         if (fragment.InlineLayout is { } inlineLayout && inlineLayout.Lines.Length > 0)
         {
             HasInFlowLineBox = true;   // §10.8.1 — an inline-block with a line box has a baseline.
+
+            // Flex baseline-alignment cycle — capture the FIRST (topmost) line box's
+            // baseline from the buffer origin. The TOPMOST line-bearing fragment wins (the
+            // first baseline per CSS Box Alignment L3 §6.2 is the box's first line); track
+            // by the smallest fragment top. The line box sits inside the fragment's border
+            // box, so its top is the fragment's block-start border+padding below the
+            // fragment's BlockOffset.
+            if (fragment.BlockOffset < _firstLineFragmentTop)
+            {
+                _firstLineFragmentTop = fragment.BlockOffset;
+                FirstBaselineFromOrigin = fragment.BlockOffset
+                    + fragment.Box.Style.BlockStartBorderPaddingPx()
+                    + FirstLineBaselineFromLineTop(fragment);
+            }
             // The last line box's bottom = this fragment's inner bottom minus its OWN block-end chrome
             // (the lines sit inside the border box). Track the GREATEST so the LAST in-flow line box wins;
             // a trailing non-line block / padding (counted in ContentBlockExtent) does NOT move it.
@@ -241,6 +282,31 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         NetPdf.Css.ComputedValues.ComputedStyle style, double fontSizePx)
         => System.Math.Max(0.0,
             NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(style, fontSizePx) / 2.0 - 0.3 * fontSizePx);
+
+    /// <summary>Flex baseline-alignment cycle — the FIRST line box's baseline offset
+    /// from the line top (px) for <paramref name="fragment"/>. When the fragment pinned a
+    /// per-line baseline for line 0 (a baseline-aligned inner atomic / shifted text grew +
+    /// pinned it, so <c>PerLineBaselineTopPx[0]</c> is finite) the offset is EXACT.
+    /// Otherwise it is the half-leading ASCENT from the fragment's real metrics (its
+    /// <see cref="BoxFragment.TextMetricsStyle"/> ?? box-style font + the first line's used
+    /// height): <c>ascent = lineHeight − descentBelowBaseline = lineHeight/2 + 0.3·fontSize</c>
+    /// (the mirror of <see cref="LastLineRunDescentBelowBaselinePx"/>'s descent model), so a
+    /// nested-block item with a different font-size / line-height stays self-consistent.</summary>
+    private static double FirstLineBaselineFromLineTop(BoxFragment fragment)
+    {
+        if (fragment.PerLineBaselineTopPx is { Count: > 0 } baselines
+            && double.IsFinite(baselines[0]))
+        {
+            return baselines[0];
+        }
+        var metricsStyle = fragment.TextMetricsStyle ?? fragment.Box.Style;
+        var fontSizePx = metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        var firstLineHeightPx = fragment.PerLineHeightsPx is { Count: > 0 } perLineHeights
+            ? perLineHeights[0]
+            : NetPdf.Layout.Inline.InlineVerticalAlign.OwnLineHeightPx(metricsStyle, fontSizePx);
+        // Ascent above the baseline = lineHeight − descentBelowBaseline.
+        return System.Math.Max(0.0, firstLineHeightPx - System.Math.Max(0.0, firstLineHeightPx / 2.0 - 0.3 * fontSizePx));
+    }
 
     public void RollbackTo(int cursor)
     {

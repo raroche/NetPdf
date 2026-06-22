@@ -343,6 +343,47 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_align_items_baseline_aligns_item_first_baselines()
+    {
+        // Flex baseline-alignment cycle (CSS Flexbox L1 §8.3) — end-to-end through the
+        // CSS cascade: `align-items: baseline` parses + decodes, and two ROW items that
+        // carry text but differ in padding-top (0 vs 30) get their FIRST text baselines
+        // aligned. The padded item's baseline is 30px deeper in its border box, so the
+        // unpadded item is shifted DOWN by exactly 30px while the padded item anchors at
+        // the cross-start. The ascent cancels (same synthetic font), so the delta is the
+        // 30px padding difference — robust against the exact font metrics.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; align-items: baseline; width: 400px; height: 100px; }
+                .item { width: 120px; }
+                .b { padding-top: 30px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a">Ag</div>
+              <div class="item b">Ag</div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? a = null, b = null;
+        foreach (var f in sink.Fragments)
+        {
+            var cls = f.Box.SourceElement?.GetAttribute("class");
+            if (cls is null || f.InlineLayout is not null) continue; // geometry fragment only
+            if (cls.Contains("a")) a = f;
+            else if (cls.Contains("b")) b = f;
+        }
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        // Padded item (deeper baseline) anchors at the line cross-start; unpadded item
+        // shifts down by the 30px padding delta so the baselines coincide.
+        Assert.Equal(0.0, b!.Value.BlockOffset, precision: 2);
+        Assert.Equal(30.0, a!.Value.BlockOffset, precision: 2);
+    }
+
+    [Fact]
     public async Task L2_production_html_justify_content_unsafe_flex_end_with_overflow_honors_alignment()
     {
         // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —

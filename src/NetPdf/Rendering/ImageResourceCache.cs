@@ -85,6 +85,11 @@ internal sealed class ImageResourceCache
     /// <c>background-image: radial-gradient(...)</c> (PDF native radial shading).</summary>
     public Dictionary<Box, CssRadialGradient> BackgroundRadialGradientBoxes { get; } = new();
 
+    /// <summary>Phase 4 shadows — element-backed box → its parsed <c>box-shadow</c> layers
+    /// (computed, not fetched). The painter emits each OUTSET layer UNDER the background — sharp
+    /// as a native filled (rounded) rect, blurred via the Skia raster bridge.</summary>
+    public Dictionary<Box, IReadOnlyList<CssBoxShadow>> BoxShadowBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -132,11 +137,12 @@ internal sealed class ImageResourceCache
         // data-URI decode cost, diagnostics, or budget consumption for backgrounds the
         // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
+        var boxShadowUnsupportedReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
-            cache.BackgroundRadialGradientBoxes,
+            cache.BackgroundRadialGradientBoxes, cache.BoxShadowBoxes,
             collectBackgrounds: options.PrintBackgrounds,
-            diagnostics, ref unsupportedBackgroundReported);
+            diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
         {
@@ -222,12 +228,38 @@ internal sealed class ImageResourceCache
         List<(Box, string, bool)> references,
         Dictionary<Box, CssLinearGradient> gradientBoxes,
         Dictionary<Box, CssRadialGradient> radialGradientBoxes,
+        Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
-        ref bool unsupportedBackgroundReported)
+        ref bool unsupportedBackgroundReported,
+        ref bool boxShadowUnsupportedReported)
     {
         if (box.SourceElement is { } element)
         {
+            // box-shadow (Phase 4 shadows) — the raw cascade winner, parsed into layers. Gated by
+            // PrintBackgrounds like the other decoration. A list whose every paintable layer is
+            // outset stores cleanly; an unparseable value or any INSET layer (outset-only first
+            // cut) surfaces CSS-BOXSHADOW-UNSUPPORTED-001 once per render.
+            if (collectBackgrounds)
+            {
+                var shadowRaw = cascade.TryGetStylesFor(element)?.GetWinner("box-shadow")?.ResolvedValue;
+                if (!string.IsNullOrWhiteSpace(shadowRaw)
+                    && !shadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    var shadows = CssBoxShadow_Parser.TryParse(shadowRaw);
+                    if (shadows is not null)
+                    {
+                        boxShadowBoxes[box] = shadows;
+                        var hasInset = false;
+                        foreach (var s in shadows) if (s.Inset) { hasInset = true; break; }
+                        if (hasInset) ReportBoxShadowUnsupported(diagnostics, ref boxShadowUnsupportedReported);
+                    }
+                    else
+                    {
+                        ReportBoxShadowUnsupported(diagnostics, ref boxShadowUnsupportedReported);
+                    }
+                }
+            }
             // <img src> on a replaced box (inline imgs are skipped by the inline pass today —
             // the atomic-inline deferral — but sizing their slots is harmless and future-proof).
             if (box.Kind is BoxKind.BlockReplacedElement or BoxKind.InlineReplacedElement
@@ -277,8 +309,21 @@ internal sealed class ImageResourceCache
         }
         foreach (var child in box.Children)
             CollectReferences(
-                child, cascade, references, gradientBoxes, radialGradientBoxes, collectBackgrounds,
-                diagnostics, ref unsupportedBackgroundReported);
+                child, cascade, references, gradientBoxes, radialGradientBoxes, boxShadowBoxes,
+                collectBackgrounds, diagnostics,
+                ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported);
+    }
+
+    private static void ReportBoxShadowUnsupported(IDiagnosticsSink diagnostics, ref bool reported)
+    {
+        if (reported) return;
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssBoxShadowUnsupported001,
+            "A box-shadow form not painted yet was ignored — an inset shadow (the first cut "
+            + "paints OUTSET shadows only) or an offset/blur/spread in a unit the parser can't "
+            + "resolve (px + absolute units supported; em/rem/% not). Other layers still paint.",
+            DiagnosticSeverity.Warning));
+        reported = true;
     }
 
     /// <summary>Parse a CSS <c>url(...)</c> token as ONE COMPLETE token (PR #166 review P2 —

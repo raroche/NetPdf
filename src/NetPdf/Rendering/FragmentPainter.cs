@@ -106,6 +106,7 @@ internal static class FragmentPainter
         // document with both a non-solid border and a non-solid outline still surfaces it only once.
         var styleApproximationReported = false;
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
+        var boxShadowRasterReported = false;      // Phase 4 shadows — once-per-render raster Info.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -131,6 +132,16 @@ internal static class FragmentPainter
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)
             {
+                // box-shadow (Phase 4 shadows) paints UNDERNEATH the background + border box
+                // (CSS B&B §7.2 — shadows are drawn behind the element's own rendering).
+                if (imageCache is not null && document is not null
+                    && imageCache.BoxShadowBoxes.TryGetValue(fragment.Box, out var shadows))
+                {
+                    PaintBoxShadows(page, document, shadows, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
+                        ref boxShadowRasterReported);
+                }
+
                 PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb);
                 // background-image tiles paint OVER this fragment's color and UNDER its borders
                 // (CSS B&B §14.2 layer order), gated by PrintBackgrounds like the color.
@@ -1110,6 +1121,149 @@ internal static class FragmentPainter
         }
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
     }
+
+    // ───── Phase 4 shadows — box-shadow ─────────────────────────────────────
+
+    private const double BoxShadowBlurEpsilonPx = 0.01; // ≤ this blur radius paints as a sharp shadow
+    private const double BoxShadowRasterScale = 2.0;    // device px per CSS px for the blur raster
+
+    /// <summary>Phase 4 shadows — paint a box's <c>box-shadow</c> layers UNDER its background
+    /// (CSS B&amp;B §7.2). OUTSET layers only (the first cut): a sharp (blur ≈ 0) layer is a native
+    /// filled (rounded) rect offset + spread-expanded from the border box; a blurred layer is
+    /// rasterized through the Skia bridge and placed as an image. Layers paint in REVERSE list
+    /// order so the FIRST-listed shadow ends up on top (§7.2.1). Inset layers are skipped (a
+    /// diagnostic was emitted at collection).</summary>
+    private static void PaintBoxShadows(
+        PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported)
+    {
+        var borderRadii = ReadCornerRadii(style, widthPx, heightPx);
+        for (var i = shadows.Count - 1; i >= 0; i--)
+        {
+            var s = shadows[i];
+            if (s.Inset) continue; // outset-only first cut
+
+            uint argb;
+            if (s.ColorRaw is null)
+            {
+                argb = currentColorArgb;
+            }
+            else
+            {
+                var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                    s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+                if (!TryResolveColor(resolved.Slot, currentColorArgb, out argb)) continue; // invalid color
+            }
+            var alpha = Alpha(argb) / 255.0;
+            if (alpha <= 0) continue;
+            ColorChannels(argb, out var r, out var g, out var b);
+
+            // The shadow shape = the border box offset by (x, y) and grown by the spread radius.
+            var shLeftPx = leftPx + s.OffsetXPx - s.SpreadPx;
+            var shTopPx = topPx + s.OffsetYPx - s.SpreadPx;
+            var shWidthPx = widthPx + 2 * s.SpreadPx;
+            var shHeightPx = heightPx + 2 * s.SpreadPx;
+            if (shWidthPx <= 0 || shHeightPx <= 0) continue;
+            var shadowRadii = ExpandRadiiForSpread(borderRadii, s.SpreadPx);
+
+            if (s.BlurPx <= BoxShadowBlurEpsilonPx)
+            {
+                ToPdfRect(shLeftPx, shTopPx, shWidthPx, shHeightPx, pageHeightPt,
+                    out var x, out var y, out var w, out var h);
+                FillShadowRect(page, x, y, w, h, shadowRadii, r, g, b, alpha);
+            }
+            else
+            {
+                PaintBlurredBoxShadow(page, document, shLeftPx, shTopPx, shWidthPx, shHeightPx,
+                    shadowRadii, s.BlurPx, pageHeightPt, r, g, b, alpha, diagnostics, ref rasterReported);
+            }
+        }
+    }
+
+    private static void FillShadowRect(
+        PdfPage page, double x, double y, double w, double h, CornerRadii radiiPx,
+        double r, double g, double b, double alpha)
+    {
+        if (radiiPx.AnyPositive)
+            page.FillRoundedRectangle(x, y, w, h, ToPt(radiiPx), r, g, b, alpha);
+        else
+            page.FillRectangle(x, y, w, h, r, g, b, alpha);
+    }
+
+    /// <summary>Rasterize a blurred OUTSET shadow through the Skia bridge and place it. The bitmap
+    /// pads the (spread-expanded) shape by ~3σ on each side (where σ = blur/2, the Chromium
+    /// convention) at <see cref="BoxShadowRasterScale"/>× resolution. Per-corner blur radii are a
+    /// documented first-cut approximation (a single representative radius drives the raster; the
+    /// sharp path is per-corner exact). An over-cap bitmap falls back to a sharp shadow.</summary>
+    private static void PaintBlurredBoxShadow(
+        PdfPage page, PdfDocument document,
+        double shLeftPx, double shTopPx, double shWidthPx, double shHeightPx,
+        CornerRadii shadowRadii, double blurPx, double pageHeightPt,
+        double r, double g, double b, double alpha,
+        IDiagnosticsSink? diagnostics, ref bool rasterReported)
+    {
+        var sigmaPx = blurPx / 2.0;
+        var marginPx = Math.Ceiling(3.0 * sigmaPx);
+        var bmpLeftPx = shLeftPx - marginPx;
+        var bmpTopPx = shTopPx - marginPx;
+        var bmpWidthPx = shWidthPx + 2 * marginPx;
+        var bmpHeightPx = shHeightPx + 2 * marginPx;
+        var deviceW = (int)Math.Ceiling(bmpWidthPx * BoxShadowRasterScale);
+        var deviceH = (int)Math.Ceiling(bmpHeightPx * BoxShadowRasterScale);
+        var radiusPx = MaxCorner(shadowRadii);
+
+        var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterize(
+            deviceW, deviceH,
+            shapeLeft: (float)(marginPx * BoxShadowRasterScale),
+            shapeTop: (float)(marginPx * BoxShadowRasterScale),
+            shapeWidth: (float)(shWidthPx * BoxShadowRasterScale),
+            shapeHeight: (float)(shHeightPx * BoxShadowRasterScale),
+            radius: (float)(radiusPx * BoxShadowRasterScale),
+            blurSigma: (float)(sigmaPx * BoxShadowRasterScale),
+            r, g, b, alpha);
+
+        if (result is null)
+        {
+            // Over-cap / degenerate → a sharp native shadow is better than nothing.
+            ToPdfRect(shLeftPx, shTopPx, shWidthPx, shHeightPx, pageHeightPt,
+                out var fx, out var fy, out var fw, out var fh);
+            FillShadowRect(page, fx, fy, fw, fh, shadowRadii, r, g, b, alpha);
+            return;
+        }
+
+        var imageRef = document.RegisterImage(result);
+        ToPdfRect(bmpLeftPx, bmpTopPx, bmpWidthPx, bmpHeightPx, pageHeightPt,
+            out var x, out var y, out var w, out var h);
+        page.PlaceImage(imageRef, x, y, w, h);
+
+        if (!rasterReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.CssBoxShadowBlurRaster001,
+                "A blurred box-shadow was painted via the Skia raster fallback (PDF has no native "
+                + "Gaussian blur); the shadow shape was rasterized at "
+                + $"{BoxShadowRasterScale:0}× and placed as an image XObject.",
+                DiagnosticSeverity.Info));
+            rasterReported = true;
+        }
+    }
+
+    /// <summary>Grow each border-radius corner by the spread (CSS B&amp;B §7.2.1 — a 0 corner stays
+    /// sharp; a positive corner radius increases by the spread, clamped ≥ 0).</summary>
+    private static CornerRadii ExpandRadiiForSpread(CornerRadii radii, double spreadPx)
+    {
+        static double E(double c, double s) => c > 0 ? Math.Max(0, c + s) : 0;
+        return new CornerRadii(
+            E(radii.TopLeftX, spreadPx), E(radii.TopLeftY, spreadPx),
+            E(radii.TopRightX, spreadPx), E(radii.TopRightY, spreadPx),
+            E(radii.BottomRightX, spreadPx), E(radii.BottomRightY, spreadPx),
+            E(radii.BottomLeftX, spreadPx), E(radii.BottomLeftY, spreadPx));
+    }
+
+    private static double MaxCorner(CornerRadii c) => Math.Max(
+        Math.Max(Math.Max(c.TopLeftX, c.TopLeftY), Math.Max(c.TopRightX, c.TopRightY)),
+        Math.Max(Math.Max(c.BottomRightX, c.BottomRightY), Math.Max(c.BottomLeftX, c.BottomLeftY)));
 
     /// <summary>Phase 4 gradients — paint a parsed <c>linear-gradient(...)</c> background layer
     /// as a PDF native axial shading (ISO 32000-2 §8.7.4.5.3) clipped to the box's (rounded)

@@ -108,6 +108,25 @@ internal static class DiagnosticCodes
     public const string CssBackgroundImageUnsupported001 = "CSS-BACKGROUND-IMAGE-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>box-shadow</c> with a non-zero blur radius was painted via the Skia raster
+    /// fallback (the shadow shape is rasterized at <c>DevicePixelRatio × 96</c> DPI and placed as
+    /// a PNG XObject) because PDF has no native Gaussian-blur primitive. Sharp (blur = 0) shadows
+    /// paint as native filled rects. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssBoxShadowBlurRaster001 = "CSS-BOXSHADOW-BLUR-RASTER-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint yet was ignored: an
+    /// <c>inset</c> shadow (the first cut paints OUTSET shadows only) or a value whose offsets /
+    /// blur / spread use a unit the parser can't resolve (e.g. <c>em</c>/<c>rem</c> — absolute
+    /// units + <c>px</c> are supported). Any other shadow layers in the list still paint.
+    /// Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssBoxShadowUnsupported001 = "CSS-BOXSHADOW-UNSUPPORTED-001";
+
+    /// <summary>
     /// An unrecognized at-rule was preserved in the AST but had no rendering effect — the
     /// cascade resolver couldn't decompose its body or its conditions weren't evaluable.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.

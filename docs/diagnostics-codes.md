@@ -51,6 +51,7 @@ Severity levels:
 | `CSS-MASK-RASTER-FALLBACK-001` | Info | `mask`/`mask-image` triggered raster fallback. |
 | `CSS-CONIC-GRADIENT-RASTER-001` | Info | Conic gradient triggered raster fallback. |
 | `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | Blurred box-shadow triggered raster fallback. |
+| `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not yet painted was ignored — an `inset` shadow (outset only in the first cut) or an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not). Other layers still paint. Once per render. |
 | `CSS-TEXTSHADOW-BLUR-RASTER-001` | Info | Blurred text-shadow triggered raster fallback. |
 | `CSS-WRITING-MODE-SIDEWAYS-UNSUPPORTED-001` | Warning | `sideways-rl`/`sideways-lr` writing modes treated as `vertical-rl`/`vertical-lr`. |
 | `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` | Warning | A `content:` value (on `::before`/`::after`/`::marker`) used a function/keyword that cycle 1 doesn't yet handle (`counter()` / `counters()` / `url()` / `image()` / `image-set()` / `linear-gradient()` / `open-quote` / `close-quote` / `no-open-quote` / `no-close-quote`). The pseudo-element generates no box. Roadmap cycle 2 ships counter machinery + the resource pipeline + quotation-stack tracking. |

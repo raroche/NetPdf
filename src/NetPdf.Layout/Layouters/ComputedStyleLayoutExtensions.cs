@@ -473,6 +473,92 @@ internal static class ComputedStyleLayoutExtensions
         return n >= 1 ? n : null;
     }
 
+    // ─── CSS Fragmentation L3 — break-before / break-after / break-inside / orphans / widows ───
+    //
+    // KeywordResolver index order is the contract. break-before / break-after:
+    //   0 auto · 1 avoid · 2 avoid-page · 3 avoid-column · 4 avoid-region ·
+    //   5 page · 6 left · 7 right · 8 recto · 9 verso · 10 column · 11 region · 12 all.
+    // Legacy page-break-before / page-break-after: 0 auto · 1 always · 2 avoid · 3 left · 4 right.
+
+    /// <summary>Per CSS Fragmentation L3 §3.1 — does this box's <c>break-before</c>
+    /// (or the legacy <c>page-break-before</c> alias) FORCE a page break? The forced-
+    /// page values are <c>page</c> / <c>left</c> / <c>right</c> / <c>recto</c> /
+    /// <c>verso</c> / <c>all</c> (modern) and <c>always</c> / <c>left</c> / <c>right</c>
+    /// (legacy). <c>column</c> / <c>region</c> force a COLUMN / REGION break, not a page
+    /// break, so they don't count here. A non-<c>auto</c> modern value wins over the
+    /// legacy alias; otherwise the legacy alias applies.</summary>
+    public static bool ForcesPageBreakBefore(this ComputedStyle style)
+        => ForcesPageBreak(style, PropertyId.BreakBefore, PropertyId.PageBreakBefore);
+
+    /// <summary>Per §3.1 — does <c>break-after</c> / <c>page-break-after</c> force a page break?</summary>
+    public static bool ForcesPageBreakAfter(this ComputedStyle style)
+        => ForcesPageBreak(style, PropertyId.BreakAfter, PropertyId.PageBreakAfter);
+
+    /// <summary>Per §3.2 — does <c>break-before</c> / <c>page-break-before</c> request
+    /// AVOIDING a page break before the box (<c>avoid</c> / <c>avoid-page</c>)?</summary>
+    public static bool AvoidsPageBreakBefore(this ComputedStyle style)
+        => AvoidsPageBreak(style, PropertyId.BreakBefore, PropertyId.PageBreakBefore);
+
+    /// <summary>Per §3.2 — does <c>break-after</c> / <c>page-break-after</c> avoid a page break after the box?</summary>
+    public static bool AvoidsPageBreakAfter(this ComputedStyle style)
+        => AvoidsPageBreak(style, PropertyId.BreakAfter, PropertyId.PageBreakAfter);
+
+    /// <summary>Per §3.2 — does <c>break-inside</c> request avoiding a break INSIDE the
+    /// box (<c>avoid</c> / <c>avoid-page</c>)? <c>avoid-column</c> / <c>avoid-region</c>
+    /// target the column / region fragmentation contexts, not pages.</summary>
+    public static bool AvoidsBreakInside(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.BreakInside);
+        return slot.Tag == ComputedSlotTag.Keyword && slot.AsKeyword() is 1 or 2;
+    }
+
+    private static bool ForcesPageBreak(ComputedStyle style, PropertyId modern, PropertyId legacy)
+    {
+        var m = style.Get(modern);
+        if (m.Tag == ComputedSlotTag.Keyword)
+        {
+            var k = m.AsKeyword();
+            // A non-auto modern value is authoritative (so `break-before: avoid` is
+            // NOT overridden by a legacy `page-break-before: always`).
+            if (k != 0) return k is 5 or 6 or 7 or 8 or 9 or 12; // page/left/right/recto/verso/all
+        }
+        var l = style.Get(legacy);
+        return l.Tag == ComputedSlotTag.Keyword && l.AsKeyword() is 1 or 3 or 4; // always/left/right
+    }
+
+    private static bool AvoidsPageBreak(ComputedStyle style, PropertyId modern, PropertyId legacy)
+    {
+        var m = style.Get(modern);
+        if (m.Tag == ComputedSlotTag.Keyword)
+        {
+            var k = m.AsKeyword();
+            if (k != 0) return k is 1 or 2; // avoid / avoid-page
+        }
+        var l = style.Get(legacy);
+        return l.Tag == ComputedSlotTag.Keyword && l.AsKeyword() == 2; // avoid
+    }
+
+    /// <summary>Per CSS Fragmentation L3 §4.2 — the box's <c>orphans</c> (min lines
+    /// left at the bottom of a fragment); defaults to 2. A non-integer or non-positive
+    /// value falls back to <paramref name="defaultValue"/>.</summary>
+    public static int ReadOrphansOrDefault(this ComputedStyle style, int defaultValue = 2)
+        => ReadPositiveIntOrDefault(style, PropertyId.Orphans, defaultValue);
+
+    /// <summary>Per §4.2 — the box's <c>widows</c> (min lines carried to the next fragment); defaults to 2.</summary>
+    public static int ReadWidowsOrDefault(this ComputedStyle style, int defaultValue = 2)
+        => ReadPositiveIntOrDefault(style, PropertyId.Widows, defaultValue);
+
+    private static int ReadPositiveIntOrDefault(ComputedStyle style, PropertyId id, int defaultValue)
+    {
+        var slot = style.Get(id);
+        if (slot.Tag == ComputedSlotTag.Integer)
+        {
+            var n = slot.AsInteger();
+            if (n >= 1) return n; // §4.2 — orphans/widows must be a positive integer
+        }
+        return defaultValue;
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 1 — decode
     /// <see cref="PropertyId.ColumnGap"/> into a CSS px length, or
     /// the cycle-1 default (16 px) when the slot is <c>normal</c> /

@@ -125,8 +125,8 @@ internal static class FragmentationCases
             PageHeightPx: 400),
 
         // §3.1 — `break-before: page` forces a page break even when the block
-        // would otherwise fit. (NetPdf does not yet propagate forced-break
-        // metadata from the box — honest gap; EXPECTED is spec.)
+        // would otherwise fit (a 100px + b 100px both fit page 0, but b is forced
+        // to page 1). The box now propagates forced-break metadata to the resolver.
         new ConformanceCase("frag-break-before-page", "CSS Fragmentation L3 §3.1",
             Doc(Block("a", 100) + "<div id='b' style='height:100px;break-before:page'></div>"),
             new[]
@@ -134,7 +134,27 @@ internal static class FragmentationCases
                 new BoxExpectation("a", Page: 0, Y: 0),
                 new BoxExpectation("b", Page: 1, Y: 0), // forced onto page 1
             },
-            PageHeightPx: 400,
-            KnownGap: "break-before:page forced-break metadata isn't propagated from the box"),
+            PageHeightPx: 400),
+
+        // §3.1 — `break-after: page` on a block forces the NEXT in-flow sibling to a
+        // new page (a forces b down even though both fit page 0).
+        new ConformanceCase("frag-break-after-page", "CSS Fragmentation L3 §3.1",
+            Doc("<div id='a' style='height:100px;break-after:page'></div>" + Block("b", 100)),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0), // forced onto page 1
+            },
+            PageHeightPx: 400),
+
+        // §3.1 — legacy `page-break-before: always` is an alias for `break-before: page`.
+        new ConformanceCase("frag-page-break-before-always", "CSS 2.1 §13.3.1 / Fragmentation L3 §A",
+            Doc(Block("a", 100) + "<div id='b' style='height:100px;page-break-before:always'></div>"),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+            },
+            PageHeightPx: 400),
     };
 }

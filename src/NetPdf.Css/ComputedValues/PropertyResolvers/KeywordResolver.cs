@@ -183,6 +183,22 @@ internal static class KeywordResolver
         // box-sizing — CSS Basic UI 4 §10.
         b[PropertyId.BoxSizing] = T("content-box", "border-box");
 
+        // break-before / break-after — CSS Fragmentation 3 §3.1. Forced-break
+        // values: page / left / right / recto / verso / column / region / all;
+        // avoid values: avoid / avoid-page / avoid-column / avoid-region. Index
+        // order is the contract read by ComputedStyleLayoutExtensions' break helpers.
+        b[PropertyId.BreakBefore] = T(
+            "auto", "avoid", "avoid-page", "avoid-column", "avoid-region",
+            "page", "left", "right", "recto", "verso", "column", "region", "all");
+        b[PropertyId.BreakAfter] = T(
+            "auto", "avoid", "avoid-page", "avoid-column", "avoid-region",
+            "page", "left", "right", "recto", "verso", "column", "region", "all");
+
+        // page-break-before / page-break-after — CSS 2.1 §13.3.1 legacy aliases
+        // (CSS Fragmentation 3 §A maps `always`→`page`, `avoid`→`avoid`, etc.).
+        b[PropertyId.PageBreakBefore] = T("auto", "always", "avoid", "left", "right");
+        b[PropertyId.PageBreakAfter] = T("auto", "always", "avoid", "left", "right");
+
         // break-inside — CSS Fragmentation 3 §3.2.
         b[PropertyId.BreakInside] = T("auto", "avoid", "avoid-page", "avoid-column", "avoid-region");
 

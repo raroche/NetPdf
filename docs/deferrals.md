@@ -221,6 +221,44 @@ grepping the ID).
 
 ---
 
+## fragmentation-control-residuals
+
+- **ID** — `fragmentation-control-residuals`
+- **Status** — `approximated`. CSS Fragmentation L3 control is wired (the control PR):
+  `break-before` / `break-after` (+ legacy `page-break-*` aliases) force page breaks that
+  propagate through fitting ancestors (Fragmentation conformance **100%**); `break-inside:
+  avoid` / `break-before:avoid` / `break-after:avoid` set the boundary `AvoidBreak` flag;
+  `orphans` / `widows` are registered + drive `BreakResolver.OrphansRequired` /
+  `WidowsRequired`. The residuals below don't block a criterion.
+- **Behavior** — Forced page breaks (`page` / `left` / `right` + legacy `always` / `left` /
+  `right`) work end-to-end. `left` / `right` currently behave like `page` (force a break)
+  WITHOUT the parity refinement (inserting a blank page so the box lands on a left/right
+  page). `recto` / `verso` / `all` are registered + handled by the reader but are NOT parsed
+  by AngleSharp.Css 1.0.0-beta.144 (the declaration is dropped before the cascade). The
+  `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
+  production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
+  (block-flow children are already emitted atomically, so this is not visibly wrong today).
+  `orphans` / `widows` flow to the resolver but have no visible effect until line-level
+  paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
+  the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
+  default), so per-paragraph overrides aren't honored yet.
+- **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion); (2) parsing for
+  `recto` / `verso` / `all` (AngleSharp upgrade or a CssPreprocessor recovery entry);
+  (3) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;
+  (4) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+- **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
+  on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
+- **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);
+  `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ForcesPageBreak*` /
+  `AvoidsBreak*` / `ReadOrphans/WidowsOrDefault`); `BlockLayouter.cs` (the two break-decision
+  sites — top-level loop + `EmitBlockSubtreeRecursive`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`
+  (orphans/widows → resolver). Parity + line-splitting are the deeper follow-ups.
+- **Added** — the CSS Fragmentation control PR (registration + cascade→resolver wiring).
+- **Removal condition** — parity blank-page insertion ships, the optimizing resolver drives
+  production, and per-paragraph orphans/widows resolve at line-break time.
+
+---
+
 ## line-height-percentage-inheritance
 
 - **ID** — `line-height-percentage-inheritance`

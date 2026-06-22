@@ -51,6 +51,37 @@ public sealed class CssLinearGradientParserTests
     }
 
     [Fact]
+    public void Corner_directions_record_the_corner_and_keep_a_square_box_angle_fallback()
+    {
+        // A `to <corner>` direction records the corner symbolically (the painter derives the true,
+        // aspect-ratio-correct angle) while AngleDeg keeps the square-box fallback (PR #209 review [P2]).
+        AssertCorner("to top right", LinearGradientCorner.TopRight, 45.0);
+        AssertCorner("to bottom right", LinearGradientCorner.BottomRight, 135.0);
+        AssertCorner("to bottom left", LinearGradientCorner.BottomLeft, 225.0);
+        AssertCorner("to top left", LinearGradientCorner.TopLeft, 315.0);
+
+        static void AssertCorner(string direction, LinearGradientCorner expectedCorner, double expectedFallbackDeg)
+        {
+            var g = CssLinearGradient_Parser.TryParse($"linear-gradient({direction}, red, blue)");
+            Assert.NotNull(g);
+            Assert.Equal(expectedCorner, g!.Corner);
+            Assert.Equal(expectedFallbackDeg, g.AngleDeg, precision: 3);
+        }
+    }
+
+    [Theory]
+    // Sides and explicit angles leave Corner null (the painter uses AngleDeg directly).
+    [InlineData("to top")]
+    [InlineData("to right")]
+    [InlineData("45deg")]
+    public void Side_and_angle_directions_leave_corner_null(string direction)
+    {
+        var g = CssLinearGradient_Parser.TryParse($"linear-gradient({direction}, red, blue)");
+        Assert.NotNull(g);
+        Assert.Null(g!.Corner);
+    }
+
+    [Fact]
     public void Percentage_stop_positions_parse()
     {
         var g = CssLinearGradient_Parser.TryParse("linear-gradient(to right, #ff0000 10%, lime 50%, blue 90%)");

@@ -4,6 +4,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using NetPdf.Pdf.Fonts;
 using NetPdf.Pdf.Images;
 using NetPdf.Pdf.Objects;
@@ -207,6 +208,13 @@ internal sealed class PdfDocument
 
     private readonly Dictionary<string, PdfIndirectRef> _patternCache = [];
 
+    // Phase 4 gradients (PR #209 review [P3]) — N boxes painting the SAME gradient (repeated
+    // cards / table rows) reuse one color function (position-independent — keyed on the stops)
+    // and, when their axis/circle geometry also coincides, one shading object, instead of
+    // allocating a fresh function + shading graph per painted fragment.
+    private readonly Dictionary<string, PdfIndirectRef> _gradientFunctionCache = [];
+    private readonly Dictionary<string, PdfIndirectRef> _gradientShadingCache = [];
+
     /// <summary>
     /// Register a TILING PATTERN (ISO 32000-2 §8.7.3, PatternType 1) that repeats one
     /// registered Image XObject on a <paramref name="tileWidthPt"/> ×
@@ -324,6 +332,11 @@ internal sealed class PdfDocument
         if (!double.IsFinite(x0) || !double.IsFinite(y0) || !double.IsFinite(x1) || !double.IsFinite(y1))
             throw new ArgumentException($"Axial shading coords must be finite; got ({x0},{y0})-({x1},{y1}).");
 
+        // Reuse an identical axial shading (same axis + stops) — PR #209 review [P3].
+        var shadingKey = string.Concat(
+            "A|", Canon(x0), ",", Canon(y0), ",", Canon(x1), ",", Canon(y1), "|", GradientStopsKey(stops));
+        if (_gradientShadingCache.TryGetValue(shadingKey, out var cachedShading)) return cachedShading;
+
         var functionRef = BuildGradientFunction(stops);
         var coords = new PdfArray()
             .Add(new PdfReal(x0)).Add(new PdfReal(y0))
@@ -336,6 +349,7 @@ internal sealed class PdfDocument
             .Set(PdfNames.Extend, new PdfArray().Add(PdfBoolean.True).Add(PdfBoolean.True));
         var shadingRef = _writer.Objects.Allocate();
         _writer.Objects.Assign(shadingRef, dict);
+        _gradientShadingCache[shadingKey] = shadingRef;
         return shadingRef;
     }
 
@@ -359,6 +373,11 @@ internal sealed class PdfDocument
             || r0 < 0 || r1 < 0)
             throw new ArgumentException($"Radial shading circles must be finite + non-negative; got ({cx},{cy}) r0={r0} r1={r1}.");
 
+        // Reuse an identical radial shading (same circles + stops) — PR #209 review [P3].
+        var shadingKey = string.Concat(
+            "R|", Canon(cx), ",", Canon(cy), ",", Canon(r0), ",", Canon(r1), "|", GradientStopsKey(stops));
+        if (_gradientShadingCache.TryGetValue(shadingKey, out var cachedShading)) return cachedShading;
+
         var functionRef = BuildGradientFunction(stops);
         var coords = new PdfArray()
             .Add(new PdfReal(cx)).Add(new PdfReal(cy)).Add(new PdfReal(r0))
@@ -371,6 +390,7 @@ internal sealed class PdfDocument
             .Set(PdfNames.Extend, new PdfArray().Add(PdfBoolean.True).Add(PdfBoolean.True));
         var shadingRef = _writer.Objects.Allocate();
         _writer.Objects.Assign(shadingRef, dict);
+        _gradientShadingCache[shadingKey] = shadingRef;
         return shadingRef;
     }
 
@@ -384,6 +404,32 @@ internal sealed class PdfDocument
     /// forced strictly increasing (an equal/hard-stop offset becomes a near-instant
     /// transition) so the PDF function contract holds (ISO 32000-2 §7.10.4).</summary>
     private PdfIndirectRef BuildGradientFunction(IReadOnlyList<PdfGradientStop> stops)
+    {
+        // Cache the color function by its normalized stops (PR #209 review [P3]) — the function
+        // is position-independent, so every box painting the same gradient shares one graph.
+        var key = GradientStopsKey(stops);
+        if (_gradientFunctionCache.TryGetValue(key, out var cached)) return cached;
+        var built = BuildGradientFunctionUncached(stops);
+        _gradientFunctionCache[key] = built;
+        return built;
+    }
+
+    /// <summary>A canonical cache key for a gradient's normalized stops (PR #209 review [P3]):
+    /// each stop's offset + RGB serialized with the SAME canonical real format the PDF writer
+    /// emits, so two stop lists that would produce a byte-identical function share one slot.</summary>
+    private static string GradientStopsKey(IReadOnlyList<PdfGradientStop> stops)
+    {
+        var sb = new StringBuilder(stops.Count * 24);
+        foreach (var s in stops)
+            sb.Append(Canon(s.Offset)).Append(':')
+              .Append(Canon(s.R)).Append(',').Append(Canon(s.G)).Append(',').Append(Canon(s.B)).Append(';');
+        return sb.ToString();
+    }
+
+    private static string Canon(double v) =>
+        v.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+
+    private PdfIndirectRef BuildGradientFunctionUncached(IReadOnlyList<PdfGradientStop> stops)
     {
         static PdfArray Rgb(PdfGradientStop s) => new PdfArray()
             .Add(new PdfReal(System.Math.Clamp(s.R, 0, 1)))
@@ -415,11 +461,25 @@ internal sealed class PdfDocument
         for (var i = 0; i < stops.Count; i++) pts.Add((System.Math.Clamp(stops[i].Offset, 0, 1), stops[i]));
         if (System.Math.Clamp(last.Offset, 0, 1) < 1) pts.Add((1.0, last));
 
-        // Force strictly increasing boundaries (equal offsets ⇒ a near-instant transition).
+        // Normalize the control-point boundaries to a STRICTLY INCREASING sequence inside the
+        // OPEN interval (0, 1) so the FunctionType 3 /Bounds contract holds (ISO 32000-2 §7.10.4
+        // — interior bounds must be strictly increasing AND strictly between the domain
+        // endpoints). PR #209 review [P1]: the old `Min(1, prev+eps)` ceiling-clamped TERMINAL
+        // hard stops (e.g. `red 100%, blue 100%, green 100%`) to DUPLICATE /Bounds at 1.0 → a
+        // malformed, reader-dependent PDF. Now the endpoints pin to 0 / 1 and each interior
+        // point is clamped above its predecessor (+eps) but below 1 with eps headroom per
+        // remaining interior point, so the points after it still fit. Non-degenerate gradients
+        // are untouched (their offsets already sit well inside the window) ⇒ byte-identical.
         const double eps = 1e-6;
-        for (var i = 1; i < pts.Count; i++)
-            if (pts[i].T <= pts[i - 1].T)
-                pts[i] = (System.Math.Min(1.0, pts[i - 1].T + eps), pts[i].S);
+        var n = pts.Count;
+        pts[0] = (0.0, pts[0].S);
+        pts[n - 1] = (1.0, pts[n - 1].S);
+        for (var i = 1; i < n - 1; i++)
+        {
+            var lo = pts[i - 1].T + eps;
+            var hi = 1.0 - eps * (n - 1 - i); // reserve room for the remaining interior pts + the 1.0 endpoint
+            pts[i] = (System.Math.Clamp(pts[i].T, lo, System.Math.Max(lo, hi)), pts[i].S);
+        }
 
         // A single segment over [0, 1] (two stops at exactly 0 and 1) needs no stitch.
         if (pts.Count == 2)

@@ -7,12 +7,23 @@ using System.Globalization;
 
 namespace NetPdf.Rendering;
 
+/// <summary>Phase 4 gradients (PR #209 review [P2]) — a <c>to &lt;corner&gt;</c> linear-gradient
+/// direction. The gradient-line angle for a corner is ASPECT-RATIO DEPENDENT (CSS Images L3 §3.1:
+/// the line points into the corner's quadrant AND is perpendicular to the diagonal joining the two
+/// NEIGHBORING corners), so the parser records the corner symbolically and the painter computes the
+/// angle from the painted box — a fixed 45° is correct only for a SQUARE box.</summary>
+internal enum LinearGradientCorner { TopLeft, TopRight, BottomRight, BottomLeft }
+
 /// <summary>Phase 4 gradients — a parsed CSS <c>linear-gradient()</c> (CSS Images L3 §3.1):
 /// the gradient-line <see cref="AngleDeg"/> (CSS convention — 0° = "to top", clockwise) plus
 /// the ordered color stops. Each stop carries the RAW color text (resolved to RGBA by the
 /// painter via the shared color resolver) and an optional position as a fraction in [0, 1]
-/// (percentages; <see langword="null"/> = unpositioned → spread evenly per CSS Images §3.4).</summary>
-internal sealed record CssLinearGradient(double AngleDeg, IReadOnlyList<CssGradientStop> Stops);
+/// (percentages; <see langword="null"/> = unpositioned → spread evenly per CSS Images §3.4).
+/// <para>When the direction was a <c>to &lt;corner&gt;</c>, <see cref="Corner"/> is set and the
+/// painter derives the true angle from the box geometry; <see cref="AngleDeg"/> then holds the
+/// square-box approximation as a fallback.</para></summary>
+internal sealed record CssLinearGradient(
+    double AngleDeg, LinearGradientCorner? Corner, IReadOnlyList<CssGradientStop> Stops);
 
 /// <summary>Phase 4 gradients — one parsed color stop: the raw color token + an optional
 /// position fraction in [0, 1] (null = unpositioned).</summary>
@@ -45,7 +56,8 @@ internal static class CssLinearGradient_Parser
         if (args.Count < 2) return null; // a gradient needs ≥ 2 stops (or a direction + ≥ 1, but ≥ 2 stops is the real floor)
 
         var angleDeg = 180.0; // CSS default direction = "to bottom".
-        var firstIsDirection = TryParseDirection(args[0], out var parsedAngle);
+        LinearGradientCorner? corner = null;
+        var firstIsDirection = TryParseDirection(args[0], out var parsedAngle, out corner);
         if (firstIsDirection) angleDeg = parsedAngle;
         var stopStart = firstIsDirection ? 1 : 0;
         if (args.Count - stopStart < 2) return null; // need ≥ 2 color stops
@@ -56,16 +68,18 @@ internal static class CssLinearGradient_Parser
             if (!TryParseStop(args[i], out var stop)) return null; // any unparseable stop → unsupported
             stops.Add(stop);
         }
-        return new CssLinearGradient(angleDeg, stops);
+        return new CssLinearGradient(angleDeg, corner, stops);
     }
 
     /// <summary>Parse a leading direction token: <c>&lt;angle&gt;</c> (deg/grad/rad/turn) or
     /// <c>to &lt;side&gt;</c> / <c>to &lt;corner&gt;</c>. Sides map to the CSS angle convention;
-    /// a corner is APPROXIMATED by the angle pointing at it for a square box (documented — an
-    /// exact corner gradient depends on the box aspect ratio, refined in the painter if needed).</summary>
-    private static bool TryParseDirection(string arg, out double angleDeg)
+    /// a corner sets <paramref name="corner"/> (the painter computes the aspect-ratio-correct
+    /// angle from the box) and <paramref name="angleDeg"/> to the square-box approximation as a
+    /// fallback. An <c>&lt;angle&gt;</c> or single side leaves <paramref name="corner"/> null.</summary>
+    private static bool TryParseDirection(string arg, out double angleDeg, out LinearGradientCorner? corner)
     {
         angleDeg = 180.0;
+        corner = null;
         var t = arg.Trim();
         if (t.StartsWith("to ", StringComparison.OrdinalIgnoreCase))
         {
@@ -88,12 +102,12 @@ internal static class CssLinearGradient_Parser
             if (right && !top && !bottom) { angleDeg = 90; return true; }
             if (bottom && !left && !right) { angleDeg = 180; return true; }
             if (left && !top && !bottom) { angleDeg = 270; return true; }
-            // Corner — approximate as the 45° diagonal toward the corner (exact value is
-            // aspect-ratio-dependent; the painter recomputes from the box if it matters).
-            if (top && right) { angleDeg = 45; return true; }
-            if (bottom && right) { angleDeg = 135; return true; }
-            if (bottom && left) { angleDeg = 225; return true; }
-            if (top && left) { angleDeg = 315; return true; }
+            // Corner — record it symbolically (the painter derives the true, aspect-ratio-correct
+            // angle from the box) and keep the 45° square-box value as the AngleDeg fallback.
+            if (top && right) { angleDeg = 45; corner = LinearGradientCorner.TopRight; return true; }
+            if (bottom && right) { angleDeg = 135; corner = LinearGradientCorner.BottomRight; return true; }
+            if (bottom && left) { angleDeg = 225; corner = LinearGradientCorner.BottomLeft; return true; }
+            if (top && left) { angleDeg = 315; corner = LinearGradientCorner.TopLeft; return true; }
             return false;
         }
         return TryParseAngle(t, out angleDeg);

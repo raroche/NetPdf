@@ -1126,7 +1126,10 @@ internal static class FragmentPainter
         if (stops.Count < 2) return;
 
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        var (x0, y0, x1, y1) = LinearGradientAxis(gradient.AngleDeg, x, y, w, h);
+        // A `to <corner>` direction's angle depends on the box aspect ratio (PR #209 review [P2]) —
+        // compute it from the painted box; an explicit angle / side uses the parsed value as-is.
+        var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, w, h) : gradient.AngleDeg;
+        var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, x, y, w, h);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
         page.PaintShadingInRect(shadingRef, x, y, w, h,
@@ -1205,6 +1208,26 @@ internal static class FragmentPainter
         var hx = len / 2.0 * sin;     // PDF dir = (sinθ, cosθ)
         var hy = len / 2.0 * cos;
         return (cx - hx, cy - hy, cx + hx, cy + hy);
+    }
+
+    /// <summary>Phase 4 gradients (PR #209 review [P2]) — the CSS <c>to &lt;corner&gt;</c>
+    /// gradient-line angle (0° = "to top", clockwise) for a box <paramref name="w"/> wide ×
+    /// <paramref name="h"/> tall. CSS Images L3 §3.1: the gradient line points into the corner's
+    /// quadrant AND is perpendicular to the diagonal joining the two NEIGHBORING corners, so the
+    /// angle is aspect-ratio dependent — a fixed 45° is correct only for a square box. For
+    /// <c>to top right</c> the line is parallel to (h, −w) ⇒ angle = atan2(h, w); the other three
+    /// corners reflect that base angle. Width/height in any consistent unit (the ratio is what
+    /// matters). Pure — unit-tested directly.</summary>
+    internal static double CornerAngleDeg(LinearGradientCorner corner, double w, double h)
+    {
+        var a = Math.Atan2(h, w) * 180.0 / Math.PI; // the `to top right` angle, in (0, 90)
+        return corner switch
+        {
+            LinearGradientCorner.TopRight => a,
+            LinearGradientCorner.BottomRight => 180.0 - a,
+            LinearGradientCorner.BottomLeft => 180.0 + a,
+            _ => 360.0 - a, // TopLeft
+        };
     }
 
     /// <summary>Phase 4 gradients — paint a parsed <c>radial-gradient(...)</c> as a PDF native

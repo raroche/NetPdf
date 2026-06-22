@@ -51,10 +51,16 @@ internal static class CssRadialGradient_Parser
         var stopStart = 0;
 
         // The first arg is a prelude when it is NOT a color stop (it mentions a shape, an
-        // extent keyword, or `at`). Heuristic: if it contains "at " or a known shape/extent
-        // keyword token, treat it as the prelude.
-        if (TryParsePrelude(args[0], ref isCircle, ref extent, ref cx, ref cy))
-            stopStart = 1;
+        // extent keyword, or `at <position>`). A prelude that is clearly intended (it has
+        // `at ...` or a shape/extent keyword) but malformed makes the WHOLE value unsupported
+        // (→ null, the bg-color shows) rather than silently centering on a wrong axis or
+        // demoting the bad prelude to a color stop (PR #209 review [P2]).
+        switch (TryParsePrelude(args[0], ref isCircle, ref extent, ref cx, ref cy))
+        {
+            case PreludeResult.Malformed: return null;
+            case PreludeResult.Consumed: stopStart = 1; break;
+            case PreludeResult.NotPrelude: break; // args[0] is the first color stop
+        }
 
         if (args.Count - stopStart < 2) return null;
         var stops = new List<CssGradientStop>(args.Count - stopStart);
@@ -66,83 +72,122 @@ internal static class CssRadialGradient_Parser
         return new CssRadialGradient(isCircle, extent, cx, cy, stops);
     }
 
-    /// <summary>Try to read <paramref name="arg"/> as the gradient prelude. Returns true only
-    /// when it is unambiguously a prelude (a shape, extent keyword, or <c>at &lt;position&gt;</c>);
-    /// a plain color stop returns false so it is parsed as the first stop.</summary>
-    private static bool TryParsePrelude(string arg, ref bool isCircle, ref RadialExtent extent,
+    /// <summary>The outcome of reading the first gradient arg as a prelude (PR #209 review [P2]):
+    /// <see cref="Consumed"/> = a valid <c>[shape || extent] [at &lt;position&gt;]?</c> prelude;
+    /// <see cref="NotPrelude"/> = a plain color stop (parse it as the first stop);
+    /// <see cref="Malformed"/> = a clear-but-invalid prelude (bad position or unknown shape token)
+    /// → the whole gradient is unsupported.</summary>
+    private enum PreludeResult { NotPrelude, Consumed, Malformed }
+
+    /// <summary>Try to read <paramref name="arg"/> as the gradient prelude. A leading
+    /// <c>at &lt;position&gt;</c> or a recognized shape/extent keyword marks it as a prelude;
+    /// once marked, an invalid position or an unknown shape/extent token is
+    /// <see cref="PreludeResult.Malformed"/> (not a silent demotion to a color stop).</summary>
+    private static PreludeResult TryParsePrelude(string arg, ref bool isCircle, ref RadialExtent extent,
         ref double cx, ref double cy)
     {
         var t = arg.Trim().ToLowerInvariant();
-        if (t.Length == 0) return false;
+        if (t.Length == 0) return PreludeResult.NotPrelude;
 
         string shapeExtent = t;
         var atIndex = t.IndexOf("at ", StringComparison.Ordinal);
-        var hasAt = atIndex >= 0 || t.StartsWith("at ", StringComparison.Ordinal);
+        var hasAt = atIndex >= 0;
         if (hasAt)
         {
             shapeExtent = atIndex > 0 ? t.Substring(0, atIndex).Trim() : string.Empty;
             var posPart = t.Substring(atIndex + 3).Trim();
-            if (!TryParsePosition(posPart, ref cx, ref cy)) return false;
+            // `at ...` makes this unambiguously a prelude — a position that doesn't parse makes
+            // the whole gradient unsupported, NOT a fallback color stop.
+            if (!TryParsePosition(posPart, ref cx, ref cy)) return PreludeResult.Malformed;
         }
 
-        var sawPrelude = hasAt;
         foreach (var tok in shapeExtent.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
         {
             switch (tok)
             {
-                case "circle": isCircle = true; sawPrelude = true; break;
-                case "ellipse": isCircle = false; sawPrelude = true; break;
-                case "closest-side": extent = RadialExtent.ClosestSide; sawPrelude = true; break;
-                case "closest-corner": extent = RadialExtent.ClosestCorner; sawPrelude = true; break;
-                case "farthest-side": extent = RadialExtent.FarthestSide; sawPrelude = true; break;
-                case "farthest-corner": extent = RadialExtent.FarthestCorner; sawPrelude = true; break;
-                default: return false; // not a recognized prelude token → it's a color stop
+                case "circle": isCircle = true; break;
+                case "ellipse": isCircle = false; break;
+                case "closest-side": extent = RadialExtent.ClosestSide; break;
+                case "closest-corner": extent = RadialExtent.ClosestCorner; break;
+                case "farthest-side": extent = RadialExtent.FarthestSide; break;
+                case "farthest-corner": extent = RadialExtent.FarthestCorner; break;
+                // An unrecognized shape/extent token: malformed if we already committed to a
+                // prelude (it had `at ...`); otherwise this whole arg is just a color stop.
+                default: return hasAt ? PreludeResult.Malformed : PreludeResult.NotPrelude;
             }
         }
-        return sawPrelude;
+        // A prelude was recognized when there was an `at` OR ≥1 shape/extent token.
+        return hasAt || shapeExtent.Length > 0 ? PreludeResult.Consumed : PreludeResult.NotPrelude;
     }
 
+    /// <summary>The axis a position token belongs to (CSS Backgrounds §3.6 / CSS Values
+    /// position grammar): a horizontal edge (<c>left</c>/<c>right</c>), a vertical edge
+    /// (<c>top</c>/<c>bottom</c>), <c>center</c> (either axis), an <c>&lt;percentage&gt;</c>
+    /// offset (either axis, by position), or an unrecognized token.</summary>
+    private enum PosKind { Horizontal, Vertical, Center, Offset, Invalid }
+
+    private static PosKind ClassifyPosToken(string tok, out double value)
+    {
+        value = 0.5;
+        switch (tok)
+        {
+            case "left": value = 0.0; return PosKind.Horizontal;
+            case "right": value = 1.0; return PosKind.Horizontal;
+            case "top": value = 0.0; return PosKind.Vertical;
+            case "bottom": value = 1.0; return PosKind.Vertical;
+            case "center": value = 0.5; return PosKind.Center;
+            default: return TryPercent(tok, out value) ? PosKind.Offset : PosKind.Invalid;
+        }
+    }
+
+    /// <summary>Parse an <c>at &lt;position&gt;</c> value into box-relative center fractions
+    /// (PR #209 review [P2]). A single token sets its named axis; two tokens are classified per
+    /// the CSS position grammar — two unambiguous keywords may appear in EITHER order, but the
+    /// moment one component is a percentage the order is fixed (first = horizontal, second =
+    /// vertical), and a duplicate-axis pair (<c>left right</c>, <c>top bottom</c>) or a misordered
+    /// keyword (<c>25% left</c>, <c>top 25%</c>) is REJECTED rather than silently mis-centered.</summary>
     private static bool TryParsePosition(string pos, ref double cx, ref double cy)
     {
         var tokens = pos.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (tokens.Length == 0 || tokens.Length > 2) return false;
 
-        // One token sets the named axis (the other stays center); two tokens are X then Y
-        // (keywords may appear in either order only for the unambiguous named forms — first
-        // cut: treat the first as horizontal unless it is top/bottom).
         if (tokens.Length == 1)
         {
-            return tokens[0] switch
+            // One token sets its named axis (the other stays center); a lone percentage is the
+            // horizontal position (§3.6 — `at 25%` ≡ `at 25% center`).
+            return ClassifyPosToken(tokens[0], out var v) switch
             {
-                "center" => true,
-                "left" => Set(ref cx, 0.0),
-                "right" => Set(ref cx, 1.0),
-                "top" => Set(ref cy, 0.0),
-                "bottom" => Set(ref cy, 1.0),
-                _ => TryPercent(tokens[0], out cx),
+                PosKind.Horizontal => Set(ref cx, v),
+                PosKind.Vertical => Set(ref cy, v),
+                PosKind.Center => true,
+                PosKind.Offset => Set(ref cx, v),
+                _ => false,
             };
         }
-        // Two tokens.
-        var okX = AxisValue(tokens[0], horizontal: true, ref cx, ref cy);
-        var okY = AxisValue(tokens[1], horizontal: false, ref cx, ref cy);
-        return okX && okY;
+
+        var k0 = ClassifyPosToken(tokens[0], out var v0);
+        var k1 = ClassifyPosToken(tokens[1], out var v1);
+        if (k0 == PosKind.Invalid || k1 == PosKind.Invalid) return false;
+
+        if (k0 != PosKind.Offset && k1 != PosKind.Offset)
+        {
+            // Both keywords — either order, but two edges on the SAME axis are invalid.
+            if (k0 == PosKind.Horizontal && k1 == PosKind.Horizontal) return false;
+            if (k0 == PosKind.Vertical && k1 == PosKind.Vertical) return false;
+            if (k0 == PosKind.Horizontal) cx = v0; else if (k0 == PosKind.Vertical) cy = v0;
+            if (k1 == PosKind.Horizontal) cx = v1; else if (k1 == PosKind.Vertical) cy = v1;
+            return true; // any `center` leaves its axis at the 0.5 default
+        }
+
+        // At least one percentage ⇒ strict positional order: [0] horizontal, [1] vertical. A
+        // keyword that names the WRONG axis for its slot rejects.
+        if (k0 == PosKind.Vertical) return false;   // e.g. `top 25%`
+        if (k1 == PosKind.Horizontal) return false; // e.g. `25% left`
+        cx = k0 == PosKind.Center ? 0.5 : v0;
+        cy = k1 == PosKind.Center ? 0.5 : v1;
+        return true;
 
         static bool Set(ref double target, double v) { target = v; return true; }
-    }
-
-    private static bool AxisValue(string tok, bool horizontal, ref double cx, ref double cy)
-    {
-        switch (tok)
-        {
-            case "center": return true;
-            case "left": cx = 0.0; return true;
-            case "right": cx = 1.0; return true;
-            case "top": cy = 0.0; return true;
-            case "bottom": cy = 1.0; return true;
-            default:
-                if (TryPercent(tok, out var f)) { if (horizontal) cx = f; else cy = f; return true; }
-                return false;
-        }
     }
 
     private static bool TryPercent(string token, out double fraction)

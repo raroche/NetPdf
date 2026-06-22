@@ -97,6 +97,38 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_handles_terminal_hard_stop_gradients_without_malformed_bounds()
+    {
+        // Phase 4 gradients (PR #209 review [P1]) — repeated TERMINAL stops at 100% used to
+        // ceiling-clamp to duplicate /Bounds at 1.0 (a malformed FunctionType 3). The whole
+        // value must still produce a well-formed, reader-safe PDF.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(red 100%, blue 100%, green 100%)\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.StartsWith("%PDF-", text);
+        Assert.Contains("%%EOF", text);
+        Assert.Contains("/ShadingType 2", text);
+        // Whatever interior /Bounds the stitch emits, they must be strictly inside (0, 1) and
+        // strictly increasing — never the duplicate `1 1` the old clamp produced.
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(text, @"/Bounds \[([^\]]*)\]"))
+        {
+            var nums = m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            double prev = 0.0;
+            foreach (var s in nums)
+            {
+                var b = double.Parse(s, CultureInfo.InvariantCulture);
+                Assert.True(b > prev && b < 1.0, $"bound {s} must be in (prev, 1): prev={prev}");
+                prev = b;
+            }
+        }
+    }
+
+    [Fact]
     public void Convert_paints_a_radial_gradient_background_as_a_pdf_radial_shading()
     {
         // Phase 4 gradients — `background-image: radial-gradient(...)` emits a PDF native

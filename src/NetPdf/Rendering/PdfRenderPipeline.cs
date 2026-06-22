@@ -404,7 +404,7 @@ internal static class PdfRenderPipeline
         // Finish() appends AFTER it, preserving the "text over backgrounds" layering.
         var textSession = new TextPainter.TextPaintSession(
             shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics,
-            imageCache.TextShadowBoxes);
+            imageCache.TextShadowBoxes, imageCache.TransformBoxes);
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();

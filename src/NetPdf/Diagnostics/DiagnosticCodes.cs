@@ -137,6 +137,24 @@ internal static class DiagnosticCodes
     public const string CssTextShadowUnsupported001 = "CSS-TEXTSHADOW-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a CSS <c>transform</c> contained a 3D function (<c>rotateX</c>/<c>rotateY</c>,
+    /// <c>translateZ</c>/<c>translate3d</c>'s z, <c>scale3d</c>'s z, <c>perspective</c>,
+    /// <c>rotate3d</c>, <c>matrix3d</c>); it was FLATTENED to 2D (the 2D-meaningful part of
+    /// <c>translate3d</c>/<c>scale3d</c> is kept; the rest projects to identity). Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssTransform3DUnsupported001 = "CSS-TRANSFORM-3D-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — a CSS <c>transform</c> value could not be parsed into the supported 2D function
+    /// set (<c>translate</c>/<c>scale</c>/<c>rotate</c>/<c>skew</c>/<c>matrix</c> + their axis
+    /// variants) — an unknown function or an offset/angle in an unresolvable unit. The element
+    /// painted UNTRANSFORMED. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssTransformUnsupported001 = "CSS-TRANSFORM-UNSUPPORTED-001";
+
+    /// <summary>
     /// An unrecognized at-rule was preserved in the AST but had no rendering effect — the
     /// cascade resolver couldn't decompose its body or its conditions weren't evaluable.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.

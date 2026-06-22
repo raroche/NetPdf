@@ -213,6 +213,13 @@ internal static class CssPreprocessor
         // template-areas string form (`grid: "a a" 50px / 100px`)
         // is deferred to a follow-up cycle.
         "grid",
+        // Per Phase 4 transforms — AngleSharp.Css 1.0.0-beta.144 drops the `transform` and
+        // `transform-origin` properties (CSS Transforms L1) entirely. The recovery path emits each
+        // declaration verbatim so the cascade keeps the raw value; the painter reads the winner +
+        // parses the 2D function list / origin (neither is a registered property yet — the documented
+        // raw-read seam, like `page` above).
+        "transform",
+        "transform-origin",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

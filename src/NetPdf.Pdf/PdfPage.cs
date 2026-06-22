@@ -590,6 +590,31 @@ internal sealed class PdfPage
         AppendContent("Q\n");
     }
 
+    /// <summary>Phase 4 transforms — push the graphics state and concatenate a 2D affine CTM
+    /// (<c>q a b c d e f cm</c>, ISO 32000-2 §8.3.4): a point (x, y) maps to
+    /// (a·x + c·y + e, b·x + d·y + f) in PDF user space. Callers MUST balance with
+    /// <see cref="RestoreGraphicsState"/>. Used to wrap a transformed element's painting (its
+    /// decoration + text) so it renders under the CSS <c>transform</c>.</summary>
+    public void BeginTransform(double a, double b, double c, double d, double e, double f)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(a) || !double.IsFinite(b) || !double.IsFinite(c)
+            || !double.IsFinite(d) || !double.IsFinite(e) || !double.IsFinite(f))
+        {
+            throw new ArgumentException(
+                $"BeginTransform matrix must be finite; got [{a} {b} {c} {d} {e} {f}].");
+        }
+        var sb = new StringBuilder(64);
+        sb.Append("q ");
+        AppendNumber(sb, a); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(' ');
+        AppendNumber(sb, c); sb.Append(' ');
+        AppendNumber(sb, d); sb.Append(' ');
+        AppendNumber(sb, e); sb.Append(' ');
+        AppendNumber(sb, f); sb.Append(" cm\n");
+        AppendContent(sb.ToString());
+    }
+
     /// <summary>Get (or create) the per-page <c>/ExtGState</c> resource name for a constant
     /// fill alpha (<c>/ca</c>), deduped by the alpha value (so equal alphas share one
     /// ExtGState). The name is derived from the value, so it's deterministic.</summary>

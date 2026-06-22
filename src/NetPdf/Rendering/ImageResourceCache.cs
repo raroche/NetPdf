@@ -95,6 +95,13 @@ internal sealed class ImageResourceCache
     /// The text painter draws the glyph run offset in the shadow color UNDER the main text.</summary>
     public Dictionary<Box, IReadOnlyList<CssTextShadow>> TextShadowBoxes { get; } = new();
 
+    /// <summary>Phase 4 transforms — element-backed box → its parsed 2D <c>transform</c> + resolved
+    /// <c>transform-origin</c>. Both the fragment's decoration (FragmentPainter) and its text
+    /// (TextPainter) wrap their ops in the matching PDF <c>cm</c> about the origin.</summary>
+    internal readonly record struct BoxTransform(CssTransform Transform, TransformOrigin Origin);
+
+    public Dictionary<Box, BoxTransform> TransformBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -144,12 +151,15 @@ internal sealed class ImageResourceCache
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
         var boxShadowUnsupportedReported = false;
         var textShadowUnsupportedReported = false;
+        var transform3DReported = false;
+        var transformUnsupportedReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BoxShadowBoxes, cache.TextShadowBoxes,
+            cache.TransformBoxes,
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-            ref textShadowUnsupportedReported);
+            ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
         {
@@ -237,14 +247,49 @@ internal sealed class ImageResourceCache
         Dictionary<Box, CssRadialGradient> radialGradientBoxes,
         Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
         Dictionary<Box, IReadOnlyList<CssTextShadow>> textShadowBoxes,
+        Dictionary<Box, BoxTransform> transformBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported,
         ref bool boxShadowUnsupportedReported,
-        ref bool textShadowUnsupportedReported)
+        ref bool textShadowUnsupportedReported,
+        ref bool transform3DReported,
+        ref bool transformUnsupportedReported)
     {
         if (box.SourceElement is { } element)
         {
+            // transform (Phase 4) — the box's OWN declared value (transform doesn't inherit),
+            // ALWAYS collected (it moves text + decoration, not just backgrounds). A 3D function
+            // flattens (CSS-TRANSFORM-3D-UNSUPPORTED-001); an unparseable value paints untransformed
+            // (CSS-TRANSFORM-UNSUPPORTED-001).
+            var rules = cascade.TryGetStylesFor(element);
+            var transformRaw = rules?.GetWinner("transform")?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(transformRaw)
+                && !transformRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                var transform = CssTransform_Parser.TryParse(transformRaw);
+                if (transform is not null)
+                {
+                    if (!transform.IsIdentity)
+                    {
+                        var origin = CssTransformOrigin_Parser.Parse(rules?.GetWinner("transform-origin")?.ResolvedValue);
+                        transformBoxes[box] = new BoxTransform(transform, origin);
+                    }
+                    if (transform.Had3D) Report(diagnostics, ref transform3DReported,
+                        DiagnosticCodes.CssTransform3DUnsupported001,
+                        "A 3D transform function was flattened to 2D (rotateX/Y, translateZ, "
+                        + "perspective, rotate3d, matrix3d project to identity; translate3d/scale3d "
+                        + "keep their 2D part).");
+                }
+                else
+                {
+                    Report(diagnostics, ref transformUnsupportedReported,
+                        DiagnosticCodes.CssTransformUnsupported001,
+                        "A transform value could not be parsed into the supported 2D function set "
+                        + "(translate/scale/rotate/skew/matrix + axis variants); the element painted "
+                        + "untransformed.");
+                }
+            }
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
             // sharp offset (CSS-TEXTSHADOW-UNSUPPORTED-001); an unparseable value surfaces the same
@@ -340,9 +385,17 @@ internal sealed class ImageResourceCache
         foreach (var child in box.Children)
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, boxShadowBoxes,
-                textShadowBoxes, collectBackgrounds, diagnostics,
+                textShadowBoxes, transformBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-                ref textShadowUnsupportedReported);
+                ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
+    }
+
+    /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>
+    private static void Report(IDiagnosticsSink diagnostics, ref bool reported, string code, string message)
+    {
+        if (reported) return;
+        diagnostics.Emit(new Diagnostic(code, message, DiagnosticSeverity.Warning));
+        reported = true;
     }
 
     private static void ReportBoxShadowUnsupported(IDiagnosticsSink diagnostics, ref bool reported)

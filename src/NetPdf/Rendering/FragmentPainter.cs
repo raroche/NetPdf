@@ -129,6 +129,19 @@ internal static class FragmentPainter
 
             var currentColorArgb = ResolveCurrentColor(style);
 
+            // transform (Phase 4) — wrap this fragment's decoration in a PDF cm about the
+            // transform-origin (the text pass wraps its glyphs in the SAME cm), so the box and its
+            // content render under the CSS transform. Non-transformed fragments emit no wrap.
+            ImageResourceCache.BoxTransform boxTransform = default;
+            var transformed = imageCache is not null
+                && imageCache.TransformBoxes.TryGetValue(fragment.Box, out boxTransform);
+            if (transformed)
+            {
+                var (ta, tb, tc, td, te, tf) = CssTransform_Parser.ToPdfMatrix(
+                    boxTransform.Transform, boxTransform.Origin, leftPx, topPx, widthPx, heightPx, pageHeightPt);
+                page.BeginTransform(ta, tb, tc, td, te, tf);
+            }
+
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)
             {
@@ -200,6 +213,8 @@ internal static class FragmentPainter
             // borders' style-approximation flag (one diagnostic per conversion).
             PaintOutline(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                 currentColorArgb, diagnostics, ref styleApproximationReported);
+
+            if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
         }
     }
 

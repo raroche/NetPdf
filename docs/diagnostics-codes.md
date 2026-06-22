@@ -45,6 +45,7 @@ Severity levels:
 | `CSS-ANCHOR-POSITIONING-UNSUPPORTED-001` | Warning | `anchor()`/`anchor-size()` used; falls back to `auto`. |
 | `CSS-POSITION-STICKY-UNSUPPORTED-001` | Warning | `position: sticky` treated as `relative` in v1. |
 | `CSS-TRANSFORM-3D-UNSUPPORTED-001` | Warning | A 3D transform was found; the matrix was projected to 2D. |
+| `CSS-TRANSFORM-UNSUPPORTED-001` | Warning | A `transform` value could not be parsed into the supported 2D function set (`translate`/`scale`/`rotate`/`skew`/`matrix` + axis variants) — an unknown function or an unresolvable unit; the element painted untransformed. Once per render. |
 | `CSS-ANIMATION-UNSUPPORTED-001` | Info | `@keyframes`/`animation`/`transition` were ignored. PDF is static. |
 | `CSS-FILTER-RASTER-FALLBACK-001` | Info | A subtree with `filter` was rasterized at `DevicePixelRatio * 96` DPI and embedded as PNG. |
 | `CSS-CLIP-PATH-RASTER-FALLBACK-001` | Info | `clip-path: path()` triggered raster fallback. |

@@ -78,6 +78,25 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_honors_linear_gradient_stop_positions_in_the_color_function()
+    {
+        // Phase 4 gradients (PR #209 Copilot fix) — authored stop positions must be honored:
+        // `red 25%, blue 75%` holds red over [0, .25], transitions over [.25, .75], holds blue
+        // over [.75, 1]. That is a FunctionType 3 stitch (with end holds) — NOT a single
+        // FunctionType 2 spanning the whole axis — with /Bounds at the stop offsets.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(to right, red 25%, blue 75%)\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.Contains("/FunctionType 3", text);  // stitched (end holds + interior transition)
+        Assert.Contains("0.25", text);              // /Bounds carry the authored offsets
+        Assert.Contains("0.75", text);
+    }
+
+    [Fact]
     public void Convert_paints_a_radial_gradient_background_as_a_pdf_radial_shading()
     {
         // Phase 4 gradients — `background-image: radial-gradient(...)` emits a PDF native

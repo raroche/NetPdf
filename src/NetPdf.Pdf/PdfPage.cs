@@ -277,8 +277,10 @@ internal sealed class PdfPage
         return resourceName;
     }
 
-    /// <summary>Phase 4 gradients — paint a registered axial/radial shading
-    /// (<see cref="PdfDocument.RegisterAxialShading"/>) clipped to the rectangle
+    /// <summary>Phase 4 gradients — paint a registered shading (axial
+    /// <see cref="PdfDocument.RegisterAxialShading"/> OR radial
+    /// <see cref="PdfDocument.RegisterRadialShading"/> — the <c>sh</c> operator is
+    /// shading-type-agnostic) clipped to the rectangle
     /// <c>(<paramref name="x"/>, <paramref name="y"/>, <paramref name="width"/>,
     /// <paramref name="height"/>)</c> (PDF points, bottom-left origin). Emits
     /// <c>q [/GSn gs] &lt;clip path&gt; W n /Shn sh Q</c>: the shading's <c>/Coords</c>
@@ -288,7 +290,7 @@ internal sealed class PdfPage
     /// <paramref name="alpha"/> &lt; 1 applies a constant-alpha ExtGState. Dedups the
     /// shading into the page's <c>/Shading</c> resource by target identity. No-op (returns
     /// empty) for a non-positive rectangle.</summary>
-    public string PaintAxialShading(
+    public string PaintShadingInRect(
         PdfIndirectRef shadingRef, double x, double y, double width, double height,
         CornerRadii? radii = null, double alpha = 1.0)
     {
@@ -298,7 +300,7 @@ internal sealed class PdfPage
             || !double.IsFinite(height) || !double.IsFinite(alpha))
         {
             throw new ArgumentException(
-                $"PaintAxialShading args must be finite; got x={x}, y={y}, w={width}, h={height}, alpha={alpha}.");
+                $"PaintShadingInRect args must be finite; got x={x}, y={y}, w={width}, h={height}, alpha={alpha}.");
         }
         if (width <= 0 || height <= 0) return string.Empty;
 

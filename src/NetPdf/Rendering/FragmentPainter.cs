@@ -1129,7 +1129,7 @@ internal static class FragmentPainter
         var (x0, y0, x1, y1) = LinearGradientAxis(gradient.AngleDeg, x, y, w, h);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
-        page.PaintAxialShading(shadingRef, x, y, w, h,
+        page.PaintShadingInRect(shadingRef, x, y, w, h,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
     }
 
@@ -1241,7 +1241,7 @@ internal static class FragmentPainter
 
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
-        page.PaintAxialShading(shadingRef, x, y, w, h,
+        page.PaintShadingInRect(shadingRef, x, y, w, h,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
     }
 

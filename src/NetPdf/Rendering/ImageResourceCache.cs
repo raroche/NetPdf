@@ -264,9 +264,10 @@ internal sealed class ImageResourceCache
                 {
                     diagnostics.Emit(new Diagnostic(
                         DiagnosticCodes.CssBackgroundImageUnsupported001,
-                        "background-image supports a single url(...) or a linear-gradient(...) "
-                        + "this cycle; a radial/conic/repeating gradient, multi-layer list, or "
-                        + "unrecognized form was ignored (background-color still paints).",
+                        "background-image supports a single url(...), linear-gradient(...), or "
+                        + "radial-gradient(...) this cycle; a conic/repeating gradient, a "
+                        + "multi-layer list, or an unrecognized form was ignored "
+                        + "(background-color still paints).",
                         DiagnosticSeverity.Warning));
                     unsupportedBackgroundReported = true;
                 }

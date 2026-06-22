@@ -309,7 +309,7 @@ internal sealed class PdfDocument
     /// (PDF points, bottom-left origin); the caller derives the axis endpoints from the box
     /// geometry + gradient angle. <c>/Extend [true true]</c> paints the end colors past the
     /// axis (CSS gradients fill the whole box). Returns the shading's indirect ref for
-    /// <see cref="PdfPage.PaintAxialShading"/>.
+    /// <see cref="PdfPage.PaintShadingInRect"/>.
     /// <para>Colors are DeviceRGB; per-stop alpha is dropped (opaque) — soft-mask alpha
     /// shadings are a documented follow-up. Stops must be sorted with strictly increasing
     /// offsets in [0, 1]; the caller (gradient parser) normalizes per CSS Images §3.4.</para></summary>
@@ -376,10 +376,13 @@ internal sealed class PdfDocument
 
     /// <summary>Phase 4 gradients — build the PDF function mapping the parametric
     /// gradient domain [0, 1] to a DeviceRGB color (ISO 32000-2 §7.10). One stop → a
-    /// constant (C0 == C1) <c>FunctionType 2</c>; two stops → a single interpolating
-    /// <c>FunctionType 2</c> (<c>/N 1</c> linear); 3+ stops → a <c>FunctionType 3</c>
-    /// stitching function over per-segment Type-2 sub-functions, with <c>/Bounds</c> at
-    /// the interior stop offsets and each sub-domain re-encoded to [0, 1].</summary>
+    /// constant (C0 == C1) <c>FunctionType 2</c>; otherwise a <c>FunctionType 3</c>
+    /// stitching function whose <c>/Bounds</c> are the STOP OFFSETS so each interpolation
+    /// happens only between its two stops (an authored `red 10%, blue 90%` holds red over
+    /// [0, .1], transitions over [.1, .9], holds blue over [.9, 1]). Leading/trailing
+    /// constant segments are added when the first/last offset isn't 0/1, and the bounds are
+    /// forced strictly increasing (an equal/hard-stop offset becomes a near-instant
+    /// transition) so the PDF function contract holds (ISO 32000-2 §7.10.4).</summary>
     private PdfIndirectRef BuildGradientFunction(IReadOnlyList<PdfGradientStop> stops)
     {
         static PdfArray Rgb(PdfGradientStop s) => new PdfArray()
@@ -402,18 +405,34 @@ internal sealed class PdfDocument
 
         if (stops.Count == 1)
             return ExpFunction(stops[0], stops[0]);
-        if (stops.Count == 2)
-            return ExpFunction(stops[0], stops[1]);
 
-        // 3+ stops: stitch per-segment exponential functions.
+        // Control points spanning the full [0, 1] domain: the stops at their offsets, plus a
+        // leading/trailing constant hold when the first/last offset isn't 0/1.
+        var pts = new List<(double T, PdfGradientStop S)>(stops.Count + 2);
+        var first = stops[0];
+        var last = stops[stops.Count - 1];
+        if (System.Math.Clamp(first.Offset, 0, 1) > 0) pts.Add((0.0, first));
+        for (var i = 0; i < stops.Count; i++) pts.Add((System.Math.Clamp(stops[i].Offset, 0, 1), stops[i]));
+        if (System.Math.Clamp(last.Offset, 0, 1) < 1) pts.Add((1.0, last));
+
+        // Force strictly increasing boundaries (equal offsets ⇒ a near-instant transition).
+        const double eps = 1e-6;
+        for (var i = 1; i < pts.Count; i++)
+            if (pts[i].T <= pts[i - 1].T)
+                pts[i] = (System.Math.Min(1.0, pts[i - 1].T + eps), pts[i].S);
+
+        // A single segment over [0, 1] (two stops at exactly 0 and 1) needs no stitch.
+        if (pts.Count == 2)
+            return ExpFunction(pts[0].S, pts[1].S);
+
         var functions = new PdfArray();
         var bounds = new PdfArray();
         var encode = new PdfArray();
-        for (var i = 0; i < stops.Count - 1; i++)
+        for (var i = 0; i < pts.Count - 1; i++)
         {
-            functions.Add(ExpFunction(stops[i], stops[i + 1]));
+            functions.Add(ExpFunction(pts[i].S, pts[i + 1].S));
             encode.Add(new PdfReal(0)).Add(new PdfReal(1));
-            if (i > 0) bounds.Add(new PdfReal(System.Math.Clamp(stops[i].Offset, 0, 1)));
+            if (i > 0) bounds.Add(new PdfReal(pts[i].T)); // interior boundaries only
         }
         var stitch = new PdfDictionary()
             .Set(PdfNames.FunctionType, new PdfInteger(3))

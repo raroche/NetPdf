@@ -16,15 +16,19 @@ a **pass-rate**.
 | Category | Pass-rate | Roadmap target | Status |
 |---|---|---|---|
 | CSS 2.2 layout | **96.7%** (29/30) | ≥ 90% | ✅ met |
-| Fragmentation | **90.0%** (9/10) | ≥ 80% | ✅ met |
+| Fragmentation | **100%** (12/12) | ≥ 80% | ✅ met |
 | Flexbox L1 | **100%** (19/19) | ≥ 85% | ✅ met |
 | Grid L1 | **100%** (15/15) | ≥ 70% | ✅ met |
 
-**All four conformance exit criteria are met.** The post-`0.7.0-beta` sizing-residuals
-PR raised three categories: Grid to **100%** (`fr` tracks now subtract the gutters
-from their free space), CSS 2.2 to **96.7%** (percentage min/max-width/height resolve
-against the containing block), and Flexbox stays **100%** with a new percentage-gap
-case (`column-gap`/`row-gap` percentages resolve against the container content box).
+**All four conformance exit criteria are met.** The CSS Fragmentation control PR took
+Fragmentation to **100%** (`break-before` / `break-after` + the legacy `page-break-*`
+aliases now propagate forced-break metadata to the resolver — a forced break splits
+even a *fitting* ancestor in the recursive emit, so `break-before:page` on a grandchild
+lands it on the next page). The earlier post-`0.7.0-beta` sizing-residuals PR raised
+three categories: Grid to **100%** (`fr` tracks now subtract the gutters from their free
+space), CSS 2.2 to **96.7%** (percentage min/max-width/height resolve against the
+containing block), and Flexbox stays **100%** with a new percentage-gap case
+(`column-gap`/`row-gap` percentages resolve against the container content box).
 Earlier: the flex/grid gap PR took Flexbox to 100% + Grid fixed-track gaps to 100%,
 and the box-model PR took CSS 2.2 to 93.3% (`box-sizing: border-box` block axis +
 `LengthPx` min/max). The one remaining CSS 2.2 gap is auto-height shrink-to-fit

@@ -204,7 +204,14 @@ internal static class PdfRenderPipeline
                     {
                         GridMeasureCache = gridMeasureCache,
                     };
-                    using var breaks = new BreakResolver();
+                    // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; the
+                    // root box carries the document's effective values (default 2),
+                    // threaded into the resolver so a CSS-set orphans/widows drives the
+                    // line-break cost instead of the hardcoded 2/2. (Per-paragraph
+                    // overrides await line-level splitting — `inline-only-block-line-splitting`.)
+                    using var breaks = new BreakResolver(
+                        orphansRequired: phase2.BoxRoot.Style.ReadOrphansOrDefault(),
+                        widowsRequired: phase2.BoxRoot.Style.ReadWidowsOrDefault());
                     // Drive each page through the retry coordinator: Strict (clean breaks)
                     // first, only escalating (DropAvoidInside → LastResort) when a constraint
                     // genuinely can't be met. A single direct LastResort attempt would instead

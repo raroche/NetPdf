@@ -2386,9 +2386,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             _activeLease = newLease;
 
             // Consult the resolver at this block boundary.
+            // CSS Fragmentation L3 §3.1 — an author FORCED break is offered here (the
+            // boundary between the previously-emitted in-flow sibling and this child):
+            // `break-before: page` (etc.) on THIS child OR `break-after: page` on the
+            // prior sibling forces a page break. Per §3.1 a forced break at the very
+            // START of a fragmentainer is ignored (it would make an empty fragment), so
+            // gate on `atFragmentainerStart` — without it the forced-overflow guard below
+            // would mislabel an already-satisfied break as an overflow.
+            // §3.2 — `break-inside: avoid` on THIS box (every between-children boundary is
+            // an internal break of `_rootBox`), plus `break-before: avoid` on this child /
+            // `break-after: avoid` on the prior sibling, mark the boundary AvoidBreak so the
+            // cost model penalizes breaking here (honored by the optimizing resolver; the
+            // production greedy resolver is cost-insensitive — see the deferral note).
+            var atFragmentainerStart = emittedThisAttempt == 0
+                && fragmentainer.UsedBlockSize == initialUsed;
+            var prevEmittedChild = lastEmittedIdx >= 0 && lastEmittedIdx < _rootBox.Children.Count
+                ? _rootBox.Children[lastEmittedIdx]
+                : null;
+            var forceBreakBefore = !atFragmentainerStart
+                && (child.Style.ForcesPageBreakBefore()
+                    || (prevEmittedChild is not null
+                        && prevEmittedChild.Style.ForcesPageBreakAfter()));
+            var avoidBreakHere = _rootBox.Style.AvoidsBreakInside()
+                || child.Style.AvoidsPageBreakBefore()
+                || (prevEmittedChild is not null
+                    && prevEmittedChild.Style.AvoidsPageBreakAfter());
             var opportunity = BreakOpportunity.Block(
                 usedBlockSize: fragmentainer.UsedBlockSize,
-                chunkBlockSize: chunkForBreakCheck);
+                chunkBlockSize: chunkForBreakCheck,
+                forceBreak: forceBreakBefore,
+                avoidBreak: avoidBreakHere);
             var decision = resolver.ConsiderBreakAt(opportunity, fragmentainer);
 
             if (decision.Action == BreakAction.Rewind)
@@ -4571,6 +4598,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the next child even if it would fit. Initialized to the container's own page name (so the first
         // child only breaks once there's prior content — guarded by the forward-progress check below).
         var prevPageName = parent.PageName;
+        // CSS Fragmentation L3 §3.1 — `break-after` of the previously-emitted in-flow
+        // sibling forces a page break before the next child (mirrors prevPageName). Reset
+        // each recursion entry, so a forced break at a fragmentainer start is a no-op.
+        var prevForcedBreakAfter = false;
         for (var childIdx = startIdx; childIdx < parent.Children.Count; childIdx++)
         {
             var child = parent.Children[childIdx];
@@ -4927,6 +4958,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         ResumeAtChild: childIdx,
                         ConsumedBlockSize: 0);
                 }
+                // CSS Fragmentation L3 §3.1 — author FORCED page break (the deferred case
+                // this site's comment named): `break-before: page` (etc.) on THIS child OR
+                // `break-after: page` on the previous in-flow sibling forces a page break
+                // here, even when the child would fit. This is what propagates a forced
+                // break out of a fitting ancestor (a `break-before:page` on a grandchild
+                // splits its body/html ancestors here in the recursion). The forward-
+                // progress guard above ensures the page already has content, so per §3.1
+                // a forced break at a fragmentainer start is ignored (no empty fragment).
+                if (child.Style.ForcesPageBreakBefore() || prevForcedBreakAfter)
+                {
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0);
+                }
                 var childStart = Math.Max(0, childBlockOffset);
                 var savedUsedBlockSize = pf.UsedBlockSize;
                 pf.UsedBlockSize = childStart;
@@ -4945,9 +4990,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
             // Track this block-flow child's used page name as the "previous" for the next child's
             // named-page break check (PR #179 review P1). Updated whether or not the child later breaks
-            // for another reason — it is on (or starts) this page either way.
+            // for another reason — it is on (or starts) this page either way. The CSS Fragmentation
+            // `break-after` of this child likewise forces a break before the NEXT sibling.
             if (IsBlockFlowContainerOwnedByBlockLayouter(child))
+            {
                 prevPageName = child.PageName;
+                prevForcedBreakAfter = child.Style.ForcesPageBreakAfter();
+            }
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) — for nested Table / InlineTable wrappers, pre-

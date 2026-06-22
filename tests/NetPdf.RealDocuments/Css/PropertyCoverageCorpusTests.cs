@@ -85,9 +85,9 @@ public sealed class PropertyCoverageCorpusTests
         "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
         "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
         "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state",
-        "page-break-before", "page-break-after", // legacy synonyms; modern break-* not in corpus today
-        "break-before", "break-after",
-        "orphans", "widows",
+        // `break-before` / `break-after` / `page-break-*` / `orphans` / `widows` REMOVED
+        // from this allowlist (CSS Fragmentation control PR) — registered in
+        // properties.json + driven into the BreakResolver (forced breaks + orphans/widows).
         "z-index", "visibility",
         "opacity",
         // `direction` REMOVED from this allowlist (PR 2 task 4 — the direction pipeline) — it's now

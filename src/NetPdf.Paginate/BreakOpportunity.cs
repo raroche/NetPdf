@@ -132,12 +132,18 @@ internal readonly record struct BreakOpportunity(
                 $"ParagraphId must be non-negative; got {ParagraphId}", nameof(ParagraphId));
     }
 
-    /// <summary>Convenience helper for the common case of a
-    /// no-special-flags block boundary (the bulk of opportunities a
-    /// real layouter offers).</summary>
-    public static BreakOpportunity Block(double usedBlockSize, double chunkBlockSize) =>
+    /// <summary>Convenience helper for a block boundary. The
+    /// <paramref name="forceBreak"/> / <paramref name="avoidBreak"/> /
+    /// <paramref name="forceParity"/> flags default to the no-special-flags case
+    /// (the bulk of opportunities a real layouter offers), so existing callers stay
+    /// byte-identical; a layouter that has read the child's CSS Fragmentation L3
+    /// <c>break-before</c> / <c>break-after</c> / <c>break-inside</c> passes them.</summary>
+    public static BreakOpportunity Block(
+        double usedBlockSize, double chunkBlockSize,
+        bool forceBreak = false, bool avoidBreak = false,
+        PageParity forceParity = PageParity.Any) =>
         new(usedBlockSize, chunkBlockSize, BreakOpportunityClass.BlockBoundary,
-            ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
+            ForceBreak: forceBreak, AvoidBreak: avoidBreak, ForceParity: forceParity,
             LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false,
             ParagraphId: 0);
 

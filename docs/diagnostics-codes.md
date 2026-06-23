@@ -45,13 +45,16 @@ Severity levels:
 | `CSS-ANCHOR-POSITIONING-UNSUPPORTED-001` | Warning | `anchor()`/`anchor-size()` used; falls back to `auto`. |
 | `CSS-POSITION-STICKY-UNSUPPORTED-001` | Warning | `position: sticky` treated as `relative` in v1. |
 | `CSS-TRANSFORM-3D-UNSUPPORTED-001` | Warning | A 3D transform was found; the matrix was projected to 2D. |
+| `CSS-TRANSFORM-UNSUPPORTED-001` | Warning | A `transform` value could not be parsed into the supported 2D function set (`translate`/`scale`/`rotate`/`skew`/`matrix` + axis variants) — an unknown function or an unresolvable unit; the element painted untransformed. Once per render. |
 | `CSS-ANIMATION-UNSUPPORTED-001` | Info | `@keyframes`/`animation`/`transition` were ignored. PDF is static. |
 | `CSS-FILTER-RASTER-FALLBACK-001` | Info | A subtree with `filter` was rasterized at `DevicePixelRatio * 96` DPI and embedded as PNG. |
 | `CSS-CLIP-PATH-RASTER-FALLBACK-001` | Info | `clip-path: path()` triggered raster fallback. |
 | `CSS-MASK-RASTER-FALLBACK-001` | Info | `mask`/`mask-image` triggered raster fallback. |
 | `CSS-CONIC-GRADIENT-RASTER-001` | Info | Conic gradient triggered raster fallback. |
 | `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | Blurred box-shadow triggered raster fallback. |
+| `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not painted exactly was ignored or approximated — an `inset` shadow (outset only in the first cut), an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not), or a blurred shadow too large to rasterize (painted sharp, over the 4096 px cap). Other layers still paint. Once per render. |
 | `CSS-TEXTSHADOW-BLUR-RASTER-001` | Info | Blurred text-shadow triggered raster fallback. |
+| `CSS-TEXTSHADOW-UNSUPPORTED-001` | Warning | A text-shadow not painted exactly yet was approximated/ignored — a non-zero blur painted as a sharp offset (glyph blur not yet applied), or an offset/blur in an unresolvable unit (px + absolute units supported; `em`/`rem`/`%` not, dropping the value). Once per render. |
 | `CSS-WRITING-MODE-SIDEWAYS-UNSUPPORTED-001` | Warning | `sideways-rl`/`sideways-lr` writing modes treated as `vertical-rl`/`vertical-lr`. |
 | `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` | Warning | A `content:` value (on `::before`/`::after`/`::marker`) used a function/keyword that cycle 1 doesn't yet handle (`counter()` / `counters()` / `url()` / `image()` / `image-set()` / `linear-gradient()` / `open-quote` / `close-quote` / `no-open-quote` / `no-close-quote`). The pseudo-element generates no box. Roadmap cycle 2 ships counter machinery + the resource pipeline + quotation-stack tracking. |
 | `CSS-ATTR-MULTI-ARG-UNSUPPORTED-001` | Warning | A modern `attr(name type, fallback)` form was rejected — cycle 1 supports the bare `attr(name)` form only. The pseudo-element generates no box rather than silently dropping the type / fallback args. Roadmap cycle 2 delivers the typed-value pipeline. |

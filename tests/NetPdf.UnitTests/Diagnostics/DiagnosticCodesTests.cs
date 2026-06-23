@@ -1070,6 +1070,23 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("PAINT-BG-IMAGE-TILE-CAP-001", DiagnosticCodes.PaintBgImageTileCap001);
     }
 
+    [Theory]
+    [InlineData(nameof(DiagnosticCodes.CssBoxShadowBlurRaster001), "CSS-BOXSHADOW-BLUR-RASTER-001", "Info")]
+    [InlineData(nameof(DiagnosticCodes.CssBoxShadowUnsupported001), "CSS-BOXSHADOW-UNSUPPORTED-001", "Warning")]
+    [InlineData(nameof(DiagnosticCodes.CssTextShadowUnsupported001), "CSS-TEXTSHADOW-UNSUPPORTED-001", "Warning")]
+    [InlineData(nameof(DiagnosticCodes.CssTransform3DUnsupported001), "CSS-TRANSFORM-3D-UNSUPPORTED-001", "Warning")]
+    [InlineData(nameof(DiagnosticCodes.CssTransformUnsupported001), "CSS-TRANSFORM-UNSUPPORTED-001", "Warning")]
+    public void Phase4_shadow_and_transform_codes_match_registry(string fieldName, string code, string severity)
+    {
+        var constant = (string)typeof(DiagnosticCodes)
+            .GetField(fieldName, BindingFlags.Public | BindingFlags.Static)!.GetValue(null)!;
+        Assert.Equal(code, constant);
+
+        var match = Regex.Match(LoadRegistry(), $@"\|\s*`?({Regex.Escape(code)})`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, $"{code} row not found in docs/diagnostics-codes.md");
+        Assert.Equal(severity, match.Groups[2].Value);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -3287,16 +3287,28 @@ flags the categories):
      terminal/leading hard stops; `to <corner>` is aspect-ratio correct; radial `at <position>`
      classifies axes + rejects duplicate/misordered pairs; identical gradients share one color
      function/shading; multi-layer lists are rejected.)
-     **Gradient residuals (Phase 4 follow-ups):** `box-shadow` (sharp → native offset path,
-     blurred → Skia raster), elliptical radial shaping via a CTM scale (the first cut paints
-     ellipses circularly by their scalar extent), `repeating-linear/radial-gradient`, conic
-     gradients (Skia raster), length-positioned color stops + color hints, per-stop alpha (a
-     soft-mask alpha shading), multi-layer background-image lists, and **gradient
-     `background-clip` / `background-origin` insets** (PR #209 Copilot — gradients paint/clip
-     against the border box; the `url()` image path already honors origin/clip + inset radii, so
-     `background-clip: padding-box` affects images but not yet gradients). The `NetPdf.Paint`
-     `DisplayCommand` IR still has no fragment→command or command→PDF consumer — the
-     bridge emits straight to `IContentStream`.
+     **Phase 4 shadows + 2D transforms shipped** (PR 2): `box-shadow` (sharp → native filled
+     rounded rect; blurred → the Skia `ShadowRasterizer` bridge → image XObject + `/SMask`),
+     `text-shadow` (offset glyph run under the text), and 2D `transform`
+     (`translate`/`scale`/`rotate`/`skew`/`matrix` → a `cm` about `transform-origin` wrapping the
+     decoration + text passes). **Gradient residuals (Phase 4 follow-ups):** elliptical radial
+     shaping via a CTM scale (the first cut paints ellipses circularly by their scalar extent),
+     `repeating-linear/radial-gradient`, conic gradients (Skia raster), length-positioned color
+     stops + color hints, per-stop alpha (a soft-mask alpha shading), multi-layer background-image
+     lists, and **gradient `background-clip` / `background-origin` insets** (PR #209 Copilot —
+     gradients paint/clip against the border box; the `url()` image path already honors origin/clip
+     + inset radii). **Shadow / transform residuals (Phase 4 follow-ups):** `box-shadow` INSET
+     (outset-only first cut; `CSS-BOXSHADOW-UNSUPPORTED-001`) + per-corner blur radii (the blur
+     raster uses one representative radius); `text-shadow` INHERITANCE to descendant text (only the
+     box's own declared value is read today) + true GLYPH BLUR (the blurred case paints a sharp
+     offset, `CSS-TEXTSHADOW-UNSUPPORTED-001`); `transform` faithful 3D PROJECTION (genuinely-3D
+     functions flatten to identity, not an orthographic projection) + the transformed-element
+     STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
+     composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element
+     transforms too — but each fragment still wraps that `cm` independently, NOT as one isolated
+     z-order group; a transformed ancestor split onto another page is also skipped) + `em`/`rem`/`%`
+     lengths in transform offsets / `transform-origin`. The `NetPdf.Paint` `DisplayCommand` IR still has no
+     fragment→command or command→PDF consumer — the bridge emits straight to `IContentStream`.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area

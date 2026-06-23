@@ -7,6 +7,7 @@ using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Diagnostics;
+using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
@@ -83,6 +84,8 @@ internal static class TextPainter
     /// <param name="contentOriginLeftPx">Left page margin in CSS px (fragments are content-area-relative).</param>
     /// <param name="contentOriginTopPx">Top page margin in CSS px.</param>
     /// <param name="diagnostics">Sink for skipped-text diagnostics; <see langword="null"/> drops them.</param>
+    /// <param name="textShadows">Phase 4 — per-box parsed <c>text-shadow</c> layers; a fragment whose
+    /// box has them paints its glyph runs offset in the shadow color UNDER the main text. Null = none.</param>
     public static void PaintText(
         IReadOnlyList<BoxFragment> fragments,
         PdfPage page,
@@ -91,13 +94,16 @@ internal static class TextPainter
         double pageHeightPt,
         double contentOriginLeftPx,
         double contentOriginTopPx,
-        IDiagnosticsSink? diagnostics)
+        IDiagnosticsSink? diagnostics,
+        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null)
     {
         // Single-page convenience over the multi-page session (byte-identical to the pre-dedup path: a
         // session with one page subsets that page's glyphs exactly as before). The multi-page driver uses
-        // the session directly to dedup a shared font across pages.
+        // the session directly to dedup a shared font across pages. (Transforms ride the multi-page path:
+        // the cm is per-page geometry, passed to CollectPage; this convenience doesn't thread one.)
         ArgumentNullException.ThrowIfNull(page);
-        var session = new TextPaintSession(shaper, pageHeightPt, contentOriginLeftPx, contentOriginTopPx, diagnostics);
+        var session = new TextPaintSession(
+            shaper, pageHeightPt, contentOriginLeftPx, contentOriginTopPx, diagnostics, textShadows);
         session.CollectPage(page, fragments);
         session.Finish(document);
     }
@@ -121,7 +127,8 @@ internal static class TextPainter
         double pageHeightPt,
         double contentOriginLeftPx,
         double contentOriginTopPx,
-        IDiagnosticsSink? diagnostics)
+        IDiagnosticsSink? diagnostics,
+        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null)
     {
         private readonly Dictionary<string, FontCollect> _collects = new(StringComparer.Ordinal);
         private readonly List<string> _fontOrder = [];               // first-seen (across pages) → deterministic build order.
@@ -142,7 +149,8 @@ internal static class TextPainter
         /// the base overload exactly (byte-identical when no per-page geometry varies).</summary>
         public void CollectPage(
             PdfPage page, IReadOnlyList<BoxFragment> fragments,
-            double pageHeightPtForPage, double originLeftPx, double originTopPx)
+            double pageHeightPtForPage, double originLeftPx, double originTopPx,
+            IReadOnlyDictionary<Box, (double A, double B, double C, double D, double E, double F)>? effectiveTransforms = null)
         {
             ArgumentNullException.ThrowIfNull(page);
             ArgumentNullException.ThrowIfNull(fragments);
@@ -156,10 +164,20 @@ internal static class TextPainter
                 var blockStyle = fragment.Box.Style;
                 if (blockStyle is null) continue;
 
+                IReadOnlyList<CssTextShadow>? fragmentTextShadows = null;
+                textShadows?.TryGetValue(fragment.Box, out fragmentTextShadows);
+                // The box's EFFECTIVE cm (ancestor-composed, review [P1]) — already in PDF space, so
+                // CollectFragment just rides it onto each glyph DrawCommand (no per-fragment matrix math).
+                (double, double, double, double, double, double)? fragmentTransformCm = null;
+                if (effectiveTransforms is not null
+                    && effectiveTransforms.TryGetValue(fragment.Box, out var ecm))
+                    fragmentTransformCm = ecm;
+
                 CollectFragment(
                     fragment, inline, blockStyle,
                     originLeftPx, originTopPx, pageHeightPtForPage,
-                    shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics);
+                    shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics,
+                    fragmentTextShadows, fragmentTransformCm);
             }
             // Skip a page with no draws (a background/image-only, transparent-text, or font-size:0 page) —
             // it has no text to replay, so storing it would just no-op in Finish (Copilot — avoid retaining
@@ -246,7 +264,12 @@ internal static class TextPainter
                 // Partial text alpha composites via ExtGState /ca, like fills (review P2) — fully
                 // transparent runs were already dropped at collect time.
                 var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0;
+                // transform (Phase 4) — wrap the glyphs in the SAME cm the fragment's decoration
+                // used, so transformed text lands on its transformed box. ShowGlyphs is its own
+                // balanced q/Q, so nesting inside this q/cm…Q is balanced.
+                if (cmd.Transform is { } m) page.BeginTransform(m.A, m.B, m.C, m.D, m.E, m.F);
                 page.ShowGlyphs(name, cmd.SizePt, cmd.XPt, cmd.YPt, subsetIds, r, g2, b, alpha);
+                if (cmd.Transform is not null) page.RestoreGraphicsState();
             }
             if (openClipPt is not null) page.RestoreGraphicsState();
         }
@@ -260,8 +283,18 @@ internal static class TextPainter
         HarfBuzzShaperResolver shaper,
         Dictionary<string, FontCollect> collects, List<string> fontOrder,
         HashSet<string> failed, HashSet<string> diagnosed, List<DrawCommand> draws,
-        IDiagnosticsSink? diagnostics)
+        IDiagnosticsSink? diagnostics,
+        IReadOnlyList<CssTextShadow>? textShadows = null,
+        (double, double, double, double, double, double)? transformCm = null)
     {
+        // transformCm (Phase 4, review [P1]) — the box's EFFECTIVE cm (ancestor-composed), the SAME
+        // matrix the decoration pass uses, rides onto each glyph DrawCommand so transformed text
+        // (incl. a child of a transformed ancestor) lands on its transformed box.
+
+        // Resolve the text-shadow colors + offsets ONCE for the whole fragment (Copilot #210), not
+        // per glyph draw — the same list replays across every DrawCommand.
+        var shadows = ResolveTextShadows(textShadows);
+
         // Content-box origin (CSS px, page-top-relative): the border box minus the
         // border + padding the layouter inset the inline content by.
         var contentLeftPx = contentOriginLeftPx + fragment.InlineOffset
@@ -397,7 +430,7 @@ internal static class TextPainter
                 EmitJustifiedLine(
                     line, shapedRuns, preRuns, blockStyle, concatText!, justifyGapCount, justifyExtraPerGapPx,
                     insetLeftPx, contentLeftPx, lineTopPx, thisLineHeightPx, explicitBaselineTopPx, pageHeightPt, clipPt,
-                    shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws);
+                    shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws, shadows, transformCm);
                 continue;
             }
 
@@ -467,14 +500,15 @@ internal static class TextPainter
                 // are spaced by the font /W advances (first-cut Td + Tj).
                 var xStartPx = contentLeftPx + sliceStartXPx + run.Glyphs[slice.GlyphStart].XOffset;
 
-                draws.Add(new DrawCommand(
+                AddTextDrawWithShadows(draws, new DrawCommand(
                     FontKey: key,
                     OriginalGlyphIds: originalIds,
                     XPt: PdfUnits.PxToPt(xStartPx),
                     YPt: pageHeightPt - PdfUnits.PxToPt(baselineTopPx),
                     SizePt: PdfUnits.PxToPt(fontSizePx),
                     ColorArgb: argb,
-                    ClipPt: clipPt));
+                    ClipPt: clipPt,
+                    Transform: transformCm), shadows);
             }
         }
     }
@@ -502,7 +536,8 @@ internal static class TextPainter
         double pageHeightPt, (double X, double Y, double W, double H)? clipPt,
         HarfBuzzShaperResolver shaper, Dictionary<string, FontCollect> collects, List<string> fontOrder,
         HashSet<string> failed, HashSet<string> diagnosed, IDiagnosticsSink? diagnostics,
-        List<DrawCommand> draws)
+        List<DrawCommand> draws, IReadOnlyList<ResolvedTextShadow>? shadows,
+        (double, double, double, double, double, double)? transformCm)
     {
         var penXPx = insetLeftPx;         // painted x cursor (natural advances + gaps added so far).
         var opportunitiesUsed = 0;
@@ -566,7 +601,7 @@ internal static class TextPainter
                 if (fc is not null)
                     EmitGlyphSegment(run, slice.GlyphStart + segStartG, g - segStartG + 1, fc, key!,
                         fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                        baselineTopPx, argb, pageHeightPt, clipPt, draws);
+                        baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm);
                 penXPx += extraPerGapPx;
                 segStartG = g + 1;
                 segPenXPx = penXPx;
@@ -575,7 +610,7 @@ internal static class TextPainter
             if (fc is not null && segStartG < slice.GlyphLength)
                 EmitGlyphSegment(run, slice.GlyphStart + segStartG, slice.GlyphLength - segStartG, fc, key!,
                     fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                    baselineTopPx, argb, pageHeightPt, clipPt, draws);
+                    baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm);
         }
     }
 
@@ -586,7 +621,9 @@ internal static class TextPainter
     private static void EmitGlyphSegment(
         ShapedRun run, int glyphStart, int glyphCount, FontCollect fc, string fontKey,
         double fontSizePx, double xStartPx, double baselineTopPx, uint argb, double pageHeightPt,
-        (double X, double Y, double W, double H)? clipPt, List<DrawCommand> draws)
+        (double X, double Y, double W, double H)? clipPt, List<DrawCommand> draws,
+        IReadOnlyList<ResolvedTextShadow>? shadows,
+        (double, double, double, double, double, double)? transformCm)
     {
         var ids = new ushort[glyphCount];
         for (var i = 0; i < glyphCount; i++)
@@ -595,14 +632,77 @@ internal static class TextPainter
             ids[i] = gid;
             fc.Used.Add(gid);
         }
-        draws.Add(new DrawCommand(
+        AddTextDrawWithShadows(draws, new DrawCommand(
             FontKey: fontKey,
             OriginalGlyphIds: ids,
             XPt: PdfUnits.PxToPt(xStartPx),
             YPt: pageHeightPt - PdfUnits.PxToPt(baselineTopPx),
             SizePt: PdfUnits.PxToPt(fontSizePx),
             ColorArgb: argb,
-            ClipPt: clipPt));
+            ClipPt: clipPt,
+            Transform: transformCm), shadows);
+    }
+
+    /// <summary>Phase 4 shadows — record a glyph draw, FIRST prepending one
+    /// <see cref="DrawCommand"/> per <c>text-shadow</c> layer: the same glyphs offset by the
+    /// shadow's (x, y) in the shadow color, so the shadow paints UNDER the text (CSS Text
+    /// Decoration L3 §3). Layers add in REVERSE so the first-listed sits on top. Blur is NOT
+    /// applied here (a sharp offset — the diagnostic was emitted at collection); the glyph-blur
+    /// raster is a documented follow-up.</summary>
+    /// <summary>A text-shadow layer with its color resolved ONCE per fragment (Copilot #210 — not
+    /// re-parsed per glyph draw): the offset in PDF points + the packed shadow color, or a null
+    /// <see cref="Argb"/> meaning "use the run's own text color" (the <c>currentColor</c> initial,
+    /// resolved per command).</summary>
+    private readonly record struct ResolvedTextShadow(double DxPt, double DyPt, uint? Argb);
+
+    /// <summary>Resolve a fragment's text-shadow layers' colors + offsets ONCE — the same list is
+    /// replayed across every glyph <see cref="DrawCommand"/>, so resolving per draw was an
+    /// O(runs × layers) string-parse cost (Copilot #210). An explicit color that doesn't resolve
+    /// drops its layer; <c>currentColor</c> (or a null ColorRaw) stays per-command.</summary>
+    private static IReadOnlyList<ResolvedTextShadow>? ResolveTextShadows(IReadOnlyList<CssTextShadow>? textShadows)
+    {
+        if (textShadows is not { Count: > 0 }) return null;
+        var result = new List<ResolvedTextShadow>(textShadows.Count);
+        foreach (var ts in textShadows)
+        {
+            uint? argb = null;
+            if (ts.ColorRaw is not null)
+            {
+                var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                    ts.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+                if (!resolved.Slot.IsCurrentColor)
+                {
+                    if (!FragmentPainter.TryResolveColor(resolved.Slot, DefaultColorArgb, out var a))
+                        continue; // an invalid (non-currentColor) shadow color drops that layer
+                    argb = a;
+                }
+                // else: resolved to currentColor → leave Argb null (the run's text color per command)
+            }
+            result.Add(new ResolvedTextShadow(
+                PdfUnits.PxToPt(ts.OffsetXPx), PdfUnits.PxToPt(ts.OffsetYPx), argb));
+        }
+        return result.Count > 0 ? result : null;
+    }
+
+    private static void AddTextDrawWithShadows(
+        List<DrawCommand> draws, DrawCommand command, IReadOnlyList<ResolvedTextShadow>? shadows)
+    {
+        if (shadows is { Count: > 0 })
+        {
+            for (var i = shadows.Count - 1; i >= 0; i--)
+            {
+                var s = shadows[i];
+                var argb = s.Argb ?? command.ColorArgb; // null = currentColor = the run's text color
+                if (FragmentPainter.Alpha(argb) == 0) continue;
+                draws.Add(command with
+                {
+                    XPt = command.XPt + s.DxPt,
+                    YPt = command.YPt - s.DyPt, // CSS y-down → PDF y-up
+                    ColorArgb = argb,
+                });
+            }
+        }
+        draws.Add(command);
     }
 
     /// <summary>Resolve a run's font program to a parsed-font collector, caching by program
@@ -690,5 +790,6 @@ internal static class TextPainter
         double YPt,
         double SizePt,
         uint ColorArgb,
-        (double X, double Y, double W, double H)? ClipPt = null);
+        (double X, double Y, double W, double H)? ClipPt = null,
+        (double A, double B, double C, double D, double E, double F)? Transform = null);
 }

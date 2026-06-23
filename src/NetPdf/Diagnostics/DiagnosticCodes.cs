@@ -108,6 +108,54 @@ internal static class DiagnosticCodes
     public const string CssBackgroundImageUnsupported001 = "CSS-BACKGROUND-IMAGE-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>box-shadow</c> with a non-zero blur radius was painted via the Skia raster
+    /// fallback (the shadow shape is rasterized at <c>DevicePixelRatio × 96</c> DPI and placed as
+    /// a PNG XObject) because PDF has no native Gaussian-blur primitive. Sharp (blur = 0) shadows
+    /// paint as native filled rects. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssBoxShadowBlurRaster001 = "CSS-BOXSHADOW-BLUR-RASTER-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
+    /// approximated: an <c>inset</c> shadow (the first cut paints OUTSET shadows only); a value
+    /// whose offsets / blur / spread use a unit the parser can't resolve (e.g. <c>em</c>/<c>rem</c>
+    /// — absolute units + <c>px</c> are supported); or a BLURRED shadow too large to rasterize (the
+    /// bitmap would exceed the 4096 px cap, so it was painted SHARP instead of blurred). Any other
+    /// shadow layers in the list still paint. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssBoxShadowUnsupported001 = "CSS-BOXSHADOW-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>text-shadow</c> form NetPdf does not paint exactly yet was approximated or
+    /// ignored: a non-zero BLUR was painted as a SHARP offset (the Gaussian blur is not yet applied
+    /// to glyph runs — the offset shadow still shows), or an offset/blur used a unit the parser
+    /// can't resolve (px + absolute units supported; <c>em</c>/<c>rem</c>/<c>%</c> not — the whole
+    /// value is dropped). Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssTextShadowUnsupported001 = "CSS-TEXTSHADOW-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — a CSS <c>transform</c> contained a 3D function (<c>rotateX</c>/<c>rotateY</c>,
+    /// <c>translateZ</c>/<c>translate3d</c>'s z, <c>scale3d</c>'s z, <c>perspective</c>,
+    /// <c>rotate3d</c>, <c>matrix3d</c>); it was FLATTENED to 2D (the 2D-meaningful part of
+    /// <c>translate3d</c>/<c>scale3d</c> is kept; the rest projects to identity). Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssTransform3DUnsupported001 = "CSS-TRANSFORM-3D-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — a CSS <c>transform</c> value could not be parsed into the supported 2D function
+    /// set (<c>translate</c>/<c>scale</c>/<c>rotate</c>/<c>skew</c>/<c>matrix</c> + their axis
+    /// variants) — an unknown function or an offset/angle in an unresolvable unit. The element
+    /// painted UNTRANSFORMED. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssTransformUnsupported001 = "CSS-TRANSFORM-UNSUPPORTED-001";
+
+    /// <summary>
     /// An unrecognized at-rule was preserved in the AST but had no rendering effect — the
     /// cascade resolver couldn't decompose its body or its conditions weren't evaluable.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.

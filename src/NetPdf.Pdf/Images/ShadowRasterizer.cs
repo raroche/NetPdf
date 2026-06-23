@@ -1,0 +1,82 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using SkiaSharp;
+
+namespace NetPdf.Pdf.Images;
+
+/// <summary>
+/// Phase 4 shadows — the Skia raster fallback for a BLURRED shadow shape (PDF has no native
+/// Gaussian-blur primitive). Draws a rounded rectangle in the shadow color into a transparent
+/// raster surface, applies a Gaussian blur, and wraps the unpremultiplied RGBA8888 result as a
+/// PDF Image XObject (RGB plane + alpha <c>/SMask</c>) via <see cref="RasterImageXObject"/>.
+/// </summary>
+/// <remarks>Deterministic: a CPU raster surface (no GPU context) + Skia's blur are pure functions
+/// of the inputs, so the same shadow produces the same bytes on a given platform (CLAUDE.md #4 —
+/// like the existing <see cref="RasterImageDecoder"/> path). The bitmap is capped at
+/// <see cref="MaxDeviceDimension"/> px per side; an oversize request returns <see langword="null"/>
+/// so the caller can fall back to a sharp native shadow rather than emit a huge stream.</remarks>
+internal static class ShadowRasterizer
+{
+    /// <summary>Per the phase-4 plan: cap the raster at 4096 px on the longest side.</summary>
+    internal const int MaxDeviceDimension = 4096;
+
+    /// <summary>Rasterize a blurred rounded-rect shadow into an Image XObject. All geometry is in
+    /// DEVICE pixels (the caller multiplies CSS px by its raster scale): the bitmap is
+    /// <paramref name="deviceWidth"/> × <paramref name="deviceHeight"/>; the shadow shape sits at
+    /// (<paramref name="shapeLeft"/>, <paramref name="shapeTop"/>) with size
+    /// (<paramref name="shapeWidth"/>, <paramref name="shapeHeight"/>) and corner radius
+    /// <paramref name="radius"/>; the Gaussian <paramref name="blurSigma"/> is the device-px
+    /// standard deviation. Color channels are [0, 1]. Returns <see langword="null"/> for a
+    /// non-positive or over-cap bitmap.</summary>
+    public static ImageXObjectResult? TryRasterize(
+        int deviceWidth, int deviceHeight,
+        float shapeLeft, float shapeTop, float shapeWidth, float shapeHeight, float radius,
+        float blurSigma, double r, double g, double b, double a)
+    {
+        if (deviceWidth <= 0 || deviceHeight <= 0) return null;
+        if (deviceWidth > MaxDeviceDimension || deviceHeight > MaxDeviceDimension) return null;
+
+        var imageInfo = new SKImageInfo(deviceWidth, deviceHeight, SKColorType.Rgba8888, SKAlphaType.Unpremul);
+        using var surface = SKSurface.Create(imageInfo);
+        if (surface is null) return null;
+
+        var canvas = surface.Canvas;
+        canvas.Clear(SKColors.Transparent);
+        using var paint = new SKPaint
+        {
+            IsAntialias = true,
+            Style = SKPaintStyle.Fill,
+            Color = new SKColor(ToByte(r), ToByte(g), ToByte(b), ToByte(a)),
+        };
+        if (blurSigma > 0)
+            paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, blurSigma);
+
+        var rect = new SKRect(shapeLeft, shapeTop, shapeLeft + shapeWidth, shapeTop + shapeHeight);
+        if (radius > 0)
+            canvas.DrawRoundRect(rect, radius, radius, paint);
+        else
+            canvas.DrawRect(rect, paint);
+
+        using var image = surface.Snapshot();
+        using var pixmap = image.PeekPixels();
+        var rowBytes = pixmap.RowBytes;
+        var width4 = deviceWidth * 4;
+        var pixels = new byte[width4 * deviceHeight];
+        var source = pixmap.GetPixelSpan();
+        for (var y = 0; y < deviceHeight; y++)
+            source.Slice(y * rowBytes, width4).CopyTo(pixels.AsSpan(y * width4));
+
+        var info = new RasterImageInfo
+        {
+            Width = deviceWidth,
+            Height = deviceHeight,
+            HasAlpha = true,
+            PixelBytes = pixels,
+        };
+        return RasterImageXObject.Build(info);
+    }
+
+    private static byte ToByte(double channel) =>
+        (byte)System.Math.Clamp((int)System.Math.Round(channel * 255.0), 0, 255);
+}

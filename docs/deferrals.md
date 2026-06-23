@@ -161,8 +161,8 @@ grepping the ID).
   `DirectionStyleExtensions.ReadParagraphDirection` (PR 2 task 4).
 - **Added** — Phase 3 Task 10 cycle 1 documented the deferral; PR 2
   task 4 wired CSS-driven base direction (levels + alignment are now
-  correct; the visual slice reversal + `dir` attribute + margin-box
-  base direction remain).
+  correct), and batch 2 wired the `dir` HTML attribute (see Missing);
+  the visual slice reversal + margin-box base direction remain.
 - **Removal condition** — Wrap reverses slice order for RTL paragraphs
   AND the painter consumes them visually.
 

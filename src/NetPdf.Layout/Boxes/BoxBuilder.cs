@@ -195,8 +195,9 @@ internal static class BoxBuilder
         ApplyInheritance(style, parentStyle);
         // The `dir` HTML attribute is a presentational hint for `direction` (HTML §3.2.6.4): applied
         // AFTER inheritance (so it overrides an inherited direction) but BEFORE the author declarations
-        // (so a CSS `direction` still wins, per the UA-origin of presentational hints).
-        ApplyDirAttribute(style, element);
+        // (so a CSS `direction` still wins, per the UA-origin of presentational hints). It reads the
+        // element's cascade winners so it can step aside for a CSS-wide `direction` declaration.
+        ApplyDirAttribute(style, element, elementRules);
         ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
         ApplyComputedStyleFixups(style, parentStyle);
@@ -1798,17 +1799,29 @@ internal static class BoxBuilder
     /// <c>direction</c> property — a presentational hint at the UA cascade origin. <c>dir="ltr"</c> /
     /// <c>dir="rtl"</c> set the direction keyword (ltr=0, rtl=1 per the <c>KeywordResolver</c> table);
     /// <c>dir="auto"</c> (content-derived first-strong direction) and any other value are left to the
-    /// inherited direction (the UAX #9 P2/P3 heuristic isn't applied here). Called after inheritance so
-    /// it overrides an inherited direction, and before the author declarations so a CSS <c>direction</c>
-    /// still wins. No-op when the element has no <c>dir</c> attribute, so non-<c>dir</c> documents are
-    /// byte-identical.</summary>
-    private static void ApplyDirAttribute(ComputedStyle style, IElement element)
+    /// inherited direction (the UAX #9 P2/P3 heuristic isn't applied here). The attribute is an HTML
+    /// enumerated attribute, so the value is whitespace-trimmed before the case-insensitive match
+    /// (<c>dir=" rtl "</c> ≡ <c>dir="rtl"</c>). Called after inheritance so it overrides an inherited
+    /// direction, and before the author declarations so a CSS <c>direction</c> still wins. Because a
+    /// CSS-wide keyword (<c>inherit</c>/<c>unset</c>/<c>initial</c>/<c>revert</c>/<c>revert-layer</c>) is
+    /// resolved by the cascade rather than a leaf resolver — it leaves no keyword slot for
+    /// <see cref="ApplyResolvedDeclarations"/> to materialize — the hint would otherwise wrongly survive
+    /// it; so when the element's winning <c>direction</c> declaration is CSS-wide we step aside and let
+    /// the cascade (inheritance/initial) decide (PR #213 review). No-op when the element has no
+    /// <c>dir</c> attribute, so non-<c>dir</c> documents are byte-identical.</summary>
+    private static void ApplyDirAttribute(ComputedStyle style, IElement element, ResolvedRuleSet? elementRules)
     {
         var dir = element.GetAttribute("dir");
-        if (dir is null) return;
-        if (dir.Equals("rtl", StringComparison.OrdinalIgnoreCase))
+        if (string.IsNullOrWhiteSpace(dir)) return;
+        // An author `direction` declaration (the author origin) beats this UA-origin hint. The keyword
+        // resolver materializes ltr/rtl over the hint, but a CSS-wide value never reaches a slot — defer.
+        var declaredDirection = elementRules?.GetWinner("direction")?.ResolvedValue;
+        if (declaredDirection is not null && CssWideKeyword.Is(declaredDirection)) return;
+
+        var trimmed = dir.AsSpan().Trim();
+        if (trimmed.Equals("rtl", StringComparison.OrdinalIgnoreCase))
             style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(1));
-        else if (dir.Equals("ltr", StringComparison.OrdinalIgnoreCase))
+        else if (trimmed.Equals("ltr", StringComparison.OrdinalIgnoreCase))
             style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(0));
         // `auto` / unknown → keep the inherited direction (the bidi first-strong heuristic is a residual).
     }

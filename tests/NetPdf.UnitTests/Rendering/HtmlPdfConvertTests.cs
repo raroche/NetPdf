@@ -1105,6 +1105,42 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Percentage_line_height_inherits_the_declaring_elements_computed_length()
+    {
+        // CSS Inline 3 §4.2 — a % line-height computes to a length at the DECLARING element's font-size
+        // and inherits AS that length. Both children are font-size:20px and wrap identically; the ONLY
+        // variable is the PARENT's font-size, which sets the inherited line-height (200% × 20 = 40px vs
+        // 200% × 40 = 80px). So the child's inter-line span differs — proving the % resolved at the
+        // parent, not re-resolved against the child's own 20px (the old bug gave both 40px → equal spans).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double ChildSpan(string parentFontSize)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body>" +
+                $"<div style=\"font-size:{parentFontSize};line-height:200%\">" +
+                "<p style=\"font-size:20px;width:30px\">A A A A A A</p></div></body></html>", opts));
+            double min = double.MaxValue, max = double.MinValue;
+            var n = 0;
+            foreach (System.Text.RegularExpressions.Match m in
+                System.Text.RegularExpressions.Regex.Matches(pdf, @"-?[0-9.]+ (-?[0-9.]+) Td"))
+            {
+                var y = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (y < min) min = y;
+                if (y > max) max = y;
+                n++;
+            }
+            Assert.True(n >= 2, $"expected the child to wrap to ≥2 lines, got {n}");
+            return max - min;
+        }
+
+        var parent20 = ChildSpan("20px");   // inherited line-height 200% × 20 = 40px
+        var parent40 = ChildSpan("40px");   // inherited line-height 200% × 40 = 80px
+        Assert.True(parent40 > parent20 + 5.0,
+            $"a larger parent font-size must give a taller inherited % line-height: " +
+            $"parent20 span={parent20:F1}pt, parent40 span={parent40:F1}pt");
+    }
+
+    [Fact]
     public void White_space_break_spaces_breaks_after_every_space()
     {
         // white-space: break-spaces (CSS Text L3 §6.4) adds a soft-wrap opportunity AFTER every

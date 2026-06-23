@@ -195,6 +195,7 @@ internal static class BoxBuilder
         ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
         ResolveMatchParentTextAlign(style, parentStyle);
+        ResolveDeclaredPercentLineHeightInPlace(style);
 
         var displayText = ReadDisplay(style, element);
         var mapResult = DisplayMapper.Map(displayText, element.LocalName, out var kind);
@@ -1793,5 +1794,26 @@ internal static class BoxBuilder
             _ => parentAlign,              // left/right/center/justify/justify-all are already physical / non-relative
         };
         style.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(physical));
+    }
+
+    /// <summary>CSS Inline 3 §4.2 — a <c>&lt;percentage&gt;</c> <c>line-height</c> computes to a LENGTH
+    /// (the percentage × the DECLARING element's font-size), and that length inherits. Resolve it here in
+    /// the top-down walk (after the element's own font-size is folded by
+    /// <see cref="ResolveDeferredFontProperties"/>): a <c>Percentage</c> slot reaching this point can
+    /// only be one this element DECLARED — an inherited percentage was already converted to a length on
+    /// the parent — so converting it to <c>LengthPx</c> BEFORE it inherits means a child with a DIFFERENT
+    /// font-size keeps the parent's computed length instead of re-resolving the percentage against its own
+    /// font-size (the bug). A <c>&lt;number&gt;</c> slot (inherits AS the number, re-multiplied per child
+    /// font-size) and a deferred <c>em</c>/<c>rem</c> raw (folded later by
+    /// <see cref="DeferredLengthResolver"/>) are left untouched. No-op unless a percentage line-height is
+    /// declared, so non-percentage rendering is byte-identical. The declaring element renders identically
+    /// (the used px is the same percentage × its own font-size, just resolved earlier).</summary>
+    private static void ResolveDeclaredPercentLineHeightInPlace(ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.LineHeight);
+        if (slot.Tag != ComputedSlotTag.Percentage) return;
+        var fontSizePx = style.ReadLengthPxOrZero(PropertyId.FontSize);
+        if (fontSizePx <= 0) fontSizePx = 16.0;   // rem/viewport font-size still deferred (resolved at paint) → UA default
+        style.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSizePx));
     }
 }

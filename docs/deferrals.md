@@ -204,36 +204,6 @@ grepping the ID).
 
 ---
 
-## line-height-percentage-inheritance
-
-- **ID** — `line-height-percentage-inheritance`
-- **Status** — `approximated`.
-- **Behavior** — A `<percentage>` `line-height` (e.g. `line-height: 150%`) resolves to a
-  `Percentage` slot, and `ReadLineHeightPx` computes the used px at READ time as % × the
-  READING element's font-size. Per CSS Inline 3 §4.2 the COMPUTED value should be a
-  LENGTH (% × the DECLARING element's font-size), and that length inherits — so a child
-  with a DIFFERENT font-size that inherits a percentage line-height should keep the
-  parent's computed length, not recompute against its own font-size. Correct for the
-  declaring element and for same-font-size inheritance (the common cases); divergent only
-  when a percentage line-height is inherited across a font-size change. A `<number>`
-  line-height is unaffected (it correctly inherits AS the number and re-multiplies), and a
-  `<length>` is absolute.
-- **Missing** — Resolving `%` → length at computed-value time (the declaring element's
-  font-size), so the inherited value is a length. Needs font-size context at resolve time
-  (the box-builder's `DeferredLengthResolver` has it but currently skips `%` terms).
-- **Trigger** — a percentage `line-height` inherited to a descendant whose font-size
-  differs from the declaring element's.
-- **Owner files** — `src/NetPdf.Css/ComputedValues/PropertyResolvers/LineHeightResolver.cs`
-  (produces the `Percentage` slot) +
-  `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ReadLineHeightPx`
-  read-time resolution). Spec-correct resolution belongs at computed-value time.
-- **Added** — the line-height cycle wired `line-height` (was UNWIRED — every value fell to
-  font-size × 1.2); the percentage inherit-as-length subtlety is the residual.
-- **Removal condition** — a percentage `line-height` resolves to a length at the declaring
-  element's font-size and inherits that length.
-
----
-
 ## inline-only-block-line-splitting
 
 - **ID** — `inline-only-block-line-splitting`

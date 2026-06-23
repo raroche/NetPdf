@@ -383,4 +383,36 @@ public sealed class BoxBuilderTests
         var p = FindFirst(root, "p")!;
         Assert.Equal(expectedChildKeyword, p.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
     }
+
+    // ============================================================
+    // line-height: <percentage> inherits as a length (CSS Inline 3 §4.2)
+    // ============================================================
+
+    [Fact]
+    public async Task Percentage_line_height_inherits_as_a_length_from_the_declaring_element()
+    {
+        // A % line-height computes to a LENGTH at the DECLARING element's font-size, and that length
+        // inherits. Parent declares line-height:150% at font-size:20px → 30px; the child has a DIFFERENT
+        // font-size:40px but must keep the parent's 30px length (NOT re-resolve 150% × 40 = 60px).
+        var html = "<div style=\"font-size:20px;line-height:150%\">" +
+                   "<p style=\"font-size:40px\">x</p></div>";
+        var root = await BuildAsync(html);
+        var div = FindFirst(root, "div")!;
+        var p = FindFirst(root, "p")!;
+        // ReadLineHeightPx returns a LengthPx slot's px directly (ignoring the passed font-size), so
+        // both the declaring element AND the differently-sized child resolve to the same 30px length.
+        Assert.Equal(30.0, div.Style.ReadLineHeightPx(20.0));   // declaring element: 150% × 20
+        Assert.Equal(30.0, p.Style.ReadLineHeightPx(40.0));     // inherited AS 30px, not 150% × 40 = 60
+    }
+
+    [Fact]
+    public async Task Percentage_line_height_on_same_font_size_child_is_unchanged()
+    {
+        // Control: when the child's font-size matches the declaring element's, the inherited length and
+        // the (old) re-resolved percentage coincide — so this common case is unaffected.
+        var html = "<div style=\"font-size:20px;line-height:150%\"><p>x</p></div>";
+        var root = await BuildAsync(html);
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(30.0, p.Style.ReadLineHeightPx(20.0));
+    }
 }

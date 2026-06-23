@@ -43,7 +43,6 @@ public sealed class DeferralsParityTests
         "hyphens-auto-language-routing",
         "uax-24-script-detection",
         "rtl-fragment-reversal",
-        "line-height-percentage-inheritance",
         "inline-only-block-line-splitting",
         "fragmentation-control-residuals",
         "phase-4-painter-wiring",

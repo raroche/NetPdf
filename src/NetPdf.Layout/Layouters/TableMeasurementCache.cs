@@ -10,20 +10,28 @@ namespace NetPdf.Layout.Layouters;
 /// fragments across N pages was measured ONCE per page by the SUBTREE-EXTENT pass
 /// (<c>BlockLayouter.MeasureNestedTableContentExtent</c>, a transient <see cref="TableLayouter"/>
 /// with no incoming continuation) — re-shaping every cell on every page, the O(n²) allocation
-/// churn the deferral tracked. The DISPATCH pass already reused the prior page's
+/// churn the deferral tracked. The DISPATCH (emit) pass already reused the prior page's
 /// <c>TableLayouter.ColumnLayoutCache</c> via the <see cref="NetPdf.Paginate.TableContinuation"/>;
-/// this cache extends that reuse to the subtree-extent pass (and page 1's dispatch) by holding the
-/// SAME page-invariant column-layout token, keyed by the table box + its content inline size, so
-/// the table is fully measured ONCE per conversion regardless of page count.
+/// this cache adds the SAME reuse to the subtree-extent pass by holding the page-invariant
+/// column-layout token keyed by the table box + its content inline size, so the table is fully
+/// SHAPED ONCE per conversion regardless of page count.
 ///
-/// <para><b>Correctness.</b> The cached token is the column widths + per-row measurements + cell
-/// placements + caption extents — none depend on the page-relative origin (the only thing that
-/// changes between pages), so a restored measure is byte-identical to a fresh one (the same
-/// invariant the cross-page <see cref="NetPdf.Paginate.TableContinuation"/> reuse already relies
-/// on). The key is the table box (reference identity — <see cref="Box"/> has no value-equality
-/// override) plus the content inline size the column split was resolved against, so a value is
-/// reused only when measured under the identical inline budget. Threaded through
-/// <c>LayoutContext</c> as <c>object?</c> and cast at the consumer, like
+/// <para><b>Ownership invariant (PR #211 review [P1]).</b> This cache is read + written ONLY by
+/// the MEASURE-ONLY subtree-extent pass, which measures at a PLACEHOLDER inline offset of 0 and
+/// never flushes its buffered fragments to the output sink. The token bundles the column widths +
+/// per-row measurements + cell placements + buffered cell/caption content; the cell/caption
+/// buffers bake in the inline offset they were measured at (FlushTo rebases only the block axis),
+/// so they are correct ONLY at that offset. The EMIT path (<c>PreMeasureTableIfNeeded</c> →
+/// <c>EmitTableInner</c>) must NEVER restore this cache — doing so would flush cell content at x=0
+/// for an indented / margined / nested table. The emit path reuses the prior page's REAL-offset
+/// layout via the <see cref="NetPdf.Paginate.TableContinuation"/> instead.</para>
+///
+/// <para><b>Correctness.</b> The subtree pass only consumes the OFFSET-INDEPENDENT row heights
+/// (for the dry-run committed extent), which are page-invariant + deterministic for the key, so a
+/// restored measure yields a byte-identical extent. The key is the table box (reference identity —
+/// <see cref="Box"/> has no value-equality override) plus the content inline size the column split
+/// was resolved against, so a value is reused only under the identical inline budget. Threaded
+/// through <c>LayoutContext</c> as <c>object?</c> and cast at the consumer, like
 /// <see cref="GridMeasurementCache"/>.</para></summary>
 internal sealed class TableMeasurementCache
 {

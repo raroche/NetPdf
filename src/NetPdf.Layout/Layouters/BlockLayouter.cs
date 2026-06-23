@@ -9444,33 +9444,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentBlockOffset: contentBlockOffset,
             contentInlineSize: contentInlineSize);
 
-        // Per `multi-page-allocation-churn` — reuse the cross-page column layout so the FIRST
-        // page's dispatch doesn't re-shape the table that the subtree-extent pass already measured
-        // (or store it for that pass). On RESUME pages the incoming TableContinuation already
-        // carries the column layout (MeasureContentHeight restores it), so this only acts on the
-        // first page where the continuation has none.
-        var incomingTableHasCache =
-            (incomingTableContinuation as TableContinuation)?.ColumnLayoutCache is not null;
-        object? preTableReuse = null;
-        var preTableHit = !incomingTableHasCache && _tableMeasureCache is not null
-            && _tableMeasureCache.TryGet(wrapperChild, contentInlineSize, out preTableReuse)
-            && preTableReuse is not null;
-        if (preTableHit)
-        {
-            tableLayouter.RestoreMeasuredStateFromReuse(preTableReuse!);
-        }
         // Per Finding 1 — run measure NOW so the caller can fold the
         // measured content extent into the wrapper's border-box size.
         // The caller is responsible for calling EmitTableInner after
         // emitting the wrapper fragment (which advances the cursor by
         // the post-Finding-1 wrapper extent).
+        //
+        // NOTE (`multi-page-allocation-churn`, PR #211 review [P1]): this DISPATCH path is the
+        // EMIT path — its TableLayouter's buffered cell/caption fragments are later flushed by
+        // EmitTableInner with their inline offsets BAKED IN at the wrapper's real content-inline
+        // offset. It must NOT restore the cross-page `TableMeasurementCache`, which is populated by
+        // the SUBTREE-extent measure at a placeholder inline offset of 0 — restoring it here would
+        // flush cell content at x=0 for any indented / margined / nested table. The dispatch
+        // already reuses the prior page's REAL-offset column layout via the incoming
+        // `TableContinuation` (MeasureContentHeight's cache path); the cross-page cache is owned
+        // exclusively by the measure-only subtree pass (which never emits).
         var naturalContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
-        if (!incomingTableHasCache && !preTableHit && _tableMeasureCache is not null
-            && tableLayouter.ExtractColumnLayoutCacheForReuse() is { } preFreshTableLayout)
-        {
-            _tableMeasureCache.Store(wrapperChild, contentInlineSize, preFreshTableLayout);
-        }
         // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — when the
         // wrapper is sized for a single page (= the outer dispatch
         // path, NOT the nested-recursion atomic path) AND the table
@@ -9564,12 +9554,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentInlineOffset: 0,
             contentBlockOffset: 0,
             contentInlineSize: contentInlineSize);
-        // Per `multi-page-allocation-churn` — reuse a prior page's (or pass's) column layout from
-        // the cross-page cache so this transient measure doesn't re-shape every cell on every page
-        // (the O(n²) churn). RestoreMeasuredStateFromReuse pre-populates the deterministic,
-        // page-invariant measured state so the MeasureContentHeight below returns immediately; on a
-        // miss we measure once + store. The transient continuation stays null, so the dry-run extent
-        // below is byte-identical to the un-cached path.
+        // Per `multi-page-allocation-churn` — reuse a prior page's column layout from the cross-page
+        // cache so this transient measure doesn't re-shape every cell on every page (the O(n²)
+        // churn). RestoreMeasuredStateFromReuse pre-populates the deterministic, page-invariant
+        // measured state so MeasureContentHeight below returns immediately; on a miss we measure
+        // once + store. The dry-run extent below depends ONLY on row heights (offset-independent),
+        // so it is byte-identical to the un-cached path.
+        //
+        // INVARIANT (PR #211 review [P1]): this MEASURE-ONLY pass is the SOLE owner of the
+        // `TableMeasurementCache`. It measures at a PLACEHOLDER inline offset of 0 and uses a
+        // discarding sink (MeasureContentHeight never writes to `_sink`, and the buffered cell
+        // fragments are dropped on Dispose), so the offset-0 inline positions the cache's buffers
+        // carry are NEVER flushed. The EMIT path (PreMeasureTableIfNeeded → EmitTableInner) must
+        // NOT read this cache — it would place cells at x=0 for any indented table; it reuses the
+        // real-offset column layout via the `TableContinuation` instead.
         object? tableReuse = null;
         var tableMeasureHit = _tableMeasureCache is not null
             && _tableMeasureCache.TryGet(wrapper, contentInlineSize, out tableReuse)

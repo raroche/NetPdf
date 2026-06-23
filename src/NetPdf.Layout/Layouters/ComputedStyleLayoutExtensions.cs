@@ -202,12 +202,13 @@ internal static class ComputedStyleLayoutExtensions
     /// edge, so <c>start</c> → 1 and <c>end</c> → 0. The initial <c>text-align: start</c> therefore
     /// RIGHT-aligns an RTL block. An LTR box is byte-identical to the pre-pipeline mapping.</para>
     ///
-    /// <para><b><c>match-parent</c> is a DEFERRED approximation</b> — a fixed physical LEFT (factor 0),
-    /// direction-INSENSITIVE. Spec-correct <c>match-parent</c> (CSS Text 3 §7.1) takes the PARENT's
-    /// <c>text-align</c>, resolves a <c>start</c>/<c>end</c> against the PARENT's <c>direction</c>, and
-    /// inherits that matched alignment — which needs the parent computed style at cascade time, not
-    /// available to this layout-time reader. Carved out of the direction-aware <c>start</c> path so it
-    /// does NOT masquerade as spec-correct. See <c>deferrals.md#text-align-match-parent</c>.</para>
+    /// <para><b><c>match-parent</c> is resolved at computed-value time</b> (CSS Text 3 §7.1) —
+    /// <c>BoxBuilder.ResolveMatchParentTextAlign</c> replaces it with the PARENT's <c>text-align</c>
+    /// (the parent's <c>start</c>/<c>end</c> resolved to physical <c>left</c>/<c>right</c> against the
+    /// parent's <c>direction</c>) during the top-down walk, so a physical keyword reaches this layout-time
+    /// reader and a descendant inherits the resolved value. The <c>6 => 0.0</c> branch here is therefore a
+    /// defensive fallback (an unresolved match-parent, e.g. on a path that bypasses the element box
+    /// builder).</para>
     ///
     /// <para>Consumed by <c>TextPainter</c> (the glyph lines, via <c>BoxFragment.LineAlignFactor</c>)
     /// + the inline-atomic placement, so the glyphs AND any inline atomic shift together — including
@@ -222,7 +223,7 @@ internal static class ComputedStyleLayoutExtensions
             4 => 0.5,              // center
             5 or 7 => 0.0,         // justify / justify-all — distributed, not a whole-line shift
             1 => rtl ? 0.0 : 1.0,  // end   → left in RTL, right in LTR
-            6 => 0.0,              // match-parent — DEFERRED fixed approximation (left); see XML doc
+            6 => 0.0,              // match-parent — resolved to a physical keyword at box-build (BoxBuilder.ResolveMatchParentTextAlign); defensive fallback only
             _ => rtl ? 1.0 : 0.0,  // start(0) → right in RTL, left in LTR
         };
     }

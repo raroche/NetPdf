@@ -44,7 +44,6 @@ public sealed class DeferralsParityTests
         "hyphens-auto-language-routing",
         "uax-24-script-detection",
         "rtl-fragment-reversal",
-        "text-align-match-parent",
         "line-height-percentage-inheritance",
         "inline-only-block-line-splitting",
         "fragmentation-control-residuals",

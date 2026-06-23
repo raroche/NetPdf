@@ -9,7 +9,9 @@ using AngleSharp.Css;
 using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
+using NetPdf.Layout.Layouters;
 using Xunit;
 
 namespace NetPdf.UnitTests.Layout.Boxes;
@@ -352,5 +354,33 @@ public sealed class BoxBuilderTests
         var p = FindFirst(root, "p")!;
         Assert.True(p.Style.IsBoxOwned);
         Assert.True(root.Style.IsBoxOwned);
+    }
+
+    // ============================================================
+    // text-align: match-parent (CSS Text 3 §7.1) — resolved at box-build
+    // ============================================================
+
+    [Theory]
+    // parent direction / parent text-align → child's resolved physical text-align keyword
+    // (KeywordResolver: 2=left 3=right 4=center 5=justify). match-parent takes the PARENT's
+    // text-align, resolving start/end against the PARENT's direction.
+    [InlineData("ltr", "start", 2)]   // start in LTR → left
+    [InlineData("rtl", "start", 3)]   // start in RTL → right (the direction-aware case)
+    [InlineData("ltr", "end", 3)]     // end in LTR → right
+    [InlineData("rtl", "end", 2)]     // end in RTL → left
+    [InlineData("ltr", "center", 4)]  // physical values pass through unchanged
+    [InlineData("ltr", "right", 3)]
+    [InlineData("ltr", "justify", 5)]
+    public async Task Match_parent_text_align_resolves_against_the_parent(
+        string parentDir, string parentAlign, int expectedChildKeyword)
+    {
+        // The child declares its OWN direction:ltr to prove match-parent reads the PARENT's direction,
+        // not the child's (a plain inherited `start` would resolve against the child's ltr instead).
+        var html =
+            $"<div style=\"direction:{parentDir};text-align:{parentAlign}\">" +
+            "<p style=\"direction:ltr;text-align:match-parent\">x</p></div>";
+        var root = await BuildAsync(html);
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(expectedChildKeyword, p.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
     }
 }

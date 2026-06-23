@@ -1105,6 +1105,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Text_align_match_parent_resolves_against_the_parent_used_value()
+    {
+        // text-align-match-parent (CSS Text 3 §7.1) end-to-end — the child takes the PARENT's used
+        // text-align, resolving start/end against the PARENT's direction. Parent `direction:rtl;
+        // text-align:start` → used RIGHT; the child declares its OWN `direction:ltr`, so `match-parent`
+        // RIGHT-aligns (parent's start-in-rtl), whereas a plain inherited/declared `start` resolves
+        // against the child's ltr → LEFT. Isolates the feature from inheritance AND from the prior
+        // fixed-physical-left approximation (both of which would land LEFT here).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double InnerX(string childAlign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"direction:rtl;text-align:start;width:300px\">" +
+            $"<div style=\"direction:ltr;text-align:{childAlign}\">A</div></div></body></html>", opts))).X;
+
+        var matchParent = InnerX("match-parent");   // parent start-in-rtl = RIGHT → large x
+        var plainStart = InnerX("start");           // child start-in-ltr = LEFT → small x
+        Assert.True(matchParent > plainStart + 50.0,
+            $"match-parent should align to the parent's used RIGHT ({matchParent:F1}pt), " +
+            $"well right of the child's own start/LEFT ({plainStart:F1}pt)");
+    }
+
+    [Fact]
     public void Text_align_justify_spreads_words_and_pushes_the_last_word_right()
     {
         // text-align: justify cycle (CSS Text 3 §7.3) — a wrapping paragraph distributes each NON-LAST

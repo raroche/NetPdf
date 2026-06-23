@@ -9,6 +9,7 @@ using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Properties;
+using NetPdf.Layout.Layouters;
 
 namespace NetPdf.Layout.Boxes;
 
@@ -193,6 +194,7 @@ internal static class BoxBuilder
         ApplyInheritance(style, parentStyle);
         ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
+        ResolveMatchParentTextAlign(style, parentStyle);
 
         var displayText = ReadDisplay(style, element);
         var mapResult = DisplayMapper.Map(displayText, element.LocalName, out var kind);
@@ -1768,4 +1770,28 @@ internal static class BoxBuilder
     /// top-down walk after defaults + inheritance + declarations, so the parent is fully resolved.</summary>
     private static void ResolveDeferredFontProperties(ComputedStyle style, ComputedStyle parentStyle) =>
         DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
+
+    /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.
+    /// <c>match-parent</c> computes to the PARENT's <c>text-align</c>, with the parent's relative
+    /// <c>start</c>/<c>end</c> resolved to physical <c>left</c>/<c>right</c> against the PARENT's
+    /// <c>direction</c>. Run in the top-down walk after defaults + inheritance + declarations (the parent
+    /// is fully computed), so the layout-time <c>ReadInlineAlignFactor</c> reader — which sees only this
+    /// element's style — gets a physical keyword, and a descendant that inherits <c>text-align</c>
+    /// inherits the RESOLVED value, not <c>match-parent</c> again. Keyword ids (the KeywordResolver
+    /// text-align table): 0=start 1=end 2=left 3=right 4=center 5=justify 6=match-parent 7=justify-all;
+    /// direction: 0=ltr 1=rtl. No-op unless this element declared <c>match-parent</c> (the common case is
+    /// untouched, so non-match-parent rendering is byte-identical).</summary>
+    private static void ResolveMatchParentTextAlign(ComputedStyle style, ComputedStyle parentStyle)
+    {
+        if (style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) != 6) return; // not match-parent
+        var parentAlign = parentStyle.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0);
+        var parentRtl = parentStyle.IsRtl();
+        var physical = parentAlign switch
+        {
+            1 => parentRtl ? 2 : 3,        // end → left in RTL, right in LTR
+            0 or 6 => parentRtl ? 3 : 2,   // start (+ defensive parent-is-match-parent) → right in RTL, left in LTR
+            _ => parentAlign,              // left/right/center/justify/justify-all are already physical / non-relative
+        };
+        style.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(physical));
+    }
 }

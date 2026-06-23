@@ -399,6 +399,32 @@ public sealed class BoxBuilderTests
         Assert.Equal(3, before.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
     }
 
+    // ============================================================
+    // dir HTML attribute → direction (HTML §3.2.6.4 presentational hint)
+    // ============================================================
+
+    [Theory]
+    [InlineData("<div dir=\"rtl\"><p>x</p></div>", 1)]               // rtl → keyword 1, inherited by <p>
+    [InlineData("<div dir=\"ltr\"><p>x</p></div>", 0)]               // ltr → keyword 0
+    [InlineData("<div dir=\"RTL\"><p>x</p></div>", 1)]               // case-insensitive
+    [InlineData("<div dir=\"rtl\"><p dir=\"ltr\">x</p></div>", 0)]   // inner dir overrides inherited rtl
+    [InlineData("<div dir=\"auto\"><p>x</p></div>", 0)]              // auto → inherited default (ltr)
+    public async Task Dir_attribute_maps_to_the_direction_property(string html, int expectedDirectionKeyword)
+    {
+        var root = await BuildAsync(html);
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(expectedDirectionKeyword, p.Style.ReadKeywordOrDefault(PropertyId.Direction, defaultIndex: 0));
+    }
+
+    [Fact]
+    public async Task Css_direction_wins_over_the_dir_attribute()
+    {
+        // The `dir` attribute is a UA-origin presentational hint, so an author CSS `direction` wins.
+        var root = await BuildAsync("<div dir=\"rtl\" style=\"direction:ltr\"><p>x</p></div>");
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(0, p.Style.ReadKeywordOrDefault(PropertyId.Direction, defaultIndex: 0));   // ltr — CSS wins
+    }
+
     /// <summary>First descendant box with the given pseudo marker (e.g. ::before), depth-first.</summary>
     private static Box? FindFirstPseudo(Box root, BoxPseudo pseudo)
     {

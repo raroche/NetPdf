@@ -193,6 +193,10 @@ internal static class BoxBuilder
         var style = ComputedStyle.Rent();
         ApplyDefaults(style);
         ApplyInheritance(style, parentStyle);
+        // The `dir` HTML attribute is a presentational hint for `direction` (HTML §3.2.6.4): applied
+        // AFTER inheritance (so it overrides an inherited direction) but BEFORE the author declarations
+        // (so a CSS `direction` still wins, per the UA-origin of presentational hints).
+        ApplyDirAttribute(style, element);
         ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
         ApplyComputedStyleFixups(style, parentStyle);
@@ -1788,6 +1792,25 @@ internal static class BoxBuilder
     {
         ResolveMatchParentTextAlign(style, parentStyle);
         ResolveDeclaredPercentLineHeightInPlace(style);
+    }
+
+    /// <summary>Map the <c>dir</c> HTML content attribute (HTML §3.2.6.4) onto the computed
+    /// <c>direction</c> property — a presentational hint at the UA cascade origin. <c>dir="ltr"</c> /
+    /// <c>dir="rtl"</c> set the direction keyword (ltr=0, rtl=1 per the <c>KeywordResolver</c> table);
+    /// <c>dir="auto"</c> (content-derived first-strong direction) and any other value are left to the
+    /// inherited direction (the UAX #9 P2/P3 heuristic isn't applied here). Called after inheritance so
+    /// it overrides an inherited direction, and before the author declarations so a CSS <c>direction</c>
+    /// still wins. No-op when the element has no <c>dir</c> attribute, so non-<c>dir</c> documents are
+    /// byte-identical.</summary>
+    private static void ApplyDirAttribute(ComputedStyle style, IElement element)
+    {
+        var dir = element.GetAttribute("dir");
+        if (dir is null) return;
+        if (dir.Equals("rtl", StringComparison.OrdinalIgnoreCase))
+            style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(1));
+        else if (dir.Equals("ltr", StringComparison.OrdinalIgnoreCase))
+            style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(0));
+        // `auto` / unknown → keep the inherited direction (the bidi first-strong heuristic is a residual).
     }
 
     /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.

@@ -1161,6 +1161,25 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Dir_attribute_rtl_right_aligns_start_text_end_to_end()
+    {
+        // The `dir="rtl"` HTML attribute maps to `direction: rtl` (HTML §3.2.6.4) through the real
+        // cascade/box-builder, so the initial `text-align: start` resolves to the RIGHT edge — landing
+        // at the same x as physical `text-align: right`, and well right of an LTR control.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string body) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" + body + "</body></html>", opts))).X;
+
+        var ltr = LineX("<div dir=\"ltr\">A</div>");           // ltr + start → left edge (control)
+        var ltrRight = LineX("<div style=\"text-align:right\">A</div>");  // physical right (reference)
+        var rtl = LineX("<div dir=\"rtl\">A</div>");           // rtl + INHERITED start → right edge
+
+        Assert.True(rtl > ltr + 1.0, $"dir=rtl should right-align: ltr={ltr} → rtl={rtl}");
+        Assert.True(System.Math.Abs(rtl - ltrRight) < 1.0,
+            $"dir=rtl start should match physical right: rtl={rtl} ltrRight={ltrRight}");
+    }
+
+    [Fact]
     public void Text_align_match_parent_resolves_against_the_parent_used_value()
     {
         // text-align-match-parent (CSS Text 3 §7.1) end-to-end — the child takes the PARENT's used

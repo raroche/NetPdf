@@ -145,10 +145,12 @@ grepping the ID).
   are correct; only the slice ORDER is wrong).
 - **Missing** — Fragment-level slice reversal (UAX #9 L2) for RTL
   paragraph base direction so the painter consumes slices visually
-  right-to-left. Plus two residual direction-pipeline gaps: the `dir`
-  HTML attribute is NOT mapped to the `direction` property (only CSS
-  `direction` works), and `PageMarginBoxPainter` inline text still
-  hardcodes LTR base direction.
+  right-to-left. Plus one residual direction-pipeline gap:
+  `PageMarginBoxPainter` inline text still hardcodes LTR base
+  direction. (The `dir` HTML attribute → `direction` mapping SHIPPED —
+  `BoxBuilder.ApplyDirAttribute`, a UA-origin presentational hint:
+  `dir="ltr"`/`"rtl"` set the direction keyword, `auto` keeps the
+  inherited direction, and a CSS `direction` wins.)
 - **Trigger** — RTL primary direction (Arabic / Hebrew) enters the
   corpus, OR a user reports right-to-left mis-rendering / a `dir="rtl"`
   attribute having no effect.
@@ -159,8 +161,8 @@ grepping the ID).
   `DirectionStyleExtensions.ReadParagraphDirection` (PR 2 task 4).
 - **Added** — Phase 3 Task 10 cycle 1 documented the deferral; PR 2
   task 4 wired CSS-driven base direction (levels + alignment are now
-  correct; the visual slice reversal + `dir` attribute + margin-box
-  base direction remain).
+  correct), and batch 2 wired the `dir` HTML attribute (see Missing);
+  the visual slice reversal + margin-box base direction remain.
 - **Removal condition** — Wrap reverses slice order for RTL paragraphs
   AND the painter consumes them visually.
 

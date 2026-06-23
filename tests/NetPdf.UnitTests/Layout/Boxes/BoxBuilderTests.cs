@@ -399,6 +399,51 @@ public sealed class BoxBuilderTests
         Assert.Equal(3, before.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
     }
 
+    // ============================================================
+    // dir HTML attribute → direction (HTML §3.2.6.4 presentational hint)
+    // ============================================================
+
+    [Theory]
+    [InlineData("<div dir=\"rtl\"><p>x</p></div>", 1)]               // rtl → keyword 1, inherited by <p>
+    [InlineData("<div dir=\"ltr\"><p>x</p></div>", 0)]               // ltr → keyword 0
+    [InlineData("<div dir=\"RTL\"><p>x</p></div>", 1)]               // case-insensitive
+    [InlineData("<div dir=\"rtl\"><p dir=\"ltr\">x</p></div>", 0)]   // inner dir overrides inherited rtl
+    [InlineData("<div dir=\"auto\"><p>x</p></div>", 0)]              // auto → inherited default (ltr)
+    [InlineData("<div dir=\" rtl \"><p>x</p></div>", 1)]            // PR #213 — surrounding ASCII whitespace trimmed
+    [InlineData("<div dir=\"\tltr\"><p>x</p></div>", 0)]            // leading tab trimmed
+    public async Task Dir_attribute_maps_to_the_direction_property(string html, int expectedDirectionKeyword)
+    {
+        var root = await BuildAsync(html);
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(expectedDirectionKeyword, p.Style.ReadKeywordOrDefault(PropertyId.Direction, defaultIndex: 0));
+    }
+
+    [Fact]
+    public async Task Css_direction_wins_over_the_dir_attribute()
+    {
+        // The `dir` attribute is a UA-origin presentational hint, so an author CSS `direction` wins.
+        var root = await BuildAsync("<div dir=\"rtl\" style=\"direction:ltr\"><p>x</p></div>");
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(0, p.Style.ReadKeywordOrDefault(PropertyId.Direction, defaultIndex: 0));   // ltr — CSS wins
+    }
+
+    [Theory]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    [InlineData("initial")]
+    public async Task Css_wide_direction_declaration_beats_the_dir_attribute(string cssWide)
+    {
+        // PR #213 review — a CSS-wide `direction` keyword is resolved by the CASCADE, not a leaf
+        // resolver, so it never reaches a keyword slot for ApplyResolvedDeclarations to materialize. The
+        // `dir` presentational hint (UA origin) must still step aside for it, so `direction:inherit` on
+        // an LTR-parented element keeps the inherited LTR — NOT the `dir="rtl"` hint. (`direction` is an
+        // inherited property, so inherit/unset/initial all resolve to the parent's LTR here, which makes
+        // the assertion robust against the tracked initial/revert invalid-fallback gap.)
+        var root = await BuildAsync($"<div><p dir=\"rtl\" style=\"direction:{cssWide}\">x</p></div>");
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(0, p.Style.ReadKeywordOrDefault(PropertyId.Direction, defaultIndex: 0));   // stays LTR
+    }
+
     /// <summary>First descendant box with the given pseudo marker (e.g. ::before), depth-first.</summary>
     private static Box? FindFirstPseudo(Box root, BoxPseudo pseudo)
     {

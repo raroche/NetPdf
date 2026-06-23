@@ -49,10 +49,11 @@ namespace NetPdf.Layout.Inline;
 ///   #29).</item>
 ///   <item>Cycle 3d sub-cycle 3 — per-source-run WordBreak.BreakAll
 ///   plumbing through the flat-build phase's BreakAll upgrade
-///   pass. KeepAll on mismatch still throws (CJK semantics need
-///   UAX #24 script detection). Cross-run BreakAll boundary uses
-///   "either side may opt in" rule per sub-cycle 3 review
-///   Finding #3.</item>
+///   pass. WordBreak.KeepAll is also honored per run now
+///   (word-break-keep-all-cjk: LB30b CJK break suppression), so a
+///   KeepAll-vs-other mismatch no longer throws. Cross-run BreakAll
+///   boundary uses "either side may opt in" rule per sub-cycle 3
+///   review Finding #3.</item>
 ///   <item>Cycle 3d sub-cycle 4 — per-source-run Hyphens via the
 ///   hyphenation pipeline. Soft-hyphen demotion (Hyphens=None)
 ///   applied per concat position; Liang application gated
@@ -67,28 +68,32 @@ namespace NetPdf.Layout.Inline;
 ///   (sub-cycle 1).</item>
 ///   <item><b>OverflowWrap</b> — Normal + Anywhere mixable
 ///   (sub-cycle 2).</item>
-///   <item><b>WordBreak</b> — Normal + BreakAll mixable
-///   (sub-cycle 3). KeepAll on mismatch THROWS (CJK semantics
-///   deferred).</item>
+///   <item><b>WordBreak</b> — Normal + BreakAll + KeepAll all
+///   mixable (sub-cycle 3; KeepAll honored per run via
+///   word-break-keep-all-cjk).</item>
 ///   <item><b>Hyphens</b> — all 3 values mixable
 ///   (sub-cycle 4).</item>
 /// </list>
 ///
+/// <para><b>Now shipped (were subsequent-cycle deferrals):</b></para>
+/// <list type="bullet">
+///   <item>KeepAll CJK inter-character break suppression
+///   (word-break-keep-all-cjk) — <c>SuppressKeepAllCjkBreaks</c>
+///   demotes the implicit breaks between East-Asian letter units
+///   (UAX #14 LB30b) per source run; the mismatch throw is gone.</item>
+///   <item>UAX #24 script detection (uax-24-script-detection) —
+///   <see cref="LineBuilder.Itemize"/> adds a script-change boundary
+///   from a block-based script table, so each script shapes with its
+///   own OpenType feature set (the exact UCD Scripts.txt table is a
+///   tracked completeness residual).</item>
+///   <item>RTL fragment-level reordering (rtl-fragment-reversal) —
+///   <see cref="LineBuilder.Wrap"/> reorders a line's slices by their
+///   shaped run's bidi level (UAX #9 rule L2), so RTL runs + RTL spans
+///   embedded in LTR text paint in visual order.</item>
+/// </list>
+///
 /// <para><b>Subsequent-cycle deferrals:</b></para>
 /// <list type="bullet">
-///   <item>KeepAll CJK inter-character break suppression — needs
-///   UAX #24 script detection + UAX #14 LB30b handling. Uniform
-///   KeepAll currently behaves like Normal (documented
-///   approximation); KeepAll on mismatch throws.</item>
-///   <item>UAX #24 script detection. Detects script per
-///   codepoint + adds a script-change boundary in <see cref="LineBuilder.Itemize"/>
-///   so multi-script documents shape each script with its
-///   appropriate OpenType feature set.</item>
-///   <item>RTL fragment-level reversal — cycle 3.
-///   <see cref="LineBuilder.Shape"/> (cycle 2 ship) already produces
-///   RTL glyph arrays in HarfBuzz visual order; cycle 3 reverses
-///   fragment-level slice order for RTL paragraphs so the painter
-///   walks slices visually right-to-left.</item>
 ///   <item>BoxFragment conversion — cycle 4. Converts
 ///   <see cref="LineFragment"/>[] into per-line <c>BoxFragment</c>
 ///   records that the block-layouter emits into the
@@ -298,8 +303,7 @@ internal static class InlineLayouter
             whiteSpace, overflowWrap, wordBreak,
             hyphens, hyphenator, cancellationToken,
             inlineTextPolicyPerRun: null,
-            intrinsicSizingMode: intrinsicSizingMode,
-            paragraphDirection: paragraphDirection);
+            intrinsicSizingMode: intrinsicSizingMode);
 
         // Per Phase 3 Task 11 sub-cycle 1 review Finding #1 — bundle
         // lines + shaped runs + preprocessed source so the painter
@@ -419,11 +423,11 @@ internal static class InlineLayouter
     /// while collapse-modes (Normal/NoWrap/PreLine) continue to
     /// strip/collapse via their carried <c>inWs</c> state.</para>
     ///
-    /// <para><b>Still-loud failure modes.</b> Per-glyph
-    /// overflow-wrap / word-break / hyphens mixed-mode is NOT yet
-    /// supported — mismatch in any of those three properties throws
-    /// <see cref="NotSupportedException"/> (deferred to a subsequent
-    /// cycle).</para>
+    /// <para><b>Per-run policy.</b> A non-uniform white-space /
+    /// overflow-wrap / word-break / hyphens mix across source runs is
+    /// fully supported — the mismatch builds a per-run
+    /// <see cref="InlineTextPolicy"/>[] that <see cref="LineBuilder.Wrap"/>
+    /// honors glyph-by-glyph (no NotSupportedException is thrown).</para>
     ///
     /// <para><b>Equality check.</b> Two policies are "the same" by
     /// the auto-generated <see cref="InlineTextPolicy"/> record-
@@ -451,10 +455,6 @@ internal static class InlineLayouter
     /// <returns>Per Phase 3 Task 11 sub-cycle 1 review Finding #1 —
     /// the full inline-pass bundle.</returns>
     /// <exception cref="ArgumentNullException">Required arg is null.</exception>
-    /// <exception cref="NotSupportedException">Source TextRuns have
-    /// non-uniform <see cref="InlineTextPolicy"/> values where
-    /// overflow-wrap / word-break / hyphens differ (per-glyph
-    /// metadata for those 3 deferred to a subsequent cycle).</exception>
     public static InlineLayoutResult LayoutPerRun(
         IReadOnlyList<TextRun> sourceTextRuns,
         double availableInlineSize,
@@ -643,8 +643,7 @@ internal static class InlineLayouter
             hyphenator,
             cancellationToken,
             perRunPolicy,
-            intrinsicSizingMode,
-            paragraphDirection);
+            intrinsicSizingMode);
         return new InlineLayoutResult(lines, shaped, preprocessed);
     }
 

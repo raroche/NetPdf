@@ -630,10 +630,11 @@ internal static class LineBuilder
     ///   BreakAll source runs get their Prohibited boundaries
     ///   upgraded to Allowed at grapheme cluster boundaries. The
     ///   cross-run BreakAll boundary uses "either side may opt in"
-    ///   (mirrors OverflowWrap's cross-run rule). KeepAll is read
-    ///   but NOT yet honored: behaves like Normal (no breaks
-    ///   suppressed), and <see cref="InlineLayouter.LayoutPerRun"/>
-    ///   throws on KeepAll mismatch to fail loud.</item>
+    ///   (mirrors OverflowWrap's cross-run rule). KeepAll is honored
+    ///   per source run (word-break-keep-all-cjk): the CSS Text §5.2 /
+    ///   UAX #14 LB30b CJK inter-character break suppression runs over
+    ///   the breaks of each KeepAll run (see <c>SuppressKeepAllCjkBreaks</c>),
+    ///   and a KeepAll-vs-other mismatch no longer throws.</item>
     ///   <item><see cref="InlineTextPolicy.Hyphens"/> (sub-cycle 4)
     ///   — drives per-source-run hyphenation. The soft-hyphen
     ///   demotion (Hyphens=None) and Liang application (per word,
@@ -661,18 +662,12 @@ internal static class LineBuilder
     /// Defaults to <see langword="false"/> — the line-wrap pass for
     /// final layout always honors break-word's glyph-boundary
     /// fallback.</param>
-    /// <param name="paragraphDirection">The paragraph base direction
-    /// (rtl-fragment-reversal). For
-    /// <see cref="ParagraphDirection.RightToLeft"/>, each emitted
-    /// line's per-run slices are reversed (UAX #9 L2 at run
-    /// granularity) so the painter consumes them visually
-    /// right-to-left; the glyph order WITHIN each level-homogeneous
-    /// slice is left as HarfBuzz shaped it. Defaults to
-    /// <see cref="ParagraphDirection.LeftToRight"/> (and
-    /// <see cref="ParagraphDirection.Auto"/> is treated likewise),
-    /// keeping document slice order — so LTR output is byte-identical.</param>
-    /// <returns>One <see cref="LineFragment"/> per wrapped line in
-    /// document order. Empty array when <paramref name="shapedRuns"/>
+    /// <returns>One <see cref="LineFragment"/> per wrapped line, each in VISUAL order. The line's
+    /// per-run slices are reordered by their shaped run's bidi LEVEL (UAX #9 rule L2 at run granularity —
+    /// rtl-fragment-reversal), so RTL runs and RTL spans embedded in LTR text paint visually; an all-LTR
+    /// line keeps document slice order (byte-identical). The base direction + the <c>Auto</c> first-strong
+    /// resolution are already folded into the run levels by <see cref="Itemize"/>, so they need not be
+    /// repassed here. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
     /// <exception cref="ArgumentNullException">A required argument is
     /// <see langword="null"/>.</exception>
@@ -700,18 +695,17 @@ internal static class LineBuilder
         Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default,
         IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun = null,
-        bool intrinsicSizingMode = false,
-        ParagraphDirection paragraphDirection = ParagraphDirection.LeftToRight)
+        bool intrinsicSizingMode = false)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
         ArgumentNullException.ThrowIfNull(shapedRuns);
         // Per Phase 3 Task 10 cycle 3d sub-cycle 2 review Rec #4 —
         // single per-source-run InlineTextPolicy array. Length must
         // match sourceTextRuns count; every entry's WhiteSpace +
-        // OverflowWrap fields must be defined enum values. (WordBreak
-        // and Hyphens fields are validated for sanity even though
-        // they're not yet honored per-run — sub-cycle 3+ will plumb
-        // them through.)
+        // OverflowWrap fields must be defined enum values. WordBreak
+        // (BreakAll + KeepAll) and Hyphens are now honored per source
+        // run (KeepAll via SuppressKeepAllCjkBreaks; Hyphens via the
+        // hyphenation pipeline below).
         if (inlineTextPolicyPerRun is not null
             && inlineTextPolicyPerRun.Count != sourceTextRuns.Count)
         {
@@ -958,16 +952,12 @@ internal static class LineBuilder
         // content is byte-identical.
         SuppressKeepAllCjkBreaks(breaks, concatText, wordBreak, inlineTextPolicyPerRun, sourceTextRuns);
 
-        // rtl-fragment-reversal — resolve the EFFECTIVE base direction for the per-run slice reversal
-        // (UAX #9 L2). An explicit `RightToLeft` reverses; `Auto` resolves via the UAX #9 P2/P3
-        // first-strong rule (so an Auto paragraph whose first strong character is RTL also reverses,
-        // matching ParagraphDirection.Auto semantics — Copilot review), using a single whole-text
-        // resolution (multi-paragraph mixed-direction Auto stays a documented approximation). The
-        // production CSS path resolves `direction` to ltr/rtl upstream + never passes Auto. LeftToRight
-        // and Auto-resolving-LTR keep document slice order, so non-RTL output is byte-identical.
-        var reverseSlicesForRtl = paragraphDirection == ParagraphDirection.RightToLeft
-            || (paragraphDirection == ParagraphDirection.Auto
-                && (ParagraphLevelResolver.Resolve(concatText, ParagraphDirection.Auto) & 1) == 1);
+        // rtl-fragment-reversal — the per-run bidi LEVEL (set by itemization's UAX #9 resolution, which
+        // already folded in the base direction AND the `Auto` first-strong rule) drives UAX #9 L2
+        // reordering of the line's slices. Capture the level of each shaped run so EmitDrawableRange can
+        // reorder by level. An all-even-level (pure LTR) line reorders to nothing → byte-identical.
+        var runLevels = new byte[shapedRuns.Count];
+        for (var r = 0; r < shapedRuns.Count; r++) runLevels[r] = shapedRuns[r].Source.BidiLevel;
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1498,7 +1488,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
-                    reverseSlicesForRtl,
+                    runLevels,
                     endsWithMandatoryBreak: false,
                     endsWithHyphenationBreak: endsWithHyphenation);
                 lineStart = lastAllowed + 1;
@@ -1643,7 +1633,7 @@ internal static class LineBuilder
                     // Force break at cursor-1: emit lineStart..cursor-1,
                     // start next line at cursor.
                     EmitDrawableRange(output, flat, lineStart, cursor - 1,
-                        reverseSlicesForRtl,
+                        runLevels,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor;
                     cursor = lineStart - 1;
@@ -1653,7 +1643,7 @@ internal static class LineBuilder
                     // Single glyph wider than line: emit just this
                     // glyph alone, advance.
                     EmitDrawableRange(output, flat, lineStart, cursor,
-                        reverseSlicesForRtl,
+                        runLevels,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor + 1;
                     // cursor stays — for-loop increment moves it past.
@@ -1680,7 +1670,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
-                    reverseSlicesForRtl,
+                    runLevels,
                     endsWithMandatoryBreak: true);
                 lineStart = cursor + 1;
                 lineAdvance = 0;
@@ -1710,7 +1700,7 @@ internal static class LineBuilder
         if (lineStart < totalGlyphs)
         {
             EmitDrawableRange(output, flat, lineStart, totalGlyphs - 1,
-                reverseSlicesForRtl,
+                runLevels,
                 endsWithMandatoryBreak: false);
         }
 
@@ -2676,7 +2666,7 @@ internal static class LineBuilder
     private static void EmitDrawableRange(
         List<LineFragment> output,
         FlatGlyph[] flat, int start, int end,
-        bool reverseSlices,
+        byte[] runLevels,
         bool endsWithMandatoryBreak,
         bool endsWithHyphenationBreak = false)
     {
@@ -2728,26 +2718,66 @@ internal static class LineBuilder
             SliceAdvance: sliceAdvance));
         totalAdvance += sliceAdvance;
 
-        // UAX #9 L2 (rtl-fragment-reversal) — when <paramref name="reverseSlices"/> (a RIGHT-TO-LEFT
-        // resolved paragraph base direction) the painter must consume the line's per-run slices visually
-        // right-to-left. Each slice is level-homogeneous (a contiguous same-shaped-run glyph range) and
-        // the slices are built in LOGICAL (document) order above, so a flat reverse of the slice ORDER is
-        // L2 reordering at run granularity: the first logical run lands rightmost, the last logical run
-        // leftmost. The glyph arrays WITHIN each slice are untouched — HarfBuzz already emits each run in
-        // its own visual order (RTL runs reversed, an embedded LTR run kept logical), so a single flat
-        // reverse composes correctly for the common single-embedding-depth case. The painter walks Slices
-        // left-to-right accumulating SliceAdvance (TextPainter), and the line is right-aligned (the
-        // text-align start/end swap), so the reversed order paints at the correct visual x. TotalAdvance
-        // is the order-independent sum, so wrap/fit decisions are unaffected. A LEFT-TO-RIGHT base keeps
-        // document order, so LTR output is byte-identical.
-        if (reverseSlices && slices.Count > 1)
-            slices.Reverse();
+        // UAX #9 L2 (rtl-fragment-reversal) — reorder the line's per-run slices by embedding LEVEL so the
+        // painter consumes them in visual order. Each slice is level-homogeneous (a contiguous
+        // same-shaped-run glyph range) and the slices are built in LOGICAL (document) order above; L2
+        // reverses, from the highest level down to the lowest ODD level, every contiguous run of slices
+        // at that level or higher. This handles BOTH an RTL base paragraph (whole line reverses, embedded
+        // LTR double-reverses back to logical) AND embedded RTL inside an LTR base (only the RTL spans
+        // reverse). The glyph arrays WITHIN each slice are untouched — HarfBuzz already emits each run in
+        // its own visual order — so the run-level L2 composes correctly. The painter walks Slices
+        // left-to-right accumulating SliceAdvance (TextPainter), so the reordered slices paint at the
+        // correct visual x; TotalAdvance is the order-independent sum, so wrap/fit is unaffected. An
+        // all-even-level (pure LTR) line reorders to nothing → byte-identical.
+        ReorderSlicesByLevelL2(slices, runLevels);
 
         output.Add(new LineFragment(
             Slices: slices.ToArray(),
             TotalAdvance: totalAdvance,
             EndsWithMandatoryBreak: endsWithMandatoryBreak,
             EndsWithHyphenationBreak: endsWithHyphenationBreak));
+    }
+
+    /// <summary>UAX #9 rule L2 (rtl-fragment-reversal) — reorder one line's per-run <paramref
+    /// name="slices"/> (built in LOGICAL order) into VISUAL order, by embedding level. From the highest
+    /// level present down to the lowest ODD level, reverse every contiguous run of slices whose run level
+    /// is ≥ that level. Each slice is level-homogeneous, so this is exact L2 at run granularity: an RTL
+    /// base reverses the whole line (and double-reverses embedded LTR back to logical), while embedded RTL
+    /// inside an LTR base reverses only the RTL spans. A line with no odd level (pure LTR) is left
+    /// untouched, so LTR output is byte-identical. <paramref name="runLevels"/> is indexed by
+    /// <see cref="ShapedRunSlice.ShapedRunIndex"/>.</summary>
+    private static void ReorderSlicesByLevelL2(List<ShapedRunSlice> slices, byte[] runLevels)
+    {
+        if (slices.Count < 2) return;
+
+        byte maxLevel = 0;
+        var minOddLevel = int.MaxValue;
+        for (var i = 0; i < slices.Count; i++)
+        {
+            var lvl = runLevels[slices[i].ShapedRunIndex];
+            if (lvl > maxLevel) maxLevel = lvl;
+            if ((lvl & 1) == 1 && lvl < minOddLevel) minOddLevel = lvl;
+        }
+        if (minOddLevel == int.MaxValue) return; // no RTL run on this line → nothing to reorder
+
+        for (var level = maxLevel; level >= minOddLevel; level--)
+        {
+            var i = 0;
+            while (i < slices.Count)
+            {
+                if (runLevels[slices[i].ShapedRunIndex] >= level)
+                {
+                    var j = i;
+                    while (j < slices.Count && runLevels[slices[j].ShapedRunIndex] >= level) j++;
+                    slices.Reverse(i, j - i); // reverse the contiguous [i, j) run at this level-or-higher
+                    i = j;
+                }
+                else
+                {
+                    i++;
+                }
+            }
+        }
     }
 
     /// <summary>CSS Text L3 §5.2 — <c>word-break: keep-all</c> (UAX #14 LB30b). Demotes the implicit

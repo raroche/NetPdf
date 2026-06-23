@@ -444,24 +444,19 @@ public class InlineLayouterTests
     [Fact]
     public void Layout_threads_rtl_base_direction_through_to_slice_reversal()
     {
-        // Integration: InlineLayouter.Layout passes paragraphDirection through Itemize/Shape AND Wrap.
-        // Two source runs produce two per-run slices; an RTL base reverses their order vs an LTR base
-        // (UAX #9 L2), while the line width (TotalAdvance) is unchanged.
+        // Integration: InlineLayouter.Layout threads the base direction into Itemize (which resolves the
+        // per-run bidi LEVELS), and Wrap reorders the slices by level (UAX #9 L2) end-to-end. Two Hebrew
+        // runs (level 1) under an RTL base reverse to [run1, run0].
         using var resolver = new TestShaperResolver();
-        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
+        var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
 
-        var ltr = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
-            paragraphDirection: ParagraphDirection.LeftToRight);
-        var rtl = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
+        var rtl = InlineLayouter.Layout(sourceRuns, 1000, resolver, "Hebr", "he",
             paragraphDirection: ParagraphDirection.RightToLeft);
 
-        var ltrLine = Assert.Single(ltr.Lines);
         var rtlLine = Assert.Single(rtl.Lines);
-        Assert.Equal(2, ltrLine.Slices.Length);
         Assert.Equal(2, rtlLine.Slices.Length);
-        Assert.Equal(ltrLine.Slices[0].ShapedRunIndex, rtlLine.Slices[1].ShapedRunIndex);
-        Assert.Equal(ltrLine.Slices[1].ShapedRunIndex, rtlLine.Slices[0].ShapedRunIndex);
-        Assert.Equal(ltrLine.TotalAdvance, rtlLine.TotalAdvance, precision: 5);
+        Assert.Equal(1, rtlLine.Slices[0].ShapedRunIndex);
+        Assert.Equal(0, rtlLine.Slices[1].ShapedRunIndex);
     }
 
     // --- Helpers --------------------------------------------------

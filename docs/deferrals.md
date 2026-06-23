@@ -35,6 +35,42 @@ grepping the ID).
 
 ---
 
+## uax-24-script-detection
+
+- **ID** — `uax-24-script-detection`
+- **Status** — `approximated`. The script-detection MECHANISM shipped; the
+  script TABLE is a block-based approximation (the residual below).
+- **Behavior** — `LineBuilder.Itemize` now detects a per-codepoint script and
+  opens a script-change run boundary (so each script-homogeneous sub-run shapes
+  with its own OpenType feature set), and `LineBuilder.Shape` shapes each run
+  with `run.ScriptIso15924 ?? uniform`. The script lookup
+  (`src/NetPdf.Text/Bidi/UnicodeScripts.cs`) is a sorted Unicode-BLOCK range
+  table covering the ~30 major scripts, which APPROXIMATES the exact UAX #24
+  Script property: a few blocks mix scripts at their edges (Coptic is carved out
+  of the Greek block; others are not), and the long tail of rare scripts +
+  supplementary-plane extensions (CJK Ext C–G past U+2A6DF, Arabic Extended-A/B,
+  etc.) is not enumerated.
+- **Missing** — an EXACT per-codepoint Script-property table generated from the
+  UCD `Scripts.txt`, replacing the block approximation, so a codepoint in an
+  uncovered-but-assigned range gets its own script tag instead of resolving to
+  `Common` (= the surrounding / caller-uniform script). The current behavior
+  feeds HarfBuzz the surrounding script tag for those codepoints (no worse than
+  the pre-detection single-script approximation, but not exact).
+- **Trigger** — corpus content in an uncovered assigned range (e.g. CJK Ext C+,
+  Arabic Extended-A) misshapes, OR a script-boundary edge inside a mixed block
+  is reported.
+- **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (replace the block
+  ranges with a generated exact table); `tests/NetPdf.UnitTests/Text/Bidi/UnicodeScriptsTests.cs`
+  (lock the uncovered-range behavior + the exact table once generated).
+- **Added** — Phase 3 Task 10 cycle 1 documented the original deferral; the
+  detection mechanism shipped in the residual long-tail batch 3 (narrowed to the
+  table-completeness residual here per PR #214 review).
+- **Removal condition** — `UnicodeScripts.GetScript` returns the exact UAX #24
+  Script property (UCD-derived) for every assigned codepoint, and `Shape`
+  consumes it; tests cover representative uncovered-today ranges.
+
+---
+
 ## hyphens-auto-language-routing
 
 - **ID** — `hyphens-auto-language-routing`

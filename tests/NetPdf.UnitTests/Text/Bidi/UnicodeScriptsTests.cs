@@ -41,6 +41,19 @@ public class UnicodeScriptsTests
     }
 
     [Fact]
+    public void GetScript_returns_common_for_uncovered_assigned_ranges_documenting_the_block_approximation()
+    {
+        // uax-24-script-detection (narrowed) — the table is a block-based APPROXIMATION, so assigned
+        // codepoints outside the enumerated blocks resolve to Common (the surrounding / caller-uniform
+        // script) rather than their exact UAX #24 Script. These lock that known behavior until an exact
+        // UCD Scripts.txt table replaces the blocks; if a future range gets covered, flip the expectation.
+        Assert.Equal(Script.Common, UnicodeScripts.GetScript(0x2A700)); // CJK Ext C (Han, past Ext B 0x2A6DF)
+        Assert.Equal(Script.Common, UnicodeScripts.GetScript(0x08A0));  // Arabic Extended-A
+        Assert.Equal(Script.Common, UnicodeScripts.GetScript(0x03E2));  // Coptic (carved out of the Greek block)
+        Assert.Equal(Script.Common, UnicodeScripts.GetScript(0x13A0));  // Cherokee (rare, not enumerated)
+    }
+
+    [Fact]
     public void ToIso15924_maps_scripts_to_tags()
     {
         Assert.Equal("Latn", UnicodeScripts.ToIso15924(Script.Latin));

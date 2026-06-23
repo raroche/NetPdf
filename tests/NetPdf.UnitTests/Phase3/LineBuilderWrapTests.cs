@@ -549,99 +549,115 @@ public class LineBuilderWrapTests
         Assert.Contains("XAdvance", ex.Message);
     }
 
-    // --- RTL fragment-level slice reversal (UAX #9 L2, rtl-fragment-reversal) ---
+    // --- UAX #9 L2 level-aware slice reordering (rtl-fragment-reversal) ---
+    //
+    // The per-run bidi LEVEL (resolved by Itemize, including the Auto first-strong rule) drives L2
+    // reordering of a line's slices. These tests cover the three structural cases + the byte-identity
+    // guard. The SyntheticFont maps every char to .notdef but the LEVELS come from the real codepoints,
+    // so Hebrew (א/ב) gives RTL (level 1) runs and Latin gives LTR runs.
 
-    [Fact]
-    public void Wrap_reverses_per_run_slice_order_for_an_rtl_paragraph_base()
+    private static double LeftXOfRun(LineFragment line, int shapedRunIndex)
     {
-        // Two source runs → two itemized runs (Itemize splits on the source-run-index change) → two
-        // shaped runs → two per-run slices on the one emitted line. Under an LTR base the slices stay in
-        // document order [run0, run1]; under an RTL base UAX #9 L2 reverses them to [run1, run0] so the
-        // painter — which walks Slices left-to-right accumulating SliceAdvance — paints the LAST logical
-        // run leftmost. TotalAdvance (the order-independent sum) is identical, so wrapping is unaffected.
-        using var resolver = new TestShaperResolver();
-        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
-
-        var ltrItemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
-        var ltrShaped = LineBuilder.Shape(sourceRuns, ltrItemized, resolver, LatnScript, EnLang);
-        var ltrLine = Assert.Single(LineBuilder.Wrap(sourceRuns, ltrShaped, availableInlineSize: 1000,
-            paragraphDirection: ParagraphDirection.LeftToRight));
-
-        var rtlItemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.RightToLeft);
-        var rtlShaped = LineBuilder.Shape(sourceRuns, rtlItemized, resolver, LatnScript, EnLang);
-        var rtlLine = Assert.Single(LineBuilder.Wrap(sourceRuns, rtlShaped, availableInlineSize: 1000,
-            paragraphDirection: ParagraphDirection.RightToLeft));
-
-        Assert.Equal(2, ltrLine.Slices.Length);
-        Assert.Equal(2, rtlLine.Slices.Length);
-
-        // The RTL slice order is the exact reverse of the LTR (document) order.
-        Assert.Equal(ltrLine.Slices[0].ShapedRunIndex, rtlLine.Slices[1].ShapedRunIndex);
-        Assert.Equal(ltrLine.Slices[1].ShapedRunIndex, rtlLine.Slices[0].ShapedRunIndex);
-
-        // The reversal does not change the line's width (order-independent advance sum).
-        Assert.Equal(ltrLine.TotalAdvance, rtlLine.TotalAdvance, precision: 5);
-
-        // Concrete painted x: walk slices left-to-right accumulating SliceAdvance, like the painter. The
-        // FIRST logical run (shaped index 0) is leftmost (x=0) under LTR, but shifts RIGHT under RTL
-        // (now preceded by the second run); the second logical run (index 1) moves to x=0.
-        static double LeftXOfRun(LineFragment line, int shapedRunIndex)
+        var x = 0.0;
+        foreach (var s in line.Slices)
         {
-            var x = 0.0;
-            foreach (var s in line.Slices)
-            {
-                if (s.ShapedRunIndex == shapedRunIndex) return x;
-                x += s.SliceAdvance;
-            }
-            return double.NaN;
+            if (s.ShapedRunIndex == shapedRunIndex) return x;
+            x += s.SliceAdvance;
         }
-
-        Assert.Equal(0.0, LeftXOfRun(ltrLine, 0));                 // run0 leftmost under LTR
-        Assert.Equal(0.0, LeftXOfRun(rtlLine, 1));                 // run1 leftmost under RTL
-        Assert.True(LeftXOfRun(rtlLine, 0) > LeftXOfRun(ltrLine, 0)); // run0 shifted right under RTL
+        return double.NaN;
     }
 
     [Fact]
-    public void Wrap_keeps_document_slice_order_for_ltr_and_auto_ltr_bases()
+    public void Wrap_reverses_rtl_runs_in_an_rtl_paragraph()
     {
-        // Regression guard for the LTR byte-identity gate: the default (LeftToRight) AND an Auto base
-        // that RESOLVES to LTR (Latin first-strong char) keep slices in document order, so non-RTL
-        // output is unchanged by the reversal branch.
+        // Two Hebrew runs (level 1) under an RTL base → L2 reverses the whole line: the first logical run
+        // paints rightmost, the last leftmost. TotalAdvance (order-independent) is unchanged.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.RightToLeft);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hebr", "he");
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(2, line.Slices.Length);
+        Assert.Equal(1, line.Slices[0].ShapedRunIndex);  // run1 (last logical) leftmost
+        Assert.Equal(0, line.Slices[1].ShapedRunIndex);  // run0 (first logical) rightmost
+        Assert.Equal(0.0, LeftXOfRun(line, 1));
+        Assert.True(LeftXOfRun(line, 0) > LeftXOfRun(line, 1));
+    }
+
+    [Fact]
+    public void Wrap_keeps_latin_runs_in_document_order_in_an_rtl_paragraph()
+    {
+        // Two LATIN runs in an RTL paragraph are a single LTR embedding (level 2), which reads
+        // left-to-right — so L2 double-reverses them (reverse at level 2, then at level 1) back to
+        // DOCUMENT order. (A naive "flat reverse for RTL base" got this wrong — PR #214 review [P1].)
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.RightToLeft);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(2, line.Slices.Length);
+        Assert.Equal(0, line.Slices[0].ShapedRunIndex);  // run0 stays leftmost (Latin reads L→R)
+        Assert.Equal(1, line.Slices[1].ShapedRunIndex);
+    }
+
+    [Fact]
+    public void Wrap_reverses_only_the_embedded_rtl_span_in_an_ltr_paragraph()
+    {
+        // PR #214 review [P1] — the common "English with a Hebrew name" case: Latin + two Hebrew runs +
+        // Latin under an LTR base. L2 reverses ONLY the contiguous RTL (level-1) span; the surrounding
+        // Latin (level 0) keeps document order. Logical [A, א, ב, B] → visual [A, ב, א, B].
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("A", MakeStyle()), new("א", MakeStyle()), new("ב", MakeStyle()), new("B", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(4, line.Slices.Length);
+        Assert.Equal(0, line.Slices[0].ShapedRunIndex);  // A  (LTR, stays)
+        Assert.Equal(2, line.Slices[1].ShapedRunIndex);  // ב  (RTL span reversed)
+        Assert.Equal(1, line.Slices[2].ShapedRunIndex);  // א
+        Assert.Equal(3, line.Slices[3].ShapedRunIndex);  // B  (LTR, stays)
+    }
+
+    [Fact]
+    public void Wrap_keeps_document_order_for_an_all_ltr_line()
+    {
+        // Byte-identity guard: a pure-LTR line (no odd level) is left untouched by L2.
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
         var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
-        var auto = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000,
-            paragraphDirection: ParagraphDirection.Auto));
-        var ltr = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000,
-            paragraphDirection: ParagraphDirection.LeftToRight));
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
 
-        Assert.Equal(0, auto.Slices[0].ShapedRunIndex);
-        Assert.Equal(1, auto.Slices[1].ShapedRunIndex);
-        Assert.Equal(0, ltr.Slices[0].ShapedRunIndex);
-        Assert.Equal(1, ltr.Slices[1].ShapedRunIndex);
+        Assert.Equal(0, line.Slices[0].ShapedRunIndex);
+        Assert.Equal(1, line.Slices[1].ShapedRunIndex);
     }
 
     [Fact]
-    public void Wrap_reverses_slices_for_an_auto_base_that_resolves_to_rtl()
+    public void Wrap_reverses_rtl_runs_for_an_auto_base_that_resolves_to_rtl()
     {
-        // PR #214 Copilot review — `ParagraphDirection.Auto` resolves the base via the UAX #9 P2/P3
-        // first-strong rule, so an Auto paragraph whose first strong character is RTL (here Hebrew)
-        // must reverse its per-run slices just like an explicit RTL base — NOT keep document order.
+        // `ParagraphDirection.Auto` resolves the base via the UAX #9 P2/P3 first-strong rule at itemize
+        // time, so two Hebrew runs under Auto get level 1 and L2 reverses them — handled entirely by the
+        // run levels (no separate base-direction pass in Wrap).
         using var resolver = new TestShaperResolver();
-        // Two Hebrew source runs (first strong char is RTL → Auto resolves to RTL); two slices.
         var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.Auto);
         var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hebr", "he");
 
-        var auto = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000,
-            paragraphDirection: ParagraphDirection.Auto));
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
 
-        Assert.Equal(2, auto.Slices.Length);
-        // Reversed: the first logical run (index 0) is painted last (rightmost).
-        Assert.Equal(1, auto.Slices[0].ShapedRunIndex);
-        Assert.Equal(0, auto.Slices[1].ShapedRunIndex);
+        Assert.Equal(2, line.Slices.Length);
+        Assert.Equal(1, line.Slices[0].ShapedRunIndex);
+        Assert.Equal(0, line.Slices[1].ShapedRunIndex);
     }
 
     // --- word-break: keep-all (CSS Text §5.2 / UAX #14 LB30b, word-break-keep-all-cjk) ---

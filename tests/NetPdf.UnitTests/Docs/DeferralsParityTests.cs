@@ -60,7 +60,6 @@ public sealed class DeferralsParityTests
         "grid-break-resolver-integration-deferred",
         "grid-fragment-plan-shared-sizing-deferral",
         "grid-spanning-item-intrinsic-distribution-deferral",
-        "grid-reverse-auto-placement-deferral",
         "grid-implicit-named-area-and-occurrence-syntax-deferral",
         "grid-auto-fit-collapse-empty-tracks-deferral",
         "recursive-block-continuation-consumed-extent-accounting-deferral",

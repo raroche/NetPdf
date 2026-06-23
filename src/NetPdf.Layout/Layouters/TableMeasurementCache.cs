@@ -37,9 +37,12 @@ internal sealed class TableMeasurementCache
 {
     private readonly Dictionary<(Box Table, double Inline), object> _columnLayout = new();
 
-    /// <summary>Instrumentation — the number of FULL table measures that actually ran (cache
-    /// misses / stores). A regression test asserts a multi-page table is fully measured ONCE
-    /// across all its pages (== 1), proving the cross-page reuse elides the per-page re-shape.</summary>
+    /// <summary>Diagnostic instrumentation — the number of FULL table measures that actually ran
+    /// (cache stores). For a single table it stays at 1 regardless of page count; the cross-page
+    /// reuse is verified BEHAVIORALLY by the allocation-slope gate
+    /// (<c>PerformanceGateTests.Multi_page_allocation_per_page_stays_constant_with_page_count</c>),
+    /// which would regress to ~O(n²) if the table were re-shaped per page. This counter is not
+    /// asserted directly (the cache is internal to the pipeline); it exists for debugging.</summary>
     public int FullMeasureCount { get; private set; }
 
     /// <summary>The page-invariant column-layout token for this table + inline size, when a prior

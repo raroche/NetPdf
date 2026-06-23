@@ -8035,7 +8035,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 metrics: metrics,
                 comp: comp,
                 fragmentainer: fragmentainer,
-                startLine: System.Math.Min(resumeAtLine, comp.InlineResult.Lines.Length),
+                startLine: resumeAtLine,   // validated against the line count inside (fail-fast, no clamp)
                 blockBorderBoxTop: fragmentainer.UsedBlockSize,
                 priorPagesConsumed: priorPagesConsumed,
                 out emitted);
@@ -8427,6 +8427,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop);
     }
 
+    /// <summary>Fail-fast guard on a resumed line index (PR #211 Copilot review): the producer
+    /// (<see cref="EmitInlineOnlyBlockSplitting"/> / <see cref="EmitInlineOnlyBlockInRecursionSplitting"/>)
+    /// only ever resumes at a line it emitted up to, so a value outside <c>[0, totalLines]</c> is an
+    /// <see cref="InlineOnlyLineSplitContinuation"/> contract violation — throw rather than clamp +
+    /// silently emit an empty / wrong slice (matching the other continuation guards in this
+    /// layouter).</summary>
+    private static void ValidateInlineResumeLine(int resumeLine, int totalLines)
+    {
+        if (resumeLine < 0 || resumeLine > totalLines)
+        {
+            throw new InvalidOperationException(
+                $"InlineOnlyLineSplitContinuation.ResumeLineIndex={resumeLine} is out of range "
+                + $"[0, {totalLines}] for the inline-only block's wrapped lines — a continuation-"
+                + "contract violation (the producer only resumes at a line index it emitted up to).");
+        }
+    }
+
     /// <summary>Emits an inline-only block starting at <paramref name="startLine"/>, slicing
     /// its lines across pages when they don't all fit (`inline-only-block-line-splitting`).
     /// Returns a <c>PageComplete</c> carrying an <see cref="InlineOnlyLineSplitContinuation"/>
@@ -8440,6 +8457,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     {
         emitted = true;
         var total = comp.InlineResult.Lines.Length;
+        ValidateInlineResumeLine(startLine, total);
         var orphans = block.Style.ReadOrphansOrDefault();
         var widows = block.Style.ReadWidowsOrDefault();
         // Chrome is ~0 (gated), so the content top == the border-box top.
@@ -8544,6 +8562,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         var total = comp.InlineResult.Lines.Length;
+        ValidateInlineResumeLine(startLine, total);
         var orphans = inlineOnlyBlock.Style.ReadOrphansOrDefault();
         var widows = inlineOnlyBlock.Style.ReadWidowsOrDefault();
         // Chrome is ~0 (gated), so the content top == the border-box top.

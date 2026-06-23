@@ -9,6 +9,7 @@ using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Properties;
+using NetPdf.Layout.Layouters;
 
 namespace NetPdf.Layout.Boxes;
 
@@ -173,6 +174,7 @@ internal static class BoxBuilder
             ApplyInheritance(brStyle, parentStyle);
             ApplyResolvedDeclarations(brStyle, cascade.TryGetStylesFor(element), diagnostics);
             ResolveDeferredFontProperties(brStyle, parentStyle);
+            ApplyComputedStyleFixups(brStyle, parentStyle);
             // BoxKind.LineBreak with the source element so diagnostics still
             // point back to the right DOM node. The kind is inline-level.
             return new[] { Box.ForElement(BoxKind.LineBreak, brStyle, element) };
@@ -193,6 +195,7 @@ internal static class BoxBuilder
         ApplyInheritance(style, parentStyle);
         ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
+        ApplyComputedStyleFixups(style, parentStyle);
 
         var displayText = ReadDisplay(style, element);
         var mapResult = DisplayMapper.Map(displayText, element.LocalName, out var kind);
@@ -362,6 +365,7 @@ internal static class BoxBuilder
         {
             ApplyMarkerApplicableDeclarations(markerStyle, markerRules, diagnostics);
             ResolveDeferredFontProperties(markerStyle, hostStyle);
+            ApplyComputedStyleFixups(markerStyle, hostStyle);
         }
 
         // Per PR #10 review Rec 2: read the EFFECTIVE list-style-type AFTER
@@ -657,6 +661,7 @@ internal static class BoxBuilder
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLineRules, diagnostics);
             ResolveDeferredFontProperties(s, elementStyle);
+            ApplyComputedStyleFixups(s, elementStyle);
             box.FirstLineStyle = s;
         }
 
@@ -668,6 +673,7 @@ internal static class BoxBuilder
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLetterRules, diagnostics);
             ResolveDeferredFontProperties(s, elementStyle);
+            ApplyComputedStyleFixups(s, elementStyle);
             box.FirstLetterStyle = s;
         }
     }
@@ -778,6 +784,7 @@ internal static class BoxBuilder
         ApplyInheritance(pseudoStyle, hostStyle);
         ApplyResolvedDeclarations(pseudoStyle, ruleSet, diagnostics);
         ResolveDeferredFontProperties(pseudoStyle, hostStyle);
+        ApplyComputedStyleFixups(pseudoStyle, hostStyle);
 
         // Per CSS Pseudo L4 §3.1: ::before / ::after default to display:inline
         // unless the cascade explicitly sets otherwise. We must NOT fall back
@@ -1768,4 +1775,70 @@ internal static class BoxBuilder
     /// top-down walk after defaults + inheritance + declarations, so the parent is fully resolved.</summary>
     private static void ResolveDeferredFontProperties(ComputedStyle style, ComputedStyle parentStyle) =>
         DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
+
+    /// <summary>Post-materialization computed-style fixups that need the PARENT's computed style + run
+    /// AFTER defaults + inheritance + own declarations + deferred-font resolution (the top-down walk, so
+    /// the parent is fully computed): <see cref="ResolveMatchParentTextAlign"/> (CSS Text 3 §7.1) +
+    /// <see cref="ResolveDeclaredPercentLineHeightInPlace"/> (CSS Inline 3 §4.2). Called from EVERY
+    /// style-materialization site — element, <c>&lt;br&gt;</c>, ::before/::after pseudo, and list marker —
+    /// so a generated box that declares <c>text-align: match-parent</c> or a <c>%</c> <c>line-height</c>
+    /// resolves it the same way an element box does (PR #212 review P2). Each fixup no-ops unless its
+    /// triggering value was declared, so non-feature styles are untouched.</summary>
+    private static void ApplyComputedStyleFixups(ComputedStyle style, ComputedStyle parentStyle)
+    {
+        ResolveMatchParentTextAlign(style, parentStyle);
+        ResolveDeclaredPercentLineHeightInPlace(style);
+    }
+
+    /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.
+    /// <c>match-parent</c> computes to the PARENT's <c>text-align</c>, with the parent's relative
+    /// <c>start</c>/<c>end</c> resolved to physical <c>left</c>/<c>right</c> against the PARENT's
+    /// <c>direction</c>. Run in the top-down walk after defaults + inheritance + declarations (the parent
+    /// is fully computed), so the layout-time <c>ReadInlineAlignFactor</c> reader — which sees only this
+    /// element's style — gets a physical keyword, and a descendant that inherits <c>text-align</c>
+    /// inherits the RESOLVED value, not <c>match-parent</c> again. Keyword ids (the KeywordResolver
+    /// text-align table): 0=start 1=end 2=left 3=right 4=center 5=justify 6=match-parent 7=justify-all;
+    /// direction: 0=ltr 1=rtl. No-op unless this element declared <c>match-parent</c> (the common case is
+    /// untouched, so non-match-parent rendering is byte-identical).</summary>
+    private static void ResolveMatchParentTextAlign(ComputedStyle style, ComputedStyle parentStyle)
+    {
+        if (style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0) != 6) return; // not match-parent
+        var parentAlign = parentStyle.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0);
+        var parentRtl = parentStyle.IsRtl();
+        var physical = parentAlign switch
+        {
+            1 => parentRtl ? 2 : 3,        // end → left in RTL, right in LTR
+            0 or 6 => parentRtl ? 3 : 2,   // start (+ defensive parent-is-match-parent) → right in RTL, left in LTR
+            _ => parentAlign,              // left/right/center/justify/justify-all are already physical / non-relative
+        };
+        style.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(physical));
+    }
+
+    /// <summary>CSS Inline 3 §4.2 — a <c>&lt;percentage&gt;</c> <c>line-height</c> computes to a LENGTH
+    /// (the percentage × the DECLARING element's font-size), and that length inherits. Resolve it here in
+    /// the top-down walk (after the element's own font-size is folded by
+    /// <see cref="ResolveDeferredFontProperties"/>): a <c>Percentage</c> slot reaching this point can
+    /// only be one this element DECLARED — an inherited percentage was already converted to a length on
+    /// the parent — so converting it to <c>LengthPx</c> BEFORE it inherits means a child with a DIFFERENT
+    /// font-size keeps the parent's computed length instead of re-resolving the percentage against its own
+    /// font-size (the bug). A <c>&lt;number&gt;</c> slot (inherits AS the number, re-multiplied per child
+    /// font-size) and a deferred <c>em</c>/<c>rem</c> raw (folded later by
+    /// <see cref="DeferredLengthResolver"/>) are left untouched. No-op unless a percentage line-height is
+    /// declared, so non-percentage rendering is byte-identical. The declaring element renders identically
+    /// (the used px is the same percentage × its own font-size, just resolved earlier).</summary>
+    private static void ResolveDeclaredPercentLineHeightInPlace(ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.LineHeight);
+        if (slot.Tag != ComputedSlotTag.Percentage) return;
+        // Only convert against a RESOLVED font-size (a LengthPx slot, including an explicit 0 → a
+        // collapsed line box). When the font-size is itself still deferred (a `rem`/`vw`/`calc()`
+        // font-size that DeferredLengthResolver folds later), leave the percentage slot in place —
+        // converting against a 16px GUESS would be wrong; the read-time path resolves it against the
+        // element's then-resolved font-size (PR #212 Copilot review: no hard-coded 16px fallback, and a
+        // resolved `font-size: 0` must give 0, not 16-based).
+        var fontSlot = style.Get(PropertyId.FontSize);
+        if (fontSlot.Tag != ComputedSlotTag.LengthPx) return;
+        style.Set(PropertyId.LineHeight,
+            ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSlot.AsLengthPx()));
+    }
 }

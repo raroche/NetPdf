@@ -63,18 +63,20 @@ public sealed class LineHeightReaderTests
     }
 
     [Fact]
-    public void Percentage_recomputes_against_the_reading_font_size_deferral_pin()
+    public void Percentage_slot_scales_with_the_reading_font_size()
     {
-        // Deferral pin (`line-height-percentage-inheritance`) — a `<percentage>` line-height is resolved at
-        // READ time against the READING element's font-size, NOT inherited as a computed LENGTH from the
-        // declaring element (CSS Inline 3 §4.2). This pins the CURRENT approximation: the SAME 150% slot
-        // yields a DIFFERENT px per font-size, so a child that inherits the slot but has a different
-        // font-size diverges from spec. When the deferral is resolved (% → length at the declaring
-        // element, inherited as that length), the slot would no longer be a Percentage and this updates.
+        // The reader resolves a Percentage line-height slot against the font-size passed to it (% × font),
+        // so the SAME 150% slot yields a different px per font-size. This is correct whenever a Percentage
+        // slot is actually present — e.g. a defensive read or a path that hasn't converted it.
+        // NOTE: a DECLARED `%` line-height no longer inherits as a Percentage across a font-size change in
+        // the body OR margin-box paths — it is converted to a LENGTH at the DECLARING element's font-size
+        // (BoxBuilder.ResolveDeclaredPercentLineHeightInPlace / MarginBoxStyle, CSS Inline 3 §4.2,
+        // `line-height-percentage-inheritance` closed) before it inherits, so the inherited value is a
+        // LengthPx, not a Percentage. This test exercises the reader's Percentage arithmetic itself.
         var s = Style();
         s.Set(PropertyId.LineHeight, ComputedSlot.FromPercentage(150));
-        Assert.Equal(24.0, s.ReadLineHeightPx(16)!.Value, precision: 4);   // as if read at a 16px element
-        Assert.Equal(60.0, s.ReadLineHeightPx(40)!.Value, precision: 4);   // re-multiplied at a 40px element — divergent
+        Assert.Equal(24.0, s.ReadLineHeightPx(16)!.Value, precision: 4);   // 150% × 16
+        Assert.Equal(60.0, s.ReadLineHeightPx(40)!.Value, precision: 4);   // 150% × 40
     }
 
     [Fact]

@@ -167,6 +167,39 @@ public sealed class MarginBoxStyleTests
         Assert.Equal(expectedKeyword, slot.AsKeyword());   // KeywordResolver table: content-box=0, border-box=1
     }
 
+    [Theory]
+    [InlineData("2", 40.0)]       // unitless multiplier → 2 × font-size
+    [InlineData("30px", 30.0)]    // absolute length
+    [InlineData("150%", 30.0)]    // percentage of font-size (20 × 1.5)
+    public void Build_materializes_declared_line_height(string value, double expectedPx)
+    {
+        // margin-box-line-height cycle — line-height joins the inherited cascade whitelist so a declared
+        // value drives the box's line pitch via ReadLineHeightPx (the painter's `?? font-size × 1.2`
+        // fallback only fires for normal/unset).
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("font-size", "20px"), Decl("line-height", value)));
+        Assert.Equal(expectedPx, style.ReadLineHeightPx(20.0));
+    }
+
+    [Fact]
+    public void Build_leaves_undeclared_line_height_unset_for_normal_fallback()
+    {
+        // No line-height declared → ReadLineHeightPx returns null so the painter keeps font-size × 1.2
+        // (byte-identical to pre-cycle rendering for the overwhelmingly common no-line-height case).
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "20px")));
+        Assert.Null(style.ReadLineHeightPx(20.0));
+    }
+
+    [Fact]
+    public void Build_inherits_line_height_from_parent()
+    {
+        // line-height IS a CSS inherited property, so a page-context value flows into the margin box
+        // (root → @page → margin box) — the deferral's core requirement.
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("line-height", "1.5")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "20px")), parent);
+        Assert.Equal(30.0, child.ReadLineHeightPx(20.0));   // inherited multiplier × child font-size
+    }
+
     [Fact]
     public void Build_does_not_inherit_box_sizing()
     {

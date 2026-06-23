@@ -2783,14 +2783,10 @@ internal static class GridSizing
                     end.NamedLine, namedLines);
                 if (resolvedEndLine is int endLineNum)
                 {
-                    // auto-start + definite-end uses the cycle-6a
-                    // simplification (single cell at end - 1); the
-                    // spec's reverse-auto-placement search is tracked
-                    // in grid-reverse-auto-placement-deferral.
-                    EmitPlacementApproximatedDiagnostic(ctx,
-                        $"auto-start with `<custom-ident>` end '{end.NamedLine}' "
-                        + "uses single-cell placement at end-1 (= "
-                        + "grid-reverse-auto-placement-deferral simplification)");
+                    // auto-start with a definite end (resolved named) line: implicit span 1, so the
+                    // item occupies the single cell ending at the resolved line (start = end - 1) per
+                    // CSS Grid L1 §8.5 — the spec result, not an approximation (see the integer-end
+                    // branch below; a span > 1 can't reach here).
                     return new PlacementSpec(
                         PlacementKind.Definite, endLineNum - 1, 1);
                 }
@@ -2804,21 +2800,13 @@ internal static class GridSizing
                 && end.NamedLine is null
                 && end.LineNumber > 0)
             {
-                // Per PR-#103 review F7 — cycle 6a's auto-start +
-                // definite-end uses a SIMPLIFICATION: single cell at
-                // (end - 1). The spec's full reverse-auto-placement
-                // searches backward from `end` for an open slot of
-                // the right span; that's tracked in
-                // `grid-reverse-auto-placement-deferral`. Emit the
-                // diagnostic so authors see they're in approximation
-                // territory; preserve the simplified placement so
-                // common single-cell `grid-row: auto / 3` cases still
-                // render at a sensible position.
-                EmitPlacementApproximatedDiagnostic(ctx,
-                    "auto-start with definite-end uses cycle-6a "
-                    + "simplification (single cell at end-1) — full "
-                    + "reverse-auto-placement search is deferred "
-                    + "(see grid-reverse-auto-placement-deferral)");
+                // auto-start with a definite end LINE: the item has a definite end and an IMPLICIT
+                // span of 1 (a span > 1 requires a `span` keyword, which routes to the auto/span branch
+                // above), so per CSS Grid L1 §8.5 it occupies the single cell ENDING at `end`, i.e.
+                // start line = end - 1. This is the spec result, not an approximation — the §8.5
+                // backward-search only matters when the span exceeds 1, which can't reach here. (The
+                // earlier `grid-reverse-auto-placement-deferral` premise was inaccurate: it assumed a
+                // span could land here. No placement-approximated diagnostic.)
                 return new PlacementSpec(
                     PlacementKind.Definite, end.LineNumber - 1, 1);
             }

@@ -73,7 +73,8 @@ public sealed class DirectionResolverTests
     [InlineData(4, 0.5)]   // center
     [InlineData(5, 0.0)]   // justify — distributed, no whole-line shift
     [InlineData(7, 0.0)]   // justify-all — distributed
-    // match-parent(6) is a deferred approximation — see Match_parent_is_a_deferred_left_approximation.
+    // match-parent(6) is resolved at box-build; the layout reader's 6 => 0.0 is a defensive fallback —
+    // see Match_parent_at_layout_time_is_a_defensive_left_fallback.
     public void Ltr_align_factor_is_physical(int textAlign, double expected)
     {
         var s = StyleWith(direction: 0, textAlign: textAlign);
@@ -88,7 +89,8 @@ public sealed class DirectionResolverTests
     [InlineData(4, 0.5)]   // center is symmetric
     [InlineData(5, 0.0)]   // justify distributes regardless of direction
     [InlineData(7, 0.0)]   // justify-all distributes
-    // match-parent(6) is a deferred approximation — see Match_parent_is_a_deferred_left_approximation.
+    // match-parent(6) is resolved at box-build; the layout reader's 6 => 0.0 is a defensive fallback —
+    // see Match_parent_at_layout_time_is_a_defensive_left_fallback.
     public void Rtl_align_factor_swaps_start_end(int textAlign, double expected)
     {
         var s = StyleWith(direction: 1, textAlign: textAlign);
@@ -108,15 +110,15 @@ public sealed class DirectionResolverTests
     }
 
     [Fact]
-    public void Match_parent_is_a_deferred_left_approximation()
+    public void Match_parent_at_layout_time_is_a_defensive_left_fallback()
     {
-        // `text-align: match-parent` (CSS Text 3 §7.1, keyword id 6) should take the PARENT's
-        // `text-align`, resolve a start/end against the PARENT's `direction`, and inherit that matched
-        // alignment — which needs parent context at cascade time. It is DEFERRED
-        // (deferrals.md#text-align-match-parent) and approximated as a fixed physical LEFT (factor 0),
-        // direction-INSENSITIVE — deliberately NOT direction-aware, so it does not masquerade as
-        // spec-correct. (Pinning 0 in BOTH directions documents the approximation; the review carved it
-        // out of the direction-aware `start` path that would otherwise right-align it in RTL.)
+        // `text-align: match-parent` (CSS Text 3 §7.1, keyword id 6) is now RESOLVED to a physical
+        // keyword at computed-value time by `BoxBuilder.ResolveMatchParentTextAlign` (it takes the
+        // PARENT's `text-align`, resolving start/end against the PARENT's `direction`), so keyword 6
+        // normally never reaches this layout-time reader. The `6 => 0.0` branch is a defensive fallback
+        // for an unresolved match-parent (a style not built through the element box builder); it returns
+        // physical left in BOTH directions (direction-insensitive). End-to-end resolution is covered by
+        // `BoxBuilderTests.Match_parent_text_align_resolves_against_the_parent` (+ the ::before pseudo).
         Assert.Equal(0.0, StyleWith(direction: 0, textAlign: 6).ReadInlineAlignFactor(), precision: 3);
         Assert.Equal(0.0, StyleWith(direction: 1, textAlign: 6).ReadInlineAlignFactor(), precision: 3);
     }

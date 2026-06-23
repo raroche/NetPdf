@@ -6,23 +6,19 @@ namespace NetPdf.Layout.Inline;
 /// <summary>
 /// Per Phase 3 Task 9 cycle 3b — CSS Text Module Level 3 §3
 /// <c>white-space</c> property values that the inline pass honors.
-/// All six CSS keywords have enum members (cycle 3 review User #3
-/// added <see cref="BreakSpaces"/>). Behavior fidelity ladder:
+/// All six CSS keywords have enum members and are honored end-to-end
+/// (cycle 3 review User #3 added <see cref="BreakSpaces"/>; the
+/// white-space-break-spaces cycle gave it its distinguishing wrap behavior):
 /// <list type="bullet">
 ///   <item><b>Full spec fidelity</b> — <see cref="Normal"/>,
 ///   <see cref="Pre"/>, <see cref="NoWrap"/>, <see cref="PreWrap"/>,
 ///   <see cref="PreLine"/>: collapse / preserve / wrap semantics
 ///   honored end-to-end through preprocessing + wrap per CSS Text
 ///   L3 §3 Table.</item>
-///   <item><b>Approximated</b> — <see cref="BreakSpaces"/>:
-///   <b>currently treated as <see cref="PreWrap"/></b> in both the
-///   preprocessor + wrap pass. The distinguishing CSS Text L3 §6.4
-///   semantics (forced wrap candidates at EVERY preserved SP, plus
-///   trailing-space wrap-vs-hang) are NOT yet implemented. Authored
-///   whitespace is preserved correctly (the user-visible guarantee
-///   for content), at the cost of less aggressive wrap candidate
-///   placement at preserved spaces — a known fidelity gap. Tracked
-///   for a subsequent cycle.</item>
+///   <item><see cref="BreakSpaces"/> (CSS Text L3 §6.4): preserve like
+///   <see cref="PreWrap"/>, but the flat-build adds a wrap opportunity
+///   AFTER every preserved SP/TAB (break between consecutive spaces),
+///   and trailing spaces take up width (no hang). See its member doc.</item>
 /// </list>
 ///
 /// <para><b>Per-source-run honoring (cycle 3c + 3d sub-cycle 1).</b>
@@ -38,8 +34,8 @@ namespace NetPdf.Layout.Inline;
 /// own WhiteSpace via <see cref="LineBuilder.PreprocessTextRunsPerRun"/>
 /// while preserve-mode runs retain spaces and collapse-mode runs
 /// chain <c>inWs</c> across boundaries. <see cref="BreakSpaces"/>
-/// participates in the matrix via its PreWrap-equivalent
-/// approximation.</para>
+/// participates in the matrix as a preserve mode, with its per-space
+/// break-after upgrade applied per source run in the flat build.</para>
 ///
 /// <para><b>Behavior summary (CSS Text L3 §3 Table).</b></para>
 /// <list type="table">
@@ -96,26 +92,17 @@ internal enum WhiteSpace : byte
     /// SP/TAB runs to a single SP. Wrapping allowed.</summary>
     PreLine = 4,
 
-    /// <summary>Per Phase 3 Task 10 cycle 3 review (User #3) —
-    /// the CSS spec defines BreakSpaces (CSS Text L3 §3 Table 1 +
-    /// §6.4) as: preserve all whitespace AND allow wrapping at
-    /// every preserved space, with trailing spaces wrapping (rather
-    /// than hanging) at line ends.
+    /// <summary>CSS Text L3 §3 Table 1 + §6.4 — preserve all whitespace AND allow wrapping
+    /// after EVERY preserved space, with trailing spaces taking up width (not hanging) at line
+    /// ends. Like <see cref="PreWrap"/> except for the per-space break opportunities.
     ///
-    /// <para><b>CURRENT BEHAVIOR — APPROXIMATION.</b> Both the
-    /// preprocessor + wrap pass treat <see cref="BreakSpaces"/>
-    /// identically to <see cref="PreWrap"/>: preserve all SP/TAB/
-    /// LF/CR + wrap at UAX #14 Allowed opportunities. The
-    /// distinguishing semantics — forced wrap candidates at EVERY
-    /// preserved SP glyph + trailing-space wrap-vs-hang — are NOT
-    /// implemented yet (would require synthesizing forced UAX #14
-    /// candidates at every SP and a separate trailing-space
-    /// pre-wrap pass). The approximation preserves authored
-    /// whitespace correctly (the user-visible guarantee) at the
-    /// cost of less aggressive wrap candidate placement. Per cycle
-    /// 3d sub-cycle 1 review Rec #3, this fidelity gap is now
-    /// explicitly documented (the prior "deferred to a subsequent
-    /// cycle" framing implied a cleaner ladder than reality).</para>
+    /// <para><b>BEHAVIOR.</b> The flat-build phase (<c>LineBuilder</c>) upgrades each preserved
+    /// SP/TAB glyph in a break-spaces source run to a UAX #14 <c>Allowed</c> break-after — so the
+    /// wrap pass can break between consecutive spaces, not just after the whole space sequence
+    /// (the pre-wrap behavior). Preserve-mode spaces are never trimmed (<c>IsBreakSpace</c> stays
+    /// false), so trailing break-spaces spaces keep their advance and wrap rather than hang. The
+    /// whitespace-preprocessing pass shares <see cref="PreWrap"/>'s preserve rules (both keep all
+    /// SP/TAB/LF/CR); only the wrap-opportunity placement differs.</para>
     /// </summary>
     BreakSpaces = 5,
 }

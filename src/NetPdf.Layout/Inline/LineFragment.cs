@@ -74,7 +74,8 @@ namespace NetPdf.Layout.Inline;
 ///   order.</item>
 ///   <item>Cycle 3b — all 6 CSS white-space modes (<c>normal</c>,
 ///   <c>pre</c>, <c>nowrap</c>, <c>pre-wrap</c>, <c>pre-line</c>,
-///   <c>break-spaces</c> — last approximated as <c>pre-wrap</c> per
+///   <c>break-spaces</c> — preserve like <c>pre-wrap</c> plus a wrap
+///   opportunity after every preserved space, see
 ///   <see cref="WhiteSpace.BreakSpaces"/> docs);
 ///   <c>overflow-wrap: anywhere</c> + <c>word-break: break-all</c>
 ///   forced-break fallback with grapheme-cluster + protected-
@@ -105,11 +106,6 @@ namespace NetPdf.Layout.Inline;
 ///
 /// <para><b>Subsequent-cycle deferrals:</b>
 /// <list type="bullet">
-///   <item><see cref="WhiteSpace.BreakSpaces"/>-distinctive semantics
-///   (forced wrap candidates at every preserved SP + trailing-space
-///   wrap-vs-hang per CSS Text L3 §6.4) — currently approximated as
-///   <see cref="WhiteSpace.PreWrap"/>; see
-///   <see cref="WhiteSpace.BreakSpaces"/> docs.</item>
 ///   <item><see cref="WordBreak.KeepAll"/> CJK inter-character
 ///   break suppression — needs UAX #24 script detection + UAX #14
 ///   LB30b. Uniform KeepAll currently approximates as Normal;

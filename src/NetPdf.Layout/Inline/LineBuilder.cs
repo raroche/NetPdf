@@ -1312,6 +1312,22 @@ internal static class LineBuilder
                     {
                         isSoftHyphen = true;
                     }
+                    // white-space: break-spaces (CSS Text L3 §6.4) — a line-break opportunity exists
+                    // AFTER every preserved space and tab, INCLUDING between consecutive spaces (unlike
+                    // pre-wrap, which only breaks at the UAX #14 Allowed positions). Upgrade each such
+                    // preserved-space glyph's break-AFTER to Allowed. The per-glyph mode comes from the
+                    // source run (LayoutPerRun passes the global `whiteSpace` as Normal), mirroring the
+                    // `glyphCollapses` read above. Preserve-mode SPs are never trimmed (isBreakSpace stays
+                    // false), so they keep their advance: break-spaces trailing spaces take up space and
+                    // can wrap, they do NOT hang. Gated to BreakSpaces runs → other modes byte-identical.
+                    var glyphWhiteSpace = inlineTextPolicyPerRun is not null
+                        ? inlineTextPolicyPerRun[shaped.Source.SourceTextRunIndex].WhiteSpace
+                        : whiteSpace;
+                    if (glyphWhiteSpace == WhiteSpace.BreakSpaces
+                        && (clusterChar == ' ' || clusterChar == '\t'))
+                    {
+                        opp = LineBreakOpportunity.Allowed;
+                    }
                 }
 
                 // Zero advance for soft-hyphens — they're invisible

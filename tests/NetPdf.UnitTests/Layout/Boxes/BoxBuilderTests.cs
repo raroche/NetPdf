@@ -9,7 +9,9 @@ using AngleSharp.Css;
 using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
+using NetPdf.Layout.Layouters;
 using Xunit;
 
 namespace NetPdf.UnitTests.Layout.Boxes;
@@ -352,5 +354,103 @@ public sealed class BoxBuilderTests
         var p = FindFirst(root, "p")!;
         Assert.True(p.Style.IsBoxOwned);
         Assert.True(root.Style.IsBoxOwned);
+    }
+
+    // ============================================================
+    // text-align: match-parent (CSS Text 3 §7.1) — resolved at box-build
+    // ============================================================
+
+    [Theory]
+    // parent direction / parent text-align → child's resolved physical text-align keyword
+    // (KeywordResolver: 2=left 3=right 4=center 5=justify). match-parent takes the PARENT's
+    // text-align, resolving start/end against the PARENT's direction.
+    [InlineData("ltr", "start", 2)]   // start in LTR → left
+    [InlineData("rtl", "start", 3)]   // start in RTL → right (the direction-aware case)
+    [InlineData("ltr", "end", 3)]     // end in LTR → right
+    [InlineData("rtl", "end", 2)]     // end in RTL → left
+    [InlineData("ltr", "center", 4)]  // physical values pass through unchanged
+    [InlineData("ltr", "right", 3)]
+    [InlineData("ltr", "justify", 5)]
+    public async Task Match_parent_text_align_resolves_against_the_parent(
+        string parentDir, string parentAlign, int expectedChildKeyword)
+    {
+        // The child declares its OWN direction:ltr to prove match-parent reads the PARENT's direction,
+        // not the child's (a plain inherited `start` would resolve against the child's ltr instead).
+        var html =
+            $"<div style=\"direction:{parentDir};text-align:{parentAlign}\">" +
+            "<p style=\"direction:ltr;text-align:match-parent\">x</p></div>";
+        var root = await BuildAsync(html);
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(expectedChildKeyword, p.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
+    }
+
+    [Fact]
+    public async Task Match_parent_text_align_resolves_on_a_before_pseudo_box()
+    {
+        // PR #212 review P2 — a generated ::before box with `text-align: match-parent` resolves against
+        // its HOST's used text-align the same way an element box does: host `direction:rtl;
+        // text-align:start` → used RIGHT, so the block pseudo aligns RIGHT (keyword 3), NOT the defensive
+        // layout-time left fallback.
+        var root = await BuildAsync(
+            "<div></div>",
+            "div { direction:rtl; text-align:start } " +
+            "div::before { content:'A'; display:block; text-align:match-parent }");
+        var before = FindFirstPseudo(root, BoxPseudo.Before)!;
+        Assert.Equal(3, before.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
+    }
+
+    /// <summary>First descendant box with the given pseudo marker (e.g. ::before), depth-first.</summary>
+    private static Box? FindFirstPseudo(Box root, BoxPseudo pseudo)
+    {
+        if (root.Pseudo == pseudo) return root;
+        foreach (var child in root.Children)
+        {
+            var hit = FindFirstPseudo(child, pseudo);
+            if (hit is not null) return hit;
+        }
+        return null;
+    }
+
+    // ============================================================
+    // line-height: <percentage> inherits as a length (CSS Inline 3 §4.2)
+    // ============================================================
+
+    [Fact]
+    public async Task Percentage_line_height_inherits_as_a_length_from_the_declaring_element()
+    {
+        // A % line-height computes to a LENGTH at the DECLARING element's font-size, and that length
+        // inherits. Parent declares line-height:150% at font-size:20px → 30px; the child has a DIFFERENT
+        // font-size:40px but must keep the parent's 30px length (NOT re-resolve 150% × 40 = 60px).
+        var html = "<div style=\"font-size:20px;line-height:150%\">" +
+                   "<p style=\"font-size:40px\">x</p></div>";
+        var root = await BuildAsync(html);
+        var div = FindFirst(root, "div")!;
+        var p = FindFirst(root, "p")!;
+        // ReadLineHeightPx returns a LengthPx slot's px directly (ignoring the passed font-size), so
+        // both the declaring element AND the differently-sized child resolve to the same 30px length.
+        Assert.Equal(30.0, div.Style.ReadLineHeightPx(20.0));   // declaring element: 150% × 20
+        Assert.Equal(30.0, p.Style.ReadLineHeightPx(40.0));     // inherited AS 30px, not 150% × 40 = 60
+    }
+
+    [Fact]
+    public async Task Percentage_line_height_on_zero_font_size_is_zero_not_a_16px_fallback()
+    {
+        // PR #212 Copilot review — a resolved `font-size: 0` must give a 0 line-height (collapsed line
+        // box), NOT a 16px-based fallback. The conversion guards on a resolved LengthPx font-size and
+        // multiplies by it directly (0 → 0); only a still-deferred font-size is left for the read path.
+        var root = await BuildAsync("<p style=\"font-size:0;line-height:150%\">x</p>");
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(0.0, p.Style.ReadLineHeightPx(0.0));   // 150% × 0, not 150% × 16
+    }
+
+    [Fact]
+    public async Task Percentage_line_height_on_same_font_size_child_is_unchanged()
+    {
+        // Control: when the child's font-size matches the declaring element's, the inherited length and
+        // the (old) re-resolved percentage coincide — so this common case is unaffected.
+        var html = "<div style=\"font-size:20px;line-height:150%\"><p>x</p></div>";
+        var root = await BuildAsync(html);
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(30.0, p.Style.ReadLineHeightPx(20.0));
     }
 }

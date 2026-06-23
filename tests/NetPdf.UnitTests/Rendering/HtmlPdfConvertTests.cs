@@ -1105,6 +1105,84 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Percentage_line_height_inherits_the_declaring_elements_computed_length()
+    {
+        // CSS Inline 3 §4.2 — a % line-height computes to a length at the DECLARING element's font-size
+        // and inherits AS that length. Both children are font-size:20px and wrap identically; the ONLY
+        // variable is the PARENT's font-size, which sets the inherited line-height (200% × 20 = 40px vs
+        // 200% × 40 = 80px). So the child's inter-line span differs — proving the % resolved at the
+        // parent, not re-resolved against the child's own 20px (the old bug gave both 40px → equal spans).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double ChildSpan(string parentFontSize)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><body>" +
+                $"<div style=\"font-size:{parentFontSize};line-height:200%\">" +
+                "<p style=\"font-size:20px;width:30px\">A A A A A A</p></div></body></html>", opts));
+            double min = double.MaxValue, max = double.MinValue;
+            var n = 0;
+            foreach (System.Text.RegularExpressions.Match m in
+                System.Text.RegularExpressions.Regex.Matches(pdf, @"-?[0-9.]+ (-?[0-9.]+) Td"))
+            {
+                var y = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (y < min) min = y;
+                if (y > max) max = y;
+                n++;
+            }
+            Assert.True(n >= 2, $"expected the child to wrap to ≥2 lines, got {n}");
+            return max - min;
+        }
+
+        var parent20 = ChildSpan("20px");   // inherited line-height 200% × 20 = 40px
+        var parent40 = ChildSpan("40px");   // inherited line-height 200% × 40 = 80px
+        Assert.True(parent40 > parent20 + 5.0,
+            $"a larger parent font-size must give a taller inherited % line-height: " +
+            $"parent20 span={parent20:F1}pt, parent40 span={parent40:F1}pt");
+    }
+
+    [Fact]
+    public void White_space_break_spaces_breaks_after_every_space()
+    {
+        // white-space: break-spaces (CSS Text L3 §6.4) adds a soft-wrap opportunity AFTER every
+        // preserved space (including between consecutive spaces), and trailing spaces take up width
+        // (no hang). So a wide run of spaces in a narrow box wraps across MORE lines than pre-wrap,
+        // which only breaks after the whole space sequence (and hangs trailing spaces). Same content +
+        // width; isolates the per-space break opportunities the flat-build now synthesizes.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        int Lines(string ws) => TdCount(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:30px;white-space:" + ws + "\">" +
+            "A          A</div></body></html>", opts)));   // A + 10 spaces + A
+
+        var preWrap = Lines("pre-wrap");
+        var breakSpaces = Lines("break-spaces");
+        Assert.True(breakSpaces > preWrap,
+            $"break-spaces ({breakSpaces} lines) should wrap the space run across more lines than " +
+            $"pre-wrap ({preWrap} lines)");
+    }
+
+    [Fact]
+    public void Text_align_match_parent_resolves_against_the_parent_used_value()
+    {
+        // text-align-match-parent (CSS Text 3 §7.1) end-to-end — the child takes the PARENT's used
+        // text-align, resolving start/end against the PARENT's direction. Parent `direction:rtl;
+        // text-align:start` → used RIGHT; the child declares its OWN `direction:ltr`, so `match-parent`
+        // RIGHT-aligns (parent's start-in-rtl), whereas a plain inherited/declared `start` resolves
+        // against the child's ltr → LEFT. Isolates the feature from inheritance AND from the prior
+        // fixed-physical-left approximation (both of which would land LEFT here).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double InnerX(string childAlign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"direction:rtl;text-align:start;width:300px\">" +
+            $"<div style=\"direction:ltr;text-align:{childAlign}\">A</div></div></body></html>", opts))).X;
+
+        var matchParent = InnerX("match-parent");   // parent start-in-rtl = RIGHT → large x
+        var plainStart = InnerX("start");           // child start-in-ltr = LEFT → small x
+        Assert.True(matchParent > plainStart + 50.0,
+            $"match-parent should align to the parent's used RIGHT ({matchParent:F1}pt), " +
+            $"well right of the child's own start/LEFT ({plainStart:F1}pt)");
+    }
+
+    [Fact]
     public void Text_align_justify_spreads_words_and_pushes_the_last_word_right()
     {
         // text-align: justify cycle (CSS Text 3 §7.3) — a wrapping paragraph distributes each NON-LAST
@@ -2255,6 +2333,96 @@ public sealed class HtmlPdfConvertTests
         // content area (y > 700pt) where body text would be.
         var td = FirstTd(pdf);
         Assert.InRange(td.Y, 0.0, 72.0);
+    }
+
+    [Fact]
+    public void Page_margin_box_line_height_drives_the_line_pitch()
+    {
+        // margin-box-line-height cycle — a declared `line-height` now spaces a MULTI-LINE margin box's
+        // lines: line-height joined MarginBoxStyle's inherited cascade, and PageMarginBoxPainter reads
+        // it via ReadLineHeightPx. Same content + width → identical wrapping (the line COUNT is
+        // line-height-independent), so a 3× line-height roughly triples the inter-line span;
+        // `overflow: visible` keeps every line (no line-count clipping to confound the comparison).
+        // BEFORE this cycle both renders used font-size × 1.2 regardless of `line-height`, so the spans
+        // were identical — this asserts the new wiring bites.
+        static (int Lines, double Span) MarginBox(string lineHeight)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>@page { @top-center { " +
+                "content: \"A A A A A A A A A A A A\"; width: 24px; overflow: visible; " +
+                $"line-height: {lineHeight} }} }}</style></head><body></body></html>",
+                new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+            double min = double.MaxValue, max = double.MinValue;
+            var count = 0;
+            foreach (System.Text.RegularExpressions.Match m in
+                System.Text.RegularExpressions.Regex.Matches(pdf, @"-?[0-9.]+ (-?[0-9.]+) Td"))
+            {
+                var y = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (y < min) min = y;
+                if (y > max) max = y;
+                count++;
+            }
+            return (count, count == 0 ? 0.0 : max - min);
+        }
+
+        var single = MarginBox("1");
+        var triple = MarginBox("3");
+
+        Assert.True(single.Lines >= 3, $"content should wrap to ≥3 lines, got {single.Lines}");
+        Assert.Equal(single.Lines, triple.Lines);            // line count is line-height-independent
+        Assert.True(triple.Span > single.Span * 2.0,         // ≈3× pitch — clearly more than a constant offset
+            $"line-height:3 span ({triple.Span:F1}pt) should exceed 2× the line-height:1 span ({single.Span:F1}pt)");
+    }
+
+    [Theory]
+    [InlineData("font-size:16px;line-height:2em", 32.0)]              // 2 × content font (16)
+    [InlineData("font-size:24px;line-height:1.5rem", 24.0)]          // 1.5 × ROOT font (16), NOT 1.5 × box 24
+    [InlineData("font-size:16px;line-height:calc(1em + 4px)", 20.0)] // 1×16 + 4
+    public void Page_margin_box_resolves_relative_and_calc_line_height(string boxFontAndLh, double expectedPitchPx)
+    {
+        // margin-box-line-height cycle (PR #212 review P1) — a deferred font-/viewport-relative or
+        // `calc()` line-height resolves at PAINT time against the content font / root / page box (the same
+        // bases as size/padding), instead of falling back to font-size × 1.2. The `rem` case uses a box
+        // font (24) ≠ the root (16) to prove it scales by the ROOT, not the box.
+        var pitchPt = MarginBoxLinePitchPt(pageDecls: "",
+            boxDecls: "content: \"A A A A A A A A A A\"; width: 24px; overflow: visible; " + boxFontAndLh);
+        Assert.Equal(expectedPitchPx * 0.75, pitchPt, 1);   // 1px = 0.75pt
+    }
+
+    [Fact]
+    public void Page_margin_box_percentage_line_height_inherits_the_page_context_length()
+    {
+        // CSS Inline 3 §4.2 (PR #212 review P1) — `@page { font-size:20px; line-height:200% }` computes a
+        // 40px LENGTH on the page context; the `@top-center { font-size:10px }` child INHERITS that 40px
+        // (not 200% × its own 10px = 20px). Proves the % is converted at the declaring @page context
+        // BEFORE it inherits into the margin box.
+        var pitchPt = MarginBoxLinePitchPt(
+            pageDecls: "font-size:20px; line-height:200%",
+            boxDecls: "content: \"A A A A A A A A A A\"; width: 24px; overflow: visible; font-size:10px");
+        Assert.Equal(40.0 * 0.75, pitchPt, 1);   // 40px = 200% × the @page 20px, NOT 200% × the box 10px
+    }
+
+    // Per-line pitch (pt) of a wrapping @top-center margin box, rendered with optional @page-level decls
+    // (font-size / line-height inherited into the box) + the box's own decls. SyntheticFont → deterministic.
+    private static double MarginBoxLinePitchPt(string pageDecls, string boxDecls)
+    {
+        var pagePrefix = string.IsNullOrEmpty(pageDecls) ? "" : pageDecls + "; ";
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { " + pagePrefix +
+            "@top-center { " + boxDecls + " } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        double min = double.MaxValue, max = double.MinValue;
+        var n = 0;
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(pdf, @"-?[0-9.]+ (-?[0-9.]+) Td"))
+        {
+            var y = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            if (y < min) min = y;
+            if (y > max) max = y;
+            n++;
+        }
+        Assert.True(n >= 2, $"expected the margin box to wrap to ≥2 lines, got {n}");
+        return (max - min) / (n - 1);   // inter-line pitch in pt
     }
 
     [Fact]

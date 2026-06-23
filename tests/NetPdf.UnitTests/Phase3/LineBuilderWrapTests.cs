@@ -123,6 +123,83 @@ public class LineBuilderWrapTests
         Assert.False(lines[0].EndsWithMandatoryBreak);
     }
 
+    [Fact]
+    public void Wrap_break_spaces_adds_a_break_after_every_space()
+    {
+        // white-space: break-spaces (CSS Text L3 §6.4) — a soft-wrap opportunity exists AFTER every
+        // preserved space, INCLUDING between consecutive spaces, vs pre-wrap which only breaks at the
+        // UAX #14 Allowed positions (after the space sequence). With a run of preserved spaces in a
+        // line too narrow to hold them, break-spaces wraps across MORE lines than pre-wrap.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("A          A", MakeStyle()) };   // A + 10 spaces + A
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var preWrap = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 18, whiteSpace: WhiteSpace.PreWrap);
+        var breakSpaces = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 18, whiteSpace: WhiteSpace.BreakSpaces);
+
+        Assert.True(breakSpaces.Length > preWrap.Length,
+            $"break-spaces ({breakSpaces.Length} lines) should break the space run more than " +
+            $"pre-wrap ({preWrap.Length} lines)");
+    }
+
+    [Fact]
+    public void Wrap_break_spaces_keeps_trailing_space_advance_at_line_end()
+    {
+        // white-space: break-spaces (CSS Text L3 §6.4, PR #212 review P3) — trailing preserved spaces at
+        // a line end TAKE their advance (they do not hang or get trimmed), unlike collapse modes which
+        // strip end-of-line spaces. "AAA   AAA" wrapped so the first line ends in preserved spaces: under
+        // break-spaces the first line's advance INCLUDES those spaces; under normal (collapse) the
+        // end-of-line spaces are trimmed, so its first line is narrower.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA   AAA", MakeStyle()) };   // 3 interior spaces
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var breakSpaces = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 30, whiteSpace: WhiteSpace.BreakSpaces);
+        var normal = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 30, whiteSpace: WhiteSpace.Normal);
+
+        Assert.True(breakSpaces[0].TotalAdvance > normal[0].TotalAdvance,
+            $"break-spaces line 0 ({breakSpaces[0].TotalAdvance}) should carry the trailing-space advance " +
+            $"that normal trims ({normal[0].TotalAdvance})");
+    }
+
+    [Fact]
+    public void Wrap_break_spaces_is_honored_per_source_run_not_globally()
+    {
+        // PR #212 review P3 — break-spaces must be honored PER SOURCE RUN (via inlineTextPolicyPerRun),
+        // not as a global mode. Two runs; only run 1 carries break-spaces. With run 1 = break-spaces its
+        // spaces add per-space break opportunities (more wrapping) vs run 1 = pre-wrap (UAX #14 only) —
+        // proving the per-run policy drives the behavior, not a single global white-space.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("A", MakeStyle()),               // run 0 — normal
+            new("A          A", MakeStyle()),     // run 1 — A + 10 CONSECUTIVE spaces + A
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        InlineTextPolicy[] PerRun(WhiteSpace run1Ws) => new[]
+        {
+            new InlineTextPolicy(WhiteSpace.Normal, OverflowWrap.Normal, WordBreak.Normal, Hyphens.Manual),
+            new InlineTextPolicy(run1Ws, OverflowWrap.Normal, WordBreak.Normal, Hyphens.Manual),
+        };
+
+        var run1BreakSpaces = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 18, inlineTextPolicyPerRun: PerRun(WhiteSpace.BreakSpaces));
+        var run1PreWrap = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 18, inlineTextPolicyPerRun: PerRun(WhiteSpace.PreWrap));
+
+        Assert.True(run1BreakSpaces.Length > run1PreWrap.Length,
+            $"break-spaces on ONLY run 1 ({run1BreakSpaces.Length} lines) should break its spaces more " +
+            $"than pre-wrap on run 1 ({run1PreWrap.Length} lines)");
+    }
+
     // --- Mandatory break (LF) ------------------------------------
 
     [Fact]

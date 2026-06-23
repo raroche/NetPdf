@@ -45,11 +45,10 @@ namespace NetPdf.Layout.Inline;
 ///   contribution, NOT the new
 ///   <see cref="OverflowWrap.BreakWord"/>.)</item>
 ///   <item><c>white-space: break-spaces</c> maps to
-///   <see cref="WhiteSpace.BreakSpaces"/> per cycle-3 review (User
-///   #3). Cycle-3 simplification: BreakSpaces behaves like PreWrap
-///   (preserve + wrap at UAX #14 Allowed); the "wrap at every
-///   preserved space" + end-of-line trailing-space semantics per
-///   CSS Text L3 §6.4 land in a subsequent cycle.</item>
+///   <see cref="WhiteSpace.BreakSpaces"/> (CSS Text L3 §6.4):
+///   preserve like PreWrap, but the flat build adds a wrap
+///   opportunity after EVERY preserved SP/TAB (break between
+///   consecutive spaces) and trailing spaces take width (no hang).</item>
 /// </list>
 ///
 /// <para><b>Integration status.</b>

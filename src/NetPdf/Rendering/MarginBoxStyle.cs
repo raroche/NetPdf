@@ -38,7 +38,7 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> / <c>white-space</c> (white-space cycle —
-/// drives the painter's wrap policy) are materialized + inherited. The
+/// drives the painter's wrap policy) are materialized + inherited (incl. <c>line-height</c> — drives the box line pitch). The
 /// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
 /// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle),
 /// <c>width</c> / <c>height</c> (explicit-size cycle), and <c>box-sizing</c> (box-sizing cycle) are
@@ -87,15 +87,17 @@ internal static class MarginBoxStyle
     /// <summary>The INHERITED longhands, in a fixed order (deterministic materialization). The font +
     /// color set feeds the shaper + text fill; <c>white-space</c> (white-space cycle) drives the
     /// painter's wrap policy (<c>canWrap</c> / the vertical-edge wrap / the §5.3 re-wrap — a declared
-    /// <c>nowrap</c>/<c>pre</c> keeps a rigid single line). All are CSS inherited properties, so they
-    /// flow root → page context → margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here —
+    /// <c>nowrap</c>/<c>pre</c> keeps a rigid single line); <c>line-height</c>
+    /// (margin-box-line-height cycle) drives the box's line pitch via <c>ReadLineHeightPx</c> (so a
+    /// declared <c>@bottom-center { line-height: 2 }</c> spaces a wrapping margin box). All are CSS
+    /// inherited properties, so they flow root → page context → margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here —
     /// alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
     /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; it is NOT
     /// inherited from the page/root, whose (UA-default) <c>text-align: start</c> would otherwise
     /// spuriously override the name-derived centering (post-PR-#134 review).</summary>
     private static readonly ImmutableArray<PropertyId> SupportedStyleIds = ImmutableArray.Create(
         PropertyId.FontFamily, PropertyId.FontSize, PropertyId.FontWeight, PropertyId.FontStyle,
-        PropertyId.Color, PropertyId.WhiteSpace);
+        PropertyId.Color, PropertyId.WhiteSpace, PropertyId.LineHeight);
 
     /// <summary>The inherited subset of <see cref="CascadedStyleIds"/> — drives the inheritance copy
     /// and the property-aware CSS-wide keyword handling (<c>unset</c>/<c>revert</c> behave as
@@ -282,9 +284,14 @@ internal static class MarginBoxStyle
                     // relative-length path; the painter resolves it or surfaces the contextual failure.
                     // Margin-box-scoped — a BODY calc() keeps the resolver's invalid-value diagnostic
                     // (body calc machinery is a separate pickup, deferrals.md).
-                    if ((IsSizeId(id) || IsPaddingId(id) || id == PropertyId.FontSize)
+                    if ((IsSizeId(id) || IsPaddingId(id) || id == PropertyId.FontSize
+                            || id == PropertyId.LineHeight)
                         && CalcLengthEvaluator.IsMathFunction(w.Value))
                     {
+                        // line-height: calc(…) joins the deferred-admission set (margin-box-line-height
+                        // cycle) — the leaf resolver has no calc machinery, but PageMarginBoxPainter
+                        // resolves the raw against the content font / root / page box at paint time
+                        // (mirroring the size/padding deferred path), so it isn't rejected here.
                         style.SetDeferred(id, w.Value);
                         continue;
                     }
@@ -357,8 +364,38 @@ internal static class MarginBoxStyle
         // (rem/viewport) stays deferred → the reader default (still a documented gap, deferrals.md).
         DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
 
+        // CSS Inline 3 §4.2 (margin-box-line-height cycle) — convert a DECLARED `%` line-height to a
+        // length at THIS context's resolved font-size, BEFORE it inherits down the @page → margin-box
+        // chain. So `@page { font-size: 20px; line-height: 200% }` computes 40px on the page context, and
+        // a `@top-center { font-size: 10px }` child keeps that 40px instead of re-resolving 200% × 10px.
+        // A Percentage slot here can only be one this context DECLARED (an inherited % was already
+        // converted on the parent). Mirrors BoxBuilder.ResolveDeclaredPercentLineHeightInPlace.
+        ResolveDeclaredPercentLineHeightInPlace(style);
+
         style.MarkAsBoxOwned();
         return style;
+    }
+
+    /// <summary>CSS Inline 3 §4.2 — convert a DECLARED <c>&lt;percentage&gt;</c> <c>line-height</c> slot to
+    /// a <c>LengthPx</c> at this style's resolved font-size, so the computed value is a LENGTH that
+    /// inherits down the @page → margin-box chain (a differently-sized child keeps the declaring context's
+    /// length). A Percentage slot here is necessarily this context's OWN declaration (an inherited % was
+    /// already converted on the parent). A <c>&lt;number&gt;</c> (inherits as the number) and a deferred
+    /// <c>em</c>/<c>rem</c>/<c>calc()</c> raw (resolved at paint time) are left untouched. No-op when the
+    /// font-size is still deferred (rem/viewport — resolved at paint), where the painter's Percentage
+    /// branch resolves it against the paint-time font-size.</summary>
+    private static void ResolveDeclaredPercentLineHeightInPlace(ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.LineHeight);
+        if (slot.Tag != ComputedSlotTag.Percentage) return;
+        // Only convert against a RESOLVED font-size (a LengthPx slot, including an explicit 0 → a
+        // collapsed line box). A still-deferred rem/viewport/calc font-size leaves the percentage in
+        // place — the painter's Percentage branch resolves it against the paint-time font-size — rather
+        // than converting against a 16px guess (PR #212 Copilot review).
+        var fontSlot = style.Get(PropertyId.FontSize);
+        if (fontSlot.Tag != ComputedSlotTag.LengthPx) return;
+        style.Set(PropertyId.LineHeight,
+            ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSlot.AsLengthPx()));
     }
 
     /// <summary>Whether <paramref name="id"/> is one of the four <c>padding-*</c> longhands (which can

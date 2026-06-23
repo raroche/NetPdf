@@ -5617,13 +5617,14 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void F7_auto_start_definite_end_emits_placement_approximated_diagnostic()
+    public void F7_auto_start_definite_end_places_single_cell_without_a_diagnostic()
     {
-        // Per PR-#103 review F7 — `grid-row: auto / 3` uses the cycle
-        // 6a simplification (single cell at end-1 = row 2) + emits
-        // the placement-approximated diagnostic so authors see they're
-        // in approximation territory. The spec's full reverse-auto-
-        // placement is deferred to grid-reverse-auto-placement-deferral.
+        // `grid-row: auto / 3` — auto start, definite end line 3, implicit span 1 → the SINGLE cell
+        // ending at line 3 = the 2nd row (lines 2..3), blockOffset 50 (after the 50px first row), size
+        // 100. This is the CSS Grid L1 §8.5 result, not an approximation: the §8.5 backward-search only
+        // applies when the span > 1, which requires a `span` keyword and routes to the auto/span branch.
+        // So the placement-approximated diagnostic must NOT fire (the grid-reverse-auto-placement-deferral
+        // premise was inaccurate — corrected when the deferral was closed).
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -5642,11 +5643,11 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        // Cycle 6a simplification: single cell at row (3 - 1) = row 1.
+        // Single cell ending at line 3 = the 2nd row (50px first row → offset 50; 2nd row is 100px).
         AssertFragmentEquals(sink, item,
             inlineOffset: 0, blockOffset: 50,
             inlineSize: 200, blockSize: 100);
-        Assert.Contains(diag.Diagnostics, d =>
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 

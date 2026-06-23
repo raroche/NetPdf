@@ -35,29 +35,39 @@ grepping the ID).
 
 ---
 
-## word-break-keep-all-cjk
+## uax-24-script-detection
 
-- **ID** — `word-break-keep-all-cjk`
-- **Status** — `approximated` (uniform), `throws` (mismatch).
-- **Behavior** — Uniform `word-break: keep-all` silently behaves like
-  `normal` (no break suppression). A `keep-all` ↔ {`normal`, `break-all`}
-  mismatch across source TextRuns throws
-  `NotSupportedException` from `InlineLayouter.LayoutPerRun`.
-- **Missing** — UAX #24 per-codepoint script detection + UAX #14 LB30b
-  ("do not break between two ID-class characters when `word-break:
-  keep-all`") to suppress CJK inter-character breaks.
-- **Trigger** — corpus adds CJK content (Chinese / Japanese / Korean
-  invoices, reports, books), OR a user-reported failing case.
-- **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (new — needs
-  the script table); `src/NetPdf.Layout/Inline/LineBuilder.cs` flat-build
-  phase (read script per glyph + suppress LB30b boundaries); remove the
-  `KeepAll` mismatch throw in
-  `src/NetPdf.Layout/Inline/InlineLayouter.cs::LayoutPerRun`.
-- **Added** — Phase 3 Task 10 cycle 3d sub-cycle 3 (added the mismatch
-  throw); cycle 3b sub-cycle 2 (added the uniform approximation).
-- **Removal condition** — UAX #24 script detection lands AND the wrap
-  loop honors KeepAll per glyph AND
-  `InlineLayouter.LayoutPerRun` no longer throws on KeepAll mismatch.
+- **ID** — `uax-24-script-detection`
+- **Status** — `approximated`. The script-detection MECHANISM shipped; the
+  script TABLE is a block-based approximation (the residual below).
+- **Behavior** — `LineBuilder.Itemize` now detects a per-codepoint script and
+  opens a script-change run boundary (so each script-homogeneous sub-run shapes
+  with its own OpenType feature set), and `LineBuilder.Shape` shapes each run
+  with `run.ScriptIso15924 ?? uniform`. The script lookup
+  (`src/NetPdf.Text/Bidi/UnicodeScripts.cs`) is a sorted Unicode-BLOCK range
+  table covering the ~30 major scripts, which APPROXIMATES the exact UAX #24
+  Script property: a few blocks mix scripts at their edges (Coptic is carved out
+  of the Greek block; others are not), and the long tail of rare scripts +
+  supplementary-plane extensions (CJK Ext C–G past U+2A6DF, Arabic Extended-A/B,
+  etc.) is not enumerated.
+- **Missing** — an EXACT per-codepoint Script-property table generated from the
+  UCD `Scripts.txt`, replacing the block approximation, so a codepoint in an
+  uncovered-but-assigned range gets its own script tag instead of resolving to
+  `Common` (= the surrounding / caller-uniform script). The current behavior
+  feeds HarfBuzz the surrounding script tag for those codepoints (no worse than
+  the pre-detection single-script approximation, but not exact).
+- **Trigger** — corpus content in an uncovered assigned range (e.g. CJK Ext C+,
+  Arabic Extended-A) misshapes, OR a script-boundary edge inside a mixed block
+  is reported.
+- **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (replace the block
+  ranges with a generated exact table); `tests/NetPdf.UnitTests/Text/Bidi/UnicodeScriptsTests.cs`
+  (lock the uncovered-range behavior + the exact table once generated).
+- **Added** — Phase 3 Task 10 cycle 1 documented the original deferral; the
+  detection mechanism shipped in the residual long-tail batch 3 (narrowed to the
+  table-completeness residual here per PR #214 review).
+- **Removal condition** — `UnicodeScripts.GetScript` returns the exact UAX #24
+  Script property (UCD-derived) for every assigned codepoint, and `Shape`
+  consumes it; tests cover representative uncovered-today ranges.
 
 ---
 
@@ -101,70 +111,6 @@ grepping the ID).
 - **Removal condition** — at least one non-English language pack ships,
   the tokenizer uses UAX #29, AND one CSS Text L4 hyphenate-* property
   is implemented.
-
----
-
-## uax-24-script-detection
-
-- **ID** — `uax-24-script-detection`
-- **Status** — `approximated`.
-- **Behavior** — `LineBuilder.Itemize` accepts a single ISO 15924 script
-  tag + BCP 47 language passed uniformly from the caller. Multi-script
-  paragraphs (Latin + Arabic + Han in one `<p>`) all shape with the same
-  feature set.
-- **Missing** — Per-codepoint script detection (UAX #24) producing a
-  script-change boundary in `Itemize`, so each script-homogeneous
-  sub-run gets its own shaping call with the appropriate OpenType
-  feature set.
-- **Trigger** — mixed-script content enters the corpus, OR a user-reported
-  failing case where script-specific shaping features (e.g., Arabic
-  joining contextual forms across a Latin↔Arabic boundary) misrender.
-- **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (new — see
-  the `word-break-keep-all-cjk` entry; same table);
-  `src/NetPdf.Layout/Inline/LineBuilder.cs::Itemize` (insert
-  script-change boundaries).
-- **Added** — Phase 3 Task 10 cycle 1 documented the deferral.
-- **Removal condition** — `Itemize` produces script-typed itemized runs
-  and `Shape` consumes them with the script-specific HarfBuzz feature
-  set.
-
----
-
-## rtl-fragment-reversal
-
-- **ID** — `rtl-fragment-reversal`
-- **Status** — `approximated`.
-- **Behavior** — The paragraph BASE direction is now CSS-driven (PR 2
-  task 4 — a `direction: rtl` block resolves to bidi base level 1 and
-  RIGHT-aligns via the `text-align` start/end swap, task 5). HarfBuzz
-  shapes RTL runs in visual (reversed) order internally; but
-  `LineFragment.Slices` stays in DOCUMENT order. Painters walk
-  per-shaped-run glyph arrays as-is. Single-direction LTR paragraphs
-  paint correctly. Single-direction RTL paragraphs are right-aligned
-  but walk in the wrong visual order at the fragment level (the levels
-  are correct; only the slice ORDER is wrong).
-- **Missing** — Fragment-level slice reversal (UAX #9 L2) for RTL
-  paragraph base direction so the painter consumes slices visually
-  right-to-left. Plus one residual direction-pipeline gap:
-  `PageMarginBoxPainter` inline text still hardcodes LTR base
-  direction. (The `dir` HTML attribute → `direction` mapping SHIPPED —
-  `BoxBuilder.ApplyDirAttribute`, a UA-origin presentational hint:
-  `dir="ltr"`/`"rtl"` set the direction keyword, `auto` keeps the
-  inherited direction, and a CSS `direction` wins.)
-- **Trigger** — RTL primary direction (Arabic / Hebrew) enters the
-  corpus, OR a user reports right-to-left mis-rendering / a `dir="rtl"`
-  attribute having no effect.
-- **Owner files** — `src/NetPdf.Layout/Inline/LineBuilder.cs::Wrap`
-  emission site (`EmitDrawableRange`) — reverse slice order when the
-  paragraph base direction is `ParagraphDirection.RightToLeft`. The
-  base direction itself is resolved by
-  `DirectionStyleExtensions.ReadParagraphDirection` (PR 2 task 4).
-- **Added** — Phase 3 Task 10 cycle 1 documented the deferral; PR 2
-  task 4 wired CSS-driven base direction (levels + alignment are now
-  correct), and batch 2 wired the `dir` HTML attribute (see Missing);
-  the visual slice reversal + margin-box base direction remain.
-- **Removal condition** — Wrap reverses slice order for RTL paragraphs
-  AND the painter consumes them visually.
 
 ---
 
@@ -349,8 +295,10 @@ grepping the ID).
     (`<br>`)-terminated line (PR-3 task 9 — `justify-all` lifts the §7.3 forced-break exception; plain
     `justify` still leaves a `<br>` line start-aligned). (center / right / end shift the atomic — body
     text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL block —
-    direction pipeline, PR 2 task 5. What remains: the atomic's bidi VISUAL ORDER within a mixed-direction
-    line is still document-order — see `rtl-fragment-reversal`.)
+    direction pipeline, PR 2 task 5. An atomic's run-level visual order within a mixed-direction line now
+    reverses together with the other per-run slices under an RTL paragraph base — the UAX #9 L2
+    run-granularity reversal in `LineBuilder.Wrap` (an atomic is itself a slice); deeper-than-single-
+    embedding bidi nesting is the residual approximation.)
   - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
     separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
     by document depth, not a dedicated cap); LTR horizontal-tb.
@@ -2297,51 +2245,6 @@ flags the categories):
   implicit `grid-area: foo` rectangle, (b) `grid-row-start: foo 2`
   resolving to the 2nd line named `foo`, and (c) `grid-row-end:
   span foo` spanning to the next `foo` line after the start.
-
----
-
-## grid-auto-fit-collapse-empty-tracks-deferral
-
-- **ID** — `grid-auto-fit-collapse-empty-tracks-deferral`
-- **Status** — `approximated`. Phase 3 Task 18 cycle 7c.
-- **Behavior** — Cycle 7c ships `repeat(auto-fill, …)` and
-  `repeat(auto-fit, …)` expansion via the container-aware
-  `ExpandTrackList` overload that derives the iteration count
-  from `(containerExtent − otherFixedSizes) ÷ patternFixedSize`,
-  clamped to ≥ 1 and to `MaxImplicitTracksPerAxis`. For cycle 7c
-  `auto-fit` is treated IDENTICALLY to `auto-fill` — both produce
-  the same expanded track list. Per CSS Grid L1 §7.2.3.1,
-  `auto-fit` additionally collapses empty tracks (= tracks with
-  no placed items) to 0 size and merges their surrounding
-  gutters AFTER placement; that collapse pass is the missing
-  piece.
-- **Missing** — A post-placement pass that walks each
-  auto-fit-derived track and:
-  - tags tracks with no items in the placement occupancy as
-    "collapsed";
-  - shrinks collapsed tracks to 0 size in
-    `ResolveTrackSizes`'s `TrackSizingInfo` output;
-  - merges adjacent gutters around collapsed tracks per
-    §7.2.3.1.
-- **Trigger** — corpus invoice / report uses
-  `grid-template-columns: repeat(auto-fit, minmax(100px, 1fr))`
-  with FEWER items than the derived count (= empty trailing
-  tracks expected to collapse for centering), OR a user-reported
-  case where `auto-fit` and `auto-fill` render IDENTICALLY when
-  the spec intends `auto-fit` to compress.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Resolve`
-    would track which tracks came from an `auto-fit` repeat
-    (= add an `IsAutoFitDerived` flag to `TrackSizingInfo`);
-    after placement, walk the occupancy + collapse empties.
-  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — emission
-    layer reads the post-collapse positions verbatim.
-- **Added** — Phase 3 Task 18 cycle 7c (this branch).
-- **Removal condition** — `auto-fit` collapses empty tracks to 0
-  + gutters merge appropriately + a production-pipeline test
-  pins `repeat(auto-fit, …)` rendering DIFFERENTLY from
-  `repeat(auto-fill, …)` when the item count is less than the
-  derived track count.
 
 ---
 

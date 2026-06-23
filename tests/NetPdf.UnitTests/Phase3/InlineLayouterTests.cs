@@ -439,6 +439,26 @@ public class InlineLayouterTests
         Assert.Equal(0, counting.ResolveCallCount);
     }
 
+    // --- RTL paragraph base: fragment-level slice reversal (rtl-fragment-reversal) ---
+
+    [Fact]
+    public void Layout_threads_rtl_base_direction_through_to_slice_reversal()
+    {
+        // Integration: InlineLayouter.Layout threads the base direction into Itemize (which resolves the
+        // per-run bidi LEVELS), and Wrap reorders the slices by level (UAX #9 L2) end-to-end. Two Hebrew
+        // runs (level 1) under an RTL base reverse to [run1, run0].
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
+
+        var rtl = InlineLayouter.Layout(sourceRuns, 1000, resolver, "Hebr", "he",
+            paragraphDirection: ParagraphDirection.RightToLeft);
+
+        var rtlLine = Assert.Single(rtl.Lines);
+        Assert.Equal(2, rtlLine.Slices.Length);
+        Assert.Equal(1, rtlLine.Slices[0].ShapedRunIndex);
+        Assert.Equal(0, rtlLine.Slices[1].ShapedRunIndex);
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

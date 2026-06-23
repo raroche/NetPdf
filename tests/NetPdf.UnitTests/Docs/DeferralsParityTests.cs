@@ -39,10 +39,8 @@ public sealed class DeferralsParityTests
     /// when picking one up.</summary>
     private static readonly string[] ExpectedDeferralIds = new[]
     {
-        "word-break-keep-all-cjk",
         "hyphens-auto-language-routing",
         "uax-24-script-detection",
-        "rtl-fragment-reversal",
         "inline-only-block-line-splitting",
         "fragmentation-control-residuals",
         "phase-4-painter-wiring",
@@ -61,7 +59,6 @@ public sealed class DeferralsParityTests
         "grid-fragment-plan-shared-sizing-deferral",
         "grid-spanning-item-intrinsic-distribution-deferral",
         "grid-implicit-named-area-and-occurrence-syntax-deferral",
-        "grid-auto-fit-collapse-empty-tracks-deferral",
         "recursive-block-continuation-consumed-extent-accounting-deferral",
         "abspos-cycle-1-explicit-only",
         "fixed-cycle-1",

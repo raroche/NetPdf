@@ -421,16 +421,11 @@ internal static class PaginateDiagnosticCodes
     public const string LayoutGridMaxExpandedTracksTruncated001 =
         "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
 
-    /// <summary>Phase 3 Task 18 cycle 7c + post-PR-#107 review F2 #4 —
-    /// a <c>grid-template-rows</c> / <c>-columns</c> declaration uses
-    /// <c>repeat(auto-fit, …)</c>. Cycle 7c expands auto-fit
-    /// IDENTICALLY to auto-fill (= the iteration count comes from
-    /// <c>(containerExtent − otherFixedSizes) ÷ patternFixedSize</c>);
-    /// per CSS Grid L1 §7.2.3.1, auto-fit additionally collapses
-    /// tracks with no placed items to 0 size AFTER placement. That
-    /// post-placement collapse is tracked under
-    /// `grid-auto-fit-collapse-empty-tracks-deferral`. Fires once per
-    /// <c>AttemptLayout</c>. Severity: Warning.</summary>
+    /// <summary>Phase 3 Task 18 cycle 7c + post-PR-#107 review F2 #4 — RETIRED (no longer emitted):
+    /// flagged that <c>repeat(auto-fit, …)</c> expanded identically to auto-fill. The §7.2.3.1
+    /// empty-track collapse is now implemented (grid-auto-fit-collapse), so auto-fit compresses its empty
+    /// tracks for real and this approximation warning is gone. The constant is kept (regression tests
+    /// assert it is NOT produced); a stale reference would otherwise re-introduce the false warning.</summary>
     public const string LayoutGridAutoFitApproximated001 =
         "LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001";
 

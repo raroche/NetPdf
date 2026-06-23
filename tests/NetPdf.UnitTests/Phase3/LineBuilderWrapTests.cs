@@ -549,6 +549,158 @@ public class LineBuilderWrapTests
         Assert.Contains("XAdvance", ex.Message);
     }
 
+    // --- UAX #9 L2 level-aware slice reordering (rtl-fragment-reversal) ---
+    //
+    // The per-run bidi LEVEL (resolved by Itemize, including the Auto first-strong rule) drives L2
+    // reordering of a line's slices. These tests cover the three structural cases + the byte-identity
+    // guard. The SyntheticFont maps every char to .notdef but the LEVELS come from the real codepoints,
+    // so Hebrew (א/ב) gives RTL (level 1) runs and Latin gives LTR runs.
+
+    private static double LeftXOfRun(LineFragment line, int shapedRunIndex)
+    {
+        var x = 0.0;
+        foreach (var s in line.Slices)
+        {
+            if (s.ShapedRunIndex == shapedRunIndex) return x;
+            x += s.SliceAdvance;
+        }
+        return double.NaN;
+    }
+
+    [Fact]
+    public void Wrap_reverses_rtl_runs_in_an_rtl_paragraph()
+    {
+        // Two Hebrew runs (level 1) under an RTL base → L2 reverses the whole line: the first logical run
+        // paints rightmost, the last leftmost. TotalAdvance (order-independent) is unchanged.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.RightToLeft);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hebr", "he");
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(2, line.Slices.Length);
+        Assert.Equal(1, line.Slices[0].ShapedRunIndex);  // run1 (last logical) leftmost
+        Assert.Equal(0, line.Slices[1].ShapedRunIndex);  // run0 (first logical) rightmost
+        Assert.Equal(0.0, LeftXOfRun(line, 1));
+        Assert.True(LeftXOfRun(line, 0) > LeftXOfRun(line, 1));
+    }
+
+    [Fact]
+    public void Wrap_keeps_latin_runs_in_document_order_in_an_rtl_paragraph()
+    {
+        // Two LATIN runs in an RTL paragraph are a single LTR embedding (level 2), which reads
+        // left-to-right — so L2 double-reverses them (reverse at level 2, then at level 1) back to
+        // DOCUMENT order. (A naive "flat reverse for RTL base" got this wrong — PR #214 review [P1].)
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.RightToLeft);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(2, line.Slices.Length);
+        Assert.Equal(0, line.Slices[0].ShapedRunIndex);  // run0 stays leftmost (Latin reads L→R)
+        Assert.Equal(1, line.Slices[1].ShapedRunIndex);
+    }
+
+    [Fact]
+    public void Wrap_reverses_only_the_embedded_rtl_span_in_an_ltr_paragraph()
+    {
+        // PR #214 review [P1] — the common "English with a Hebrew name" case: Latin + two Hebrew runs +
+        // Latin under an LTR base. L2 reverses ONLY the contiguous RTL (level-1) span; the surrounding
+        // Latin (level 0) keeps document order. Logical [A, א, ב, B] → visual [A, ב, א, B].
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("A", MakeStyle()), new("א", MakeStyle()), new("ב", MakeStyle()), new("B", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(4, line.Slices.Length);
+        Assert.Equal(0, line.Slices[0].ShapedRunIndex);  // A  (LTR, stays)
+        Assert.Equal(2, line.Slices[1].ShapedRunIndex);  // ב  (RTL span reversed)
+        Assert.Equal(1, line.Slices[2].ShapedRunIndex);  // א
+        Assert.Equal(3, line.Slices[3].ShapedRunIndex);  // B  (LTR, stays)
+    }
+
+    [Fact]
+    public void Wrap_keeps_document_order_for_an_all_ltr_line()
+    {
+        // Byte-identity guard: a pure-LTR line (no odd level) is left untouched by L2.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(0, line.Slices[0].ShapedRunIndex);
+        Assert.Equal(1, line.Slices[1].ShapedRunIndex);
+    }
+
+    [Fact]
+    public void Wrap_reverses_rtl_runs_for_an_auto_base_that_resolves_to_rtl()
+    {
+        // `ParagraphDirection.Auto` resolves the base via the UAX #9 P2/P3 first-strong rule at itemize
+        // time, so two Hebrew runs under Auto get level 1 and L2 reverses them — handled entirely by the
+        // run levels (no separate base-direction pass in Wrap).
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.Auto);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hebr", "he");
+
+        var line = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000));
+
+        Assert.Equal(2, line.Slices.Length);
+        Assert.Equal(1, line.Slices[0].ShapedRunIndex);
+        Assert.Equal(0, line.Slices[1].ShapedRunIndex);
+    }
+
+    // --- word-break: keep-all (CSS Text §5.2 / UAX #14 LB30b, word-break-keep-all-cjk) ---
+
+    [Fact]
+    public void Wrap_keep_all_suppresses_inter_cjk_breaks()
+    {
+        // Three Han ideographs (each falls back to .notdef at 600 fontUnits = 7.2px). At width 10,
+        // NORMAL word-break wraps per character — UAX #14 leaves a default break opportunity between
+        // two ID-class ideographs — so the run breaks into several lines; KEEP-ALL demotes those
+        // inter-character opportunities to Prohibited, so the run stays on ONE (overflowing) line.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("東京都", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hani", "ja");
+
+        var normal = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 10,
+            wordBreak: WordBreak.Normal);
+        var keepAll = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 10,
+            wordBreak: WordBreak.KeepAll);
+
+        Assert.True(normal.Length > 1, $"normal should wrap CJK per character, got {normal.Length} line(s)");
+        Assert.Single(keepAll);   // keep-all keeps the ideographs together on one line
+    }
+
+    [Fact]
+    public void Wrap_keep_all_still_breaks_at_a_space_between_cjk_words()
+    {
+        // keep-all only suppresses inter-CHARACTER opportunities; an explicit space is still a break
+        // opportunity. "東京 大阪" (two 2-ideograph words separated by a space) wraps at the space under
+        // keep-all (each word stays intact) rather than collapsing to a single overflowing line.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("東京 大阪", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hani", "ja");
+
+        // Width fits one 2-ideograph word (~14.4px) but not both words + space — so it wraps at the space.
+        var keepAll = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 16,
+            wordBreak: WordBreak.KeepAll);
+
+        Assert.Equal(2, keepAll.Length);   // breaks at the space, one word per line
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

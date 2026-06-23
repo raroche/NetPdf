@@ -1735,25 +1735,21 @@ public sealed class BlockInlineIntegrationTests
     }
 
     [Fact]
-    public void Block_with_unsupported_inline_throws_caught_as_diagnostic()
+    public void Block_with_mixed_word_break_inline_lays_out_without_a_diagnostic()
     {
-        // Per Finding #6 — when InlineLayouter.LayoutPerRun throws
-        // NotSupportedException (here induced by KeepAll vs Normal
-        // word-break mismatch across two source TextRuns), the
-        // block layouter catches it + degrades to a Warning
-        // diagnostic + skips the block without bringing the
-        // layouter down.
+        // word-break-keep-all-cjk closed — a block whose inline content mixes a normal run with a
+        // keep-all run (which previously made InlineLayouter.LayoutPerRun throw NotSupportedException,
+        // degrading to a LAYOUT-INLINE-UNSUPPORTED-001 Warning + a skipped block) now lays out normally:
+        // LineBuilder applies LB30b CJK suppression per source run, so the block emits its text fragment
+        // and no unsupported-inline diagnostic fires. (The BlockLayouter's defensive
+        // NotSupportedException catch remains for genuinely-unsupported future inline features.)
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var resolver = new SyntheticShaperResolver();
 
-        // Build two TextRuns with mismatched WordBreak. KeepAll's
-        // CJK semantics are deferred; mixed-mode throws per
-        // sub-cycle 3 review Finding #1.
         var styleA = MakeStyle();  // default WordBreak = Normal (index 0).
         var styleB = MakeStyle();
-        // word-break: keep-all is keyword index 2 in the source-gen'd
-        // table — set as Keyword slot.
+        // word-break: keep-all is keyword index 2 in the source-gen'd table — set as a Keyword slot.
         styleB.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(2));
 
         var root = Box.CreateRoot(MakeStyle());
@@ -1771,14 +1767,11 @@ public sealed class BlockInlineIntegrationTests
         var result = layouter.AttemptLayout(
             ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
 
-        // No crash; AllDone outcome; no fragment emitted; one
-        // LAYOUT-INLINE-UNSUPPORTED-001 diagnostic captured.
+        // Lays out: AllDone, a fragment emitted, and NO unsupported-inline diagnostic.
         Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
-        Assert.Empty(sink.Fragments);
-        var unsupportedDiag = diagSink.Diagnostics
-            .Find(d => d.Code == PaginateDiagnosticCodes.LayoutInlineUnsupported001);
-        Assert.NotEqual(default, unsupportedDiag);
-        Assert.Equal(PaginateDiagnosticSeverity.Warning, unsupportedDiag.Severity);
+        Assert.NotEmpty(sink.Fragments);
+        Assert.DoesNotContain(diagSink.Diagnostics,
+            d => d.Code == PaginateDiagnosticCodes.LayoutInlineUnsupported001);
     }
 
     // ====================================================================

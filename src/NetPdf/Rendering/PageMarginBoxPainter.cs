@@ -595,7 +595,11 @@ internal static class PageMarginBoxPainter
                         availableInlineSize: horizontalAxis ? availableInlinePx : fixedAxisContentWidthPx,
                         resolver: shaper,
                         scriptIso15924: "Latn", language: "en",
-                        paragraphDirection: ParagraphDirection.LeftToRight,
+                        // rtl-fragment-reversal — the margin box's own computed `direction` drives the
+                        // bidi base direction (was hardcoded LTR), so an `@page` margin box / running
+                        // element with `direction: rtl` lays its inline text out right-to-left. LTR boxes
+                        // (the common case) resolve to LeftToRight → byte-identical.
+                        paragraphDirection: contentStyle.ReadParagraphDirection(),
                         whiteSpace: horizontalAxis
                             ? (hasForcedBreaks ? forcedBreakWhiteSpace : WhiteSpace.NoWrap)
                             : reflowWhiteSpace);
@@ -671,7 +675,8 @@ internal static class PageMarginBoxPainter
                 ? boxWidthPx : boxHeightPx;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal && hasLine && canWrap
                 && explicitVarSizePx is null
-                && TryMeasureMinContentWidthPx(layoutRuns, shaper, reflowWhiteSpace, out var minContentWidthPx))
+                && TryMeasureMinContentWidthPx(layoutRuns, shaper, reflowWhiteSpace,
+                    contentStyle.ReadParagraphDirection(), out var minContentWidthPx))
             {
                 minVarSizePx = Math.Min(region.Width, minContentWidthPx + insetLeftPx + insetRightPx);
             }
@@ -744,7 +749,8 @@ internal static class PageMarginBoxPainter
             // — a mandatory break can put a wider line later), wrapping with the reflow white-space (the
             // box's own, or pre-line/pre for forced-break content so the block breaks survive).
             if (contentWidthPx > 0 && contentWidthPx < WidestLineAdvancePx(item.Inline) - 0.5
-                && TryLayoutContent(item.ContentRuns, shaper, contentWidthPx, item.ReflowWhiteSpace, out var wrapped))
+                && TryLayoutContent(item.ContentRuns, shaper, contentWidthPx, item.ReflowWhiteSpace,
+                    item.ContentStyle.ReadParagraphDirection(), out var wrapped))
             {
                 item.Inline = wrapped;
             }
@@ -1191,7 +1197,7 @@ internal static class PageMarginBoxPainter
     /// re-wrap.</summary>
     private static bool TryLayoutContent(
         IReadOnlyList<TextRun> runs, HarfBuzzShaperResolver shaper, double widthPx, WhiteSpace whiteSpace,
-        out InlineLayoutResult result)
+        ParagraphDirection paragraphDirection, out InlineLayoutResult result)
     {
         result = default;
         if (runs.Count == 0 || (runs.Count == 1 && string.IsNullOrEmpty(runs[0].Text))) return false;
@@ -1201,7 +1207,10 @@ internal static class PageMarginBoxPainter
                 sourceTextRuns: runs,
                 availableInlineSize: Math.Max(widthPx, 1.0), resolver: shaper,
                 scriptIso15924: "Latn", language: "en",
-                paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: whiteSpace);
+                // rtl-fragment-reversal — the re-wrap / min-content measure uses the MARGIN BOX's own
+                // paragraph base direction (its content style), consistent with the initial layout and
+                // independent of any per-segment run style (Copilot review). LTR → byte-identical.
+                paragraphDirection: paragraphDirection, whiteSpace: whiteSpace);
             if (laid.Lines.Length == 0) return false;
             result = laid;
             return true;
@@ -1215,10 +1224,11 @@ internal static class PageMarginBoxPainter
     /// only calls this for a wrapping mode) so a <c>nowrap</c>/<c>pre</c> box isn't measured as if it could
     /// wrap (Copilot review). <see langword="false"/> on a font-resolution failure.</summary>
     private static bool TryMeasureMinContentWidthPx(
-        IReadOnlyList<TextRun> runs, HarfBuzzShaperResolver shaper, WhiteSpace whiteSpace, out double minContentPx)
+        IReadOnlyList<TextRun> runs, HarfBuzzShaperResolver shaper, WhiteSpace whiteSpace,
+        ParagraphDirection paragraphDirection, out double minContentPx)
     {
         minContentPx = 0;
-        if (!TryLayoutContent(runs, shaper, 1.0, whiteSpace, out var laid)) return false;
+        if (!TryLayoutContent(runs, shaper, 1.0, whiteSpace, paragraphDirection, out var laid)) return false;
         minContentPx = WidestLineAdvancePx(laid);
         return true;
     }

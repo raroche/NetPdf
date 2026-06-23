@@ -164,26 +164,42 @@ internal static class LineBuilder
             concatBuf, paragraphDirection);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Walk the concatenated text + emit a new ItemizedRun
-        // whenever the bidi level OR the source-run-index changes.
+        // Walk the concatenated text + emit a new ItemizedRun whenever the bidi level, the
+        // source-run-index, OR the UAX #24 script changes (cycle 3 — script-change itemization). A
+        // Common/Inherited codepoint (digit / punctuation / space / combining mark / uncovered script)
+        // extends the run in progress, and a leading Common prefix adopts the first concrete script that
+        // follows it (UAX #24 §5.1), so a single-script paragraph still produces one run per
+        // level/style — and shapes byte-identically when the caller's uniform script matches.
         var output = new List<ItemizedRun>(capacity: textRuns.Count);
         var runStart = 0;
         var runLevel = bidiLevels[0];
         var runSourceIdx = sourceRunIndices[0];
+        var runScript = ScriptAt(concatBuf, 0, totalLength);
         for (var i = 1; i < totalLength; i++)
         {
             var level = bidiLevels[i];
             var srcIdx = sourceRunIndices[i];
-            if (level != runLevel || srcIdx != runSourceIdx)
+            var cpScript = ScriptAt(concatBuf, i, totalLength);
+            var scriptBoundary = cpScript != UnicodeScripts.UnicodeScript.Common
+                && runScript != UnicodeScripts.UnicodeScript.Common
+                && cpScript != runScript;
+            if (level != runLevel || srcIdx != runSourceIdx || scriptBoundary)
             {
                 output.Add(new ItemizedRun(
                     Utf16Start: runStart,
                     Utf16Length: i - runStart,
                     BidiLevel: runLevel,
-                    SourceTextRunIndex: runSourceIdx));
+                    SourceTextRunIndex: runSourceIdx,
+                    ScriptIso15924: ScriptTagOrNull(runScript)));
                 runStart = i;
                 runLevel = level;
                 runSourceIdx = srcIdx;
+                runScript = cpScript;
+            }
+            else if (runScript == UnicodeScripts.UnicodeScript.Common
+                && cpScript != UnicodeScripts.UnicodeScript.Common)
+            {
+                runScript = cpScript; // leading Common prefix adopts the first concrete script
             }
         }
         // Tail run.
@@ -191,10 +207,30 @@ internal static class LineBuilder
             Utf16Start: runStart,
             Utf16Length: totalLength - runStart,
             BidiLevel: runLevel,
-            SourceTextRunIndex: runSourceIdx));
+            SourceTextRunIndex: runSourceIdx,
+            ScriptIso15924: ScriptTagOrNull(runScript)));
 
         return output.ToArray();
     }
+
+    /// <summary>The UAX #24 script of the codepoint covering UTF-16 code unit <paramref name="i"/> —
+    /// surrogate-aware (a high surrogate pairs with the following low surrogate; a low surrogate looks
+    /// back to its high surrogate), so both halves of a pair share one script and never split a run.</summary>
+    private static UnicodeScripts.UnicodeScript ScriptAt(char[] text, int i, int len)
+    {
+        var c = text[i];
+        if (char.IsHighSurrogate(c) && i + 1 < len && char.IsLowSurrogate(text[i + 1]))
+            return UnicodeScripts.GetScript(char.ConvertToUtf32(c, text[i + 1]));
+        if (char.IsLowSurrogate(c) && i > 0 && char.IsHighSurrogate(text[i - 1]))
+            return UnicodeScripts.GetScript(char.ConvertToUtf32(text[i - 1], c));
+        return UnicodeScripts.GetScript(c);
+    }
+
+    /// <summary>The ISO 15924 tag for an itemized run's script, or <see langword="null"/> for
+    /// <see cref="UnicodeScripts.UnicodeScript.Common"/> so the shaper falls back to the caller's
+    /// uniform script (an all-Common run carries no script of its own).</summary>
+    private static string? ScriptTagOrNull(UnicodeScripts.UnicodeScript script) =>
+        script == UnicodeScripts.UnicodeScript.Common ? null : UnicodeScripts.ToIso15924(script);
 
     /// <summary>Per Phase 3 Task 9 cycle 2 — shaping pass. Takes
     /// the <see cref="ItemizedRun"/>s produced by <see cref="Itemize"/>
@@ -375,11 +411,16 @@ internal static class LineBuilder
             // boundary contextual shaping (Arabic joining across
             // TextRuns, complex-script reordering, etc.) + cluster
             // indices stay concat-buffer relative.
+            // UAX #24 (cycle 3) — shape with the run's OWN detected script when itemization tagged one,
+            // so a mixed-script paragraph (e.g. Arabic embedded in Latin) gets the correct OpenType
+            // feature set instead of the caller's uniform script. An all-Common run keeps the uniform
+            // script. Single-script paragraphs whose content matches the uniform script are unchanged.
+            var runScript = run.ScriptIso15924 ?? scriptIso15924;
             var shaper = resolver.Resolve(style);
             var glyphs = shaper.Shape(
                 concatText.AsSpan(),
                 run.Utf16Start, run.Utf16Length,
-                direction, scriptIso15924, language,
+                direction, runScript, language,
                 cancellationToken);
 
             // Cycle 2 — sum XAdvance for fast wrap-pass measurement.
@@ -589,10 +630,11 @@ internal static class LineBuilder
     ///   BreakAll source runs get their Prohibited boundaries
     ///   upgraded to Allowed at grapheme cluster boundaries. The
     ///   cross-run BreakAll boundary uses "either side may opt in"
-    ///   (mirrors OverflowWrap's cross-run rule). KeepAll is read
-    ///   but NOT yet honored: behaves like Normal (no breaks
-    ///   suppressed), and <see cref="InlineLayouter.LayoutPerRun"/>
-    ///   throws on KeepAll mismatch to fail loud.</item>
+    ///   (mirrors OverflowWrap's cross-run rule). KeepAll is honored
+    ///   per source run (word-break-keep-all-cjk): the CSS Text §5.2 /
+    ///   UAX #14 LB30b CJK inter-character break suppression runs over
+    ///   the breaks of each KeepAll run (see <c>SuppressKeepAllCjkBreaks</c>),
+    ///   and a KeepAll-vs-other mismatch no longer throws.</item>
     ///   <item><see cref="InlineTextPolicy.Hyphens"/> (sub-cycle 4)
     ///   — drives per-source-run hyphenation. The soft-hyphen
     ///   demotion (Hyphens=None) and Liang application (per word,
@@ -620,8 +662,12 @@ internal static class LineBuilder
     /// Defaults to <see langword="false"/> — the line-wrap pass for
     /// final layout always honors break-word's glyph-boundary
     /// fallback.</param>
-    /// <returns>One <see cref="LineFragment"/> per wrapped line in
-    /// document order. Empty array when <paramref name="shapedRuns"/>
+    /// <returns>One <see cref="LineFragment"/> per wrapped line, each in VISUAL order. The line's
+    /// per-run slices are reordered by their shaped run's bidi LEVEL (UAX #9 rule L2 at run granularity —
+    /// rtl-fragment-reversal), so RTL runs and RTL spans embedded in LTR text paint visually; an all-LTR
+    /// line keeps document slice order (byte-identical). The base direction + the <c>Auto</c> first-strong
+    /// resolution are already folded into the run levels by <see cref="Itemize"/>, so they need not be
+    /// repassed here. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
     /// <exception cref="ArgumentNullException">A required argument is
     /// <see langword="null"/>.</exception>
@@ -656,10 +702,10 @@ internal static class LineBuilder
         // Per Phase 3 Task 10 cycle 3d sub-cycle 2 review Rec #4 —
         // single per-source-run InlineTextPolicy array. Length must
         // match sourceTextRuns count; every entry's WhiteSpace +
-        // OverflowWrap fields must be defined enum values. (WordBreak
-        // and Hyphens fields are validated for sanity even though
-        // they're not yet honored per-run — sub-cycle 3+ will plumb
-        // them through.)
+        // OverflowWrap fields must be defined enum values. WordBreak
+        // (BreakAll + KeepAll) and Hyphens are now honored per source
+        // run (KeepAll via SuppressKeepAllCjkBreaks; Hyphens via the
+        // hyphenation pipeline below).
         if (inlineTextPolicyPerRun is not null
             && inlineTextPolicyPerRun.Count != sourceTextRuns.Count)
         {
@@ -899,6 +945,19 @@ internal static class LineBuilder
         // breaks[i] = opportunity AFTER UTF-16 code unit i. Final
         // entry is always Mandatory per LB3.
         var breaks = LineBreakAlgorithm.FindBreaks(concatText.AsSpan());
+
+        // CSS Text L3 §5.2 word-break:keep-all (UAX #14 LB30b) — suppress the implicit inter-character
+        // soft-wrap opportunities between East-Asian letter units so CJK runs stay on one line (they
+        // still break at spaces / explicit opportunities). No-op when keep-all isn't active, so other
+        // content is byte-identical.
+        SuppressKeepAllCjkBreaks(breaks, concatText, wordBreak, inlineTextPolicyPerRun, sourceTextRuns);
+
+        // rtl-fragment-reversal — the per-run bidi LEVEL (set by itemization's UAX #9 resolution, which
+        // already folded in the base direction AND the `Auto` first-strong rule) drives UAX #9 L2
+        // reordering of the line's slices. Capture the level of each shaped run so EmitDrawableRange can
+        // reorder by level. An all-even-level (pure LTR) line reorders to nothing → byte-identical.
+        var runLevels = new byte[shapedRuns.Count];
+        for (var r = 0; r < shapedRuns.Count; r++) runLevels[r] = shapedRuns[r].Source.BidiLevel;
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1429,6 +1488,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
+                    runLevels,
                     endsWithMandatoryBreak: false,
                     endsWithHyphenationBreak: endsWithHyphenation);
                 lineStart = lastAllowed + 1;
@@ -1573,6 +1633,7 @@ internal static class LineBuilder
                     // Force break at cursor-1: emit lineStart..cursor-1,
                     // start next line at cursor.
                     EmitDrawableRange(output, flat, lineStart, cursor - 1,
+                        runLevels,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor;
                     cursor = lineStart - 1;
@@ -1582,6 +1643,7 @@ internal static class LineBuilder
                     // Single glyph wider than line: emit just this
                     // glyph alone, advance.
                     EmitDrawableRange(output, flat, lineStart, cursor,
+                        runLevels,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor + 1;
                     // cursor stays — for-loop increment moves it past.
@@ -1608,6 +1670,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
+                    runLevels,
                     endsWithMandatoryBreak: true);
                 lineStart = cursor + 1;
                 lineAdvance = 0;
@@ -1637,6 +1700,7 @@ internal static class LineBuilder
         if (lineStart < totalGlyphs)
         {
             EmitDrawableRange(output, flat, lineStart, totalGlyphs - 1,
+                runLevels,
                 endsWithMandatoryBreak: false);
         }
 
@@ -2602,6 +2666,7 @@ internal static class LineBuilder
     private static void EmitDrawableRange(
         List<LineFragment> output,
         FlatGlyph[] flat, int start, int end,
+        byte[] runLevels,
         bool endsWithMandatoryBreak,
         bool endsWithHyphenationBreak = false)
     {
@@ -2653,12 +2718,148 @@ internal static class LineBuilder
             SliceAdvance: sliceAdvance));
         totalAdvance += sliceAdvance;
 
+        // UAX #9 L2 (rtl-fragment-reversal) — reorder the line's per-run slices by embedding LEVEL so the
+        // painter consumes them in visual order. Each slice is level-homogeneous (a contiguous
+        // same-shaped-run glyph range) and the slices are built in LOGICAL (document) order above; L2
+        // reverses, from the highest level down to the lowest ODD level, every contiguous run of slices
+        // at that level or higher. This handles BOTH an RTL base paragraph (whole line reverses, embedded
+        // LTR double-reverses back to logical) AND embedded RTL inside an LTR base (only the RTL spans
+        // reverse). The glyph arrays WITHIN each slice are untouched — HarfBuzz already emits each run in
+        // its own visual order — so the run-level L2 composes correctly. The painter walks Slices
+        // left-to-right accumulating SliceAdvance (TextPainter), so the reordered slices paint at the
+        // correct visual x; TotalAdvance is the order-independent sum, so wrap/fit is unaffected. An
+        // all-even-level (pure LTR) line reorders to nothing → byte-identical.
+        ReorderSlicesByLevelL2(slices, runLevels);
+
         output.Add(new LineFragment(
             Slices: slices.ToArray(),
             TotalAdvance: totalAdvance,
             EndsWithMandatoryBreak: endsWithMandatoryBreak,
             EndsWithHyphenationBreak: endsWithHyphenationBreak));
     }
+
+    /// <summary>UAX #9 rule L2 (rtl-fragment-reversal) — reorder one line's per-run <paramref
+    /// name="slices"/> (built in LOGICAL order) into VISUAL order, by embedding level. From the highest
+    /// level present down to the lowest ODD level, reverse every contiguous run of slices whose run level
+    /// is ≥ that level. Each slice is level-homogeneous, so this is exact L2 at run granularity: an RTL
+    /// base reverses the whole line (and double-reverses embedded LTR back to logical), while embedded RTL
+    /// inside an LTR base reverses only the RTL spans. A line with no odd level (pure LTR) is left
+    /// untouched, so LTR output is byte-identical. <paramref name="runLevels"/> is indexed by
+    /// <see cref="ShapedRunSlice.ShapedRunIndex"/>.</summary>
+    private static void ReorderSlicesByLevelL2(List<ShapedRunSlice> slices, byte[] runLevels)
+    {
+        if (slices.Count < 2) return;
+
+        byte maxLevel = 0;
+        var minOddLevel = int.MaxValue;
+        for (var i = 0; i < slices.Count; i++)
+        {
+            var lvl = runLevels[slices[i].ShapedRunIndex];
+            if (lvl > maxLevel) maxLevel = lvl;
+            if ((lvl & 1) == 1 && lvl < minOddLevel) minOddLevel = lvl;
+        }
+        if (minOddLevel == int.MaxValue) return; // no RTL run on this line → nothing to reorder
+
+        for (var level = maxLevel; level >= minOddLevel; level--)
+        {
+            var i = 0;
+            while (i < slices.Count)
+            {
+                if (runLevels[slices[i].ShapedRunIndex] >= level)
+                {
+                    var j = i;
+                    while (j < slices.Count && runLevels[slices[j].ShapedRunIndex] >= level) j++;
+                    slices.Reverse(i, j - i); // reverse the contiguous [i, j) run at this level-or-higher
+                    i = j;
+                }
+                else
+                {
+                    i++;
+                }
+            }
+        }
+    }
+
+    /// <summary>CSS Text L3 §5.2 — <c>word-break: keep-all</c> (UAX #14 LB30b). Demotes the implicit
+    /// soft-wrap opportunities BETWEEN two East-Asian "letter units" from <c>Allowed</c> to
+    /// <c>Prohibited</c>, so CJK text doesn't break between characters (it still breaks at spaces /
+    /// explicit opportunities, and overflow still falls through to the overflow-wrap fallback). A
+    /// boundary is kept together when its LEFT character's source run opted into keep-all (uniform
+    /// <paramref name="wordBreak"/>, or — under per-run mode — the policy of the run owning code unit
+    /// <c>i</c>) AND both adjacent codepoints are an East-Asian ideographic line-break class. No-op
+    /// unless keep-all is active, so non-keep-all content is byte-identical.</summary>
+    private static void SuppressKeepAllCjkBreaks(
+        LineBreakOpportunity[] breaks,
+        string concatText,
+        WordBreak wordBreak,
+        IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun,
+        IReadOnlyList<TextRun> sourceTextRuns)
+    {
+        var uniformKeepAll = inlineTextPolicyPerRun is null && wordBreak == WordBreak.KeepAll;
+        var anyKeepAllRun = false;
+        if (inlineTextPolicyPerRun is not null)
+        {
+            for (var r = 0; r < inlineTextPolicyPerRun.Count; r++)
+            {
+                if (inlineTextPolicyPerRun[r].WordBreak == WordBreak.KeepAll) { anyKeepAllRun = true; break; }
+            }
+        }
+        if (!uniformKeepAll && !anyKeepAllRun) return;
+
+        // The per-position source-run map is only needed for the per-run case (reading each boundary's
+        // owning run policy); the uniform case applies keep-all to every boundary.
+        int[]? posToSrc = null;
+        if (anyKeepAllRun)
+        {
+            posToSrc = new int[concatText.Length];
+            var p = 0;
+            for (var r = 0; r < sourceTextRuns.Count; r++)
+            {
+                var len = sourceTextRuns[r].Text.Length;
+                for (var k = 0; k < len && p + k < posToSrc.Length; k++) posToSrc[p + k] = r;
+                p += len;
+            }
+        }
+
+        for (var i = 0; i + 1 < concatText.Length; i++)
+        {
+            if (breaks[i] != LineBreakOpportunity.Allowed) continue;
+            var active = uniformKeepAll
+                || (posToSrc is not null
+                    && (uint)posToSrc[i] < (uint)inlineTextPolicyPerRun!.Count
+                    && inlineTextPolicyPerRun[posToSrc[i]].WordBreak == WordBreak.KeepAll);
+            if (!active) continue;
+            if (IsKeepAllCjkClass(CodepointEndingAt(concatText, i))
+                && IsKeepAllCjkClass(CodepointStartingAt(concatText, i + 1)))
+            {
+                breaks[i] = LineBreakOpportunity.Prohibited;
+            }
+        }
+    }
+
+    /// <summary>The East-Asian UAX #14 line-break classes whose inter-character implicit break
+    /// opportunities <c>word-break: keep-all</c> suppresses: ID (ideographic — Han / Kana), CJ
+    /// (conditional Japanese starter — small kana), the Hangul syllable (H2 / H3) + conjoining jamo
+    /// (JL / JV / JT) classes.</summary>
+    private static bool IsKeepAllCjkClass(int codepoint) => LineBreakClassTable.GetClass(codepoint) is
+        LineBreakClass.ID or LineBreakClass.CJ or LineBreakClass.H2 or LineBreakClass.H3
+        or LineBreakClass.JL or LineBreakClass.JV or LineBreakClass.JT;
+
+    /// <summary>The Unicode scalar value whose UTF-16 representation ENDS at index <paramref name="i"/>
+    /// (a low surrogate at <c>i</c> paired with the high surrogate at <c>i-1</c>; otherwise the BMP
+    /// unit at <c>i</c>).</summary>
+    private static int CodepointEndingAt(string s, int i) =>
+        char.IsLowSurrogate(s[i]) && i > 0 && char.IsHighSurrogate(s[i - 1])
+            ? char.ConvertToUtf32(s[i - 1], s[i])
+            : s[i];
+
+    /// <summary>The Unicode scalar value whose UTF-16 representation STARTS at index <paramref name="i"/>
+    /// (a high surrogate at <c>i</c> paired with the low surrogate at <c>i+1</c>; otherwise the BMP unit
+    /// at <c>i</c>).</summary>
+    private static int CodepointStartingAt(string s, int i) =>
+        char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1])
+            ? char.ConvertToUtf32(s[i], s[i + 1])
+            : s[i];
 
     /// <summary>Cycle 3a/3b internal: a flattened glyph view across
     /// all shaped runs, indexed by global glyph position.

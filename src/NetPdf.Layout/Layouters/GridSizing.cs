@@ -92,6 +92,13 @@ internal static class GridSizing
         /// <see cref="RowExtentSum"/> so the auto-height wrapper reserves the
         /// gutters too (the positions already include them).</summary>
         public double RowGap { get; init; }
+        /// <summary>The number of row-gap gutters that actually consume block extent =
+        /// (VISIBLE row count − 1), clamped at 0. grid-auto-fit-collapse — a collapsed
+        /// auto-fit ROW contributes no gutter, so this is &lt; <c>RowSizes.Count − 1</c>
+        /// when rows collapse; it equals <c>RowSizes.Count − 1</c> otherwise (PR #214
+        /// review). <see cref="RowExtentSum"/> uses it instead of the raw track count so
+        /// the auto-height wrapper measurement matches the collapse-aware positions.</summary>
+        public required int RowVisibleGutterCount { get; init; }
         /// <summary>True when cumulative positions + per-track right/
         /// bottom edges are all finite. Caller skips emission when
         /// false (= protect downstream paint from non-finite geometry).</summary>
@@ -112,8 +119,10 @@ internal static class GridSizing
                 foreach (var s in RowSizes) sum += s;
                 // §10.1 — the row-gap gutters between the row tracks are part of
                 // the block extent (the row positions already include them), so
-                // an auto-height wrapper must reserve them too.
-                if (RowSizes.Count > 1) sum += (RowSizes.Count - 1) * RowGap;
+                // an auto-height wrapper must reserve them too. grid-auto-fit-collapse —
+                // use the VISIBLE gutter count so a collapsed auto-fit row's merged
+                // gutter isn't double-counted (matches ComputeTrackPositions).
+                sum += RowVisibleGutterCount * RowGap;
                 return sum;
             }
         }
@@ -268,6 +277,7 @@ internal static class GridSizing
                 RowPositions = new List<double>(),
                 ColPositions = new List<double>(),
                 PlacedItems = new List<PlacedItem>(),
+                RowVisibleGutterCount = 0,
                 IsGeometryFinite = true,
             };
         }
@@ -310,6 +320,16 @@ internal static class GridSizing
         }
         _ = grownOccupancy;
 
+        // CSS Grid L1 §7.2.3.1 — grid-auto-fit-collapse: now that placement is known, collapse any
+        // auto-fit-derived track that holds no item (size → 0, leaves the fr pool), then re-resolve fr so
+        // the surviving tracks absorb the freed space + merged gutters. This is what makes
+        // repeat(auto-fit, …) compress to the filled tracks where repeat(auto-fill, …) keeps the empties.
+        // No-op for non-auto-fit grids (no track is auto-fit-derived), so they stay byte-identical.
+        if (CollapseEmptyAutoFitTracks(colInfos, placedItems, isRowAxis: false))
+            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken, columnGap);
+        if (CollapseEmptyAutoFitTracks(rowInfos, placedItems, isRowAxis: true))
+            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken, rowGap);
+
         // Intrinsic resolution from placed items. CSS Grid §11 sizes COLUMNS BEFORE ROWS, so the COLUMN
         // axis resolves FIRST (post-PR-#184 review F1 — the prior row-before-column order measured row
         // content at a STALE 0/1px column width and kept an inflated row height after the column later
@@ -351,8 +371,8 @@ internal static class GridSizing
 
         // Compute positions + finite check (CSS Grid L1 §10.1 gutters — column-gap
         // between columns, row-gap between rows; both read early above + reused here).
-        var rowPositions = ComputeTrackPositions(rowSizes, contentBlockOffset, rowGap);
-        var colPositions = ComputeTrackPositions(colSizes, contentInlineOffset, columnGap);
+        var rowPositions = ComputeTrackPositions(rowSizes, contentBlockOffset, rowGap, CollapsedFlags(rowInfos));
+        var colPositions = ComputeTrackPositions(colSizes, contentInlineOffset, columnGap, CollapsedFlags(colInfos));
         var isFinite = IsTrackGeometryFinite(rowPositions, rowSizes)
             && IsTrackGeometryFinite(colPositions, colSizes);
         if (!isFinite)
@@ -378,6 +398,10 @@ internal static class GridSizing
             ColPositions = colPositions,
             PlacedItems = placedItems,
             RowGap = rowGap,
+            // grid-auto-fit-collapse — the row-gap gutters that survive collapse (= visible rows − 1),
+            // so RowExtentSum matches the collapse-aware positions. Equals rowInfos.Count − 1 when no row
+            // collapsed (the common case).
+            RowVisibleGutterCount = VisibleGutterCount(CollectionsMarshal.AsSpan(rowInfos)),
             IsGeometryFinite = isFinite,
         };
     }
@@ -406,11 +430,6 @@ internal static class GridSizing
         public bool EmittedFrIndefiniteDiagnostic { get; set; }
         public bool EmittedPercentageDiagnostic { get; set; }
         public bool EmittedTruncationDiagnostic { get; set; }
-        /// <summary>Per PR-#107 review F2 #4 — one-shot guard for the
-        /// auto-fit approximation diagnostic; mirrors the other
-        /// one-shot flags so the same diagnostic doesn't repeat per
-        /// item or per pass.</summary>
-        public bool EmittedAutoFitDiagnostic { get; set; }
         public SizingContext(EmitDiagnostic? emitter) { Emitter = emitter; }
         public void Emit(PaginateDiagnostic d) => Emitter?.Invoke(d);
     }
@@ -489,6 +508,17 @@ internal static class GridSizing
         /// max-content)). Cycle 4 with L19 approximation simplifies
         /// to min(limit, max-content) since auto-min = 0.</summary>
         public double FitContentLimit;
+        /// <summary>True when this track was unrolled from a
+        /// <c>repeat(auto-fit, …)</c> repeat (grid-auto-fit-collapse-empty-tracks).
+        /// Only auto-fit-derived tracks are eligible for the §7.2.3.1
+        /// empty-track collapse after placement.</summary>
+        public bool IsAutoFitDerived;
+        /// <summary>True when an empty auto-fit track was collapsed
+        /// (§7.2.3.1): its base/growth-limit are 0, it leaves the fr
+        /// pool, and the gutters on either side merge (the fr free-space
+        /// gutter count + the position pass both skip it). Always false
+        /// for non-auto-fit grids, so they are byte-identical.</summary>
+        public bool IsCollapsed;
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 4 — expand <c>repeat(N, ...)</c>
@@ -531,12 +561,12 @@ internal static class GridSizing
     /// <c>repeat(auto-fill, …)</c> / <c>repeat(auto-fit, …)</c> from
     /// the container extent per CSS Grid L1 §7.2.3.1.
     ///
-    /// <para><b>Per PR-#107 review F2 #4</b>: emits a one-shot
-    /// <see cref="PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001"/>
-    /// when an auto-fit repeat is encountered; until the empty-track
-    /// collapse pass lands, auto-fit and auto-fill produce identical
-    /// expansions (= the deferral is visible at runtime, not just in
-    /// the docs).</para>
+    /// <para><b>grid-auto-fit-collapse</b>: an auto-fit repeat expands to the same iteration count as
+    /// auto-fill here; the difference (collapsing the EMPTY auto-fit tracks to 0 + merging their gutters)
+    /// happens later, after placement, in the sizing pass (<see cref="CollapseEmptyAutoFitTracks"/>). The
+    /// auto-fit-derived tracks are tagged via the optional <c>autoFitFlagsOut</c> so that pass can find
+    /// them. (PR-#107's one-shot auto-fit-approximated diagnostic is retired now that the collapse is
+    /// implemented.)</para>
     ///
     /// <para><b>Per PR-#107 review F2 #5</b>: per-axis truncation
     /// caps apply at the GLOBAL
@@ -546,7 +576,7 @@ internal static class GridSizing
     /// <see cref="PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001"/>.</para></summary>
     private static List<TrackListItem> ExpandTrackList(
         TrackList trackList, SizingContext ctx, CancellationToken ct,
-        double containerExtent, double gap)
+        double containerExtent, double gap, List<bool>? autoFitFlagsOut = null)
     {
         var expanded = new List<TrackListItem>(trackList.Items.Length);
         var truncated = false;
@@ -560,17 +590,9 @@ internal static class GridSizing
         int autoIterations = ComputeAutoRepeatIterations(
             trackList, containerExtent, gap);
 
-        // Per PR-#107 review F2 #4 — emit a one-shot auto-fit
-        // approximation diagnostic when the track list contains an
-        // auto-fit repeat (Count == -1).
-        foreach (var item in trackList.Items)
-        {
-            if (item is TrackListRepeat tr && tr.Repeat.Count == -1)
-            {
-                EmitAutoFitApproximatedDiagnostic(ctx);
-                break;
-            }
-        }
+        // grid-auto-fit-collapse — `repeat(auto-fit, …)` is now fully implemented (empty tracks collapse
+        // after placement in the sizing pass), so it no longer emits the auto-fit-approximated diagnostic
+        // that PR-#107 added while auto-fit was treated identically to auto-fill.
 
         foreach (var item in trackList.Items)
         {
@@ -580,6 +602,12 @@ internal static class GridSizing
                 truncated = true;
                 break;
             }
+            // grid-auto-fit-collapse — record which expanded items came from a `repeat(auto-fit, …)`
+            // repeat (Count == -1; auto-fill is Count == 0, NOT eligible) so the sizing pass can collapse
+            // empty auto-fit tracks after placement. Captured per source item + appended in lockstep with
+            // `expanded` (which only ever grows by appending).
+            var beforeCount = expanded.Count;
+            var fromAutoFit = item is TrackListRepeat afr && afr.Repeat.Count == -1;
             switch (item)
             {
                 case TrackListEntry:
@@ -613,6 +641,9 @@ internal static class GridSizing
                     }
                     break;
             }
+            if (autoFitFlagsOut is not null)
+                for (var k = beforeCount; k < expanded.Count; k++)
+                    autoFitFlagsOut.Add(fromAutoFit);
             if (truncated) break;
         }
         if (truncated)
@@ -820,6 +851,19 @@ internal static class GridSizing
         return percent * containerExtent / 100.0;
     }
 
+    /// <summary>True when <paramref name="trackList"/> contains a <c>repeat(auto-fit, …)</c>
+    /// (Count == -1) — the only case where the post-placement empty-track collapse needs to tag
+    /// auto-fit-derived tracks (grid-auto-fit-collapse). §7.2.3.1 allows at most one auto-repeat per
+    /// track list, so a single linear scan suffices.</summary>
+    private static bool ContainsAutoFitRepeat(TrackList trackList)
+    {
+        foreach (var item in trackList.Items)
+        {
+            if (item is TrackListRepeat tr && tr.Repeat.Count == -1) return true;
+        }
+        return false;
+    }
+
     private static void ResolveTrackSizes(
         TrackList trackList, double containerExtent, bool isAxisIndefinite,
         List<TrackSizingInfo> infoOut, SizingContext ctx,
@@ -832,13 +876,22 @@ internal static class GridSizing
         // for block-level grids with `width: auto` in a definite
         // containing block (= BlockLayouter passes finite content
         // size even when the Width slot is Keyword). Dropped.
+        // grid-auto-fit-collapse — only allocate the provenance list when the track list actually has a
+        // repeat(auto-fit, …); the common case (no auto-fit) keeps the pre-existing zero-extra-allocation
+        // path (PR #214 review).
+        var autoFitFlags = ContainsAutoFitRepeat(trackList) ? new List<bool>() : null;
         var expanded = ExpandTrackList(
-            trackList, ctx, ct, containerExtent, gap);
-        foreach (var item in expanded)
+            trackList, ctx, ct, containerExtent, gap, autoFitFlags);
+        for (var ei = 0; ei < expanded.Count; ei++)
         {
+            var item = expanded[ei];
             if (item is TrackListEntry entry)
             {
-                infoOut.Add(ClassifyEntry(entry.Entry, ctx));
+                var info = ClassifyEntry(entry.Entry, ctx);
+                // grid-auto-fit-collapse — tag tracks from a repeat(auto-fit, …) so the post-placement
+                // collapse pass can zero the empty ones (the flags list is parallel to `expanded`).
+                info.IsAutoFitDerived = autoFitFlags is not null && ei < autoFitFlags.Count && autoFitFlags[ei];
+                infoOut.Add(info);
             }
             else if (item is TrackListRepeat)
             {
@@ -1065,6 +1118,78 @@ internal static class GridSizing
         return sizes;
     }
 
+    /// <summary>CSS Grid L1 §7.2.3.1 — after placement, collapse any <c>repeat(auto-fit, …)</c>-derived
+    /// track that contains no grid item: its base / growth-limit go to 0 and it leaves the fr pool, so the
+    /// surviving tracks absorb the freed space when fr is re-resolved, and (via the collapse-aware gutter
+    /// count in <see cref="ResolveFrTracks"/> / <see cref="MaximizeTracks"/> and the position pass) the
+    /// gutters on either side merge. Returns <see langword="true"/> when at least one track collapsed.
+    /// No-op (returns false) when no track is auto-fit-derived — so an auto-fill or explicit grid is
+    /// byte-identical.</summary>
+    private static bool CollapseEmptyAutoFitTracks(
+        List<TrackSizingInfo> infos, List<PlacedItem> placedItems, bool isRowAxis)
+    {
+        var anyAutoFit = false;
+        for (var i = 0; i < infos.Count; i++)
+        {
+            if (infos[i].IsAutoFitDerived) { anyAutoFit = true; break; }
+        }
+        if (!anyAutoFit) return false;
+
+        // Occupancy on this axis: a track is "filled" if any placed item spans it.
+        var occupied = new bool[infos.Count];
+        foreach (var item in placedItems)
+        {
+            var start = isRowAxis ? item.Row : item.Col;
+            var itemSpan = isRowAxis ? item.RowSpan : item.ColSpan;
+            if (start < 0) continue; // unplaced (defensive — placement assigns all items)
+            for (var t = start; t < start + itemSpan && t < occupied.Length; t++)
+            {
+                if (t >= 0) occupied[t] = true;
+            }
+        }
+
+        var span = CollectionsMarshal.AsSpan(infos);
+        var collapsedAny = false;
+        for (var i = 0; i < span.Length; i++)
+        {
+            if (!span[i].IsAutoFitDerived || occupied[i]) continue;
+            span[i].IsCollapsed = true;
+            span[i].BaseSize = 0;
+            span[i].MinBaseSize = 0;
+            span[i].GrowthLimit = 0;
+            span[i].IsFr = false;
+            span[i].FrFactor = 0;
+            collapsedAny = true;
+        }
+        return collapsedAny;
+    }
+
+    /// <summary>A per-track collapsed-flag list parallel to the materialized sizes, or
+    /// <see langword="null"/> when NOTHING collapsed (the overwhelmingly common case) so
+    /// <see cref="ComputeTrackPositions"/> takes its byte-identical fast path.</summary>
+    private static List<bool>? CollapsedFlags(List<TrackSizingInfo> infos)
+    {
+        var any = false;
+        for (var i = 0; i < infos.Count; i++)
+        {
+            if (infos[i].IsCollapsed) { any = true; break; }
+        }
+        if (!any) return null;
+        var flags = new List<bool>(infos.Count);
+        for (var i = 0; i < infos.Count; i++) flags.Add(infos[i].IsCollapsed);
+        return flags;
+    }
+
+    /// <summary>The number of inter-track gutters for the §11.5 / §7.2.3 free-space + position math:
+    /// (non-collapsed track count − 1), clamped at 0. grid-auto-fit-collapse — collapsed tracks carry no
+    /// gutter. Equals (count − 1) when nothing collapsed, so non-auto-fit grids are unchanged.</summary>
+    private static int VisibleGutterCount(System.ReadOnlySpan<TrackSizingInfo> span)
+    {
+        var visible = 0;
+        for (var i = 0; i < span.Length; i++) if (!span[i].IsCollapsed) visible++;
+        return System.Math.Max(0, visible - 1);
+    }
+
     // =====================================================================
     //  §11.7 fr distribution (cycle 4 — with iterative removal)
     // =====================================================================
@@ -1129,7 +1254,7 @@ internal static class GridSizing
         // container extent (ResolvePercentage at the ClassifyEntry site is unchanged)
         // — only the fr leftover loses the gutters, so `1fr 1fr; column-gap:20` in 400
         // sizes each fr at 190 (= (400-20)/2), not 200.
-        var gutterTotal = System.Math.Max(0, span.Length - 1) * gap;
+        var gutterTotal = VisibleGutterCount(span) * gap;
 
         // Per-track "frozen" flag — fr tracks whose base exceeds
         // their proportional share get treated as fixed for the
@@ -1302,7 +1427,7 @@ internal static class GridSizing
         // gutters and overflow (e.g., `minmax(50,500) minmax(50,500); column-gap:20`
         // in 400 grew to 200/200 + a 20px gutter = 420). The gutter total is constant
         // across the freeze passes (it does not depend on which tracks freeze).
-        var gutterTotal = System.Math.Max(0, span.Length - 1) * gap;
+        var gutterTotal = VisibleGutterCount(span) * gap;
 
         // Per PR-#95 review P1+P2 — Span ref-access + stackalloc for
         // small-track-count case.
@@ -2975,16 +3100,27 @@ internal static class GridSizing
     // =====================================================================
 
     private static List<double> ComputeTrackPositions(
-        List<double> sizes, double originOffset, double gap)
+        List<double> sizes, double originOffset, double gap, IReadOnlyList<bool>? collapsed = null)
     {
         var positions = new List<double>(sizes.Count);
         var cursor = originOffset;
+        var prevVisible = false;
         for (var i = 0; i < sizes.Count; i++)
         {
+            // CSS Grid L1 §10.1 + §7.2.3.1 — a gutter sits only BETWEEN two visible (non-collapsed)
+            // tracks; a grid-auto-fit-collapsed track is zero-width and its surrounding gutters merge.
+            // When `collapsed` is null (every grid except an auto-fit one with empty tracks) this is
+            // bit-identical to "a gutter follows every track but the last" — same additions, same order.
+            var isCollapsed = collapsed is not null && i < collapsed.Count && collapsed[i];
+            if (isCollapsed)
+            {
+                positions.Add(cursor); // zero-width track, sits at the cursor between gutters
+                continue;
+            }
+            if (prevVisible) cursor += gap;
             positions.Add(cursor);
             cursor += sizes[i];
-            // CSS Grid L1 §10.1 — a gutter follows every track except the last.
-            if (i < sizes.Count - 1) cursor += gap;
+            prevVisible = true;
         }
         return positions;
     }
@@ -3057,33 +3193,6 @@ internal static class GridSizing
                 + "unbounded memory allocation from hostile CSS like "
                 + "repeat(10000, 1px 1fr 1px 1fr 1fr 1px). Items placed "
                 + "at indices in the truncated tail are silently dropped.",
-            Severity: PaginateDiagnosticSeverity.Warning));
-    }
-
-    /// <summary>Per PR-#107 review F2 #4 — emit a one-shot
-    /// `LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001` warning when the
-    /// track list uses <c>repeat(auto-fit, …)</c>. The diagnostic
-    /// surfaces the cycle-7c approximation (= auto-fit expands
-    /// identically to auto-fill; the post-placement empty-track
-    /// collapse pass is tracked under
-    /// `grid-auto-fit-collapse-empty-tracks-deferral`).</summary>
-    private static void EmitAutoFitApproximatedDiagnostic(SizingContext ctx)
-    {
-        if (ctx.EmittedAutoFitDiagnostic) return;
-        ctx.EmittedAutoFitDiagnostic = true;
-        ctx.Emit(new PaginateDiagnostic(
-            Code: PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001,
-            Message: "Grid uses repeat(auto-fit, …). Cycle 7c expands "
-                + "auto-fit IDENTICALLY to auto-fill; per CSS Grid L1 "
-                + "§7.2.3.1 auto-fit additionally collapses empty "
-                + "tracks (= those with no placed items) to 0 size "
-                + "AFTER placement. That post-placement collapse is "
-                + "deferred under "
-                + "`grid-auto-fit-collapse-empty-tracks-deferral`. "
-                + "Layouts that rely on the difference between auto-fit "
-                + "and auto-fill (= compacted vs. fixed columns when "
-                + "the item count is less than the derived track count) "
-                + "render identically until the deferral is picked up.",
             Severity: PaginateDiagnosticSeverity.Warning));
     }
 

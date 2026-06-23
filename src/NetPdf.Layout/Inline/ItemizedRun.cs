@@ -49,11 +49,18 @@ namespace NetPdf.Layout.Inline;
 /// TextRun array — the shaper reads
 /// <c>sourceRuns[SourceTextRunIndex].Style</c> to get font / size /
 /// color / etc.</param>
+/// <param name="ScriptIso15924">The run's UAX #24 script as an ISO 15924
+/// four-letter tag (cycle 3 — script-change itemization). <see langword="null"/>
+/// when the run is all-Common (digits / punctuation / spaces) or the script
+/// table doesn't cover it, in which case the shaper falls back to the caller's
+/// uniform script. Even-handed with <see cref="BidiLevel"/> + style: a script
+/// change opens a new run so each shaping pass uses one OpenType feature set.</param>
 internal readonly record struct ItemizedRun(
     int Utf16Start,
     int Utf16Length,
     byte BidiLevel,
-    int SourceTextRunIndex)
+    int SourceTextRunIndex,
+    string? ScriptIso15924 = null)
 {
     /// <summary><see langword="true"/> when the run's bidi level is
     /// odd — i.e., the run is right-to-left.</summary>

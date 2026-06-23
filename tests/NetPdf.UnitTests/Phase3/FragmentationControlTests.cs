@@ -57,10 +57,36 @@ public sealed class FragmentationControlTests : System.IDisposable
     {
         // left/right force a page break (the parity refinement — actually landing on a
         // left/right page via blank-page insertion — is a documented residual; here they
-        // behave like `page`). recto/verso/all are also registered + handled by the
-        // reader, but AngleSharp.Css 1.0.0-beta.144 doesn't parse those keywords yet.
+        // behave like `page`).
         var b = await ParseBox($"<div id='x' style='{css}'></div>");
         Assert.True(b.Style.ForcesPageBreakBefore());
+    }
+
+    [Theory]
+    [InlineData("break-before:recto", 8)]
+    [InlineData("break-before:verso", 9)]
+    [InlineData("break-before:all", 12)]
+    public async Task Break_before_recto_verso_all_parse_and_force(string css, int expectedKeyword)
+    {
+        // fragmentation-control-residuals (narrowed) — AngleSharp.Css 1.0.0-beta.144 DROPS the
+        // recto / verso / all forced-break values; the CssPreprocessor now recovers them so they
+        // reach the cascade (KeywordResolver index) + the break reader honors them as page breaks
+        // (recto / verso land on a left/right page; the blank-page parity stays a documented residual).
+        var b = await ParseBox($"<div id='x' style='{css}'></div>");
+        var slot = b.Style.Get(PropertyId.BreakBefore);
+        Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);
+        Assert.Equal(expectedKeyword, slot.AsKeyword());
+        Assert.True(b.Style.ForcesPageBreakBefore());
+        Assert.False(b.Style.ForcesPageBreakAfter());
+    }
+
+    [Fact]
+    public async Task Break_after_verso_parses_and_forces()
+    {
+        // The recovery covers break-after too (the value-gated entry matches both longhands).
+        var b = await ParseBox("<div id='x' style='break-after:verso'></div>");
+        Assert.True(b.Style.ForcesPageBreakAfter());
+        Assert.False(b.Style.ForcesPageBreakBefore());
     }
 
     [Theory]

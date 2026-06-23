@@ -765,6 +765,16 @@ internal static class CssPreprocessor
                   // slot. Gated to the three intrinsic keywords so the length / percentage / auto forms
                   // AngleSharp already keeps aren't duplicate-recovered.
                   || (lowerName == "flex-basis" && IsIntrinsicFlexBasisValue(rawValue))
+                  // fragmentation-control-residuals — AngleSharp.Css 1.0.0-beta.144 keeps
+                  // `break-before` / `break-after` but DROPS the `recto` / `verso` / `all` forced-break
+                  // values (CSS Fragmentation L3 §3.1; its grammar predates them), so those declarations
+                  // never reach the cascade even though KeywordResolver maps them + the break reader
+                  // (ComputedStyleLayoutExtensions.ForcesPageBreak) honors them. Recover ONLY those three
+                  // values verbatim (page / left / right / column / region / avoid* / auto are kept by
+                  // AngleSharp, so they aren't duplicate-recovered) — same value-gated precedent as the
+                  // intrinsic `flex-basis` keywords above.
+                  || ((lowerName == "break-before" || lowerName == "break-after")
+                      && IsRectoVersoAllBreakValue(rawValue))
                   // Per the body-calc cycle — AngleSharp.Css drops/normalizes declarations whose value
                   // carries a CSS math function it can't represent (`width: calc(1in - 24pt)` never
                   // reaches the cascade), so the body-calc first cut would silently see nothing.
@@ -1285,6 +1295,21 @@ internal static class CssPreprocessor
         return v.Equals("content", StringComparison.OrdinalIgnoreCase)
             || v.Equals("max-content", StringComparison.OrdinalIgnoreCase)
             || v.Equals("min-content", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>fragmentation-control-residuals — <see langword="true"/> for the three
+    /// <c>break-before</c> / <c>break-after</c> forced-break values AngleSharp.Css drops
+    /// (<c>recto</c> / <c>verso</c> / <c>all</c>, CSS Fragmentation L3 §3.1). The other
+    /// values (<c>page</c> / <c>left</c> / <c>right</c> / <c>column</c> / <c>region</c> /
+    /// <c>avoid*</c> / <c>auto</c>) reach the cascade through AngleSharp, so they're left
+    /// alone to avoid a duplicate recovery.</summary>
+    private static bool IsRectoVersoAllBreakValue(string rawValue)
+    {
+        var (clean, _) = ImportantParser.Strip(rawValue);
+        var v = clean.Trim();
+        return v.Equals("recto", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("verso", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("all", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

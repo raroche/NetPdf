@@ -126,8 +126,11 @@ grepping the ID).
 - **Behavior** — Forced page breaks (`page` / `left` / `right` + legacy `always` / `left` /
   `right`) work end-to-end. `left` / `right` currently behave like `page` (force a break)
   WITHOUT the parity refinement (inserting a blank page so the box lands on a left/right
-  page). `recto` / `verso` / `all` are registered + handled by the reader but are NOT parsed
-  by AngleSharp.Css 1.0.0-beta.144 (the declaration is dropped before the cascade). The
+  page). `recto` / `verso` / `all` are registered + handled by the reader AND now parsed —
+  AngleSharp.Css 1.0.0-beta.144 dropped those three values before the cascade, so a
+  `CssPreprocessor` value-gated recovery (`IsRectoVersoAllBreakValue`) now emits them
+  verbatim so they reach the cascade + force a page break (`recto` / `verso` still lack the
+  blank-page parity refinement, like `left` / `right`). The
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
   production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
@@ -135,13 +138,15 @@ grepping the ID).
   paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
   the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
   default), so per-paragraph overrides aren't honored yet.
-- **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion); (2) parsing for
-  `recto` / `verso` / `all` (AngleSharp upgrade or a CssPreprocessor recovery entry);
-  (3) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;
-  (4) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+- **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion);
+  (2) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;
+  (3) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+  (Parsing for `recto` / `verso` / `all` SHIPPED — the `CssPreprocessor` recovery above.)
 - **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
   on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
 - **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);
+  `src/NetPdf.Css/Parser/Preprocessing/CssPreprocessor.cs` (`IsRectoVersoAllBreakValue`
+  recovery for the dropped values);
   `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ForcesPageBreak*` /
   `AvoidsBreak*` / `ReadOrphans/WidowsOrDefault`); `BlockLayouter.cs` (the two break-decision
   sites — top-level loop + `EmitBlockSubtreeRecursive`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`

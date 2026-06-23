@@ -174,6 +174,7 @@ internal static class BoxBuilder
             ApplyInheritance(brStyle, parentStyle);
             ApplyResolvedDeclarations(brStyle, cascade.TryGetStylesFor(element), diagnostics);
             ResolveDeferredFontProperties(brStyle, parentStyle);
+            ApplyComputedStyleFixups(brStyle, parentStyle);
             // BoxKind.LineBreak with the source element so diagnostics still
             // point back to the right DOM node. The kind is inline-level.
             return new[] { Box.ForElement(BoxKind.LineBreak, brStyle, element) };
@@ -194,8 +195,7 @@ internal static class BoxBuilder
         ApplyInheritance(style, parentStyle);
         ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
-        ResolveMatchParentTextAlign(style, parentStyle);
-        ResolveDeclaredPercentLineHeightInPlace(style);
+        ApplyComputedStyleFixups(style, parentStyle);
 
         var displayText = ReadDisplay(style, element);
         var mapResult = DisplayMapper.Map(displayText, element.LocalName, out var kind);
@@ -365,6 +365,7 @@ internal static class BoxBuilder
         {
             ApplyMarkerApplicableDeclarations(markerStyle, markerRules, diagnostics);
             ResolveDeferredFontProperties(markerStyle, hostStyle);
+            ApplyComputedStyleFixups(markerStyle, hostStyle);
         }
 
         // Per PR #10 review Rec 2: read the EFFECTIVE list-style-type AFTER
@@ -660,6 +661,7 @@ internal static class BoxBuilder
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLineRules, diagnostics);
             ResolveDeferredFontProperties(s, elementStyle);
+            ApplyComputedStyleFixups(s, elementStyle);
             box.FirstLineStyle = s;
         }
 
@@ -671,6 +673,7 @@ internal static class BoxBuilder
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLetterRules, diagnostics);
             ResolveDeferredFontProperties(s, elementStyle);
+            ApplyComputedStyleFixups(s, elementStyle);
             box.FirstLetterStyle = s;
         }
     }
@@ -781,6 +784,7 @@ internal static class BoxBuilder
         ApplyInheritance(pseudoStyle, hostStyle);
         ApplyResolvedDeclarations(pseudoStyle, ruleSet, diagnostics);
         ResolveDeferredFontProperties(pseudoStyle, hostStyle);
+        ApplyComputedStyleFixups(pseudoStyle, hostStyle);
 
         // Per CSS Pseudo L4 §3.1: ::before / ::after default to display:inline
         // unless the cascade explicitly sets otherwise. We must NOT fall back
@@ -1771,6 +1775,20 @@ internal static class BoxBuilder
     /// top-down walk after defaults + inheritance + declarations, so the parent is fully resolved.</summary>
     private static void ResolveDeferredFontProperties(ComputedStyle style, ComputedStyle parentStyle) =>
         DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
+
+    /// <summary>Post-materialization computed-style fixups that need the PARENT's computed style + run
+    /// AFTER defaults + inheritance + own declarations + deferred-font resolution (the top-down walk, so
+    /// the parent is fully computed): <see cref="ResolveMatchParentTextAlign"/> (CSS Text 3 §7.1) +
+    /// <see cref="ResolveDeclaredPercentLineHeightInPlace"/> (CSS Inline 3 §4.2). Called from EVERY
+    /// style-materialization site — element, <c>&lt;br&gt;</c>, ::before/::after pseudo, and list marker —
+    /// so a generated box that declares <c>text-align: match-parent</c> or a <c>%</c> <c>line-height</c>
+    /// resolves it the same way an element box does (PR #212 review P2). Each fixup no-ops unless its
+    /// triggering value was declared, so non-feature styles are untouched.</summary>
+    private static void ApplyComputedStyleFixups(ComputedStyle style, ComputedStyle parentStyle)
+    {
+        ResolveMatchParentTextAlign(style, parentStyle);
+        ResolveDeclaredPercentLineHeightInPlace(style);
+    }
 
     /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.
     /// <c>match-parent</c> computes to the PARENT's <c>text-align</c>, with the parent's relative

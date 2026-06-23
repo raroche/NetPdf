@@ -384,6 +384,33 @@ public sealed class BoxBuilderTests
         Assert.Equal(expectedChildKeyword, p.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
     }
 
+    [Fact]
+    public async Task Match_parent_text_align_resolves_on_a_before_pseudo_box()
+    {
+        // PR #212 review P2 — a generated ::before box with `text-align: match-parent` resolves against
+        // its HOST's used text-align the same way an element box does: host `direction:rtl;
+        // text-align:start` → used RIGHT, so the block pseudo aligns RIGHT (keyword 3), NOT the defensive
+        // layout-time left fallback.
+        var root = await BuildAsync(
+            "<div></div>",
+            "div { direction:rtl; text-align:start } " +
+            "div::before { content:'A'; display:block; text-align:match-parent }");
+        var before = FindFirstPseudo(root, BoxPseudo.Before)!;
+        Assert.Equal(3, before.Style.ReadKeywordOrDefault(PropertyId.TextAlign, defaultIndex: 0));
+    }
+
+    /// <summary>First descendant box with the given pseudo marker (e.g. ::before), depth-first.</summary>
+    private static Box? FindFirstPseudo(Box root, BoxPseudo pseudo)
+    {
+        if (root.Pseudo == pseudo) return root;
+        foreach (var child in root.Children)
+        {
+            var hit = FindFirstPseudo(child, pseudo);
+            if (hit is not null) return hit;
+        }
+        return null;
+    }
+
     // ============================================================
     // line-height: <percentage> inherits as a length (CSS Inline 3 §4.2)
     // ============================================================

@@ -281,6 +281,13 @@ internal static class PageMarginBoxPainter
                     contentStyle, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx,
                     $"page margin box @{mb.Name}", diagnostics);
 
+            // A deferred font-/viewport-relative or calc() `line-height` (`2em` / `1.5rem` / `calc(…)`)
+            // resolves HERE too (margin-box-line-height cycle) — after the font-size is used px — so the
+            // inline-content line metrics AND the painter pitch both read the used px via ReadLineHeightPx.
+            ResolveDeferredLineHeightInPlace(style, rootEmPx, pageWidthPx, pageHeightPx);
+            if (!ReferenceEquals(contentStyle, style))
+                ResolveDeferredLineHeightInPlace(contentStyle, rootEmPx, pageWidthPx, pageHeightPx);
+
             // A font-/viewport-relative `border-radius` (`0.5em` / `2vw` / `1rem`, margin-box
             // relative-radius cycle) resolves HERE — after the box font-size is used px (the `em`
             // base) + before ReadCornerRadii reads the band/border/clip radii below. An absolute
@@ -538,6 +545,8 @@ internal static class PageMarginBoxPainter
             // the content font-size, falling back to font-size × 1.2 for `normal` / unset. (The running-
             // element segment path parses its OWN per-segment line-height separately, above.)
             var contentFontPx = contentMetricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+            // The deferred relative/calc line-height was already resolved IN PLACE on contentMetricsStyle
+            // (above, after font-size) so ReadLineHeightPx returns the used px; `normal`/unset → font × 1.2.
             var lineHeightPx = contentMetricsStyle.ReadLineHeightPx(contentFontPx) ?? contentFontPx * NormalLineHeightFactor;
             // The box's computed white-space decides whether its content can WRAP: only Normal / PreWrap /
             // PreLine / BreakSpaces wrap, so only they can flex narrower than the single-line width and
@@ -1455,11 +1464,30 @@ internal static class PageMarginBoxPainter
         return null;
     }
 
+    /// <summary>Resolve a DEFERRED font-/viewport-relative or <c>calc()</c> <c>line-height</c>
+    /// (<c>2em</c> / <c>1.5rem</c> / <c>5vw</c> / <c>calc(1em + 4px)</c>) to a used px <c>LengthPx</c> slot
+    /// IN PLACE (margin-box-line-height cycle, PR #212 review P1) — against the box's resolved font-size
+    /// (<c>em</c>) / root (<c>rem</c>) / page box (viewport), the same bases as the size + padding
+    /// resolves, a percentage term resolving against the font-size. Runs AFTER the font-size is used px
+    /// (the <c>em</c> base) so EVERY downstream reader — the inline-content line metrics AND the painter's
+    /// pitch — sees the same used value (rather than the typed-only <c>ReadLineHeightPx</c> falling back to
+    /// font-size × 1.2). A <c>&lt;number&gt;</c> / <c>&lt;length&gt;</c> / <c>&lt;percentage&gt;</c> /
+    /// <c>normal</c> slot is already typed (not deferred) and is left untouched.</summary>
+    private static void ResolveDeferredLineHeightInPlace(
+        ComputedStyle style, double rootEmPx, double pageWidthPx, double pageHeightPx)
+    {
+        if (!style.TryGetDeferred(PropertyId.LineHeight, out var raw) || raw is null) return;
+        var emPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        var bases = new RelativeSizeBases(emPx, rootEmPx, pageWidthPx, pageHeightPx);
+        if (TryResolveDeferredLengthPx(raw, emPx, bases, out var px))
+            style.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(px));
+    }
+
     /// <summary>Resolve a KEPT deferred length raw — a <c>calc()</c>/<c>min()</c>/<c>max()</c>/
     /// <c>clamp()</c> math function (calc + min/max/clamp cycles, percent terms against
     /// <paramref name="percentBasePx"/>) or a font-/viewport-relative length (relative-units cycle) —
-    /// to used px against <paramref name="bases"/>. Shared by the explicit §5.3 size and the padding
-    /// resolve.</summary>
+    /// to used px against <paramref name="bases"/>. Shared by the explicit §5.3 size, padding, and
+    /// line-height resolves.</summary>
     private static bool TryResolveDeferredLengthPx(
         string raw, double percentBasePx, in RelativeSizeBases bases, out double px)
     {

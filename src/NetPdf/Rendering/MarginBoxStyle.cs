@@ -284,9 +284,14 @@ internal static class MarginBoxStyle
                     // relative-length path; the painter resolves it or surfaces the contextual failure.
                     // Margin-box-scoped — a BODY calc() keeps the resolver's invalid-value diagnostic
                     // (body calc machinery is a separate pickup, deferrals.md).
-                    if ((IsSizeId(id) || IsPaddingId(id) || id == PropertyId.FontSize)
+                    if ((IsSizeId(id) || IsPaddingId(id) || id == PropertyId.FontSize
+                            || id == PropertyId.LineHeight)
                         && CalcLengthEvaluator.IsMathFunction(w.Value))
                     {
+                        // line-height: calc(…) joins the deferred-admission set (margin-box-line-height
+                        // cycle) — the leaf resolver has no calc machinery, but PageMarginBoxPainter
+                        // resolves the raw against the content font / root / page box at paint time
+                        // (mirroring the size/padding deferred path), so it isn't rejected here.
                         style.SetDeferred(id, w.Value);
                         continue;
                     }
@@ -359,8 +364,34 @@ internal static class MarginBoxStyle
         // (rem/viewport) stays deferred → the reader default (still a documented gap, deferrals.md).
         DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
 
+        // CSS Inline 3 §4.2 (margin-box-line-height cycle) — convert a DECLARED `%` line-height to a
+        // length at THIS context's resolved font-size, BEFORE it inherits down the @page → margin-box
+        // chain. So `@page { font-size: 20px; line-height: 200% }` computes 40px on the page context, and
+        // a `@top-center { font-size: 10px }` child keeps that 40px instead of re-resolving 200% × 10px.
+        // A Percentage slot here can only be one this context DECLARED (an inherited % was already
+        // converted on the parent). Mirrors BoxBuilder.ResolveDeclaredPercentLineHeightInPlace.
+        ResolveDeclaredPercentLineHeightInPlace(style);
+
         style.MarkAsBoxOwned();
         return style;
+    }
+
+    /// <summary>CSS Inline 3 §4.2 — convert a DECLARED <c>&lt;percentage&gt;</c> <c>line-height</c> slot to
+    /// a <c>LengthPx</c> at this style's resolved font-size, so the computed value is a LENGTH that
+    /// inherits down the @page → margin-box chain (a differently-sized child keeps the declaring context's
+    /// length). A Percentage slot here is necessarily this context's OWN declaration (an inherited % was
+    /// already converted on the parent). A <c>&lt;number&gt;</c> (inherits as the number) and a deferred
+    /// <c>em</c>/<c>rem</c>/<c>calc()</c> raw (resolved at paint time) are left untouched. No-op when the
+    /// font-size is still deferred (rem/viewport — resolved at paint), where the painter's Percentage
+    /// branch resolves it against the paint-time font-size.</summary>
+    private static void ResolveDeclaredPercentLineHeightInPlace(ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.LineHeight);
+        if (slot.Tag != ComputedSlotTag.Percentage) return;
+        if (style.Get(PropertyId.FontSize).Tag != ComputedSlotTag.LengthPx) return; // font-size still deferred
+        var fontSizePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        if (fontSizePx <= 0) return;
+        style.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSizePx));
     }
 
     /// <summary>Whether <paramref name="id"/> is one of the four <c>padding-*</c> longhands (which can

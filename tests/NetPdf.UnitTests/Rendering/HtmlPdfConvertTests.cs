@@ -2374,6 +2374,57 @@ public sealed class HtmlPdfConvertTests
             $"line-height:3 span ({triple.Span:F1}pt) should exceed 2× the line-height:1 span ({single.Span:F1}pt)");
     }
 
+    [Theory]
+    [InlineData("font-size:16px;line-height:2em", 32.0)]              // 2 × content font (16)
+    [InlineData("font-size:24px;line-height:1.5rem", 24.0)]          // 1.5 × ROOT font (16), NOT 1.5 × box 24
+    [InlineData("font-size:16px;line-height:calc(1em + 4px)", 20.0)] // 1×16 + 4
+    public void Page_margin_box_resolves_relative_and_calc_line_height(string boxFontAndLh, double expectedPitchPx)
+    {
+        // margin-box-line-height cycle (PR #212 review P1) — a deferred font-/viewport-relative or
+        // `calc()` line-height resolves at PAINT time against the content font / root / page box (the same
+        // bases as size/padding), instead of falling back to font-size × 1.2. The `rem` case uses a box
+        // font (24) ≠ the root (16) to prove it scales by the ROOT, not the box.
+        var pitchPt = MarginBoxLinePitchPt(pageDecls: "",
+            boxDecls: "content: \"A A A A A A A A A A\"; width: 24px; overflow: visible; " + boxFontAndLh);
+        Assert.Equal(expectedPitchPx * 0.75, pitchPt, 1);   // 1px = 0.75pt
+    }
+
+    [Fact]
+    public void Page_margin_box_percentage_line_height_inherits_the_page_context_length()
+    {
+        // CSS Inline 3 §4.2 (PR #212 review P1) — `@page { font-size:20px; line-height:200% }` computes a
+        // 40px LENGTH on the page context; the `@top-center { font-size:10px }` child INHERITS that 40px
+        // (not 200% × its own 10px = 20px). Proves the % is converted at the declaring @page context
+        // BEFORE it inherits into the margin box.
+        var pitchPt = MarginBoxLinePitchPt(
+            pageDecls: "font-size:20px; line-height:200%",
+            boxDecls: "content: \"A A A A A A A A A A\"; width: 24px; overflow: visible; font-size:10px");
+        Assert.Equal(40.0 * 0.75, pitchPt, 1);   // 40px = 200% × the @page 20px, NOT 200% × the box 10px
+    }
+
+    // Per-line pitch (pt) of a wrapping @top-center margin box, rendered with optional @page-level decls
+    // (font-size / line-height inherited into the box) + the box's own decls. SyntheticFont → deterministic.
+    private static double MarginBoxLinePitchPt(string pageDecls, string boxDecls)
+    {
+        var pagePrefix = string.IsNullOrEmpty(pageDecls) ? "" : pageDecls + "; ";
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { " + pagePrefix +
+            "@top-center { " + boxDecls + " } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        double min = double.MaxValue, max = double.MinValue;
+        var n = 0;
+        foreach (System.Text.RegularExpressions.Match m in
+            System.Text.RegularExpressions.Regex.Matches(pdf, @"-?[0-9.]+ (-?[0-9.]+) Td"))
+        {
+            var y = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+            if (y < min) min = y;
+            if (y > max) max = y;
+            n++;
+        }
+        Assert.True(n >= 2, $"expected the margin box to wrap to ≥2 lines, got {n}");
+        return (max - min) / (n - 1);   // inter-line pitch in pt
+    }
+
     [Fact]
     public void Page_margin_box_with_unsupported_content_function_is_skipped_with_a_diagnostic()
     {

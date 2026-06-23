@@ -2258,6 +2258,45 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_line_height_drives_the_line_pitch()
+    {
+        // margin-box-line-height cycle — a declared `line-height` now spaces a MULTI-LINE margin box's
+        // lines: line-height joined MarginBoxStyle's inherited cascade, and PageMarginBoxPainter reads
+        // it via ReadLineHeightPx. Same content + width → identical wrapping (the line COUNT is
+        // line-height-independent), so a 3× line-height roughly triples the inter-line span;
+        // `overflow: visible` keeps every line (no line-count clipping to confound the comparison).
+        // BEFORE this cycle both renders used font-size × 1.2 regardless of `line-height`, so the spans
+        // were identical — this asserts the new wiring bites.
+        static (int Lines, double Span) MarginBox(string lineHeight)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>@page { @top-center { " +
+                "content: \"A A A A A A A A A A A A\"; width: 24px; overflow: visible; " +
+                $"line-height: {lineHeight} }} }}</style></head><body></body></html>",
+                new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+            double min = double.MaxValue, max = double.MinValue;
+            var count = 0;
+            foreach (System.Text.RegularExpressions.Match m in
+                System.Text.RegularExpressions.Regex.Matches(pdf, @"-?[0-9.]+ (-?[0-9.]+) Td"))
+            {
+                var y = double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (y < min) min = y;
+                if (y > max) max = y;
+                count++;
+            }
+            return (count, count == 0 ? 0.0 : max - min);
+        }
+
+        var single = MarginBox("1");
+        var triple = MarginBox("3");
+
+        Assert.True(single.Lines >= 3, $"content should wrap to ≥3 lines, got {single.Lines}");
+        Assert.Equal(single.Lines, triple.Lines);            // line count is line-height-independent
+        Assert.True(triple.Span > single.Span * 2.0,         // ≈3× pitch — clearly more than a constant offset
+            $"line-height:3 span ({triple.Span:F1}pt) should exceed 2× the line-height:1 span ({single.Span:F1}pt)");
+    }
+
+    [Fact]
     public void Page_margin_box_with_unsupported_content_function_is_skipped_with_a_diagnostic()
     {
         // A non-page counter (counter(chapter)) is still a later cycle — it must emit a diagnostic

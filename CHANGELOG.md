@@ -8,6 +8,12 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Fixed — Phase 3 residual long-tail
+
+This batch closes the documented Phase-3 residual deferrals (`deferrals.md`) in a single pass; every change is gated so non-feature rendering stays byte-identical.
+
+- **`@page` margin boxes honor a declared `line-height`** (CSS Inline 3 §4.2, `margin-box-line-height` closed) — literal margin-box content (e.g. `@bottom-center { content: "…"; line-height: 2 }`) previously used `font-size × 1.2` for its line pitch regardless of a declared `line-height`. `line-height` now joins `MarginBoxStyle`'s inherited longhand whitelist (so it flows root → `@page` context → margin box) and `PageMarginBoxPainter` reads it via `ReadLineHeightPx` (the full `<number>` / `<length>` / `<percentage>` grammar), falling back to `font-size × 1.2` only for `normal` / unset. A margin box with no declared `line-height` is byte-identical.
+
 ### Fixed — Phase 3 closeout (remaining residual deferrals)
 
 - **Auto-height block backgrounds span their in-flow children** (CSS 2.1 §10.6.3, `auto-height-emit-vs-pagination` closed) — an `auto`-height block-flow container previously emitted only its own chrome (padding + border) as the painted border box, so its background / border / border-radius under-sized when its children were taller. The emitted fragment now spans the content extent (the value already used for the cursor + break accounting), **capped to the page fragment** so a subtree taller than the page paints a page-bounded rectangle — the cap is what keeps multi-page block-flow pagination byte-identical (the earlier uncapped attempt force-overflowed). Pagination, the cursor advance, the break checks, and continuation accounting are unchanged; only the painter's rectangle grows. **CSS 2.2 conformance → 100%** (30/30).

@@ -46,7 +46,6 @@ public sealed class DeferralsParityTests
         "rtl-fragment-reversal",
         "text-align-match-parent",
         "line-height-percentage-inheritance",
-        "margin-box-line-height",
         "inline-only-block-line-splitting",
         "fragmentation-control-residuals",
         "phase-4-painter-wiring",

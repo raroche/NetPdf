@@ -38,7 +38,7 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> / <c>white-space</c> (white-space cycle —
-/// drives the painter's wrap policy) are materialized + inherited. The
+/// drives the painter's wrap policy) are materialized + inherited (incl. <c>line-height</c> — drives the box line pitch). The
 /// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
 /// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle),
 /// <c>width</c> / <c>height</c> (explicit-size cycle), and <c>box-sizing</c> (box-sizing cycle) are
@@ -87,15 +87,17 @@ internal static class MarginBoxStyle
     /// <summary>The INHERITED longhands, in a fixed order (deterministic materialization). The font +
     /// color set feeds the shaper + text fill; <c>white-space</c> (white-space cycle) drives the
     /// painter's wrap policy (<c>canWrap</c> / the vertical-edge wrap / the §5.3 re-wrap — a declared
-    /// <c>nowrap</c>/<c>pre</c> keeps a rigid single line). All are CSS inherited properties, so they
-    /// flow root → page context → margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here —
+    /// <c>nowrap</c>/<c>pre</c> keeps a rigid single line); <c>line-height</c>
+    /// (margin-box-line-height cycle) drives the box's line pitch via <c>ReadLineHeightPx</c> (so a
+    /// declared <c>@bottom-center { line-height: 2 }</c> spaces a wrapping margin box). All are CSS
+    /// inherited properties, so they flow root → page context → margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here —
     /// alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
     /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; it is NOT
     /// inherited from the page/root, whose (UA-default) <c>text-align: start</c> would otherwise
     /// spuriously override the name-derived centering (post-PR-#134 review).</summary>
     private static readonly ImmutableArray<PropertyId> SupportedStyleIds = ImmutableArray.Create(
         PropertyId.FontFamily, PropertyId.FontSize, PropertyId.FontWeight, PropertyId.FontStyle,
-        PropertyId.Color, PropertyId.WhiteSpace);
+        PropertyId.Color, PropertyId.WhiteSpace, PropertyId.LineHeight);
 
     /// <summary>The inherited subset of <see cref="CascadedStyleIds"/> — drives the inheritance copy
     /// and the property-aware CSS-wide keyword handling (<c>unset</c>/<c>revert</c> behave as

@@ -532,11 +532,13 @@ internal static class PageMarginBoxPainter
             // Lay out the content line FIRST — its size drives the §5.3 shrink-to-fit box below. An
             // empty `content: ""` box (CSS Page 3 §6.1: content not none/normal) or one whose font won't
             // resolve has no content size, so it keeps the FULL band.
-            // DEFERRED (deferrals.md#margin-box-line-height) — literal margin-box content uses font-size
-            // × 1.2 regardless of a declared `line-height`: `line-height` is not in MarginBoxStyle's
-            // inherited set, so the slot isn't present here. The body path's ReadLineHeightPx is NOT wired
-            // in until that inheritance lands (the running-element segment path parses line-height separately).
-            var lineHeightPx = contentMetricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+            // margin-box-line-height cycle — literal margin-box content HONORS a declared `line-height`:
+            // it is now an inherited MarginBoxStyle longhand (flows root → page context → margin box), so
+            // ReadLineHeightPx decodes the full `<number>` / `<length>` / `<percentage>` grammar against
+            // the content font-size, falling back to font-size × 1.2 for `normal` / unset. (The running-
+            // element segment path parses its OWN per-segment line-height separately, above.)
+            var contentFontPx = contentMetricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+            var lineHeightPx = contentMetricsStyle.ReadLineHeightPx(contentFontPx) ?? contentFontPx * NormalLineHeightFactor;
             // The box's computed white-space decides whether its content can WRAP: only Normal / PreWrap /
             // PreLine / BreakSpaces wrap, so only they can flex narrower than the single-line width and
             // re-wrap to fit. A `nowrap` / `pre` box is rigid (min-content == max-content) → the

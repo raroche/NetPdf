@@ -354,30 +354,6 @@ grepping the ID).
 
 ---
 
-## multi-page-allocation-churn
-
-- **ID** — `multi-page-allocation-churn`
-- **Status** — `approximated` (correct output; super-linear transient allocations).
-- **Behavior** — Total allocation CHURN on the multi-page path scales ~O(n²) with page count: a single
-  table at ~26 rows/page allocates ~28 MiB/page at 5 pages but ~192 MiB/page at 39 pages (≈ O(n^1.9)
-  cumulative). The driver re-walks / re-measures content per page instead of carrying a continuation cursor
-  that does O(1) work per page. RETAINED memory is unaffected — it stays flat (~52 MiB at both 5 and 39
-  pages) because pages stream to the output, so exit criterion 8 (memory grows linearly) HOLDS; this is
-  purely transient GC pressure that also makes wall-clock somewhat super-linear (24 pg ≈ 400 ms, 34 pg ≈
-  800 ms). Within the exit-criterion-7 thresholds (3-page ≤ 200 ms, 20-page ≤ 1.5 s) the absolute times pass
-  with headroom; documents of hundreds of pages would degrade.
-- **Missing** — a continuation-carried layout cursor so each page does work proportional to its OWN content,
-  not all prior content re-measured each page. Likely overlaps the pagination cost-model / continuation-token
-  hardening.
-- **Trigger** — rendering a document of many (50+) pages — the per-page allocation grows with the page index.
-- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (the per-page re-measure passes) +
-  `src/NetPdf.Paginate/` (the driver loop).
-- **Added** — 2026-06-19, measured while wiring the task-15 memory-linearity gate.
-- **Removal condition** — per-page allocation is ~constant (O(1) per page) across a page-count sweep; total
-  churn grows linearly.
-
----
-
 ## phase-4-painter-wiring
 
 - **ID** — `phase-4-painter-wiring`

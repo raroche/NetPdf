@@ -48,7 +48,6 @@ public sealed class DeferralsParityTests
         "line-height-percentage-inheritance",
         "margin-box-line-height",
         "inline-only-block-line-splitting",
-        "multi-page-allocation-churn",
         "fragmentation-control-residuals",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",

@@ -927,6 +927,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // it. Re-captured each AttemptLayout (idempotent — the same per-conversion
         // object). Null when no shared cache is wired (the per-instance fallback).
         _gridMeasureCache = layout.GridMeasureCache as GridMeasurementCache;
+        // Per `multi-page-allocation-churn` — same cross-page capture for the table measurement
+        // cache (re-captured each AttemptLayout; null ⇒ the dispatch path still reuses the
+        // continuation's cache, only the per-page subtree re-shape stays).
+        _tableMeasureCache = layout.TableMeasureCache as TableMeasurementCache;
 
         // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2) —
         // clear the per-AttemptLayout nested-table content-height
@@ -4369,6 +4373,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             WritingMode = outerLayout.WritingMode,
             IsRtl = outerLayout.IsRtl,
             GridMeasureCache = outerLayout.GridMeasureCache,   // measurement-cache cycle
+            TableMeasureCache = outerLayout.TableMeasureCache, // multi-page-allocation-churn
         };
         using var innerLayouter = new BlockLayouter(
             rootBox: box,
@@ -5778,6 +5783,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         Diagnostics = _diagnostics,
                         GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
+                        TableMeasureCache = _tableMeasureCache, // multi-page-allocation-churn
                     };
                     nestedMulticolResult = nestedMulticolLayouter.AttemptLayout(
                         _capturedFragmentainer,
@@ -5912,6 +5918,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         Diagnostics = _diagnostics,
                         GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
+                        TableMeasureCache = _tableMeasureCache, // multi-page-allocation-churn
                     };
                     nestedFlexResult = DispatchFlexInner(
                         flexBox: child,
@@ -6055,6 +6062,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // Measurement-cache cycle — propagate the per-conversion cache so a
                     // nested (html→body-nested) grid's emission shares with its pre-measure.
                     GridMeasureCache = _gridMeasureCache,
+                    TableMeasureCache = _tableMeasureCache,
                 };
 
                 // Per cycle 5c.2d — resume contract: extract any
@@ -6537,6 +6545,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// propagated onto the nested-dispatch contexts so a nested grid's emission
     /// shares it. Null ⇒ no shared cache wired (per-instance fallback).</summary>
     private GridMeasurementCache? _gridMeasureCache;
+
+    /// <summary>Per `multi-page-allocation-churn` — the cross-page table measurement cache,
+    /// captured from <c>LayoutContext.TableMeasureCache</c> + propagated onto nested-dispatch
+    /// contexts. Lets <see cref="MeasureNestedTableContentExtent"/> (and page 1's
+    /// <see cref="PreMeasureTableIfNeeded"/>) reuse the page-invariant column layout instead of
+    /// re-shaping every cell on every page. Null ⇒ no shared cache wired.</summary>
+    private TableMeasurementCache? _tableMeasureCache;
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2)
     /// — per-AttemptLayout cache of nested-table CONTENT HEIGHT
@@ -9429,6 +9444,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentBlockOffset: contentBlockOffset,
             contentInlineSize: contentInlineSize);
 
+        // Per `multi-page-allocation-churn` — reuse the cross-page column layout so the FIRST
+        // page's dispatch doesn't re-shape the table that the subtree-extent pass already measured
+        // (or store it for that pass). On RESUME pages the incoming TableContinuation already
+        // carries the column layout (MeasureContentHeight restores it), so this only acts on the
+        // first page where the continuation has none.
+        var incomingTableHasCache =
+            (incomingTableContinuation as TableContinuation)?.ColumnLayoutCache is not null;
+        object? preTableReuse = null;
+        var preTableHit = !incomingTableHasCache && _tableMeasureCache is not null
+            && _tableMeasureCache.TryGet(wrapperChild, contentInlineSize, out preTableReuse)
+            && preTableReuse is not null;
+        if (preTableHit)
+        {
+            tableLayouter.RestoreMeasuredStateFromReuse(preTableReuse!);
+        }
         // Per Finding 1 — run measure NOW so the caller can fold the
         // measured content extent into the wrapper's border-box size.
         // The caller is responsible for calling EmitTableInner after
@@ -9436,6 +9466,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the post-Finding-1 wrapper extent).
         var naturalContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
+        if (!incomingTableHasCache && !preTableHit && _tableMeasureCache is not null
+            && tableLayouter.ExtractColumnLayoutCacheForReuse() is { } preFreshTableLayout)
+        {
+            _tableMeasureCache.Store(wrapperChild, contentInlineSize, preFreshTableLayout);
+        }
         // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — when the
         // wrapper is sized for a single page (= the outer dispatch
         // path, NOT the nested-recursion atomic path) AND the table
@@ -9529,12 +9564,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentInlineOffset: 0,
             contentBlockOffset: 0,
             contentInlineSize: contentInlineSize);
+        // Per `multi-page-allocation-churn` — reuse a prior page's (or pass's) column layout from
+        // the cross-page cache so this transient measure doesn't re-shape every cell on every page
+        // (the O(n²) churn). RestoreMeasuredStateFromReuse pre-populates the deterministic,
+        // page-invariant measured state so the MeasureContentHeight below returns immediately; on a
+        // miss we measure once + store. The transient continuation stays null, so the dry-run extent
+        // below is byte-identical to the un-cached path.
+        object? tableReuse = null;
+        var tableMeasureHit = _tableMeasureCache is not null
+            && _tableMeasureCache.TryGet(wrapper, contentInlineSize, out tableReuse)
+            && tableReuse is not null;
+        if (tableMeasureHit)
+        {
+            transientLayouter.RestoreMeasuredStateFromReuse(tableReuse!);
+        }
         var transientLayout = new LayoutContext(_capturedFragmentainer)
         {
             Diagnostics = _diagnostics,
         };
         var contentHeight = transientLayouter.MeasureContentHeight(
             _capturedFragmentainer, ref transientLayout, cancellationToken);
+        if (!tableMeasureHit && _tableMeasureCache is not null
+            && transientLayouter.ExtractColumnLayoutCacheForReuse() is { } freshTableLayout)
+        {
+            _tableMeasureCache.Store(wrapper, contentInlineSize, freshTableLayout);
+        }
 
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
         // the caller is doing a measure pass for a wrapper whose

@@ -101,6 +101,18 @@ internal ref struct LayoutContext
     /// even if a nested context misses propagation.</summary>
     public object? GridMeasureCache;
 
+    /// <summary>Per `multi-page-allocation-churn` — the cross-page table measurement cache,
+    /// allocated ONCE at the root pipeline + threaded through the layout context like
+    /// <see cref="GridMeasureCache"/>. A table that fragments across N pages was re-shaped per
+    /// page by the SUBTREE-EXTENT measure (a transient layouter with no continuation); this cache
+    /// holds the page-invariant column-layout token so that pass (and page 1's dispatch) reuse the
+    /// measure instead of re-shaping every cell every page (the O(n²) churn). Typed <c>object?</c>
+    /// to keep the NetPdf.Paginate → NetPdf.Layout edge clean (concrete
+    /// <c>TableMeasurementCache</c> lives in NetPdf.Layout, cast at the consumer); the token is
+    /// page-invariant + deterministic, so a hit is byte-identical. <see langword="null"/> ⇒ no
+    /// shared cache wired; the dispatch path still reuses the continuation's cache.</summary>
+    public object? TableMeasureCache;
+
     /// <summary>Document-scoped counter values per CSS Lists L3 §4.
     /// Keys are counter names (<c>page</c>, <c>pages</c>, author-defined);
     /// values are integer counter readings at the current layout
@@ -122,6 +134,7 @@ internal ref struct LayoutContext
         Fragmentainer = fragmentainer;
         Diagnostics = null;
         GridMeasureCache = null;
+        TableMeasureCache = null;
         _counters = null;
     }
 

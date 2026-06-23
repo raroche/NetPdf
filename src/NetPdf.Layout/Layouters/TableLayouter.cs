@@ -2799,6 +2799,55 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// <see langword="null"/> when the measure pass didn't populate
     /// the cache-relevant fields (degenerate paths — missing-grid,
     /// zero-row, etc.).</summary>
+    /// <summary>Restore the measure-phase state from a <see cref="ColumnLayoutCache"/> — the
+    /// inverse of <see cref="BuildColumnLayoutCache"/>. Shared by the resume-page
+    /// <see cref="MeasureContentHeight"/> fast path AND the cross-page reuse
+    /// (<see cref="RestoreMeasuredStateFromReuse"/>): the cached column widths + cell
+    /// placements + per-row heights are page-invariant (they don't depend on the page-relative
+    /// origin, the only thing that changes between pages), so restoring them is byte-identical to
+    /// a fresh measure.</summary>
+    private void LoadFromColumnLayoutCache(ColumnLayoutCache cache)
+    {
+        _measuredColumnCount = cache.ColumnCount;
+        _measuredColumnWidths = cache.ColumnWidths;
+        _measuredColumnOffsets = cache.ColumnOffsets;
+        _measuredRows = cache.MeasuredRows;
+        _measuredPlacements = cache.MeasuredPlacements;
+        _measuredCaptionList = cache.MeasuredCaptions;
+        _measuredTopCaptionsTotal = cache.MeasuredTopCaptionsTotal;
+        _measuredBottomCaptionsTotal = cache.MeasuredBottomCaptionsTotal;
+        _measuredUsedInlineSize = cache.MeasuredUsedInlineSize;
+        _measuredContentHeight = cache.MeasuredContentHeight;
+        // Per Phase 3 Task 13 cycle 2 — header / footer slice info.
+        _measuredHeaderRowCount = cache.HeaderRowCount;
+        _measuredFooterRowCount = cache.FooterRowCount;
+        _measuredHeaderStackHeight = cache.HeaderStackHeight;
+        _measuredFooterStackHeight = cache.FooterStackHeight;
+        _measureDone = true;
+    }
+
+    /// <summary>Per `multi-page-allocation-churn` — extract this layouter's page-invariant
+    /// measured state (column widths + per-row measurements + cell placements + caption extents)
+    /// as an opaque token for the cross-page <c>TableMeasurementCache</c>, so the per-page
+    /// SUBTREE-EXTENT measure can reuse it instead of re-shaping every cell on every page. The
+    /// same object <see cref="BuildColumnLayoutCache"/> attaches to a <see cref="TableContinuation"/>;
+    /// <see langword="null"/> on the degenerate (missing-grid / zero-row) paths.</summary>
+    internal object? ExtractColumnLayoutCacheForReuse() => BuildColumnLayoutCache();
+
+    /// <summary>Per `multi-page-allocation-churn` — pre-populate this layouter's measure-phase
+    /// state from a cross-page <c>TableMeasurementCache</c> token (the inverse of
+    /// <see cref="ExtractColumnLayoutCacheForReuse"/>), so a subsequent
+    /// <see cref="MeasureContentHeight"/> returns immediately without re-shaping. No-op when the
+    /// measure already ran or the token isn't a <see cref="ColumnLayoutCache"/>.</summary>
+    internal void RestoreMeasuredStateFromReuse(object columnLayoutCache)
+    {
+        if (_measureDone || columnLayoutCache is not ColumnLayoutCache cache)
+        {
+            return;
+        }
+        LoadFromColumnLayoutCache(cache);
+    }
+
     private ColumnLayoutCache? BuildColumnLayoutCache()
     {
         if (_measuredRows is null
@@ -2923,22 +2972,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         if (_incomingTableContinuation?.ColumnLayoutCache
             is ColumnLayoutCache cachedColumnLayout)
         {
-            _measuredColumnCount = cachedColumnLayout.ColumnCount;
-            _measuredColumnWidths = cachedColumnLayout.ColumnWidths;
-            _measuredColumnOffsets = cachedColumnLayout.ColumnOffsets;
-            _measuredRows = cachedColumnLayout.MeasuredRows;
-            _measuredPlacements = cachedColumnLayout.MeasuredPlacements;
-            _measuredCaptionList = cachedColumnLayout.MeasuredCaptions;
-            _measuredTopCaptionsTotal = cachedColumnLayout.MeasuredTopCaptionsTotal;
-            _measuredBottomCaptionsTotal = cachedColumnLayout.MeasuredBottomCaptionsTotal;
-            _measuredUsedInlineSize = cachedColumnLayout.MeasuredUsedInlineSize;
-            _measuredContentHeight = cachedColumnLayout.MeasuredContentHeight;
-            // Per Phase 3 Task 13 cycle 2 — header / footer slice info.
-            _measuredHeaderRowCount = cachedColumnLayout.HeaderRowCount;
-            _measuredFooterRowCount = cachedColumnLayout.FooterRowCount;
-            _measuredHeaderStackHeight = cachedColumnLayout.HeaderStackHeight;
-            _measuredFooterStackHeight = cachedColumnLayout.FooterStackHeight;
-            _measureDone = true;
+            LoadFromColumnLayoutCache(cachedColumnLayout);
             return _measuredContentHeight;
         }
 

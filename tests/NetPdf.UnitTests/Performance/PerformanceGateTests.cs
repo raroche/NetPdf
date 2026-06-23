@@ -31,10 +31,11 @@ namespace NetPdf.UnitTests.Performance;
 /// <item>The exit-criterion-7 "20-page report" target (docs/design/performance.md) is a FULL-pipeline
 /// workload — tables + images + web fonts. This gate covers only the SYNTHETIC layout/pagination pipeline;
 /// the image + real-font cost belongs in a Phase-4 corpus benchmark (review P2).</item>
-/// <item>Criterion 8 here is a RETAINED-heap check only (the heap stays flat across page count). It does NOT
-/// enforce ALLOCATION linearity — multi-page allocation CHURN is super-linear (~O(n²),
-/// deferrals.md <c>multi-page-allocation-churn</c>), which the MemoryDiagnoser standard would flag, so
-/// criterion 8 is only PARTIALLY met (review P1).</item></list></para>
+/// <item>Criterion 8 is checked two ways: a RETAINED-heap gate (the heap stays flat across page count) AND
+/// an ALLOCATION-SLOPE gate (<see cref="Multi_page_allocation_per_page_stays_constant_with_page_count"/>) —
+/// per-page transient allocation no longer grows with page count now that a fragmenting table is measured
+/// ONCE per conversion + reused across pages (the <c>multi-page-allocation-churn</c> O(n²) churn is fixed).
+/// The BenchmarkDotNet <c>[MemoryDiagnoser]</c> flow remains the authoritative allocation profile.</item></list></para>
 ///
 /// <para>The two p50 gates use WALL-CLOCK timing and the retained-heap gate forces full GCs, so all three
 /// run in a <see cref="PerformanceGatesCollection"/> with <c>DisableParallelization = true</c> — they do
@@ -111,6 +112,44 @@ public sealed class PerformanceGateTests
         var retained = GC.GetTotalMemory(forceFullCollection: true);
         GC.KeepAlive(result);   // keep the rendered output alive so it counts toward the retained heap
         return retained;
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public void Multi_page_allocation_per_page_stays_constant_with_page_count()
+    {
+        // Exit criterion 8 (allocation linearity) — `multi-page-allocation-churn`. TOTAL transient
+        // allocation must grow ~LINEARLY with page count, i.e. PER-PAGE allocation stays ~constant.
+        // The fix: a fragmenting table is measured (column split + cell shaping) ONCE per conversion
+        // and reused across pages via the cross-page TableMeasurementCache, instead of re-shaped by
+        // the per-page subtree-extent pass. Pre-fix the per-page allocation grew ~O(n) with page
+        // count (27→187 MiB/page over 5→39 pages, ~O(n²) total); post-fix it is flat (~5 MiB/page).
+        var smallPerPage = AllocBytesPerPage(PerfFixtures.Invoice(lineItems: 130), out var smallPages);
+        var bigPerPage = AllocBytesPerPage(PerfFixtures.Invoice(lineItems: 520), out var bigPages);
+
+        Assert.True(bigPages >= smallPages * 3,
+            $"the fixtures should scale page count ~4× ({smallPages} → {bigPages} pages).");
+        // O(n²) churn would make per-page allocation grow ~4× for 4× pages; the cached table keeps
+        // it flat. A 1.5× ceiling catches a regression to super-linear while tolerating the small
+        // residual per-page growth (display-list + counter state) and GC measurement noise.
+        Assert.True(bigPerPage < smallPerPage * 1.5,
+            $"Exit criterion 8: per-page allocation must stay ~constant with page count "
+            + $"({smallPages} pg = {smallPerPage / 1024.0 / 1024.0:F1} MiB/pg → {bigPages} pg = "
+            + $"{bigPerPage / 1024.0 / 1024.0:F1} MiB/pg; a {bigPerPage / (double)smallPerPage:F2}× rise "
+            + "for 4× pages signals the table is being re-measured per page again).");
+    }
+
+    private static double AllocBytesPerPage(string html, out int pages)
+    {
+        var opts = new HtmlPdfOptions { FontResolver = new PerfFixtures.SynthResolver() };
+        _ = HtmlPdf.Convert(html, opts);   // warm (JIT + the per-conversion caches are per-call, so this only warms JIT)
+        GC.Collect();
+        var before = GC.GetTotalAllocatedBytes(precise: true);
+        var result = HtmlPdf.ConvertDetailed(html, opts);
+        var after = GC.GetTotalAllocatedBytes(precise: true);
+        pages = result.PageCount;
+        GC.KeepAlive(result);
+        return (after - before) / (double)pages;
     }
 }
 

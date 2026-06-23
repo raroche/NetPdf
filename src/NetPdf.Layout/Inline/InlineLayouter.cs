@@ -298,7 +298,8 @@ internal static class InlineLayouter
             whiteSpace, overflowWrap, wordBreak,
             hyphens, hyphenator, cancellationToken,
             inlineTextPolicyPerRun: null,
-            intrinsicSizingMode: intrinsicSizingMode);
+            intrinsicSizingMode: intrinsicSizingMode,
+            paragraphDirection: paragraphDirection);
 
         // Per Phase 3 Task 11 sub-cycle 1 review Finding #1 — bundle
         // lines + shaped runs + preprocessed source so the painter
@@ -660,7 +661,8 @@ internal static class InlineLayouter
             hyphenator,
             cancellationToken,
             perRunPolicy,
-            intrinsicSizingMode);
+            intrinsicSizingMode,
+            paragraphDirection);
         return new InlineLayoutResult(lines, shaped, preprocessed);
     }
 

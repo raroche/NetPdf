@@ -130,44 +130,6 @@ grepping the ID).
 
 ---
 
-## rtl-fragment-reversal
-
-- **ID** — `rtl-fragment-reversal`
-- **Status** — `approximated`.
-- **Behavior** — The paragraph BASE direction is now CSS-driven (PR 2
-  task 4 — a `direction: rtl` block resolves to bidi base level 1 and
-  RIGHT-aligns via the `text-align` start/end swap, task 5). HarfBuzz
-  shapes RTL runs in visual (reversed) order internally; but
-  `LineFragment.Slices` stays in DOCUMENT order. Painters walk
-  per-shaped-run glyph arrays as-is. Single-direction LTR paragraphs
-  paint correctly. Single-direction RTL paragraphs are right-aligned
-  but walk in the wrong visual order at the fragment level (the levels
-  are correct; only the slice ORDER is wrong).
-- **Missing** — Fragment-level slice reversal (UAX #9 L2) for RTL
-  paragraph base direction so the painter consumes slices visually
-  right-to-left. Plus one residual direction-pipeline gap:
-  `PageMarginBoxPainter` inline text still hardcodes LTR base
-  direction. (The `dir` HTML attribute → `direction` mapping SHIPPED —
-  `BoxBuilder.ApplyDirAttribute`, a UA-origin presentational hint:
-  `dir="ltr"`/`"rtl"` set the direction keyword, `auto` keeps the
-  inherited direction, and a CSS `direction` wins.)
-- **Trigger** — RTL primary direction (Arabic / Hebrew) enters the
-  corpus, OR a user reports right-to-left mis-rendering / a `dir="rtl"`
-  attribute having no effect.
-- **Owner files** — `src/NetPdf.Layout/Inline/LineBuilder.cs::Wrap`
-  emission site (`EmitDrawableRange`) — reverse slice order when the
-  paragraph base direction is `ParagraphDirection.RightToLeft`. The
-  base direction itself is resolved by
-  `DirectionStyleExtensions.ReadParagraphDirection` (PR 2 task 4).
-- **Added** — Phase 3 Task 10 cycle 1 documented the deferral; PR 2
-  task 4 wired CSS-driven base direction (levels + alignment are now
-  correct), and batch 2 wired the `dir` HTML attribute (see Missing);
-  the visual slice reversal + margin-box base direction remain.
-- **Removal condition** — Wrap reverses slice order for RTL paragraphs
-  AND the painter consumes them visually.
-
----
-
 ## fragmentation-control-residuals
 
 - **ID** — `fragmentation-control-residuals`
@@ -349,8 +311,10 @@ grepping the ID).
     (`<br>`)-terminated line (PR-3 task 9 — `justify-all` lifts the §7.3 forced-break exception; plain
     `justify` still leaves a `<br>` line start-aligned). (center / right / end shift the atomic — body
     text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL block —
-    direction pipeline, PR 2 task 5. What remains: the atomic's bidi VISUAL ORDER within a mixed-direction
-    line is still document-order — see `rtl-fragment-reversal`.)
+    direction pipeline, PR 2 task 5. An atomic's run-level visual order within a mixed-direction line now
+    reverses together with the other per-run slices under an RTL paragraph base — the UAX #9 L2
+    run-granularity reversal in `LineBuilder.Wrap` (an atomic is itself a slice); deeper-than-single-
+    embedding bidi nesting is the residual approximation.)
   - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
     separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
     by document depth, not a dedicated cap); LTR horizontal-tb.

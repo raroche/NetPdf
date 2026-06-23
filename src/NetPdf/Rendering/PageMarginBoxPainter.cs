@@ -595,7 +595,11 @@ internal static class PageMarginBoxPainter
                         availableInlineSize: horizontalAxis ? availableInlinePx : fixedAxisContentWidthPx,
                         resolver: shaper,
                         scriptIso15924: "Latn", language: "en",
-                        paragraphDirection: ParagraphDirection.LeftToRight,
+                        // rtl-fragment-reversal — the margin box's own computed `direction` drives the
+                        // bidi base direction (was hardcoded LTR), so an `@page` margin box / running
+                        // element with `direction: rtl` lays its inline text out right-to-left. LTR boxes
+                        // (the common case) resolve to LeftToRight → byte-identical.
+                        paragraphDirection: contentStyle.ReadParagraphDirection(),
                         whiteSpace: horizontalAxis
                             ? (hasForcedBreaks ? forcedBreakWhiteSpace : WhiteSpace.NoWrap)
                             : reflowWhiteSpace);
@@ -1201,7 +1205,9 @@ internal static class PageMarginBoxPainter
                 sourceTextRuns: runs,
                 availableInlineSize: Math.Max(widthPx, 1.0), resolver: shaper,
                 scriptIso15924: "Latn", language: "en",
-                paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: whiteSpace);
+                // rtl-fragment-reversal — the box content's own `direction` drives the bidi base
+                // direction (the runs share the margin box's content style); LTR → byte-identical.
+                paragraphDirection: runs[0].Style.ReadParagraphDirection(), whiteSpace: whiteSpace);
             if (laid.Lines.Length == 0) return false;
             result = laid;
             return true;

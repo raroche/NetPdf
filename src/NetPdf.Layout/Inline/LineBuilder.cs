@@ -620,6 +620,16 @@ internal static class LineBuilder
     /// Defaults to <see langword="false"/> — the line-wrap pass for
     /// final layout always honors break-word's glyph-boundary
     /// fallback.</param>
+    /// <param name="paragraphDirection">The paragraph base direction
+    /// (rtl-fragment-reversal). For
+    /// <see cref="ParagraphDirection.RightToLeft"/>, each emitted
+    /// line's per-run slices are reversed (UAX #9 L2 at run
+    /// granularity) so the painter consumes them visually
+    /// right-to-left; the glyph order WITHIN each level-homogeneous
+    /// slice is left as HarfBuzz shaped it. Defaults to
+    /// <see cref="ParagraphDirection.LeftToRight"/> (and
+    /// <see cref="ParagraphDirection.Auto"/> is treated likewise),
+    /// keeping document slice order — so LTR output is byte-identical.</param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
@@ -649,7 +659,8 @@ internal static class LineBuilder
         Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default,
         IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun = null,
-        bool intrinsicSizingMode = false)
+        bool intrinsicSizingMode = false,
+        ParagraphDirection paragraphDirection = ParagraphDirection.LeftToRight)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
         ArgumentNullException.ThrowIfNull(shapedRuns);
@@ -1429,6 +1440,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
+                    paragraphDirection,
                     endsWithMandatoryBreak: false,
                     endsWithHyphenationBreak: endsWithHyphenation);
                 lineStart = lastAllowed + 1;
@@ -1573,6 +1585,7 @@ internal static class LineBuilder
                     // Force break at cursor-1: emit lineStart..cursor-1,
                     // start next line at cursor.
                     EmitDrawableRange(output, flat, lineStart, cursor - 1,
+                        paragraphDirection,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor;
                     cursor = lineStart - 1;
@@ -1582,6 +1595,7 @@ internal static class LineBuilder
                     // Single glyph wider than line: emit just this
                     // glyph alone, advance.
                     EmitDrawableRange(output, flat, lineStart, cursor,
+                        paragraphDirection,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor + 1;
                     // cursor stays — for-loop increment moves it past.
@@ -1608,6 +1622,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
+                    paragraphDirection,
                     endsWithMandatoryBreak: true);
                 lineStart = cursor + 1;
                 lineAdvance = 0;
@@ -1637,6 +1652,7 @@ internal static class LineBuilder
         if (lineStart < totalGlyphs)
         {
             EmitDrawableRange(output, flat, lineStart, totalGlyphs - 1,
+                paragraphDirection,
                 endsWithMandatoryBreak: false);
         }
 
@@ -2602,6 +2618,7 @@ internal static class LineBuilder
     private static void EmitDrawableRange(
         List<LineFragment> output,
         FlatGlyph[] flat, int start, int end,
+        ParagraphDirection paragraphDirection,
         bool endsWithMandatoryBreak,
         bool endsWithHyphenationBreak = false)
     {
@@ -2652,6 +2669,20 @@ internal static class LineBuilder
             GlyphLength: sliceCount,
             SliceAdvance: sliceAdvance));
         totalAdvance += sliceAdvance;
+
+        // UAX #9 L2 (rtl-fragment-reversal) — for a RIGHT-TO-LEFT paragraph base direction the painter
+        // must consume the line's per-run slices visually right-to-left. Each slice is level-homogeneous
+        // (a contiguous same-shaped-run glyph range) and the slices are built in LOGICAL (document) order
+        // above, so a flat reverse of the slice ORDER is L2 reordering at run granularity: the first
+        // logical run lands rightmost, the last logical run leftmost. The glyph arrays WITHIN each slice
+        // are untouched — HarfBuzz already emits each run in its own visual order (RTL runs reversed, an
+        // embedded LTR run kept logical), so a single flat reverse composes correctly for the common
+        // single-embedding-depth case. The painter walks Slices left-to-right accumulating SliceAdvance
+        // (TextPainter), and the line is right-aligned (the text-align start/end swap), so the reversed
+        // order paints at the correct visual x. TotalAdvance is the order-independent sum, so wrap/fit
+        // decisions are unaffected. LeftToRight / Auto keep document order, so LTR output is byte-identical.
+        if (paragraphDirection == ParagraphDirection.RightToLeft && slices.Count > 1)
+            slices.Reverse();
 
         output.Add(new LineFragment(
             Slices: slices.ToArray(),

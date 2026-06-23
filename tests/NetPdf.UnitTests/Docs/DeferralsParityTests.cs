@@ -42,7 +42,6 @@ public sealed class DeferralsParityTests
         "word-break-keep-all-cjk",
         "hyphens-auto-language-routing",
         "uax-24-script-detection",
-        "rtl-fragment-reversal",
         "inline-only-block-line-splitting",
         "fragmentation-control-residuals",
         "phase-4-painter-wiring",

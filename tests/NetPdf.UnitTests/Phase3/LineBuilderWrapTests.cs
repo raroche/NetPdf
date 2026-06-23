@@ -549,6 +549,79 @@ public class LineBuilderWrapTests
         Assert.Contains("XAdvance", ex.Message);
     }
 
+    // --- RTL fragment-level slice reversal (UAX #9 L2, rtl-fragment-reversal) ---
+
+    [Fact]
+    public void Wrap_reverses_per_run_slice_order_for_an_rtl_paragraph_base()
+    {
+        // Two source runs → two itemized runs (Itemize splits on the source-run-index change) → two
+        // shaped runs → two per-run slices on the one emitted line. Under an LTR base the slices stay in
+        // document order [run0, run1]; under an RTL base UAX #9 L2 reverses them to [run1, run0] so the
+        // painter — which walks Slices left-to-right accumulating SliceAdvance — paints the LAST logical
+        // run leftmost. TotalAdvance (the order-independent sum) is identical, so wrapping is unaffected.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
+
+        var ltrItemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var ltrShaped = LineBuilder.Shape(sourceRuns, ltrItemized, resolver, LatnScript, EnLang);
+        var ltrLine = Assert.Single(LineBuilder.Wrap(sourceRuns, ltrShaped, availableInlineSize: 1000,
+            paragraphDirection: ParagraphDirection.LeftToRight));
+
+        var rtlItemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.RightToLeft);
+        var rtlShaped = LineBuilder.Shape(sourceRuns, rtlItemized, resolver, LatnScript, EnLang);
+        var rtlLine = Assert.Single(LineBuilder.Wrap(sourceRuns, rtlShaped, availableInlineSize: 1000,
+            paragraphDirection: ParagraphDirection.RightToLeft));
+
+        Assert.Equal(2, ltrLine.Slices.Length);
+        Assert.Equal(2, rtlLine.Slices.Length);
+
+        // The RTL slice order is the exact reverse of the LTR (document) order.
+        Assert.Equal(ltrLine.Slices[0].ShapedRunIndex, rtlLine.Slices[1].ShapedRunIndex);
+        Assert.Equal(ltrLine.Slices[1].ShapedRunIndex, rtlLine.Slices[0].ShapedRunIndex);
+
+        // The reversal does not change the line's width (order-independent advance sum).
+        Assert.Equal(ltrLine.TotalAdvance, rtlLine.TotalAdvance, precision: 5);
+
+        // Concrete painted x: walk slices left-to-right accumulating SliceAdvance, like the painter. The
+        // FIRST logical run (shaped index 0) is leftmost (x=0) under LTR, but shifts RIGHT under RTL
+        // (now preceded by the second run); the second logical run (index 1) moves to x=0.
+        static double LeftXOfRun(LineFragment line, int shapedRunIndex)
+        {
+            var x = 0.0;
+            foreach (var s in line.Slices)
+            {
+                if (s.ShapedRunIndex == shapedRunIndex) return x;
+                x += s.SliceAdvance;
+            }
+            return double.NaN;
+        }
+
+        Assert.Equal(0.0, LeftXOfRun(ltrLine, 0));                 // run0 leftmost under LTR
+        Assert.Equal(0.0, LeftXOfRun(rtlLine, 1));                 // run1 leftmost under RTL
+        Assert.True(LeftXOfRun(rtlLine, 0) > LeftXOfRun(ltrLine, 0)); // run0 shifted right under RTL
+    }
+
+    [Fact]
+    public void Wrap_keeps_document_slice_order_for_ltr_and_auto_bases()
+    {
+        // Regression guard for the LTR byte-identity gate: the default (LeftToRight) AND Auto bases keep
+        // slices in document order, so non-RTL output is unchanged by the reversal branch.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var auto = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000,
+            paragraphDirection: ParagraphDirection.Auto));
+        var ltr = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000,
+            paragraphDirection: ParagraphDirection.LeftToRight));
+
+        Assert.Equal(0, auto.Slices[0].ShapedRunIndex);
+        Assert.Equal(1, auto.Slices[1].ShapedRunIndex);
+        Assert.Equal(0, ltr.Slices[0].ShapedRunIndex);
+        Assert.Equal(1, ltr.Slices[1].ShapedRunIndex);
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

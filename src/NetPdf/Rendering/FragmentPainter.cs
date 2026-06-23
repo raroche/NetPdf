@@ -6,6 +6,7 @@ using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Parser.Preprocessing;
 using NetPdf.Css.Properties;
+using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
 
@@ -88,6 +89,8 @@ internal static class FragmentPainter
     /// pre-cycle caller) paints color-only, byte-identical.</param>
     /// <param name="document">The owning document for XObject registration; required (non-null)
     /// only when <paramref name="imageCache"/> is supplied.</param>
+    /// <param name="effectiveTransforms">Phase 4 — box → effective (ancestor-composed) PDF cm; a
+    /// fragment whose box is present wraps its decoration in that matrix. Null = nothing transformed.</param>
     public static void PaintFragments(
         IReadOnlyList<BoxFragment> fragments,
         PdfPage page,
@@ -99,7 +102,10 @@ internal static class FragmentPainter
         // bg-image cycle: the per-render image store + owning document. Null (the default and
         // every pre-cycle caller) paints color-only — byte-identical output.
         ImageResourceCache? imageCache = null,
-        PdfDocument? document = null)
+        PdfDocument? document = null,
+        // Phase 4 transforms (review [P1]): box → effective (ancestor-composed) PDF cm. A fragment
+        // whose box is present wraps its decoration in that matrix. Null = nothing transformed.
+        IReadOnlyDictionary<Box, (double A, double B, double C, double D, double E, double F)>? effectiveTransforms = null)
     {
         // ONE "a line-style was approximated as solid" flag, SHARED by borders + outline (post-PR-#173
         // Copilot review): PAINT-BORDER-STYLE-APPROXIMATED-001 is a once-per-conversion diagnostic, so a
@@ -107,6 +113,7 @@ internal static class FragmentPainter
         var styleApproximationReported = false;
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
         var boxShadowRasterReported = false;      // Phase 4 shadows — once-per-render raster Info.
+        var boxShadowCapReported = false;         // Phase 4 shadows — once-per-render over-cap Warning.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -129,18 +136,14 @@ internal static class FragmentPainter
 
             var currentColorArgb = ResolveCurrentColor(style);
 
-            // transform (Phase 4) — wrap this fragment's decoration in a PDF cm about the
-            // transform-origin (the text pass wraps its glyphs in the SAME cm), so the box and its
-            // content render under the CSS transform. Non-transformed fragments emit no wrap.
-            ImageResourceCache.BoxTransform boxTransform = default;
-            var transformed = imageCache is not null
-                && imageCache.TransformBoxes.TryGetValue(fragment.Box, out boxTransform);
-            if (transformed)
-            {
-                var (ta, tb, tc, td, te, tf) = CssTransform_Parser.ToPdfMatrix(
-                    boxTransform.Transform, boxTransform.Origin, leftPx, topPx, widthPx, heightPx, pageHeightPt);
-                page.BeginTransform(ta, tb, tc, td, te, tf);
-            }
+            // transform (Phase 4, review [P1]) — wrap this fragment's decoration in the box's
+            // EFFECTIVE cm (its own transform composed with every ancestor's), so a child of a
+            // transformed element transforms too. The text + image passes use the SAME map.
+            // Non-transformed fragments emit no wrap (byte-identical).
+            (double A, double B, double C, double D, double E, double F) effCm = default;
+            var transformed = effectiveTransforms is not null
+                && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
+            if (transformed) page.BeginTransform(effCm.A, effCm.B, effCm.C, effCm.D, effCm.E, effCm.F);
 
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)
@@ -152,7 +155,7 @@ internal static class FragmentPainter
                 {
                     PaintBoxShadows(page, document, shadows, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
-                        ref boxShadowRasterReported);
+                        ref boxShadowRasterReported, ref boxShadowCapReported);
                 }
 
                 PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb);
@@ -1151,7 +1154,7 @@ internal static class FragmentPainter
     private static void PaintBoxShadows(
         PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
     {
         var borderRadii = ReadCornerRadii(style, widthPx, heightPx);
         for (var i = shadows.Count - 1; i >= 0; i--)
@@ -1191,7 +1194,8 @@ internal static class FragmentPainter
             else
             {
                 PaintBlurredBoxShadow(page, document, shLeftPx, shTopPx, shWidthPx, shHeightPx,
-                    shadowRadii, s.BlurPx, pageHeightPt, r, g, b, alpha, diagnostics, ref rasterReported);
+                    shadowRadii, s.BlurPx, pageHeightPt, r, g, b, alpha, diagnostics,
+                    ref rasterReported, ref capReported);
             }
         }
     }
@@ -1216,7 +1220,7 @@ internal static class FragmentPainter
         double shLeftPx, double shTopPx, double shWidthPx, double shHeightPx,
         CornerRadii shadowRadii, double blurPx, double pageHeightPt,
         double r, double g, double b, double alpha,
-        IDiagnosticsSink? diagnostics, ref bool rasterReported)
+        IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
     {
         var sigmaPx = blurPx / 2.0;
         var marginPx = Math.Ceiling(3.0 * sigmaPx);
@@ -1240,10 +1244,21 @@ internal static class FragmentPainter
 
         if (result is null)
         {
-            // Over-cap / degenerate → a sharp native shadow is better than nothing.
+            // Over-cap / degenerate → a sharp native shadow is better than nothing, but SURFACE the
+            // approximation (PR #210 review [P2] — never silently degrade).
             ToPdfRect(shLeftPx, shTopPx, shWidthPx, shHeightPx, pageHeightPt,
                 out var fx, out var fy, out var fw, out var fh);
             FillShadowRect(page, fx, fy, fw, fh, shadowRadii, r, g, b, alpha);
+            if (!capReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.CssBoxShadowUnsupported001,
+                    "A blurred box-shadow was too large to rasterize (the shadow bitmap would exceed "
+                    + $"the {NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); it was "
+                    + "painted as a SHARP shadow instead of blurred.",
+                    DiagnosticSeverity.Warning));
+                capReported = true;
+            }
             return;
         }
 

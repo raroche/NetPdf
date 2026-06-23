@@ -86,8 +86,6 @@ internal static class TextPainter
     /// <param name="diagnostics">Sink for skipped-text diagnostics; <see langword="null"/> drops them.</param>
     /// <param name="textShadows">Phase 4 — per-box parsed <c>text-shadow</c> layers; a fragment whose
     /// box has them paints its glyph runs offset in the shadow color UNDER the main text. Null = none.</param>
-    /// <param name="transforms">Phase 4 — per-box parsed 2D <c>transform</c> + origin; a fragment
-    /// whose box has one wraps its glyphs in the matching PDF <c>cm</c>. Null = none.</param>
     public static void PaintText(
         IReadOnlyList<BoxFragment> fragments,
         PdfPage page,
@@ -97,15 +95,15 @@ internal static class TextPainter
         double contentOriginLeftPx,
         double contentOriginTopPx,
         IDiagnosticsSink? diagnostics,
-        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null,
-        IReadOnlyDictionary<Box, ImageResourceCache.BoxTransform>? transforms = null)
+        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null)
     {
         // Single-page convenience over the multi-page session (byte-identical to the pre-dedup path: a
         // session with one page subsets that page's glyphs exactly as before). The multi-page driver uses
-        // the session directly to dedup a shared font across pages.
+        // the session directly to dedup a shared font across pages. (Transforms ride the multi-page path:
+        // the cm is per-page geometry, passed to CollectPage; this convenience doesn't thread one.)
         ArgumentNullException.ThrowIfNull(page);
         var session = new TextPaintSession(
-            shaper, pageHeightPt, contentOriginLeftPx, contentOriginTopPx, diagnostics, textShadows, transforms);
+            shaper, pageHeightPt, contentOriginLeftPx, contentOriginTopPx, diagnostics, textShadows);
         session.CollectPage(page, fragments);
         session.Finish(document);
     }
@@ -130,8 +128,7 @@ internal static class TextPainter
         double contentOriginLeftPx,
         double contentOriginTopPx,
         IDiagnosticsSink? diagnostics,
-        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null,
-        IReadOnlyDictionary<Box, ImageResourceCache.BoxTransform>? transforms = null)
+        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null)
     {
         private readonly Dictionary<string, FontCollect> _collects = new(StringComparer.Ordinal);
         private readonly List<string> _fontOrder = [];               // first-seen (across pages) → deterministic build order.
@@ -152,7 +149,8 @@ internal static class TextPainter
         /// the base overload exactly (byte-identical when no per-page geometry varies).</summary>
         public void CollectPage(
             PdfPage page, IReadOnlyList<BoxFragment> fragments,
-            double pageHeightPtForPage, double originLeftPx, double originTopPx)
+            double pageHeightPtForPage, double originLeftPx, double originTopPx,
+            IReadOnlyDictionary<Box, (double A, double B, double C, double D, double E, double F)>? effectiveTransforms = null)
         {
             ArgumentNullException.ThrowIfNull(page);
             ArgumentNullException.ThrowIfNull(fragments);
@@ -168,15 +166,18 @@ internal static class TextPainter
 
                 IReadOnlyList<CssTextShadow>? fragmentTextShadows = null;
                 textShadows?.TryGetValue(fragment.Box, out fragmentTextShadows);
-                ImageResourceCache.BoxTransform fragmentTransform = default;
-                var hasTransform = transforms is not null
-                    && transforms.TryGetValue(fragment.Box, out fragmentTransform);
+                // The box's EFFECTIVE cm (ancestor-composed, review [P1]) — already in PDF space, so
+                // CollectFragment just rides it onto each glyph DrawCommand (no per-fragment matrix math).
+                (double, double, double, double, double, double)? fragmentTransformCm = null;
+                if (effectiveTransforms is not null
+                    && effectiveTransforms.TryGetValue(fragment.Box, out var ecm))
+                    fragmentTransformCm = ecm;
 
                 CollectFragment(
                     fragment, inline, blockStyle,
                     originLeftPx, originTopPx, pageHeightPtForPage,
                     shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics,
-                    fragmentTextShadows, hasTransform ? fragmentTransform : null);
+                    fragmentTextShadows, fragmentTransformCm);
             }
             // Skip a page with no draws (a background/image-only, transparent-text, or font-size:0 page) —
             // it has no text to replay, so storing it would just no-op in Finish (Copilot — avoid retaining
@@ -284,16 +285,11 @@ internal static class TextPainter
         HashSet<string> failed, HashSet<string> diagnosed, List<DrawCommand> draws,
         IDiagnosticsSink? diagnostics,
         IReadOnlyList<CssTextShadow>? textShadows = null,
-        ImageResourceCache.BoxTransform? boxTransform = null)
+        (double, double, double, double, double, double)? transformCm = null)
     {
-        // transform (Phase 4) — the PDF cm wrapping this fragment's glyphs, the SAME matrix the
-        // decoration pass (FragmentPainter) uses, derived from the border box + transform-origin.
-        (double, double, double, double, double, double)? transformCm = null;
-        if (boxTransform is { } bt && !bt.Transform.IsIdentity)
-            transformCm = CssTransform_Parser.ToPdfMatrix(
-                bt.Transform, bt.Origin,
-                contentOriginLeftPx + fragment.InlineOffset, contentOriginTopPx + fragment.BlockOffset,
-                fragment.InlineSize, fragment.BlockSize, pageHeightPt);
+        // transformCm (Phase 4, review [P1]) — the box's EFFECTIVE cm (ancestor-composed), the SAME
+        // matrix the decoration pass uses, rides onto each glyph DrawCommand so transformed text
+        // (incl. a child of a transformed ancestor) lands on its transformed box.
 
         // Content-box origin (CSS px, page-top-relative): the border box minus the
         // border + padding the layouter inset the inline content by.

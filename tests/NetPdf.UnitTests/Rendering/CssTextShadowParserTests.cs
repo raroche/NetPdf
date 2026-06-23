@@ -51,8 +51,17 @@ public sealed class CssTextShadowParserTests
     [InlineData("1px 2px 3px 4px")]  // text-shadow has no spread (4 lengths invalid)
     [InlineData("2em 2px")]          // unsupported unit
     [InlineData("1px 1px -2px red")] // negative blur
+    [InlineData("1e400px 2px red")]  // non-finite (overflow) — PR #210 review [P2]
     public void Unsupported_or_empty_forms_return_null(string value)
     {
         Assert.Null(CssTextShadow_Parser.TryParse(value));
+    }
+
+    [Fact]
+    public void Unitless_zero_offsets_parse()
+    {
+        var s = Assert.Single(CssTextShadow_Parser.TryParse("0 0.0 blue")!); // PR #210 review [P3]
+        Assert.Equal(0.0, s.OffsetXPx, 4);
+        Assert.Equal(0.0, s.OffsetYPx, 4);
     }
 }

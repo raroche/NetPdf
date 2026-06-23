@@ -74,4 +74,15 @@ public sealed class BoxShadowPaintTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowBlurRaster001);
     }
+
+    [Fact]
+    public void Oversized_blur_falls_back_to_sharp_with_a_diagnostic()
+    {
+        // An 800px blur on the 100×60 box drives the raster bitmap past the 4096px cap → sharp
+        // fallback, SURFACED via CSS-BOXSHADOW-UNSUPPORTED-001 (PR #210 review [P2]).
+        var result = HtmlPdf.ConvertDetailed(Html("0 0 800px #cc3366"));
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+        Assert.Contains("0.8 0.2 0.4 rg", Latin1(result.Pdf)); // a sharp shadow still paints
+    }
 }

@@ -83,8 +83,20 @@ public sealed class CssBoxShadowParserTests
     [InlineData("2em 4px")]        // font-relative unit not resolved here
     [InlineData("2px 4px 50%")]    // percentage blur not a length we resolve
     [InlineData("2px 2px -3px red")] // negative blur is invalid
+    [InlineData("1e400px 2px red")] // non-finite (overflow) — PR #210 review [P2]
+    [InlineData("2px 1e400px red")]
     public void Unsupported_or_empty_forms_return_null(string value)
     {
         Assert.Null(CssBoxShadow_Parser.TryParse(value));
+    }
+
+    [Fact]
+    public void Unitless_zero_offsets_parse()
+    {
+        // Every CSS zero form is valid, not just exact "0" (PR #210 review [P3]).
+        var s = Assert.Single(CssBoxShadow_Parser.TryParse("0.0 -0 red")!);
+        Assert.Equal(0.0, s.OffsetXPx, 4);
+        Assert.Equal(0.0, s.OffsetYPx, 4);
+        Assert.Equal("red", s.ColorRaw);
     }
 }

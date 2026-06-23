@@ -3303,9 +3303,11 @@ flags the categories):
      box's own declared value is read today) + true GLYPH BLUR (the blurred case paints a sharp
      offset, `CSS-TEXTSHADOW-UNSUPPORTED-001`); `transform` faithful 3D PROJECTION (genuinely-3D
      functions flatten to identity, not an orthographic projection) + the transformed-element
-     STACKING CONTEXT (each fragment's decoration + text wrap the same `cm` independently, so
-     z-order vs. other elements isn't a true isolated group) + `em`/`rem`/`%` lengths in transform
-     offsets / `transform-origin`. The `NetPdf.Paint` `DisplayCommand` IR still has no
+     STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
+     composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element
+     transforms too — but each fragment still wraps that `cm` independently, NOT as one isolated
+     z-order group; a transformed ancestor split onto another page is also skipped) + `em`/`rem`/`%`
+     lengths in transform offsets / `transform-origin`. The `NetPdf.Paint` `DisplayCommand` IR still has no
      fragment→command or command→PDF consumer — the bridge emits straight to `IContentStream`.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →

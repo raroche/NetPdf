@@ -404,7 +404,7 @@ internal static class PdfRenderPipeline
         // Finish() appends AFTER it, preserving the "text over backgrounds" layering.
         var textSession = new TextPainter.TextPaintSession(
             shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics,
-            imageCache.TextShadowBoxes, imageCache.TransformBoxes);
+            imageCache.TextShadowBoxes);
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -435,16 +435,22 @@ internal static class PdfRenderPipeline
 
             var page = document.AddPage(ppMediaBox);
 
+            // Phase 4 transforms (review [P1]) — the per-page box → effective (ancestor-composed) cm,
+            // shared by the decoration / image / text passes so a transformed element transforms its
+            // whole subtree. Empty (no allocation) when nothing on the page is transformed.
+            var effectiveTransforms = TransformResolver.BuildEffectiveTransforms(
+                bodyFragments, imageCache.TransformBoxes, ppMargins.LeftPx, ppMargins.TopPx, ppMediaBox.HeightPts);
+
             FragmentPainter.PaintFragments(
                 bodyFragments, page, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx,
                 paintBackgrounds: options.PrintBackgrounds, diagnostics,
-                imageCache, document);
+                imageCache, document, effectiveTransforms);
 
             // Replaced-element content (img-pipeline cycle): each <img> fragment places its
             // decoded XObject at its content box — over every band/border, under the glyphs.
             ImagePainter.PaintImages(
                 bodyFragments, page, document, imageCache, ppMediaBox.HeightPts,
-                ppMargins.LeftPx, ppMargins.TopPx, diagnostics);
+                ppMargins.LeftPx, ppMargins.TopPx, diagnostics, effectiveTransforms);
 
             var textFragments = bodyFragments;
             if (hasMarginBoxes)
@@ -510,7 +516,8 @@ internal static class PdfRenderPipeline
             // actual glyph runs are replayed in Finish() below, after every font is subset + embedded
             // once from the cross-page union. Per-page geometry: the y-flip + content origin use the
             // page's OWN MediaBox height + margins (= the session defaults when no per-page rule applies).
-            textSession.CollectPage(page, textFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx);
+            textSession.CollectPage(page, textFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx,
+                effectiveTransforms);
         }
 
         // Inline overflow / the page-count cap / per-page-geometry clipping (review F3) surfaced once.

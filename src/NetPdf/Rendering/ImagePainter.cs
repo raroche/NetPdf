@@ -4,6 +4,7 @@
 using System.Collections.Generic;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
+using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
 
@@ -33,7 +34,10 @@ internal static class ImagePainter
         double pageHeightPt,
         double contentOriginLeftPx,
         double contentOriginTopPx,
-        IDiagnosticsSink? diagnostics = null)
+        IDiagnosticsSink? diagnostics = null,
+        // Phase 4 transforms (review [P1]): box → effective cm. A transformed <img> wraps its
+        // image XObject placement in the matrix (not just decoration). Null = nothing transformed.
+        IReadOnlyDictionary<Box, (double A, double B, double C, double D, double E, double F)>? effectiveTransforms = null)
     {
         if (cache.ImageBoxes.Count == 0) return;
         var unknownPositionReported = false;   // object-position cycle — once per render.
@@ -101,6 +105,12 @@ internal static class ImagePainter
             }
 
             var imageRef = ImageResourceCache.GetOrRegister(document, entry);
+            // transform (Phase 4, review [P1]) — a transformed <img> wraps its XObject placement
+            // (and the overflow clip) in the box's effective cm, so the image moves with the box.
+            (double A, double B, double C, double D, double E, double F) effCm = default;
+            var transformed = effectiveTransforms is not null
+                && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
+            if (transformed) page.BeginTransform(effCm.A, effCm.B, effCm.C, effCm.D, effCm.E, effCm.F);
             // cover / none can overflow the content box — clip there (CSS Images 3 §5.5: the
             // content's painted area is the content box).
             const double overflowEps = 0.01;
@@ -117,6 +127,7 @@ internal static class ImagePainter
                 out var x, out var y, out var w, out var h);
             page.PlaceImage(imageRef, x, y, w, h);
             if (clips) page.RestoreGraphicsState();
+            if (transformed) page.RestoreGraphicsState();
         }
     }
 

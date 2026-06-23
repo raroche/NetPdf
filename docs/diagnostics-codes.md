@@ -52,7 +52,7 @@ Severity levels:
 | `CSS-MASK-RASTER-FALLBACK-001` | Info | `mask`/`mask-image` triggered raster fallback. |
 | `CSS-CONIC-GRADIENT-RASTER-001` | Info | Conic gradient triggered raster fallback. |
 | `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | Blurred box-shadow triggered raster fallback. |
-| `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not yet painted was ignored — an `inset` shadow (outset only in the first cut) or an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not). Other layers still paint. Once per render. |
+| `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not painted exactly was ignored or approximated — an `inset` shadow (outset only in the first cut), an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not), or a blurred shadow too large to rasterize (painted sharp, over the 4096 px cap). Other layers still paint. Once per render. |
 | `CSS-TEXTSHADOW-BLUR-RASTER-001` | Info | Blurred text-shadow triggered raster fallback. |
 | `CSS-TEXTSHADOW-UNSUPPORTED-001` | Warning | A text-shadow not painted exactly yet was approximated/ignored — a non-zero blur painted as a sharp offset (glyph blur not yet applied), or an offset/blur in an unresolvable unit (px + absolute units supported; `em`/`rem`/`%` not, dropping the value). Once per render. |
 | `CSS-WRITING-MODE-SIDEWAYS-UNSUPPORTED-001` | Warning | `sideways-rl`/`sideways-lr` writing modes treated as `vertical-rl`/`vertical-lr`. |

@@ -53,6 +53,10 @@ internal static class CssTransform_Parser
             if (m is { } mm)
                 (a, b, c, d, e, f) = Multiply(a, b, c, d, e, f, mm.A, mm.B, mm.C, mm.D, mm.E, mm.F);
         }
+        // A composed matrix can blow up to non-finite (e.g. skew near 90° → tan → huge) — reject it
+        // so it never reaches PDF emission (PR #210 review [P2]).
+        if (!(double.IsFinite(a) && double.IsFinite(b) && double.IsFinite(c)
+            && double.IsFinite(d) && double.IsFinite(e) && double.IsFinite(f))) return null;
         return new CssTransform(a, b, c, d, e, f, had3D);
     }
 
@@ -150,7 +154,7 @@ internal static class CssTransform_Parser
         if (args.Count < min || args.Count > max) return false;
         var result = new double[args.Count];
         for (var i = 0; i < args.Count; i++)
-            if (!double.TryParse(args[i].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out result[i]))
+            if (!CssLengthParsing.TryFinite(args[i].Trim(), out result[i])) // non-finite rejected (review [P2])
                 return false;
         values = result;
         return true;
@@ -178,7 +182,6 @@ internal static class CssTransform_Parser
         radians = 0;
         var t = token.Trim().ToLowerInvariant();
         if (t.Length == 0) return false;
-        if (t == "0") return true;
         (string Unit, double ToRad)[] units =
         {
             ("deg", Math.PI / 180.0), ("grad", Math.PI / 200.0), ("rad", 1.0), ("turn", 2.0 * Math.PI),
@@ -187,16 +190,16 @@ internal static class CssTransform_Parser
         {
             if (t.EndsWith(unit, StringComparison.Ordinal))
             {
-                var num = t.AsSpan(0, t.Length - unit.Length);
-                if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                if (CssLengthParsing.TryFinite(t.AsSpan(0, t.Length - unit.Length), out var v))
                 {
                     radians = v * toRad;
-                    return true;
+                    return double.IsFinite(radians);
                 }
                 return false;
             }
         }
-        return false;
+        // Unitless is valid ONLY as a finite zero (a bare angle needs a unit otherwise) — PR #210 [P3].
+        return CssLengthParsing.TryFinite(t, out var z) && z == 0.0;
     }
 
     /// <summary>Split a function's argument list on commas (CSS transforms use commas between args;
@@ -243,52 +246,77 @@ internal static class CssTransformOrigin_Parser
         if (string.IsNullOrWhiteSpace(raw)) return TransformOrigin.Center;
         var tokens = CssLengthParsing.SplitTopLevelSpaces(raw.Trim());
         if (tokens.Count is 0 or > 3) return TransformOrigin.Center;
+        // A 3rd value is the z-length (CSS Transforms L1 §3) — it must be a length, and is ignored.
+        if (tokens.Count == 3 && !CssLengthParsing.TryLengthPx(tokens[2], out _)) return TransformOrigin.Center;
 
-        // Classify ≤ 2 positional tokens (the optional 3rd, a z-length, is ignored).
-        var xFrac = 0.5; var xPx = 0.0; var yFrac = 0.5; var yPx = 0.0;
+        var k0 = Classify(tokens[0], out var f0, out var p0);
+        if (k0 == OriginKind.Invalid) return TransformOrigin.Center;
         if (tokens.Count == 1)
         {
-            if (!ApplyAxis(tokens[0], horizontal: true, ref xFrac, ref xPx, ref yFrac, ref yPx))
-                return TransformOrigin.Center;
-            return new TransformOrigin(xFrac, xPx, yFrac, yPx);
+            // One value: a keyword sets its named axis (the other stays center); a lone offset is X.
+            return k0 switch
+            {
+                OriginKind.Horizontal => new TransformOrigin(f0, p0, 0.5, 0),
+                OriginKind.Vertical => new TransformOrigin(0.5, 0, f0, p0),
+                OriginKind.Offset => new TransformOrigin(f0, p0, 0.5, 0),
+                _ => TransformOrigin.Center, // center
+            };
         }
 
-        // Two values: keywords may swap (top left ≡ left top); otherwise first = x, second = y.
-        var t0 = tokens[0].ToLowerInvariant();
-        var t1 = tokens[1].ToLowerInvariant();
-        var swap = t0 is "top" or "bottom" || t1 is "left" or "right";
-        var xTok = swap ? tokens[1] : tokens[0];
-        var yTok = swap ? tokens[0] : tokens[1];
-        if (!ApplyAxis(xTok, horizontal: true, ref xFrac, ref xPx, ref yFrac, ref yPx)) return TransformOrigin.Center;
-        if (!ApplyAxis(yTok, horizontal: false, ref xFrac, ref xPx, ref yFrac, ref yPx)) return TransformOrigin.Center;
-        return new TransformOrigin(xFrac, xPx, yFrac, yPx);
+        var k1 = Classify(tokens[1], out var f1, out var p1);
+        if (k1 == OriginKind.Invalid) return TransformOrigin.Center;
+
+        if (k0 != OriginKind.Offset && k1 != OriginKind.Offset)
+        {
+            // Both keywords — either order, but two edges on the SAME axis are invalid (PR #210 [P2]).
+            if (k0 == OriginKind.Horizontal && k1 == OriginKind.Horizontal) return TransformOrigin.Center;
+            if (k0 == OriginKind.Vertical && k1 == OriginKind.Vertical) return TransformOrigin.Center;
+            double xf = 0.5, xp = 0, yf = 0.5, yp = 0;
+            if (k0 == OriginKind.Horizontal) { xf = f0; xp = p0; } else if (k0 == OriginKind.Vertical) { yf = f0; yp = p0; }
+            if (k1 == OriginKind.Horizontal) { xf = f1; xp = p1; } else if (k1 == OriginKind.Vertical) { yf = f1; yp = p1; }
+            return new TransformOrigin(xf, xp, yf, yp);
+        }
+
+        // At least one offset ⇒ strict positional order: [0] = horizontal, [1] = vertical. A keyword
+        // naming the wrong axis for its slot rejects (`25% left`, `top 25%`).
+        if (k0 == OriginKind.Vertical) return TransformOrigin.Center;
+        if (k1 == OriginKind.Horizontal) return TransformOrigin.Center;
+        var (xfr, xpx) = k0 == OriginKind.Center ? (0.5, 0.0) : (f0, p0);
+        var (yfr, ypx) = k1 == OriginKind.Center ? (0.5, 0.0) : (f1, p1);
+        return new TransformOrigin(xfr, xpx, yfr, ypx);
     }
 
-    private static bool ApplyAxis(string token, bool horizontal,
-        ref double xFrac, ref double xPx, ref double yFrac, ref double yPx)
+    private enum OriginKind { Horizontal, Vertical, Center, Offset, Invalid }
+
+    /// <summary>Classify a transform-origin token + read its value as a box fraction (keyword / %)
+    /// OR a px offset (length). Exactly one of <paramref name="frac"/> / <paramref name="px"/> is
+    /// non-trivial; the caller assigns whichever to the resolved axis.</summary>
+    private static OriginKind Classify(string token, out double frac, out double px)
     {
+        frac = 0.5;
+        px = 0.0;
         var t = token.Trim().ToLowerInvariant();
         switch (t)
         {
-            case "left": xFrac = 0.0; xPx = 0; return true;
-            case "right": xFrac = 1.0; xPx = 0; return true;
-            case "top": yFrac = 0.0; yPx = 0; return true;
-            case "bottom": yFrac = 1.0; yPx = 0; return true;
-            case "center":
-                if (horizontal) { xFrac = 0.5; xPx = 0; } else { yFrac = 0.5; yPx = 0; }
-                return true;
+            case "left": frac = 0.0; return OriginKind.Horizontal;
+            case "right": frac = 1.0; return OriginKind.Horizontal;
+            case "top": frac = 0.0; return OriginKind.Vertical;
+            case "bottom": frac = 1.0; return OriginKind.Vertical;
+            case "center": frac = 0.5; return OriginKind.Center;
         }
         if (t.EndsWith("%", StringComparison.Ordinal)
-            && double.TryParse(t.AsSpan(0, t.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+            && CssLengthParsing.TryFinite(t.AsSpan(0, t.Length - 1), out var pct))
         {
-            if (horizontal) { xFrac = pct / 100.0; xPx = 0; } else { yFrac = pct / 100.0; yPx = 0; }
-            return true;
+            frac = pct / 100.0;
+            px = 0;
+            return OriginKind.Offset;
         }
-        if (CssLengthParsing.TryLengthPx(t, out var px))
+        if (CssLengthParsing.TryLengthPx(t, out var lengthPx))
         {
-            if (horizontal) { xFrac = 0; xPx = px; } else { yFrac = 0; yPx = px; }
-            return true;
+            frac = 0;
+            px = lengthPx;
+            return OriginKind.Offset;
         }
-        return false;
+        return OriginKind.Invalid;
     }
 }

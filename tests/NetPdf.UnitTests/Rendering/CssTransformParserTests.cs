@@ -73,6 +73,49 @@ public sealed class CssTransformParserTests
     }
 
     [Theory]
+    // Non-finite numbers must REJECT (not reach PDF emission and throw) — PR #210 review [P2].
+    [InlineData("translate(NaNpx)")]
+    [InlineData("translate(Infinitypx, 0)")]
+    [InlineData("rotate(Infinitydeg)")]
+    [InlineData("scale(NaN)")]
+    [InlineData("matrix(1, 0, 0, 1, 1e400, 0)")] // overflowing exponent → +Infinity
+    public void Non_finite_numbers_reject(string value)
+    {
+        Assert.Null(CssTransform_Parser.TryParse(value));
+    }
+
+    [Theory]
+    // Every CSS zero form is valid (not just exact "0") — PR #210 review [P3].
+    [InlineData("translate(0, 0)")]
+    [InlineData("translate(0.0, +0)")]
+    [InlineData("translate(-0, 0px)")]
+    [InlineData("rotate(0)")]   // unitless zero angle
+    public void Unitless_zero_forms_parse(string value)
+    {
+        Assert.NotNull(CssTransform_Parser.TryParse(value));
+    }
+
+    [Theory]
+    // A duplicate-axis or misordered transform-origin defaults to center (PR #210 review [P2]).
+    [InlineData("left right")]
+    [InlineData("top bottom")]
+    [InlineData("25% left")]
+    [InlineData("top 25%")]
+    [InlineData("left top center")] // invalid 3rd token (not a z-length)
+    public void Transform_origin_invalid_axes_default_to_center(string value)
+    {
+        Assert.Equal(TransformOrigin.Center, CssTransformOrigin_Parser.Parse(value));
+    }
+
+    [Fact]
+    public void Transform_origin_valid_z_length_is_ignored()
+    {
+        var o = CssTransformOrigin_Parser.Parse("left top 10px"); // z = 10px, ignored
+        Assert.Equal(0.0, o.XFraction, 4);
+        Assert.Equal(0.0, o.YFraction, 4);
+    }
+
+    [Theory]
     [InlineData("left top", 0.0, 0.0, 0.0, 0.0)]
     [InlineData("top left", 0.0, 0.0, 0.0, 0.0)]   // keyword order-independent
     [InlineData("center", 0.5, 0.0, 0.5, 0.0)]

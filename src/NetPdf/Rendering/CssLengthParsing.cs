@@ -13,14 +13,15 @@ namespace NetPdf.Rendering;
 /// (the caller rejects the value), since the parser has no computed font-size / containing block.</summary>
 internal static class CssLengthParsing
 {
-    /// <summary>A CSS length to CSS px — <c>px</c> + the absolute units. A bare <c>0</c> is zero; a
-    /// font-relative / percentage / unitless-non-zero token returns false.</summary>
+    /// <summary>A CSS length to CSS px — <c>px</c> + the absolute units. A unitless token is valid
+    /// ONLY when it is a finite ZERO (<c>0</c> / <c>0.0</c> / <c>+0</c> / <c>-0</c>); a unitless
+    /// non-zero, a font-relative / percentage unit, or a non-finite value (<c>NaNpx</c>,
+    /// <c>Infinitypx</c>, an overflowing exponent) returns false (PR #210 review [P2]/[P3]).</summary>
     public static bool TryLengthPx(string token, out double px)
     {
         px = 0;
         var t = token.Trim();
         if (t.Length == 0) return false;
-        if (t == "0") return true;
 
         ReadOnlySpan<(string Unit, double PerUnitPx)> units =
         [
@@ -33,16 +34,24 @@ internal static class CssLengthParsing
             if (lower.EndsWith(unit, StringComparison.Ordinal))
             {
                 var num = lower.AsSpan(0, lower.Length - unit.Length);
-                if (double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                if (TryFinite(num, out var v))
                 {
                     px = v * perUnitPx;
-                    return true;
+                    return double.IsFinite(px);
                 }
                 return false;
             }
         }
-        return false; // unitless non-zero, em/rem/%, or garbage
+        // Unitless: a length needs a unit EXCEPT for a finite zero (CSS Values §6).
+        return TryFinite(lower, out var z) && z == 0.0;
     }
+
+    /// <summary>Parse <paramref name="span"/> as an invariant float AND require it be finite —
+    /// rejecting <c>NaN</c> / <c>Infinity</c> / overflowing exponents that would otherwise reach
+    /// PDF emission and throw (PR #210 review [P2]).</summary>
+    public static bool TryFinite(ReadOnlySpan<char> span, out double value) =>
+        double.TryParse(span, NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+        && double.IsFinite(value);
 
     /// <summary>True when a token starts like a number (so it must be a length, never a color) —
     /// a digit, sign, or decimal point.</summary>

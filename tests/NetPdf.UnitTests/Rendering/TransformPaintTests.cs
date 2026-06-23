@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetPdf;
 using NetPdf.Diagnostics;
+using NetPdf.UnitTests.Pdf.Images;
 using NetPdf.UnitTests.Text.Fonts.OpenType;
 using Xunit;
 
@@ -87,6 +88,53 @@ public sealed class TransformPaintTests
             Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssTransform3DUnsupported001);
             Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssTransformUnsupported001);
         }
+    }
+
+    [Fact]
+    public void Transformed_parent_also_transforms_child_text()
+    {
+        // PR #210 review [P1]: <div transform><p>A</p></div> — the CHILD paragraph's text must wrap
+        // in the div's matrix too (transforms are subtree-local, not box-local).
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"transform:translate(20px,30px)\"><p>A</p></div>" +
+            "</body></html>", Opts()));
+
+        Assert.Contains(TranslateCm, text);
+        var lastCm = text.LastIndexOf(TranslateCm, StringComparison.Ordinal);
+        var btAfter = text.IndexOf("BT", lastCm, StringComparison.Ordinal);
+        Assert.True(lastCm >= 0 && btAfter > lastCm, "child text must wrap in the parent transform");
+    }
+
+    [Fact]
+    public void Transformed_image_wraps_its_xobject_placement()
+    {
+        // PR #210 review [P1]: a transformed <img> must transform the image XObject, not just decoration.
+        var img = "data:image/png;base64," + Convert.ToBase64String(SyntheticPng.BuildOpaqueRgb8(8, 8));
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{img}\" style=\"display:block;width:40px;height:40px;transform:translate(20px,30px)\">" +
+            "</body></html>"));
+
+        Assert.Contains(TranslateCm, text);
+        Assert.Contains(" Do", text); // the image XObject was placed
+        var cmIdx = text.IndexOf(TranslateCm, StringComparison.Ordinal);
+        var doIdx = text.IndexOf(" Do", StringComparison.Ordinal);
+        Assert.True(cmIdx >= 0 && doIdx > cmIdx, "the image placement must wrap in the transform");
+    }
+
+    [Fact]
+    public void Nested_transforms_compose()
+    {
+        // outer translate(10px, 0) ∘ inner translate(0, 20px) ⇒ the deepest text wraps in
+        // translate(10, 20): cm = [1 0 0 1 7.5 -15] (px→pt + y-flip).
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"transform:translate(10px,0)\"><div style=\"transform:translate(0,20px)\">" +
+            "<p>A</p></div></div>" +
+            "</body></html>", Opts()));
+
+        Assert.Contains("1 0 0 1 7.5 -15 cm", text);
     }
 
     private sealed class SynthFontResolver : IFontResolver

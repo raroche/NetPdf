@@ -3106,14 +3106,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the wrapper stays at this cursor index, ahead of its
             // children).
             var wrapperCursor = _sink.Cursor;
+            // CSS 2.1 §10.6.3 — an auto-height block-flow container's painted
+            // border box spans its in-flow children; the chrome-only
+            // borderBoxBlockSize stays the pagination/cursor input (untouched
+            // above + below), this only grows the painter's rectangle, capped
+            // to the page (`auto-height-emit-vs-pagination`).
+            var emittedBlockSize = ResolveAutoHeightEmittedBlockSize(
+                child, borderBoxBlockSize, effectiveBlockSize, blockOffset, fragmentainer);
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: inFlowInlineOffset,
                 BlockOffset: blockOffset,
                 InlineSize: borderBoxInlineSize,
-                BlockSize: borderBoxBlockSize));
+                BlockSize: emittedBlockSize));
             // Per Phase 3 Task 19 cycle 2a — record positioned-CB
-            // establishers for abspos descendant anchoring.
+            // establishers for abspos descendant anchoring. Anchors to the
+            // chrome border box (abspos containing-block geometry is a separate
+            // concern from the painted auto-height span).
             RecordPositionedBoxGeometry(
                 child, inFlowInlineOffset, blockOffset,
                 borderBoxInlineSize, borderBoxBlockSize);
@@ -5634,13 +5643,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the subtree extent is for cursor advance only. Per
             // cycle 2b, the painter sees the border box; descendants
             // that overflow are emitted as their own fragments at
-            // their own offsets.
+            // their own offsets. EXCEPTION (CSS 2.1 §10.6.3,
+            // `auto-height-emit-vs-pagination`): an auto-height block-flow
+            // container's painted border box spans its children — the
+            // chrome-only childBorderBoxBlockSize stays the cursor/break input,
+            // this only grows the painter's rectangle, capped to the page.
+            var emittedChildBlockSize = ResolveAutoHeightEmittedBlockSize(
+                child, childBorderBoxBlockSize, childEffectiveBlockSize,
+                childBlockOffset, _capturedFragmentainer);
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: childInlineOffset,
                 BlockOffset: childBlockOffset,
                 InlineSize: childBorderBoxInlineSize,
-                BlockSize: childBorderBoxBlockSize));
+                BlockSize: emittedChildBlockSize));
             // Per Phase 3 Task 19 cycle 2a — record positioned-CB
             // establishers reached via the recursive walk so abspos
             // descendants anchor to their nearest positioned ancestor.
@@ -9903,6 +9919,52 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // resolves against the containing block's height; treating it as
         // auto would route balanced multicol into the wrong layout path.
         return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+    }
+
+    /// <summary>CSS 2.1 §10.6.3 — the painted border box of an AUTO-height
+    /// block-flow container must SPAN its in-flow children, not just its own
+    /// chrome (padding + border). Returns the border-box block size to EMIT
+    /// (= what the painter draws for background / border / border-radius):
+    /// the content-spanning <paramref name="effectiveBlockSize"/>, CAPPED to
+    /// the current page fragment so a subtree taller than the page paints a
+    /// page-bounded rectangle (its content resumes on later pages) rather than
+    /// a rectangle running off the page edge — the regression that reverted
+    /// the first attempt (`auto-height-emit-vs-pagination`).
+    ///
+    /// <para>Byte-identical for every other box: explicit-height blocks, leaves
+    /// (<paramref name="effectiveBlockSize"/> == <paramref name="borderBoxBlockSize"/>),
+    /// and flex / grid / table / multicol wrappers (excluded by
+    /// <see cref="IsBlockFlowContainerOwnedByBlockLayouter"/> — they own their own
+    /// block sizing via the F2 wrapper-resize path) all return
+    /// <paramref name="borderBoxBlockSize"/> unchanged. Crucially this affects
+    /// ONLY the emitted fragment the painter consumes: pagination, the cursor
+    /// advance, the break checks, and continuation accounting keep using the
+    /// chrome <paramref name="borderBoxBlockSize"/> and the uncapped
+    /// effective extent, so page splitting stays byte-identical.</para></summary>
+    private static double ResolveAutoHeightEmittedBlockSize(
+        Box box, double borderBoxBlockSize, double effectiveBlockSize,
+        double blockOffset, FragmentainerContext? fragmentainer)
+    {
+        if (effectiveBlockSize <= borderBoxBlockSize
+            || !IsHeightAuto(box)
+            || !IsBlockFlowContainerOwnedByBlockLayouter(box))
+        {
+            return borderBoxBlockSize;
+        }
+
+        var spanned = effectiveBlockSize;
+        if (fragmentainer is { SuppressBlockPagination: false })
+        {
+            // The rectangle starts at blockOffset (page-relative) and must not
+            // extend past the fragmentainer bottom; cap to the page remainder,
+            // never below the chrome.
+            var pageRemaining = fragmentainer.BlockSize - blockOffset;
+            spanned = pageRemaining > borderBoxBlockSize
+                ? Math.Min(spanned, pageRemaining)
+                : borderBoxBlockSize;
+        }
+
+        return Math.Max(borderBoxBlockSize, spanned);
     }
 
     /// <summary>Per Phase 3 Task 16 cycle 4a (PR #82, following the

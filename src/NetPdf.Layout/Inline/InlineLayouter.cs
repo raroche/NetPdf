@@ -523,11 +523,10 @@ internal static class InlineLayouter
         //     per-glyph IsBreakSpace + wrap-at-Allowed downgrade.
         //   * OverflowWrap (sub-cycle 2) — per-glyph anywhere
         //     fallback gating.
-        // WordBreak + Hyphens fields are populated but NOT yet
-        // honored per-run (sub-cycle 3+). Mixed-mode in those still
-        // throws here.
+        // WordBreak + Hyphens are now honored per-run (Hyphens via the Wrap hyphenation pipeline,
+        // WordBreak:keep-all via LineBuilder's LB30b CJK suppression), so a mixed-mode policy builds the
+        // per-run array below rather than throwing.
         InlineTextPolicy? effectivePolicy = null;
-        var firstNonEmptyIndex = -1;
         InlineTextPolicy[]? perRunPolicy = null; // built lazily on first mismatch
         for (var i = 0; i < sourceTextRuns.Count; i++)
         {
@@ -537,32 +536,15 @@ internal static class InlineLayouter
             if (effectivePolicy is null)
             {
                 effectivePolicy = p;
-                firstNonEmptyIndex = i;
             }
             else if (p != effectivePolicy)
             {
-                // Cycle 3d sub-cycle 4 — Hyphens mismatch is now
-                // handled via per-source-run plumbing through
-                // <see cref="LineBuilder.Wrap"/>'s hyphenation
-                // pipeline. The remaining hard-throw is KeepAll
-                // mismatch (per sub-cycle 3 review Finding #1,
-                // KeepAll's CJK semantics need UAX #24).
-                if ((p.WordBreak == WordBreak.KeepAll
-                        || effectivePolicy.Value.WordBreak == WordBreak.KeepAll)
-                    && p.WordBreak != effectivePolicy.Value.WordBreak)
-                {
-                    throw new NotSupportedException(
-                        $"InlineLayouter.LayoutPerRun: source TextRuns have " +
-                        $"a word-break:keep-all vs. {(p.WordBreak == WordBreak.KeepAll ? effectivePolicy.Value.WordBreak : p.WordBreak)} mismatch " +
-                        $"(run {firstNonEmptyIndex}={effectivePolicy}, run {i}={p}). " +
-                        $"KeepAll's CJK inter-character break suppression " +
-                        $"(CSS Text L3 §5.2) requires UAX #24 script detection " +
-                        $"+ CJK-aware UAX #14 LB30b handling — not yet " +
-                        $"implemented. Per sub-cycle 3 review Finding #1 we " +
-                        $"throw on the mixed case so KeepAll behavior isn't " +
-                        $"silently lost. Uniform-KeepAll behaves like Normal " +
-                        $"(documented approximation).");
-                }
+                // Cycle 3d sub-cycle 4 — Hyphens mismatch is handled via per-source-run plumbing through
+                // LineBuilder.Wrap's hyphenation pipeline. A word-break:keep-all mismatch is now ALSO
+                // supported (word-break-keep-all-cjk closed): LineBuilder.Wrap applies the CSS Text §5.2
+                // / UAX #14 LB30b CJK inter-character break suppression PER SOURCE RUN, so a keep-all run
+                // mixed with normal/break-all runs no longer needs to fail loud — it flows through the
+                // per-run policy array built below (the suppression reads each boundary's owning run).
 
                 // Lazily build the per-run policy array on first
                 // mismatch. Fill all previously-walked entries with

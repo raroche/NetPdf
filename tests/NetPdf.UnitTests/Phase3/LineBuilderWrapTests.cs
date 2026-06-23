@@ -622,6 +622,47 @@ public class LineBuilderWrapTests
         Assert.Equal(1, ltr.Slices[1].ShapedRunIndex);
     }
 
+    // --- word-break: keep-all (CSS Text §5.2 / UAX #14 LB30b, word-break-keep-all-cjk) ---
+
+    [Fact]
+    public void Wrap_keep_all_suppresses_inter_cjk_breaks()
+    {
+        // Three Han ideographs (each falls back to .notdef at 600 fontUnits = 7.2px). At width 10,
+        // NORMAL word-break wraps per character — UAX #14 leaves a default break opportunity between
+        // two ID-class ideographs — so the run breaks into several lines; KEEP-ALL demotes those
+        // inter-character opportunities to Prohibited, so the run stays on ONE (overflowing) line.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("東京都", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hani", "ja");
+
+        var normal = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 10,
+            wordBreak: WordBreak.Normal);
+        var keepAll = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 10,
+            wordBreak: WordBreak.KeepAll);
+
+        Assert.True(normal.Length > 1, $"normal should wrap CJK per character, got {normal.Length} line(s)");
+        Assert.Single(keepAll);   // keep-all keeps the ideographs together on one line
+    }
+
+    [Fact]
+    public void Wrap_keep_all_still_breaks_at_a_space_between_cjk_words()
+    {
+        // keep-all only suppresses inter-CHARACTER opportunities; an explicit space is still a break
+        // opportunity. "東京 大阪" (two 2-ideograph words separated by a space) wraps at the space under
+        // keep-all (each word stays intact) rather than collapsing to a single overflowing line.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("東京 大阪", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hani", "ja");
+
+        // Width fits one 2-ideograph word (~14.4px) but not both words + space — so it wraps at the space.
+        var keepAll = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 16,
+            wordBreak: WordBreak.KeepAll);
+
+        Assert.Equal(2, keepAll.Length);   // breaks at the space, one word per line
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

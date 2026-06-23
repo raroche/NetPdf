@@ -35,32 +35,6 @@ grepping the ID).
 
 ---
 
-## word-break-keep-all-cjk
-
-- **ID** — `word-break-keep-all-cjk`
-- **Status** — `approximated` (uniform), `throws` (mismatch).
-- **Behavior** — Uniform `word-break: keep-all` silently behaves like
-  `normal` (no break suppression). A `keep-all` ↔ {`normal`, `break-all`}
-  mismatch across source TextRuns throws
-  `NotSupportedException` from `InlineLayouter.LayoutPerRun`.
-- **Missing** — UAX #24 per-codepoint script detection + UAX #14 LB30b
-  ("do not break between two ID-class characters when `word-break:
-  keep-all`") to suppress CJK inter-character breaks.
-- **Trigger** — corpus adds CJK content (Chinese / Japanese / Korean
-  invoices, reports, books), OR a user-reported failing case.
-- **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (new — needs
-  the script table); `src/NetPdf.Layout/Inline/LineBuilder.cs` flat-build
-  phase (read script per glyph + suppress LB30b boundaries); remove the
-  `KeepAll` mismatch throw in
-  `src/NetPdf.Layout/Inline/InlineLayouter.cs::LayoutPerRun`.
-- **Added** — Phase 3 Task 10 cycle 3d sub-cycle 3 (added the mismatch
-  throw); cycle 3b sub-cycle 2 (added the uniform approximation).
-- **Removal condition** — UAX #24 script detection lands AND the wrap
-  loop honors KeepAll per glyph AND
-  `InlineLayouter.LayoutPerRun` no longer throws on KeepAll mismatch.
-
----
-
 ## hyphens-auto-language-routing
 
 - **ID** — `hyphens-auto-language-routing`
@@ -101,32 +75,6 @@ grepping the ID).
 - **Removal condition** — at least one non-English language pack ships,
   the tokenizer uses UAX #29, AND one CSS Text L4 hyphenate-* property
   is implemented.
-
----
-
-## uax-24-script-detection
-
-- **ID** — `uax-24-script-detection`
-- **Status** — `approximated`.
-- **Behavior** — `LineBuilder.Itemize` accepts a single ISO 15924 script
-  tag + BCP 47 language passed uniformly from the caller. Multi-script
-  paragraphs (Latin + Arabic + Han in one `<p>`) all shape with the same
-  feature set.
-- **Missing** — Per-codepoint script detection (UAX #24) producing a
-  script-change boundary in `Itemize`, so each script-homogeneous
-  sub-run gets its own shaping call with the appropriate OpenType
-  feature set.
-- **Trigger** — mixed-script content enters the corpus, OR a user-reported
-  failing case where script-specific shaping features (e.g., Arabic
-  joining contextual forms across a Latin↔Arabic boundary) misrender.
-- **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (new — see
-  the `word-break-keep-all-cjk` entry; same table);
-  `src/NetPdf.Layout/Inline/LineBuilder.cs::Itemize` (insert
-  script-change boundaries).
-- **Added** — Phase 3 Task 10 cycle 1 documented the deferral.
-- **Removal condition** — `Itemize` produces script-typed itemized runs
-  and `Shape` consumes them with the script-specific HarfBuzz feature
-  set.
 
 ---
 

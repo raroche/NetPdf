@@ -911,12 +911,12 @@ public sealed class InlineLayouterCycle3dTests
     }
 
     [Fact]
-    public void LayoutPerRun_KeepAll_mixed_with_Normal_throws_pending_CJK_support()
+    public void LayoutPerRun_KeepAll_mixed_with_Normal_no_longer_throws()
     {
-        // Per sub-cycle 3 review Finding #1 — KeepAll on mismatch
-        // throws because the wrap pass currently doesn't implement
-        // KeepAll semantics (CJK inter-character break suppression
-        // requires UAX #24 script detection + LB30b handling).
+        // word-break-keep-all-cjk closed — a keep-all run mixed with a normal run is now SUPPORTED:
+        // LineBuilder.Wrap applies the CSS Text §5.2 / UAX #14 LB30b CJK break suppression per source
+        // run, so the mismatch builds the per-run policy array instead of throwing. (Latin "AAA"/"BBB"
+        // have no CJK boundaries, so the suppression is a no-op; the point is LayoutPerRun returns.)
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sKeepAll = ComputedStyle.RentForExclusiveTesting();
@@ -926,10 +926,8 @@ public sealed class InlineLayouterCycle3dTests
             new("AAA", sNormal),
             new("BBB", sKeepAll),
         };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("keep-all", ex.Message);
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver, LatnScript, EnLang);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]

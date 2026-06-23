@@ -351,6 +351,62 @@ public class LineBuilderTests
         Assert.True(hasRtl, "Expected an RTL run for the first-paragraph Arabic text.");
     }
 
+    // --- UAX #24 script-change itemization (uax-24-script-detection) ---
+
+    [Fact]
+    public void Itemize_splits_same_direction_runs_on_a_script_change()
+    {
+        // "abc中" — Latin + Han are BOTH left-to-right (one bidi level), so only the UAX #24 script
+        // change splits them: Latin "abc" (Latn) then Han "中" (Hani). Proves script-change itemization
+        // (not just bidi) opens the boundary, so each shapes with its own OpenType feature set.
+        var runs = new List<TextRun> { new("abc中", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
+
+        Assert.Equal(2, itemized.Length);
+        Assert.Equal("Latn", itemized[0].ScriptIso15924);
+        Assert.Equal(0, itemized[0].Utf16Start);
+        Assert.Equal(3, itemized[0].Utf16Length);
+        Assert.Equal("Hani", itemized[1].ScriptIso15924);
+        Assert.Equal(3, itemized[1].Utf16Start);
+        Assert.Equal(1, itemized[1].Utf16Length);
+    }
+
+    [Fact]
+    public void Itemize_keeps_a_latin_run_with_common_codepoints_together()
+    {
+        // Common codepoints (comma, space, digits) EXTEND the surrounding script rather than splitting
+        // the run, so "Hello, World 123" is a single Latn run.
+        var runs = new List<TextRun> { new("Hello, World 123", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
+
+        Assert.Single(itemized);
+        Assert.Equal("Latn", itemized[0].ScriptIso15924);
+    }
+
+    [Fact]
+    public void Itemize_leading_common_prefix_adopts_the_following_script()
+    {
+        // A leading Common prefix takes the script that follows it (UAX #24 §5.1): "123中文" is ONE Han
+        // run (Hani), not a Common-then-Han split.
+        var runs = new List<TextRun> { new("123中文", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
+
+        Assert.Single(itemized);
+        Assert.Equal("Hani", itemized[0].ScriptIso15924);
+    }
+
+    [Fact]
+    public void Itemize_all_common_run_carries_no_script()
+    {
+        // Pure digits / punctuation carry no script of their own (null), so the shaper falls back to the
+        // caller's uniform script.
+        var runs = new List<TextRun> { new("12.34", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
+
+        Assert.Single(itemized);
+        Assert.Null(itemized[0].ScriptIso15924);
+    }
+
     // --- Helpers -------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

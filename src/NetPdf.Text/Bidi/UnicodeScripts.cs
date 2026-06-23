@@ -6,23 +6,27 @@ using System;
 namespace NetPdf.Text.Bidi;
 
 /// <summary>
-/// UAX #24 (Unicode Script Property) — maps a codepoint to its script, for itemization into
-/// script-homogeneous shaping runs. Each script has different OpenType feature requirements
-/// (Arabic joining, Indic reordering, Han vertical forms…), so a Latin run can't share a HarfBuzz
-/// shaping pass with a Hebrew or Devanagari run even at the same bidi level + font.
+/// A BLOCK-BASED APPROXIMATION of the UAX #24 (Unicode Script Property) mapping — maps a codepoint
+/// to its script, for itemization into script-homogeneous shaping runs. Each script has different
+/// OpenType feature requirements (Arabic joining, Indic reordering, Han vertical forms…), so a Latin
+/// run can't share a HarfBuzz shaping pass with a Hebrew or Devanagari run even at the same bidi
+/// level + font.
 /// </summary>
 /// <remarks>
 /// <para>The table is a sorted, non-overlapping range array covering the MAJOR scripts that appear
-/// in real documents and need distinct shaping (the ~30 scripts below). It is derived from the
-/// Unicode Character Database (UAX #24 + the block assignments), per the clean-room policy — DATA,
-/// not another engine's code. Codepoints outside the table — ASCII digits / punctuation, spaces,
-/// the <c>Common</c> and <c>Inherited</c> script values (combining marks), and the long tail of
-/// rare scripts — resolve to <see cref="UnicodeScript.Common"/>; per UAX #24 §5.1 they take the
-/// script of the surrounding text, so the itemizer does NOT start a new run at a Common codepoint
-/// (it extends the run in progress, and a leading Common prefix falls back to the caller's uniform
-/// script). This keeps mixed-script paragraphs shaping correctly for the covered scripts while a
-/// rare uncovered script degrades to the surrounding/uniform script (no worse than the pre-UAX-24
-/// single-script approximation).</para>
+/// in real documents and need distinct shaping (the ~30 scripts below). The ranges are the Unicode
+/// BLOCK assignments for each script (clean-room DATA from the UCD, not another engine's code), which
+/// approximates the per-codepoint Script property: a few blocks mix scripts at their edges (the most
+/// notable, Coptic in the Greek-and-Coptic block, is carved out), and the long tail of rare scripts
+/// is not enumerated. Codepoints outside the table — ASCII digits / punctuation, spaces, the
+/// <c>Common</c> and <c>Inherited</c> script values (combining marks), a carved-out block remnant, and
+/// any rare uncovered script — resolve to <see cref="UnicodeScript.Common"/>; per UAX #24 §5.1 they
+/// take the script of the surrounding text, so the itemizer does NOT start a new run at a Common
+/// codepoint (it extends the run in progress, and a leading Common prefix falls back to the caller's
+/// uniform script). This shapes mixed-script paragraphs correctly for the covered scripts, while a
+/// rare or carved-out codepoint degrades to the surrounding/uniform script — no worse than the
+/// pre-UAX-24 single-script approximation. A future exact per-codepoint Script-property table (from
+/// the UCD <c>Scripts.txt</c>) would tighten the block edges.</para>
 /// </remarks>
 internal static class UnicodeScripts
 {
@@ -46,7 +50,8 @@ internal static class UnicodeScripts
         new(0x0061, 0x007A, UnicodeScript.Latin),   // a-z
         new(0x00C0, 0x024F, UnicodeScript.Latin),   // Latin-1 Suppl letters + Latin Extended-A/B
         new(0x0250, 0x02AF, UnicodeScript.Latin),   // IPA Extensions
-        new(0x0370, 0x03FF, UnicodeScript.Greek),   // Greek and Coptic
+        new(0x0370, 0x03E1, UnicodeScript.Greek),   // Greek (the Coptic letters 0x03E2..0x03EF carve out)
+        new(0x03F0, 0x03FF, UnicodeScript.Greek),   // Greek (post-Coptic tail of the Greek and Coptic block)
         new(0x0400, 0x052F, UnicodeScript.Cyrillic),// Cyrillic + Cyrillic Suppl
         new(0x0531, 0x058F, UnicodeScript.Armenian),// Armenian
         new(0x0591, 0x05FF, UnicodeScript.Hebrew),  // Hebrew

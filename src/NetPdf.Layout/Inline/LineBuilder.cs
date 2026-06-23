@@ -958,6 +958,17 @@ internal static class LineBuilder
         // content is byte-identical.
         SuppressKeepAllCjkBreaks(breaks, concatText, wordBreak, inlineTextPolicyPerRun, sourceTextRuns);
 
+        // rtl-fragment-reversal — resolve the EFFECTIVE base direction for the per-run slice reversal
+        // (UAX #9 L2). An explicit `RightToLeft` reverses; `Auto` resolves via the UAX #9 P2/P3
+        // first-strong rule (so an Auto paragraph whose first strong character is RTL also reverses,
+        // matching ParagraphDirection.Auto semantics — Copilot review), using a single whole-text
+        // resolution (multi-paragraph mixed-direction Auto stays a documented approximation). The
+        // production CSS path resolves `direction` to ltr/rtl upstream + never passes Auto. LeftToRight
+        // and Auto-resolving-LTR keep document slice order, so non-RTL output is byte-identical.
+        var reverseSlicesForRtl = paragraphDirection == ParagraphDirection.RightToLeft
+            || (paragraphDirection == ParagraphDirection.Auto
+                && (ParagraphLevelResolver.Resolve(concatText, ParagraphDirection.Auto) & 1) == 1);
+
         cancellationToken.ThrowIfCancellationRequested();
 
         // Cycle 3b sub-cycle 2 hardening — for word-break:break-all
@@ -1487,7 +1498,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
-                    paragraphDirection,
+                    reverseSlicesForRtl,
                     endsWithMandatoryBreak: false,
                     endsWithHyphenationBreak: endsWithHyphenation);
                 lineStart = lastAllowed + 1;
@@ -1632,7 +1643,7 @@ internal static class LineBuilder
                     // Force break at cursor-1: emit lineStart..cursor-1,
                     // start next line at cursor.
                     EmitDrawableRange(output, flat, lineStart, cursor - 1,
-                        paragraphDirection,
+                        reverseSlicesForRtl,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor;
                     cursor = lineStart - 1;
@@ -1642,7 +1653,7 @@ internal static class LineBuilder
                     // Single glyph wider than line: emit just this
                     // glyph alone, advance.
                     EmitDrawableRange(output, flat, lineStart, cursor,
-                        paragraphDirection,
+                        reverseSlicesForRtl,
                         endsWithMandatoryBreak: false);
                     lineStart = cursor + 1;
                     // cursor stays — for-loop increment moves it past.
@@ -1669,7 +1680,7 @@ internal static class LineBuilder
                 }
 
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
-                    paragraphDirection,
+                    reverseSlicesForRtl,
                     endsWithMandatoryBreak: true);
                 lineStart = cursor + 1;
                 lineAdvance = 0;
@@ -1699,7 +1710,7 @@ internal static class LineBuilder
         if (lineStart < totalGlyphs)
         {
             EmitDrawableRange(output, flat, lineStart, totalGlyphs - 1,
-                paragraphDirection,
+                reverseSlicesForRtl,
                 endsWithMandatoryBreak: false);
         }
 
@@ -2665,7 +2676,7 @@ internal static class LineBuilder
     private static void EmitDrawableRange(
         List<LineFragment> output,
         FlatGlyph[] flat, int start, int end,
-        ParagraphDirection paragraphDirection,
+        bool reverseSlices,
         bool endsWithMandatoryBreak,
         bool endsWithHyphenationBreak = false)
     {
@@ -2717,18 +2728,19 @@ internal static class LineBuilder
             SliceAdvance: sliceAdvance));
         totalAdvance += sliceAdvance;
 
-        // UAX #9 L2 (rtl-fragment-reversal) — for a RIGHT-TO-LEFT paragraph base direction the painter
-        // must consume the line's per-run slices visually right-to-left. Each slice is level-homogeneous
-        // (a contiguous same-shaped-run glyph range) and the slices are built in LOGICAL (document) order
-        // above, so a flat reverse of the slice ORDER is L2 reordering at run granularity: the first
-        // logical run lands rightmost, the last logical run leftmost. The glyph arrays WITHIN each slice
-        // are untouched — HarfBuzz already emits each run in its own visual order (RTL runs reversed, an
-        // embedded LTR run kept logical), so a single flat reverse composes correctly for the common
-        // single-embedding-depth case. The painter walks Slices left-to-right accumulating SliceAdvance
-        // (TextPainter), and the line is right-aligned (the text-align start/end swap), so the reversed
-        // order paints at the correct visual x. TotalAdvance is the order-independent sum, so wrap/fit
-        // decisions are unaffected. LeftToRight / Auto keep document order, so LTR output is byte-identical.
-        if (paragraphDirection == ParagraphDirection.RightToLeft && slices.Count > 1)
+        // UAX #9 L2 (rtl-fragment-reversal) — when <paramref name="reverseSlices"/> (a RIGHT-TO-LEFT
+        // resolved paragraph base direction) the painter must consume the line's per-run slices visually
+        // right-to-left. Each slice is level-homogeneous (a contiguous same-shaped-run glyph range) and
+        // the slices are built in LOGICAL (document) order above, so a flat reverse of the slice ORDER is
+        // L2 reordering at run granularity: the first logical run lands rightmost, the last logical run
+        // leftmost. The glyph arrays WITHIN each slice are untouched — HarfBuzz already emits each run in
+        // its own visual order (RTL runs reversed, an embedded LTR run kept logical), so a single flat
+        // reverse composes correctly for the common single-embedding-depth case. The painter walks Slices
+        // left-to-right accumulating SliceAdvance (TextPainter), and the line is right-aligned (the
+        // text-align start/end swap), so the reversed order paints at the correct visual x. TotalAdvance
+        // is the order-independent sum, so wrap/fit decisions are unaffected. A LEFT-TO-RIGHT base keeps
+        // document order, so LTR output is byte-identical.
+        if (reverseSlices && slices.Count > 1)
             slices.Reverse();
 
         output.Add(new LineFragment(

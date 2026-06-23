@@ -602,10 +602,11 @@ public class LineBuilderWrapTests
     }
 
     [Fact]
-    public void Wrap_keeps_document_slice_order_for_ltr_and_auto_bases()
+    public void Wrap_keeps_document_slice_order_for_ltr_and_auto_ltr_bases()
     {
-        // Regression guard for the LTR byte-identity gate: the default (LeftToRight) AND Auto bases keep
-        // slices in document order, so non-RTL output is unchanged by the reversal branch.
+        // Regression guard for the LTR byte-identity gate: the default (LeftToRight) AND an Auto base
+        // that RESOLVES to LTR (Latin first-strong char) keep slices in document order, so non-RTL
+        // output is unchanged by the reversal branch.
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun> { new("AB", MakeStyle()), new("CD", MakeStyle()) };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
@@ -620,6 +621,27 @@ public class LineBuilderWrapTests
         Assert.Equal(1, auto.Slices[1].ShapedRunIndex);
         Assert.Equal(0, ltr.Slices[0].ShapedRunIndex);
         Assert.Equal(1, ltr.Slices[1].ShapedRunIndex);
+    }
+
+    [Fact]
+    public void Wrap_reverses_slices_for_an_auto_base_that_resolves_to_rtl()
+    {
+        // PR #214 Copilot review — `ParagraphDirection.Auto` resolves the base via the UAX #9 P2/P3
+        // first-strong rule, so an Auto paragraph whose first strong character is RTL (here Hebrew)
+        // must reverse its per-run slices just like an explicit RTL base — NOT keep document order.
+        using var resolver = new TestShaperResolver();
+        // Two Hebrew source runs (first strong char is RTL → Auto resolves to RTL); two slices.
+        var sourceRuns = new List<TextRun> { new("א", MakeStyle()), new("ב", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.Auto);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, "Hebr", "he");
+
+        var auto = Assert.Single(LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000,
+            paragraphDirection: ParagraphDirection.Auto));
+
+        Assert.Equal(2, auto.Slices.Length);
+        // Reversed: the first logical run (index 0) is painted last (rightmost).
+        Assert.Equal(1, auto.Slices[0].ShapedRunIndex);
+        Assert.Equal(0, auto.Slices[1].ShapedRunIndex);
     }
 
     // --- word-break: keep-all (CSS Text §5.2 / UAX #14 LB30b, word-break-keep-all-cjk) ---

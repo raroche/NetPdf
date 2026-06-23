@@ -4782,6 +4782,41 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
+    public void Auto_fit_collapses_empty_rows_with_a_row_gap()
+    {
+        // grid-auto-fit-collapse on the ROW axis (PR #214 review thread 2): `repeat(auto-fit, 50px)` rows
+        // with row-gap 10px in a 200px-tall grid derives 3 rows ((200+10)/(50+10) = 3). One item at row 3
+        // (0-based row 2) → the two empty leading rows + their gutters collapse, so the item lands at
+        // blockOffset 0 (NOT 120). This also exercises the collapse-aware RowVisibleGutterCount that
+        // RowExtentSum uses for auto-height wrapper measurement.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: -1, // auto-fit
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(50.0)))))));
+        var colsTrack = BuildLengthTrackList(new[] { 100.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitHeight(grid, 200);
+        grid.Style.Set(PropertyId.RowGap, ComputedSlot.FromLengthPx(10));
+
+        var item = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 100, contentBlockSize: 200);
+
+        Assert.Single(sink.Fragments);
+        // Empty leading rows + their merged gutters collapsed → the filled row sits at blockOffset 0.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
     public void Auto_fill_count_accounts_for_the_column_gap()
     {
         // PR #206 review [P1] — §7.2.3.1 derives the auto-fill count "taking gutters

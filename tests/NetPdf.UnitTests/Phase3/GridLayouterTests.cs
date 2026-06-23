@@ -4708,12 +4708,13 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Cycle7c_auto_fit_treated_identically_to_auto_fill()
+    public void Cycle7c_auto_fit_collapses_empty_leading_tracks()
     {
-        // Per grid-auto-fit-collapse-empty-tracks-deferral — cycle 7c
-        // ships auto-fit as auto-fill (= no empty-track collapse).
-        // Same input as the auto-fill test should produce the same
-        // tracks (= 3 columns × 100px in 350px).
+        // grid-auto-fit-collapse — `repeat(auto-fit, 100px)` in 350px derives 3 tracks, but with ONE
+        // item explicitly placed at column 3 (0-based col 2) the two EMPTY leading tracks (cols 0,1)
+        // collapse to 0 size and their gutters merge (§7.2.3.1), so the item lands at inlineOffset 0 —
+        // NOT at 200 the way auto-fill (which keeps the empty tracks) would place it. This is the visible
+        // auto-fit ≠ auto-fill difference.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -4735,10 +4736,49 @@ public sealed class GridLayouterTests
             contentInlineSize: 350, contentBlockSize: 400);
 
         Assert.Single(sink.Fragments);
-        // Item at column 3 (0-based col 2) → inlineOffset 200.
+        // The 2 empty leading tracks collapsed → the filled track is the first VISIBLE one at x = 0.
         AssertFragmentEquals(sink, item,
-            inlineOffset: 200, blockOffset: 0,
+            inlineOffset: 0, blockOffset: 0,
             inlineSize: 100, blockSize: 50);
+        // And the now-implemented collapse no longer emits the auto-fit-approximated diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001);
+    }
+
+    [Fact]
+    public void Auto_fit_fr_tracks_fill_the_container_when_some_collapse()
+    {
+        // grid-auto-fit-collapse — the canonical responsive case: `repeat(auto-fit, minmax(100px, 1fr))`
+        // in 400px derives 4 tracks; with only 2 items the 2 empty tracks collapse + leave the fr pool,
+        // so the surviving 2 fr tracks each absorb HALF the full 400px → 200px wide (vs auto-fill, where
+        // 4 tracks × 1fr keep the 2 items at 100px each with 200px of empty space).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: -1, // auto-fit
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForMinMax(
+                            TrackEntry.ForLength(100.0), TrackEntry.ForFr(1.0))))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 400);
+
+        var items = new[] { BuildAutoPlacedItem(), BuildAutoPlacedItem() };
+        foreach (var it in items) grid.AppendChild(it);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 400, contentBlockSize: 400);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // Two visible fr tracks each fill half the container: 200px at x = 0 and x = 200.
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 200, blockOffset: 0, inlineSize: 200, blockSize: 50);
     }
 
     [Fact]
@@ -4790,9 +4830,10 @@ public sealed class GridLayouterTests
     [Fact]
     public void Auto_fit_count_accounts_for_the_column_gap_like_auto_fill()
     {
-        // PR #206 review [P1] — auto-fit derives the same gutter-aware count as
-        // auto-fill (= 3 columns in the gap example), so an item placed at column 3
-        // lands at the 3rd track origin (x = 240) rather than spilling to a 4th track.
+        // PR #206 review [P1] — auto-fit derives the same gutter-aware count as auto-fill (= 3 columns in
+        // the gap example). With all 3 tracks FILLED (3 items), none collapse, so the tracks sit at the
+        // same gutter-aware origins as auto-fill (x = 0, 120, 240) and a 4th item wraps — confirming
+        // exactly 3 columns were generated.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -4808,16 +4849,27 @@ public sealed class GridLayouterTests
         SetExplicitWidth(grid, 400);
         grid.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(20));
 
-        var item = BuildItemWithExplicitPlacement(row: 1, col: 3);
-        grid.AppendChild(item);
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            items[i] = BuildAutoPlacedItem();
+            grid.AppendChild(items[i]);
+        }
 
         RunGridLayouter(grid, sink, diag, shaper,
             contentInlineSize: 400, contentBlockSize: 400);
 
-        Assert.Single(sink.Fragments);
-        // Column 3 (0-based col 2) → inlineOffset 240 (= 2 * (100 + 20)).
-        AssertFragmentEquals(sink, item,
+        Assert.Equal(4, sink.Fragments.Count);
+        // All 3 columns filled → no collapse → same gutter-aware origins as auto-fill.
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 120, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[2],
             inlineOffset: 240, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        // The 4th item wraps to row 2 — confirms exactly 3 columns were generated.
+        AssertFragmentEquals(sink, items[3],
+            inlineOffset: 0, blockOffset: 50, inlineSize: 100, blockSize: 0);
     }
 
     [Fact]
@@ -4939,11 +4991,11 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Cycle7c_F2_auto_fit_emits_approximation_diagnostic()
+    public void Cycle7c_auto_fit_emits_no_approximation_diagnostic()
     {
-        // Per PR-#107 review F2 #4 — auto-fit emits a one-shot
-        // `LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001` warning so authors
-        // know the empty-track collapse pass is approximated.
+        // grid-auto-fit-collapse — auto-fit is now fully implemented (empty tracks collapse after
+        // placement), so it no longer emits the `LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001` warning that
+        // flagged the old "auto-fit == auto-fill" approximation.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -4964,7 +5016,7 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper,
             contentInlineSize: 350, contentBlockSize: 400);
 
-        Assert.Contains(diag.Diagnostics, d =>
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001);
     }
 

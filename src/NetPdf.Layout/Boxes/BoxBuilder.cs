@@ -1830,8 +1830,15 @@ internal static class BoxBuilder
     {
         var slot = style.Get(PropertyId.LineHeight);
         if (slot.Tag != ComputedSlotTag.Percentage) return;
-        var fontSizePx = style.ReadLengthPxOrZero(PropertyId.FontSize);
-        if (fontSizePx <= 0) fontSizePx = 16.0;   // rem/viewport font-size still deferred (resolved at paint) → UA default
-        style.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSizePx));
+        // Only convert against a RESOLVED font-size (a LengthPx slot, including an explicit 0 → a
+        // collapsed line box). When the font-size is itself still deferred (a `rem`/`vw`/`calc()`
+        // font-size that DeferredLengthResolver folds later), leave the percentage slot in place —
+        // converting against a 16px GUESS would be wrong; the read-time path resolves it against the
+        // element's then-resolved font-size (PR #212 Copilot review: no hard-coded 16px fallback, and a
+        // resolved `font-size: 0` must give 0, not 16-based).
+        var fontSlot = style.Get(PropertyId.FontSize);
+        if (fontSlot.Tag != ComputedSlotTag.LengthPx) return;
+        style.Set(PropertyId.LineHeight,
+            ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSlot.AsLengthPx()));
     }
 }

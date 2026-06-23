@@ -388,10 +388,14 @@ internal static class MarginBoxStyle
     {
         var slot = style.Get(PropertyId.LineHeight);
         if (slot.Tag != ComputedSlotTag.Percentage) return;
-        if (style.Get(PropertyId.FontSize).Tag != ComputedSlotTag.LengthPx) return; // font-size still deferred
-        var fontSizePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
-        if (fontSizePx <= 0) return;
-        style.Set(PropertyId.LineHeight, ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSizePx));
+        // Only convert against a RESOLVED font-size (a LengthPx slot, including an explicit 0 → a
+        // collapsed line box). A still-deferred rem/viewport/calc font-size leaves the percentage in
+        // place — the painter's Percentage branch resolves it against the paint-time font-size — rather
+        // than converting against a 16px guess (PR #212 Copilot review).
+        var fontSlot = style.Get(PropertyId.FontSize);
+        if (fontSlot.Tag != ComputedSlotTag.LengthPx) return;
+        style.Set(PropertyId.LineHeight,
+            ComputedSlot.FromLengthPx(slot.AsPercentage() / 100.0 * fontSlot.AsLengthPx()));
     }
 
     /// <summary>Whether <paramref name="id"/> is one of the four <c>padding-*</c> longhands (which can

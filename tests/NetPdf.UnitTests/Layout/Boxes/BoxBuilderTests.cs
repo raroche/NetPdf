@@ -433,6 +433,17 @@ public sealed class BoxBuilderTests
     }
 
     [Fact]
+    public async Task Percentage_line_height_on_zero_font_size_is_zero_not_a_16px_fallback()
+    {
+        // PR #212 Copilot review — a resolved `font-size: 0` must give a 0 line-height (collapsed line
+        // box), NOT a 16px-based fallback. The conversion guards on a resolved LengthPx font-size and
+        // multiplies by it directly (0 → 0); only a still-deferred font-size is left for the read path.
+        var root = await BuildAsync("<p style=\"font-size:0;line-height:150%\">x</p>");
+        var p = FindFirst(root, "p")!;
+        Assert.Equal(0.0, p.Style.ReadLineHeightPx(0.0));   // 150% × 0, not 150% × 16
+    }
+
+    [Fact]
     public async Task Percentage_line_height_on_same_font_size_child_is_unchanged()
     {
         // Control: when the child's font-size matches the declaring element's, the inherited length and

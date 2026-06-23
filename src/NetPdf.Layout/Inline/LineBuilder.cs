@@ -1324,7 +1324,7 @@ internal static class LineBuilder
                         ? inlineTextPolicyPerRun[shaped.Source.SourceTextRunIndex].WhiteSpace
                         : whiteSpace;
                     if (glyphWhiteSpace == WhiteSpace.BreakSpaces
-                        && (clusterChar == ' ' || clusterChar == '	'))
+                        && (clusterChar == ' ' || clusterChar == '\t'))
                     {
                         opp = LineBreakOpportunity.Allowed;
                     }

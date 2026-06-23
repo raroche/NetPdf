@@ -61,31 +61,6 @@ grepping the ID).
 
 ---
 
-## white-space-break-spaces
-
-- **ID** — `white-space-break-spaces`
-- **Status** — `approximated`.
-- **Behavior** — Both the preprocessor and the wrap pass treat
-  `white-space: break-spaces` identically to `pre-wrap` (preserve all
-  whitespace + wrap at UAX #14 Allowed opportunities only).
-- **Missing** — Per CSS Text L3 §6.4, `break-spaces` must add forced wrap
-  candidates at **every** preserved space glyph (not just UAX #14 Allowed
-  positions) AND honor trailing-space wrap-vs-hang at line ends.
-- **Trigger** — corpus needs `break-spaces` semantics (rare; mainly
-  legal/typographic content with explicit trailing-space wrapping).
-- **Owner files** —
-  `src/NetPdf.Layout/Inline/LineBuilder.cs` flat-build phase (synthesize
-  Allowed at every SP glyph in `break-spaces` source runs) + wrap loop's
-  trailing-trim path (hang trailing SPs past the line edge instead of
-  trimming).
-- **Added** — Phase 3 Task 10 cycle 3 review (User #3) added the enum
-  value with the documented PreWrap-equivalent approximation.
-- **Removal condition** — wrap pass synthesizes per-glyph forced
-  candidates inside `break-spaces` runs AND trailing-space hang/wrap
-  semantics are implemented.
-
----
-
 ## hyphens-auto-language-routing
 
 - **ID** — `hyphens-auto-language-routing`

@@ -1105,6 +1105,26 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void White_space_break_spaces_breaks_after_every_space()
+    {
+        // white-space: break-spaces (CSS Text L3 §6.4) adds a soft-wrap opportunity AFTER every
+        // preserved space (including between consecutive spaces), and trailing spaces take up width
+        // (no hang). So a wide run of spaces in a narrow box wraps across MORE lines than pre-wrap,
+        // which only breaks after the whole space sequence (and hangs trailing spaces). Same content +
+        // width; isolates the per-space break opportunities the flat-build now synthesizes.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        int Lines(string ws) => TdCount(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:30px;white-space:" + ws + "\">" +
+            "A          A</div></body></html>", opts)));   // A + 10 spaces + A
+
+        var preWrap = Lines("pre-wrap");
+        var breakSpaces = Lines("break-spaces");
+        Assert.True(breakSpaces > preWrap,
+            $"break-spaces ({breakSpaces} lines) should wrap the space run across more lines than " +
+            $"pre-wrap ({preWrap} lines)");
+    }
+
+    [Fact]
     public void Text_align_match_parent_resolves_against_the_parent_used_value()
     {
         // text-align-match-parent (CSS Text 3 §7.1) end-to-end — the child takes the PARENT's used

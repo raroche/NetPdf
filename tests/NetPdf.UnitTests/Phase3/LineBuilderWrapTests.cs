@@ -123,6 +123,28 @@ public class LineBuilderWrapTests
         Assert.False(lines[0].EndsWithMandatoryBreak);
     }
 
+    [Fact]
+    public void Wrap_break_spaces_adds_a_break_after_every_space()
+    {
+        // white-space: break-spaces (CSS Text L3 §6.4) — a soft-wrap opportunity exists AFTER every
+        // preserved space, INCLUDING between consecutive spaces, vs pre-wrap which only breaks at the
+        // UAX #14 Allowed positions (after the space sequence). With a run of preserved spaces in a
+        // line too narrow to hold them, break-spaces wraps across MORE lines than pre-wrap.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("A          A", MakeStyle()) };   // A + 10 spaces + A
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        var preWrap = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 18, whiteSpace: WhiteSpace.PreWrap);
+        var breakSpaces = LineBuilder.Wrap(
+            sourceRuns, shaped, availableInlineSize: 18, whiteSpace: WhiteSpace.BreakSpaces);
+
+        Assert.True(breakSpaces.Length > preWrap.Length,
+            $"break-spaces ({breakSpaces.Length} lines) should break the space run more than " +
+            $"pre-wrap ({preWrap.Length} lines)");
+    }
+
     // --- Mandatory break (LF) ------------------------------------
 
     [Fact]

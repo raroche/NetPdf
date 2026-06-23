@@ -40,7 +40,6 @@ public sealed class DeferralsParityTests
     private static readonly string[] ExpectedDeferralIds = new[]
     {
         "word-break-keep-all-cjk",
-        "white-space-break-spaces",
         "hyphens-auto-language-routing",
         "uax-24-script-detection",
         "rtl-fragment-reversal",

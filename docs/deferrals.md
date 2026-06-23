@@ -2181,8 +2181,10 @@ flags the categories):
 
 - **ID** — `grid-implicit-named-area-and-occurrence-syntax-deferral`
 - **Status** — `approximated` (NARROWED). Phase 3 Task 18 cycle 7b + the
-  residual-long-tail batch. The occurrence syntax + end-edge span-by-name +
-  named-line-pair placement now resolve; the residuals below remain.
+  residual-long-tail batch (occurrence syntax + end-edge span-by-name +
+  named-line-pair placement) + the PR #215 review (§8.3 forward implicit-line
+  assumption, negative-start normalization, `(name, line)` dedup); the
+  residuals below remain.
 - **Behavior** — `GridSizing.ReadPlacement` resolves `<custom-ident>`
   references via the per-axis named-line occurrence map (`BuildNamedLineMap`:
   name → sorted occurrence line numbers, including the implicit `<area>-start`
@@ -2194,6 +2196,14 @@ flags the categories):
   - **`span <custom-ident>` / `span <custom-ident> <integer>`** (e.g.
     `grid-row-end: span foo`) — on the END edge with a definite start, spans
     to the Nth `foo` line strictly after the start (`ResolveSpanToNamedLine`).
+  - **§8.3 implicit-line assumption** (PR #215 review [P1]) — when fewer than
+    N explicit `foo` lines exist, a POSITIVE occurrence / forward span resolves
+    through the implicit lines past the explicit grid's end edge (each assumed
+    named `foo`), capped at `MaxImplicitTracksPerAxis`. So `foo 2` with one
+    explicit `foo`, and `1 / span foo 2` with too few `foo` lines, extend the
+    grid with implicit tracks instead of falling back to auto. The negative
+    integer start is normalized against the explicit-grid track count BEFORE
+    the named-end span math; the `(name, line)` set is deduplicated per §8.1.
   - **Named-line-pair placement** — `[foo-start] … [foo-end]` line pairs
     place a `grid-row: foo` / `grid-area: foo` item at the foo region via the
     line-name lookups (`<ident>-start` / `<ident>-end`), even with no
@@ -2205,6 +2215,10 @@ flags the categories):
     count depends on where auto-placement lands the opposite edge, so it
     needs the auto-placement span algorithm; still falls back to auto with
     `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`.
+  - **Negative-occurrence start-side implicit fill** (e.g. `foo -3` with too
+    few `foo` lines) — the reverse (negative) direction's implicit lines (at
+    0, −1, …) are not synthesised; an underflowing negative occurrence still
+    falls back to auto. Only the forward (positive) implicit fill shipped.
   - **Explicit implicit-area `GridAreaRect` registration** — the line-pair
     placement works via the line map (above), but a `GridAreaRect` for the
     derived area is not registered in `GridTemplateAreas.NameToRect`; anything
@@ -2222,9 +2236,9 @@ flags the categories):
   residual long-tail batch when occurrence + end-span + line-pair placement
   shipped.
 - **Removal condition** — `span <custom-ident>` resolves on the start / auto
-  edge too (via the auto-placement span algorithm) AND the implicit-area
-  `GridAreaRect` is registered in `NameToRect` for `*-start` / `*-end` line
-  pairs.
+  edge too (via the auto-placement span algorithm) AND the negative-occurrence
+  start-side implicit fill is synthesised AND the implicit-area `GridAreaRect`
+  is registered in `NameToRect` for `*-start` / `*-end` line pairs.
 ---
 
 ## abspos-cycle-1-explicit-only

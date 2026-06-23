@@ -5528,6 +5528,182 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  PR #215 review — §8.3 implicit-line assumption + negative-start
+    //  normalization + (name,line) dedup + hostile-occurrence overflow.
+    // =====================================================================
+
+    [Fact]
+    public void Integer_ident_occurrence_resolves_through_implicit_lines_when_explicit_short()
+    {
+        // PR #215 review [P1] — §8.3: "If not enough lines with that name exist, all implicit grid
+        // lines are assumed to have that name." Rows `[foo] 100px` put `foo` ONLY at line 1
+        // (explicitTrackCount = 1). `grid-row-start: foo 2` needs the 2nd `foo`; the 1st implicit line
+        // past the explicit grid (line 3) is assumed `foo`, so the item lands at row index 2 (an
+        // implicit, auto-sized 0px row) — NOT a fall-back-to-auto. blockOffset = 100 (explicit row 0) +
+        // 0 (implicit row 1); blockSize = 0 (implicit row 2). No placement-approximated diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForNamedLineNumber("foo", 2));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 0);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Span_ident_occurrence_extends_through_implicit_lines_when_explicit_short()
+    {
+        // PR #215 review [P1] — `grid-row: 1 / span foo 2` with rows `100px [foo] 100px` (foo at line 2,
+        // explicitTrackCount = 2). The 1st `foo` after the start is line 2; the 2nd is taken from the
+        // implicit lines past the explicit grid (line 4), so the span runs line 1 → line 4 = 3 tracks
+        // (rows 0+1 explicit 100px each, row 2 implicit 0px). blockSize = 200. No diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForLineNumber(1));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForSpanNameOccurrence("foo", 2));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 200);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Repeated_name_on_one_physical_line_counts_once_for_occurrence()
+    {
+        // PR #215 review [P1] — §8.1: a line's name collection is a SET; a name landing on the SAME
+        // physical line twice counts ONCE. Rows `[foo] 100px [foo] [foo] 100px` put `foo` at lines
+        // 1, 2, 2, 3 — the two adjacent `[foo]` items both mark line 2. Deduped → {1, 2, 3}, so
+        // `grid-row-start: foo 3` resolves to line 3 (row index 2, blockOffset 200). Without dedup it
+        // would wrongly resolve to line 2 (blockOffset 100). explicitTrackCount = 2.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForNamedLineNumber("foo", 3));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 200, inlineSize: 50, blockSize: 0);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Negative_integer_start_normalizes_before_named_span()
+    {
+        // PR #215 review [P1] — a NEGATIVE start counts from the explicit grid's END edge and must be
+        // normalized BEFORE the span math. Rows `100px 100px [foo] 100px` (foo at line 3,
+        // explicitTrackCount = 3). `grid-row: -3 / span foo`: -3 → line 2; `span foo` reaches the next
+        // `foo` (line 3) → a ONE-track span at row index 1 (blockOffset 100, blockSize 100). Without the
+        // fix, SpanBetweenLines(-3, 3) would yield a 6-track span.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForLineNumber(-3));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForSpanName("foo"));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Hostile_minint_occurrence_does_not_overflow_and_defers()
+    {
+        // PR #215 review [P1/P2] — the parser accepts `foo -2147483648`; the out-of-range fallback must
+        // not call Math.Abs(int.MinValue) (which throws OverflowException). The negative occurrence
+        // underflows the explicit `foo` lines (start-side shortfall stays deferred), so it falls back to
+        // auto with a deferral-tagged diagnostic — and completing without an exception proves the guard.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart,
+            (object)GridLineValue.ForNamedLineNumber("foo", int.MinValue));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        var diagnostic = Assert.Single(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+        Assert.Contains("grid-implicit-named-area-and-occurrence-syntax-deferral",
+            diagnostic.Message);
+    }
+
+    // =====================================================================
     //  PR-#103 review F1–F7 — coverage for the review-pass-resolved
     //  findings: implicit-only grids, captured-explicit-count negative
     //  resolution, sparse-occupancy DoS guard, auto-flow:column

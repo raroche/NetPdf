@@ -305,13 +305,13 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Prose_block_flow_taller_than_one_page_paginates_at_paragraph_boundaries()
     {
-        // Prose pagination (block-granularity — the broad `inline-only-block-pagination` deferral is now
-        // CLOSED; the residual single-paragraph line split is `inline-only-block-line-splitting`): a stack of
-        // text-bearing blocks (inline-only blocks) taller than the page now BREAKS across pages instead of
-        // overflowing page 1 (the pre-fix behavior was 120 paragraphs crammed onto a single page). Each
-        // paragraph is emitted EXACTLY ONCE — Td count == paragraph count — so the break/resume neither
-        // drops content (overflow) nor duplicates it. Mid-paragraph line splitting (orphans/widows) stays
-        // deferred; whole one-line paragraphs move to the next page.
+        // Prose pagination (block-granularity): a stack of text-bearing blocks (inline-only blocks) taller
+        // than the page BREAKS across pages instead of overflowing page 1 (the pre-fix behavior was 120
+        // paragraphs crammed onto a single page). Each paragraph is emitted EXACTLY ONCE — Td count ==
+        // paragraph count — so the break/resume neither drops content (overflow) nor duplicates it. These
+        // are ONE-LINE paragraphs, so each moves WHOLE to the next page (a single line can't be split);
+        // splitting a SINGLE multi-line paragraph's lines across pages is covered by
+        // Single_tall_paragraph_splits_its_lines_across_pages (`inline-only-block-line-splitting`).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var sb = new StringBuilder("<!DOCTYPE html><html><body>");
         for (var i = 0; i < 120; i++) sb.Append("<p>Line ").Append(i).Append("</p>");
@@ -352,6 +352,52 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains("1 0 0 rg", pdf);    // the red spacer's fill color
         Assert.Contains("re f", pdf);        // the spacer paints a filled rectangle (not dropped)
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void Single_tall_paragraph_splits_its_lines_across_pages()
+    {
+        // `inline-only-block-line-splitting` — ONE paragraph taller than a whole page now SLICES
+        // its own wrapped lines across pages instead of force-overflowing a single page (the
+        // residual the broad prose-pagination deferral left behind). 301 one-word lines (via
+        // <br>) span several A4 pages; each line is emitted EXACTLY ONCE — no loss, no duplication.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><p>");
+        for (var i = 0; i < 300; i++) sb.Append("L").Append(i).Append("<br>");
+        sb.Append("L300</p></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+        var perPage = TdCountsPerPage(pdf);
+
+        Assert.True(result.PageCount >= 2,
+            $"a paragraph taller than a page must split its lines across pages; got {result.PageCount}.");
+        Assert.Equal(301, TdCount(pdf));        // all 301 lines, once each — no loss / duplication
+        Assert.Equal(301, perPage.Sum());       // distributed across the pages
+        Assert.True(perPage.Count >= 2, $"lines must land on multiple pages; got [{string.Join(",", perPage)}].");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void Single_tall_paragraph_line_split_honors_widows()
+    {
+        // CSS Fragmentation L3 §4.2 — the LAST page of a split paragraph keeps at least `widows`
+        // lines (read off the paragraph's OWN computed value — per-paragraph orphans/widows). A
+        // 150-line paragraph with widows:20 pulls lines back from the penultimate page so the
+        // final page carries >= 20, without losing any line.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><p style=\"widows:20\">");
+        for (var i = 0; i < 149; i++) sb.Append("L").Append(i).Append("<br>");
+        sb.Append("L149</p></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+        var perPage = TdCountsPerPage(pdf);
+
+        Assert.True(result.PageCount >= 2, $"the paragraph must split; got {result.PageCount}.");
+        Assert.Equal(150, TdCount(pdf));        // no line lost to the widows pull-back
+        Assert.True(perPage[^1] >= 20,
+            $"widows:20 must keep >= 20 lines on the last page; got [{string.Join(",", perPage)}].");
     }
 
     // Non-block pagination — regression lock-in (multi-page-driver.md, post-cycle-8 audit).
@@ -8010,6 +8056,20 @@ public sealed class HtmlPdfConvertTests
              i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
             n++;
         return n;
+    }
+
+    // Per-page ` Td` counts (one per emitted text line), in page order — the facade emits one
+    // uncompressed content stream per page, so each text-bearing stream is one page's lines.
+    private static System.Collections.Generic.List<int> TdCountsPerPage(string pdf)
+    {
+        var counts = new System.Collections.Generic.List<int>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, "stream(.*?)endstream", System.Text.RegularExpressions.RegexOptions.Singleline))
+        {
+            var c = TdCount(m.Groups[1].Value);
+            if (c > 0) counts.Add(c);
+        }
+        return counts;
     }
 
     /// <summary>The maximum x operand across every <c>&lt;x&gt; &lt;y&gt; Td</c> text-position operator —

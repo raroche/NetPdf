@@ -319,29 +319,38 @@ grepping the ID).
 ## inline-only-block-line-splitting
 
 - **ID** — `inline-only-block-line-splitting`
-- **Status** — `approximated` (block-granularity prose pagination ships; a SINGLE paragraph taller than a
-  whole page can't split its own lines — it force-overflows).
-- **Behavior** — Block-granularity PROSE pagination is LIVE (2026-06-20): the recursion's inline-only branch
-  now consults the break resolver before emitting (mirroring the block-flow check at ~`BlockLayouter.cs`
-  L4830), so a text-bearing block whose margin-box would overflow the fragmentainer breaks WHOLE to the next
-  page — `<p>×200` paginates cleanly across pages (was ONE overflowing A4 page). The RESIDUAL is LINE-LEVEL:
-  a SINGLE inline-only block taller than an ENTIRE page can't split its OWN lines across pages (no
-  orphans/widows), so it force-overflows the page it starts on instead of breaking mid-paragraph.
-  Multi-paragraph prose — the common case — paginates at paragraph boundaries.
-- **Missing** — intra-block LINE fragmentation: a continuation that resumes a paragraph at line K on the
-  next page (an `InlineContinuation` carrying the resume line index) + orphans/widows (CSS Fragmentation
-  §4) — the "true mid-subtree split" work.
-- **Trigger** — a SINGLE `<p>`/`<div>` whose text is taller than one whole page (rare) — it overflows the
-  bottom of its starting page rather than splitting its lines.
-- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (the inline-only branch in
-  `EmitBlockSubtreeRecursive` + `EmitInlineOnlyBlockInRecursion`).
-- **Added** — 2026-06-20, when block-granularity prose pagination shipped (the broad
-  `inline-only-block-pagination` deferral CLOSED). The fix guards on a real content extent
-  (`InlineOnlyBreakMinExtentPx`) so a ZERO-extent anonymous block — flex/grid content the recursion walks,
-  placed past the page edge — does NOT spuriously break (that was the earlier flex/grid regression: both
-  triggering blocks had `chunk == 0` at `start > pageBlockSize`).
-- **Removal condition** — a single inline-only block taller than a page splits its lines across pages with
-  orphans/widows honored.
+- **Status** — `approximated` (intra-paragraph LINE splitting + orphans/widows SHIP for the common case;
+  blocks with block-axis chrome or atomic inlines still force-overflow).
+- **Behavior** — A SINGLE inline-only (text-bearing) block taller than a whole fragmentainer now SLICES its
+  own wrapped lines across pages instead of force-overflowing: the lines that fit are emitted on the current
+  page, the remainder resumes on the next via an `InlineOnlyLineSplitContinuation` (carried in
+  `BlockContinuation.LayouterState` at the block's child index, mirroring the grid/multicol/table resume
+  pattern). The painter walks a fragment's `InlineLayout.Lines` by array index, so a page-fragment is the
+  original `Lines[]` sliced to the fitting lines + a fresh `BlockOffset` — no shaped-run buffers cross the
+  page boundary (the resume page re-runs the deterministic inline pass + re-slices). CSS Fragmentation L3 §4
+  orphans / widows are honored at the cut, read off the block's OWN computed value (so per-paragraph
+  `widows` / `orphans` work). Block-granularity prose pagination (multi-paragraph, the common case) still
+  moves whole one-line paragraphs to the next page.
+- **Missing** — the slice path is gated to TEXT-ONLY, CHROME-FREE blocks (`CanSplitInlineOnlyLines`): a tall
+  single block with block-axis padding/border OR inline-block / `<img>` atomics still falls back to the
+  whole-block force-overflow (the atomic content-relative offsets + box-decoration-break:slice chrome
+  arithmetic aren't sliced yet). Also: an intermediate slice's last line isn't justified
+  (`text-align: justify` treats it as the paragraph end), and the cost-model doesn't yet weigh the split
+  (`orphans` is read but the geometric fill already satisfies it; widows is enforced directly).
+- **Trigger** — a SINGLE `<p>`/`<div>` with block-axis padding/border OR an inline atomic, whose text is
+  taller than one whole page (rare) — it overflows the bottom of its starting page rather than splitting.
+- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
+  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `EmitInlineOnlyBlockSlice` +
+  `CanSplitInlineOnlyLines`); `src/NetPdf.Paginate/LayoutContinuation.cs`
+  (`InlineOnlyLineSplitContinuation`).
+- **Added** — 2026-06-20 as the line-level residual of block-granularity prose pagination; NARROWED
+  2026-06-22 when text-only line splitting + orphans/widows shipped. (The recursion guards a real content
+  extent via `InlineOnlyBreakMinExtentPx` so a ZERO-extent anonymous block — flex/grid content the recursion
+  walks, placed past the page edge — does NOT spuriously break: the earlier flex/grid regression where both
+  triggering blocks had `chunk == 0` at `start > pageBlockSize`.)
+- **Removal condition** — a single inline-only block WITH block-axis chrome OR inline atomics, taller than a
+  page, splits its lines across pages too (box-decoration-break:slice chrome on the first/last fragment;
+  atomic placements re-indexed to the resumed lines), and an intermediate slice's last line justifies.
 
 ---
 

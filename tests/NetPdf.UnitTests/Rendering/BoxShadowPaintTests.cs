@@ -2,7 +2,6 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
-using System.Linq;
 using System.Text;
 using NetPdf;
 using NetPdf.Diagnostics;

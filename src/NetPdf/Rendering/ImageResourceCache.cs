@@ -294,7 +294,7 @@ internal sealed class ImageResourceCache
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
             // sharp offset (CSS-TEXTSHADOW-UNSUPPORTED-001); an unparseable value surfaces the same
             // code. Inheritance to descendant text is a documented first-cut residual.
-            var textShadowRaw = cascade.TryGetStylesFor(element)?.GetWinner("text-shadow")?.ResolvedValue;
+            var textShadowRaw = rules?.GetWinner("text-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
             if (!string.IsNullOrWhiteSpace(textShadowRaw)
                 && !textShadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
@@ -317,7 +317,7 @@ internal sealed class ImageResourceCache
             // cut) surfaces CSS-BOXSHADOW-UNSUPPORTED-001 once per render.
             if (collectBackgrounds)
             {
-                var shadowRaw = cascade.TryGetStylesFor(element)?.GetWinner("box-shadow")?.ResolvedValue;
+                var shadowRaw = rules?.GetWinner("box-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
                 if (!string.IsNullOrWhiteSpace(shadowRaw)
                     && !shadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
                 {
@@ -350,7 +350,7 @@ internal sealed class ImageResourceCache
             // wholesale under PrintBackgrounds=false (PR #166 review P1) — no fetch, no decode,
             // no diagnostics for backgrounds that will not paint.
             var bgRaw = collectBackgrounds
-                ? cascade.TryGetStylesFor(element)?.GetWinner("background-image")?.ResolvedValue
+                ? rules?.GetWinner("background-image")?.ResolvedValue // reuse `rules` (Copilot #210)
                 : null;
             if (!string.IsNullOrWhiteSpace(bgRaw)
                 && !bgRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))

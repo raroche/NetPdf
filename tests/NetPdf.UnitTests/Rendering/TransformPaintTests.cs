@@ -1,7 +1,6 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
-using System;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;

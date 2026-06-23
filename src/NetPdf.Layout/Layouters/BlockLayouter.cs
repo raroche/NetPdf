@@ -413,6 +413,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// every AttemptLayout entry.</summary>
     private bool _consumedIncomingMulticolContinuation;
 
+    /// <summary>Per `inline-only-block-line-splitting` — mirrors
+    /// <see cref="_consumedIncomingMulticolContinuation"/> for an incoming
+    /// <see cref="InlineOnlyLineSplitContinuation"/>: it applies to the FIRST
+    /// inline-only block encountered at its <c>ResumeAtChild</c> index after
+    /// resume (so a later split in the same attempt starts fresh). Reset on
+    /// every AttemptLayout entry.</summary>
+    private bool _consumedIncomingInlineLineSplit;
+
     /// <summary>Per Phase 3 Task 16 cycle 2 — mirrors
     /// <see cref="_consumedIncomingMulticolContinuation"/> for the
     /// flex multi-page resume contract. The incoming
@@ -919,6 +927,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // it. Re-captured each AttemptLayout (idempotent — the same per-conversion
         // object). Null when no shared cache is wired (the per-instance fallback).
         _gridMeasureCache = layout.GridMeasureCache as GridMeasurementCache;
+        // Per `multi-page-allocation-churn` — same cross-page capture for the table measurement
+        // cache (re-captured each AttemptLayout; null ⇒ the dispatch path still reuses the
+        // continuation's cache, only the per-page subtree re-shape stays).
+        _tableMeasureCache = layout.TableMeasureCache as TableMeasurementCache;
 
         // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2) —
         // clear the per-AttemptLayout nested-table content-height
@@ -943,6 +955,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // resumed index; subsequent multicol children in the same
         // attempt start fresh.
         _consumedIncomingMulticolContinuation = false;
+        // Per `inline-only-block-line-splitting` — same one-shot reset for the
+        // inline-only line-split resume contract.
+        _consumedIncomingInlineLineSplit = false;
         // Per Phase 3 Task 16 cycle 2 — same one-shot reset for the
         // flex multi-page resume contract.
         _consumedIncomingFlexContinuation = false;
@@ -1150,6 +1165,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // / NeedsRewind). Null means "fragment emitted (or
                 // skipped via diagnostic), continue with the next
                 // child".
+                // `inline-only-block-line-splitting` — resume a prior line split. The carried
+                // InlineOnlyLineSplitContinuation (one-shot, like the multicol/flex contracts)
+                // names the line to resume this block's tail at on this fresh page.
+                var inlineResumeLine = 0;
+                if (incomingBlock?.LayouterState is InlineOnlyLineSplitContinuation inlineLineCont
+                    && childIdx == incomingBlock.ResumeAtChild
+                    && !_consumedIncomingInlineLineSplit)
+                {
+                    inlineResumeLine = inlineLineCont.ResumeLineIndex;
+                    _consumedIncomingInlineLineSplit = true;
+                }
                 var inlineDispatchResult = DispatchInlineOnlyBlock(
                     child,
                     childIdx,
@@ -1163,7 +1189,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     lastEmittedIdx,
                     emittedThisAttempt,
                     out var inlineFragmentEmitted,
-                    cancellationToken);
+                    cancellationToken,
+                    resumeAtLine: inlineResumeLine);
                 if (inlineDispatchResult.HasValue)
                 {
                     return inlineDispatchResult.Value;
@@ -3106,14 +3133,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the wrapper stays at this cursor index, ahead of its
             // children).
             var wrapperCursor = _sink.Cursor;
+            // CSS 2.1 §10.6.3 — an auto-height block-flow container's painted
+            // border box spans its in-flow children; the chrome-only
+            // borderBoxBlockSize stays the pagination/cursor input (untouched
+            // above + below), this only grows the painter's rectangle, capped
+            // to the page (`auto-height-emit-vs-pagination`).
+            var emittedBlockSize = ResolveAutoHeightEmittedBlockSize(
+                child, borderBoxBlockSize, effectiveBlockSize, blockOffset, fragmentainer);
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: inFlowInlineOffset,
                 BlockOffset: blockOffset,
                 InlineSize: borderBoxInlineSize,
-                BlockSize: borderBoxBlockSize));
+                BlockSize: emittedBlockSize));
             // Per Phase 3 Task 19 cycle 2a — record positioned-CB
-            // establishers for abspos descendant anchoring.
+            // establishers for abspos descendant anchoring. Anchors to the
+            // chrome border box (abspos containing-block geometry is a separate
+            // concern from the painted auto-height span).
             RecordPositionedBoxGeometry(
                 child, inFlowInlineOffset, blockOffset,
                 borderBoxInlineSize, borderBoxBlockSize);
@@ -4337,6 +4373,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             WritingMode = outerLayout.WritingMode,
             IsRtl = outerLayout.IsRtl,
             GridMeasureCache = outerLayout.GridMeasureCache,   // measurement-cache cycle
+            TableMeasureCache = outerLayout.TableMeasureCache, // multi-page-allocation-churn
         };
         using var innerLayouter = new BlockLayouter(
             rootBox: box,
@@ -4711,6 +4748,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var inlineOnlyMarginStart =
                     child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
 
+                // `inline-only-block-line-splitting` — resume a prior line split of THIS block
+                // (one-shot consume of the chained continuation, mirroring grid/multicol). On
+                // resume the block re-enters at the top of a fresh page with no margin-top.
+                var recInlineResumeLine = 0;
+                if (incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is InlineOnlyLineSplitContinuation recLineCont)
+                {
+                    recInlineResumeLine = recLineCont.ResumeLineIndex;
+                    incomingBlockChain = null;
+                }
+
                 // Prose pagination (block-granularity, 2026-06-20) — the recursion's inline-only path now
                 // CONSULTS the break resolver before emitting, mirroring the in-flow block break check below.
                 // Pre-fix this branch emitted unconditionally + `continue`d, so N stacked text blocks taller
@@ -4761,20 +4810,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                 }
 
-                var emittedExtent = EmitInlineOnlyBlockInRecursion(
+                // Block-axis offset of the block's BORDER-BOX top inside the parent's content
+                // area. A FRESH block (resumeLine 0) lands after its own margin-top; a RESUMED
+                // tail (`inline-only-block-line-splitting`) continues at the page top with no
+                // margin (a fragmentation break suppresses the continuation's margin).
+                var recInlineBorderBoxTop = recInlineResumeLine > 0
+                    ? contentTop + childCursor
+                    : contentTop + childCursor + inlineOnlyMarginStart;
+                var inlineSplitReturn = EmitInlineOnlyBlockInRecursionSplitting(
                     child,
                     parentContentInlineSize: contentInlineSize,
-                    // Inline-axis offset: the parent's content-area
-                    // left edge in fragmentainer coords; the helper
-                    // adds the block's own marginInlineStart.
+                    // Inline-axis offset: the parent's content-area left edge in fragmentainer
+                    // coords; the helper adds the block's own marginInlineStart.
                     inlineOffsetFromContentOrigin: contentLeft,
-                    // Block-axis offset: contentTop + childCursor
-                    // gives the line-box start position INSIDE the
-                    // parent's content area; add the inline-only
-                    // block's marginTop to land at the border-box
-                    // top edge.
-                    blockOffsetFromContentOrigin: contentTop + childCursor
-                        + inlineOnlyMarginStart,
+                    blockBorderBoxTop: recInlineBorderBoxTop,
+                    childIdx: childIdx,
+                    startLine: recInlineResumeLine,
+                    fragmentainer: propagatingFragmentainer,
+                    out var emittedExtent,
                     cancellationToken);
                 // Inline-only block resets the margin-collapse chain
                 // per CSS 2.1 §8.3.1 (the line box breaks adjacency).
@@ -4782,10 +4835,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 prevMarginEnd = 0;
                 // (The previous-in-flow-sibling tracking for `break-after` is done once at the
                 // loop top now — covers all child types.)
-                // Advance the recursive cursor by the block's full
-                // margin-box extent (marginTop + borderBox +
-                // marginBottom). EmitInlineOnlyBlockInRecursion
-                // returns that value.
+                // A non-null return means the block split its lines across pages: propagate the
+                // continuation up (page break, resume the tail next page).
+                if (inlineSplitReturn is not null)
+                {
+                    return inlineSplitReturn;
+                }
+                // Finished on this page — advance the recursive cursor by the emitted slice's
+                // full margin-box extent (margin-top-if-first + borderBox + margin-bottom).
                 childCursor += emittedExtent;
                 continue;
             }
@@ -5634,13 +5691,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the subtree extent is for cursor advance only. Per
             // cycle 2b, the painter sees the border box; descendants
             // that overflow are emitted as their own fragments at
-            // their own offsets.
+            // their own offsets. EXCEPTION (CSS 2.1 §10.6.3,
+            // `auto-height-emit-vs-pagination`): an auto-height block-flow
+            // container's painted border box spans its children — the
+            // chrome-only childBorderBoxBlockSize stays the cursor/break input,
+            // this only grows the painter's rectangle, capped to the page.
+            var emittedChildBlockSize = ResolveAutoHeightEmittedBlockSize(
+                child, childBorderBoxBlockSize, childEffectiveBlockSize,
+                childBlockOffset, _capturedFragmentainer);
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: childInlineOffset,
                 BlockOffset: childBlockOffset,
                 InlineSize: childBorderBoxInlineSize,
-                BlockSize: childBorderBoxBlockSize));
+                BlockSize: emittedChildBlockSize));
             // Per Phase 3 Task 19 cycle 2a — record positioned-CB
             // establishers reached via the recursive walk so abspos
             // descendants anchor to their nearest positioned ancestor.
@@ -5719,6 +5783,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         Diagnostics = _diagnostics,
                         GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
+                        TableMeasureCache = _tableMeasureCache, // multi-page-allocation-churn
                     };
                     nestedMulticolResult = nestedMulticolLayouter.AttemptLayout(
                         _capturedFragmentainer,
@@ -5853,6 +5918,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         Diagnostics = _diagnostics,
                         GridMeasureCache = _gridMeasureCache,   // measurement-cache cycle
+                        TableMeasureCache = _tableMeasureCache, // multi-page-allocation-churn
                     };
                     nestedFlexResult = DispatchFlexInner(
                         flexBox: child,
@@ -5996,6 +6062,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // Measurement-cache cycle — propagate the per-conversion cache so a
                     // nested (html→body-nested) grid's emission shares with its pre-measure.
                     GridMeasureCache = _gridMeasureCache,
+                    TableMeasureCache = _tableMeasureCache,
                 };
 
                 // Per cycle 5c.2d — resume contract: extract any
@@ -6478,6 +6545,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// propagated onto the nested-dispatch contexts so a nested grid's emission
     /// shares it. Null ⇒ no shared cache wired (per-instance fallback).</summary>
     private GridMeasurementCache? _gridMeasureCache;
+
+    /// <summary>Per `multi-page-allocation-churn` — the cross-page table measurement cache,
+    /// captured from <c>LayoutContext.TableMeasureCache</c> + propagated onto nested-dispatch
+    /// contexts. Lets <see cref="MeasureNestedTableContentExtent"/> (and page 1's
+    /// <see cref="PreMeasureTableIfNeeded"/>) reuse the page-invariant column layout instead of
+    /// re-shaping every cell on every page. Null ⇒ no shared cache wired.</summary>
+    private TableMeasurementCache? _tableMeasureCache;
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2)
     /// — per-AttemptLayout cache of nested-table CONTENT HEIGHT
@@ -7125,9 +7199,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// result + the geometry the fragment will be drawn with. Used
     /// by both <see cref="DispatchInlineOnlyBlock"/> (the main-loop
     /// path that needs the metrics for resolver consultation +
-    /// emit) AND <see cref="EmitInlineOnlyBlockInRecursion"/> (the
-    /// recursive-subtree path per Finding #2 that emits at a
-    /// caller-provided position without resolver consultation).
+    /// emit) AND <see cref="EmitInlineOnlyBlockInRecursionSplitting"/>
+    /// (the recursive-subtree path per Finding #2 that emits — slicing
+    /// the lines across pages when needed — at a caller-provided
+    /// position without resolver consultation).
     ///
     /// <para>Returns <see langword="null"/> when the inline pass
     /// produces no content (no TextRuns OR all collapse to empty
@@ -7853,7 +7928,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         int emittedThisAttempt,
         out bool emitted,
         CancellationToken cancellationToken,
-        bool suppressOwnMargins = false)
+        bool suppressOwnMargins = false,
+        // `inline-only-block-line-splitting` — when > 0 the block is RESUMING a prior line
+        // split: emit its lines from this 0-based index (skipping the lines already emitted on
+        // earlier pages), splitting again if the remainder still overflows.
+        int resumeAtLine = 0)
     {
         // Per PR #48 review Copilot — the caller must NOT bump
         // `lastEmittedIdx` + `emittedThisAttempt` on skip paths
@@ -7941,6 +8020,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         var comp = computation.Value;
+        var canSplitLines = CanSplitInlineOnlyLines(metrics, comp);
+
+        // `inline-only-block-line-splitting` — RESUME a previously line-split block. It re-enters
+        // at the top of a fresh page (a fragmentation break suppresses the block's own margin +
+        // — gated chrome-free — its border/padding), emitting its remaining lines from
+        // `resumeAtLine` and splitting again if they still overflow. No resolver consult: the
+        // tail unconditionally continues here (it was already deferred to its own fresh page).
+        if (resumeAtLine > 0)
+        {
+            return EmitInlineOnlyBlockSplitting(
+                block: inlineOnlyBlock,
+                childIdx: childIdx,
+                metrics: metrics,
+                comp: comp,
+                fragmentainer: fragmentainer,
+                startLine: resumeAtLine,   // validated against the line count inside (fail-fast, no clamp)
+                blockBorderBoxTop: fragmentainer.UsedBlockSize,
+                priorPagesConsumed: priorPagesConsumed,
+                out emitted);
+        }
 
         // Finding 3 — pagination integration. Mirror the in-flow
         // block dispatch: capture a checkpoint at the candidate-
@@ -8016,8 +8115,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var atTopOfPage = fragmentainer.UsedBlockSize == initialUsed;
             if (nothingEmittedThisAttempt && atTopOfPage)
             {
+                // `inline-only-block-line-splitting` — the block is taller than a WHOLE page
+                // (it's alone at the top + still doesn't fit). When its lines are sliceable
+                // (text-only, chrome-free, multi-line), split them across pages instead of
+                // force-overflowing: emit the lines that fit here + resume the tail next page.
+                if (canSplitLines)
+                {
+                    return EmitInlineOnlyBlockSplitting(
+                        block: inlineOnlyBlock,
+                        childIdx: childIdx,
+                        metrics: metrics,
+                        comp: comp,
+                        fragmentainer: fragmentainer,
+                        startLine: 0,
+                        blockBorderBoxTop: fragmentainer.UsedBlockSize + topShift,
+                        priorPagesConsumed: priorPagesConsumed,
+                        out emitted);
+                }
+
                 // Forced overflow — the inline content is taller
-                // than the fragmentainer. Same loud-fail semantics
+                // than the fragmentainer AND not sliceable (a single line, atomics, or
+                // block-axis chrome). Same loud-fail semantics
                 // as the in-flow path: emit anyway + diagnostic.
                 var diagSink = layout.Diagnostics ?? _diagnostics;
                 OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
@@ -8169,47 +8287,236 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
     }
 
-    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
-    /// review Finding #2 — emit the inline-only block fragment from
-    /// the recursive subtree walker
-    /// (<see cref="EmitBlockSubtreeRecursive"/>). Computes the
-    /// inline pass + emits at the caller-supplied content-area-
-    /// relative position. The recursive caller has already chosen
-    /// the in-parent-content-area offset via its own stacking +
-    /// margin-collapse arithmetic; this helper just runs the
-    /// inline pass + emits.
-    ///
-    /// <para><b>Pagination scope.</b> The recursive caller (<see cref="EmitBlockSubtreeRecursive"/>) now
-    /// CONSULTS the break resolver BEFORE invoking this helper (prose pagination, 2026-06-20): a
-    /// text-bearing block whose visual extent would overflow the fragmentainer breaks WHOLE to the next page
-    /// at child-boundary granularity. This helper itself just runs the inline pass + emits at the chosen
-    /// offset; it is reached only once the caller has decided the block fits (or is the first, force-overflow
-    /// case). Intra-block LINE splitting — a single paragraph taller than a whole page resuming at line K on
-    /// the next page (orphans/widows) — stays deferred (`inline-only-block-line-splitting`).</para>
-    ///
-    /// <para><b>NotSupportedException + atomic-inline diagnostics.</b>
-    /// Routed through the captured diagnostic sink (set at
-    /// AttemptLayout entry); same diagnostic codes as the main-loop
-    /// dispatch.</para></summary>
-    /// <returns>The total block-axis extent the recursive caller
-    /// should advance its child cursor by (= computed border-box
-    /// block size when content was emitted; 0 when the inline pass
-    /// produced nothing).</returns>
-    private double EmitInlineOnlyBlockInRecursion(
+    // ---- inline-only-block-line-splitting -------------------------------------
+    // A single inline-only (text-bearing) block whose wrapped lines are taller than a
+    // whole fragmentainer splits its OWN lines across pages, honoring orphans / widows.
+    // The painter walks a fragment's InlineLayout.Lines by ARRAY index from 0 (positions =
+    // BlockOffset + cumulative per-line heights), so a page-fragment is just the original
+    // Lines[] sliced to the lines that fit + a fresh BlockOffset; an InlineOnlyLineSplit-
+    // Continuation (carried in BlockContinuation.LayouterState) resumes the tail next page.
+
+    /// <summary>Tolerance (px) for the line-split fit accumulation + the chrome-free gate.</summary>
+    private const double InlineOnlyLineSplitEpsilonPx = 0.01;
+
+    /// <summary>One wrapped line's block-axis height, matching the painter EXACTLY: the
+    /// per-line height when the computation carries one (a tall inline atomic grew the line),
+    /// else the uniform pitch (= content extent / line count, which equals the painter's
+    /// <c>line-height</c> for a text-only block).</summary>
+    private static double InlineOnlyLineHeightAt(
+        InlineOnlyBlockComputation comp, int lineIndex, int totalLines)
+        => comp.PerLineHeightsPx is { } h && lineIndex < h.Count
+            ? h[lineIndex]
+            : (totalLines > 0 ? comp.ContentBlockSize / totalLines : 0);
+
+    private static double SumInlineOnlyLineHeights(
+        InlineOnlyBlockComputation comp, int startLine, int endLine, int totalLines)
+    {
+        var sum = 0.0;
+        for (var i = startLine; i < endLine; i++)
+        {
+            sum += InlineOnlyLineHeightAt(comp, i, totalLines);
+        }
+        return sum;
+    }
+
+    /// <summary>Whether the block's wrapped lines CAN be sliced across pages: more than one
+    /// line (a single line can't split), pure text (no atomic-inline placements / inline-block
+    /// content — their content-relative offsets would mis-place under a slice), and no
+    /// block-axis chrome (so a slice's geometry is exactly its stacked line heights + the
+    /// continuation lands cleanly at the page top with no top padding/border to re-apply). A
+    /// padded/bordered or atomic-bearing tall block falls back to whole-block force-overflow
+    /// (a documented residual of `inline-only-block-line-splitting`).</summary>
+    private static bool CanSplitInlineOnlyLines(
+        InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp)
+        => comp.InlineResult.Lines.Length > 1
+            && comp.AtomicPlacements is null or { Count: 0 }
+            && comp.InlineBlockContents is null or { Count: 0 }
+            && (metrics.BorderBlockStart + metrics.PaddingBlockStart
+                + metrics.BorderBlockEnd + metrics.PaddingBlockEnd) < InlineOnlyLineSplitEpsilonPx;
+
+    /// <summary>Number of lines from <paramref name="startLine"/> that fit in
+    /// <paramref name="availableBlockPx"/>, honoring widows; always &gt;= 1 so pagination
+    /// makes forward progress, and == the remaining count when they all fit.</summary>
+    private static int ComputeInlineOnlyFitLines(
+        InlineOnlyBlockComputation comp, int startLine, double availableBlockPx,
+        int orphans, int widows)
+    {
+        var total = comp.InlineResult.Lines.Length;
+        var remaining = total - startLine;
+        if (remaining <= 0)
+        {
+            return 0;
+        }
+
+        var fit = 0;
+        var acc = 0.0;
+        for (var i = startLine; i < total; i++)
+        {
+            var h = InlineOnlyLineHeightAt(comp, i, total);
+            if (fit > 0 && acc + h > availableBlockPx + InlineOnlyLineSplitEpsilonPx)
+            {
+                break;
+            }
+            acc += h;
+            fit++;
+        }
+        if (fit >= remaining)
+        {
+            return remaining;   // everything left fits — no further split
+        }
+
+        // CSS Fragmentation L3 §4.2 widows — keep at least `widows` lines for the tail page; pull
+        // lines back from this page when the break would otherwise leave a too-short remainder, BUT
+        // not so far that this page itself drops below `orphans` lines (when widows + orphans can't
+        // both be met on a page this small, orphans wins — the geometric fill keeps a full earlier
+        // page well past both). A block taller than a page fills each page past `orphans` anyway, so
+        // this bites only near the final boundary.
+        var tail = remaining - fit;
+        if (tail < widows)
+        {
+            var reduced = remaining - widows;
+            if (reduced >= orphans && reduced < fit)
+            {
+                fit = reduced;
+            }
+        }
+        return fit;
+    }
+
+    /// <summary>Emits lines <c>[startLine, endLine)</c> of a (text-only, chrome-free)
+    /// inline-only block as ONE <see cref="BoxFragment"/> at the page-relative border-box top,
+    /// reusing <see cref="EmitInlineOnlyBlockFragment"/> via a sliced computation (a sub-array
+    /// of <c>Lines</c> + matching per-line heights + the slice's content extent).</summary>
+    private void EmitInlineOnlyBlockSlice(
+        Box block, InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp,
+        int startLine, int endLine, double inlineOffsetFromContentOrigin, double blockBorderBoxTop)
+    {
+        var total = comp.InlineResult.Lines.Length;
+        if (startLine == 0 && endLine == total)
+        {
+            // The whole block fits — no actual split. Emit the original computation directly (no
+            // array copy, byte-identical to the pre-split whole-block emit).
+            EmitInlineOnlyBlockFragment(
+                block, metrics, comp, inlineOffsetFromContentOrigin, blockBorderBoxTop);
+            return;
+        }
+        var slicedLines = comp.InlineResult.Lines[startLine..endLine];
+        var slicedInline = new InlineLayoutResult(
+            slicedLines, comp.InlineResult.ShapedRuns, comp.InlineResult.PreprocessedRuns);
+
+        double[]? slicedHeights = null;
+        if (comp.PerLineHeightsPx is { } ph)
+        {
+            slicedHeights = new double[endLine - startLine];
+            for (var i = 0; i < slicedHeights.Length; i++)
+            {
+                slicedHeights[i] = ph[startLine + i];
+            }
+        }
+        var slicedContent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
+
+        var slicedComp = comp with
+        {
+            InlineResult = slicedInline,
+            // Chrome is ~0 (CanSplitInlineOnlyLines), so the border box == the content extent.
+            BorderBoxBlockSize = slicedContent,
+            ContentBlockSize = slicedContent,
+            PerLineHeightsPx = slicedHeights,
+        };
+        EmitInlineOnlyBlockFragment(
+            block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop);
+    }
+
+    /// <summary>Fail-fast guard on a resumed line index (PR #211 Copilot review): the producer
+    /// (<see cref="EmitInlineOnlyBlockSplitting"/> / <see cref="EmitInlineOnlyBlockInRecursionSplitting"/>)
+    /// only ever resumes at a line it emitted up to, so a value outside <c>[0, totalLines]</c> is an
+    /// <see cref="InlineOnlyLineSplitContinuation"/> contract violation — throw rather than clamp +
+    /// silently emit an empty / wrong slice (matching the other continuation guards in this
+    /// layouter).</summary>
+    private static void ValidateInlineResumeLine(int resumeLine, int totalLines)
+    {
+        if (resumeLine < 0 || resumeLine > totalLines)
+        {
+            throw new InvalidOperationException(
+                $"InlineOnlyLineSplitContinuation.ResumeLineIndex={resumeLine} is out of range "
+                + $"[0, {totalLines}] for the inline-only block's wrapped lines — a continuation-"
+                + "contract violation (the producer only resumes at a line index it emitted up to).");
+        }
+    }
+
+    /// <summary>Emits an inline-only block starting at <paramref name="startLine"/>, slicing
+    /// its lines across pages when they don't all fit (`inline-only-block-line-splitting`).
+    /// Returns a <c>PageComplete</c> carrying an <see cref="InlineOnlyLineSplitContinuation"/>
+    /// when lines remain for the next page; returns <see langword="null"/> when the block
+    /// FINISHED on this page (this method advances <see cref="FragmentainerContext.UsedBlockSize"/>
+    /// past the final slice so the caller's next sibling flows below it).</summary>
+    private LayoutAttemptResult? EmitInlineOnlyBlockSplitting(
+        Box block, int childIdx, InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp,
+        FragmentainerContext fragmentainer, int startLine, double blockBorderBoxTop,
+        double priorPagesConsumed, out bool emitted)
+    {
+        emitted = true;
+        var total = comp.InlineResult.Lines.Length;
+        ValidateInlineResumeLine(startLine, total);
+        var orphans = block.Style.ReadOrphansOrDefault();
+        var widows = block.Style.ReadWidowsOrDefault();
+        // Chrome is ~0 (gated), so the content top == the border-box top.
+        var available = fragmentainer.BlockSize - blockBorderBoxTop;
+        var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
+        var endLine = System.Math.Min(startLine + fit, total);
+
+        EmitInlineOnlyBlockSlice(
+            block, metrics, comp, startLine, endLine,
+            inlineOffsetFromContentOrigin: 0, blockBorderBoxTop: blockBorderBoxTop);
+
+        if (endLine >= total)
+        {
+            // The block finished on this page — advance past the slice + its margin-bottom so
+            // a following sibling flows below it.
+            var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
+            fragmentainer.UsedBlockSize = System.Math.Max(0,
+                blockBorderBoxTop + sliceExtent + metrics.MarginBlockEnd);
+            return null;
+        }
+
+        // Lines remain → the page is full; resume the block's tail at `endLine` next page.
+        fragmentainer.UsedBlockSize = fragmentainer.BlockSize;
+        return LayoutAttemptResult.PageComplete(
+            new BlockContinuation(
+                ResumeAtChild: childIdx,
+                ConsumedBlockSize: priorPagesConsumed
+                    + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                LayouterState: new InlineOnlyLineSplitContinuation(endLine)),
+            cost: 0);
+    }
+
+    /// <summary>Per `inline-only-block-line-splitting` — the recursion's split-aware emit for an
+    /// inline-only block. Emits the block (or, when <paramref name="startLine"/> &gt; 0, its
+    /// resumed tail), SLICING its wrapped lines across pages when they don't all fit the
+    /// fragmentainer. Returns a <see cref="BlockContinuation"/> carrying an
+    /// <see cref="InlineOnlyLineSplitContinuation"/> when lines remain (the recursive caller
+    /// returns it to page-break); returns <see langword="null"/> when the block FINISHED on this
+    /// page, with <paramref name="marginBoxExtentAdvance"/> set to the cursor advance
+    /// (margin-start when this is the first slice + the emitted border-box extent + margin-end).
+    /// Falls back to a whole-block emit (the pre-existing force-overflow behavior) when the lines
+    /// aren't sliceable (<see cref="CanSplitInlineOnlyLines"/>) or there's no paginating
+    /// fragmentainer.</summary>
+    private LayoutContinuation? EmitInlineOnlyBlockInRecursionSplitting(
         Box inlineOnlyBlock,
         double parentContentInlineSize,
         double inlineOffsetFromContentOrigin,
-        double blockOffsetFromContentOrigin,
+        double blockBorderBoxTop,
+        int childIdx,
+        int startLine,
+        FragmentainerContext? fragmentainer,
+        out double marginBoxExtentAdvance,
         CancellationToken cancellationToken)
     {
+        marginBoxExtentAdvance = 0;
         var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock, parentContentInlineSize);
         var computation = ComputeInlineOnlyBlockLayout(
-            inlineOnlyBlock,
-            metrics,
-            containingInlineSize: parentContentInlineSize,
-            out var notSupportedMessage,
-            out var atomicInlineSkipCount,
-            cancellationToken);
+            inlineOnlyBlock, metrics, containingInlineSize: parentContentInlineSize,
+            out var notSupportedMessage, out var atomicInlineSkipCount, cancellationToken);
 
         if (atomicInlineSkipCount > 0)
         {
@@ -8221,7 +8528,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "inline-replaced) — sub-cycle 1 skips them in the resulting line.",
                 PaginateDiagnosticSeverity.Warning));
         }
-
         if (notSupportedMessage is not null)
         {
             OptimizingBreakResolver.SafeEmit(_capturedDiagSink, new PaginateDiagnostic(
@@ -8230,26 +8536,53 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "subtree) threw NotSupportedException + the inline content "
                 + "was dropped. Detail: " + notSupportedMessage,
                 PaginateDiagnosticSeverity.Warning));
-            return 0;
+            return null;
         }
-
         if (computation is null)
         {
-            return 0;
+            return null;
         }
 
         var comp = computation.Value;
-        EmitInlineOnlyBlockFragment(
-            inlineOnlyBlock, metrics, comp,
-            inlineOffsetFromContentOrigin,
-            blockOffsetFromContentOrigin);
-        // Total block-axis cursor advance for the recursive caller =
-        // marginBlockStart + borderBoxBlockSize + marginBlockEnd.
-        // The recursive caller's stacking does not apply collapse
-        // for inline-only blocks (line box breaks adjacency — same
-        // rule as the main loop).
-        return metrics.MarginBlockStart + comp.BorderBoxBlockSize
-            + metrics.MarginBlockEnd;
+        var marginStartAdvance = startLine == 0 ? metrics.MarginBlockStart : 0;
+
+        // Not sliceable (single line, atomics, or block-axis chrome) OR an unpaginated
+        // fragmentainer → emit the whole block at the border-box top (the pre-existing
+        // force-overflow path; `startLine` is 0 here because a split only ever resumes a
+        // sliceable block).
+        if (!CanSplitInlineOnlyLines(metrics, comp)
+            || fragmentainer is not { SuppressBlockPagination: false })
+        {
+            EmitInlineOnlyBlockFragment(
+                inlineOnlyBlock, metrics, comp,
+                inlineOffsetFromContentOrigin, blockBorderBoxTop);
+            marginBoxExtentAdvance = metrics.MarginBlockStart
+                + comp.BorderBoxBlockSize + metrics.MarginBlockEnd;
+            return null;
+        }
+
+        var total = comp.InlineResult.Lines.Length;
+        ValidateInlineResumeLine(startLine, total);
+        var orphans = inlineOnlyBlock.Style.ReadOrphansOrDefault();
+        var widows = inlineOnlyBlock.Style.ReadWidowsOrDefault();
+        // Chrome is ~0 (gated), so the content top == the border-box top.
+        var available = fragmentainer.BlockSize - blockBorderBoxTop;
+        var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
+        var endLine = System.Math.Min(startLine + fit, total);
+        EmitInlineOnlyBlockSlice(
+            inlineOnlyBlock, metrics, comp, startLine, endLine,
+            inlineOffsetFromContentOrigin, blockBorderBoxTop);
+        var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
+
+        if (endLine >= total)
+        {
+            marginBoxExtentAdvance = marginStartAdvance + sliceExtent + metrics.MarginBlockEnd;
+            return null;
+        }
+        // Lines remain → resume the tail at `endLine` on the next page.
+        return new BlockContinuation(
+            ResumeAtChild: childIdx, ConsumedBlockSize: 0,
+            LayouterState: new InlineOnlyLineSplitContinuation(endLine));
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — measure
@@ -9135,6 +9468,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // The caller is responsible for calling EmitTableInner after
         // emitting the wrapper fragment (which advances the cursor by
         // the post-Finding-1 wrapper extent).
+        //
+        // NOTE (`multi-page-allocation-churn`, PR #211 review [P1]): this DISPATCH path is the
+        // EMIT path — its TableLayouter's buffered cell/caption fragments are later flushed by
+        // EmitTableInner with their inline offsets BAKED IN at the wrapper's real content-inline
+        // offset. It must NOT restore the cross-page `TableMeasurementCache`, which is populated by
+        // the SUBTREE-extent measure at a placeholder inline offset of 0 — restoring it here would
+        // flush cell content at x=0 for any indented / margined / nested table. The dispatch
+        // already reuses the prior page's REAL-offset column layout via the incoming
+        // `TableContinuation` (MeasureContentHeight's cache path); the cross-page cache is owned
+        // exclusively by the measure-only subtree pass (which never emits).
         var naturalContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
         // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — when the
@@ -9230,12 +9573,39 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentInlineOffset: 0,
             contentBlockOffset: 0,
             contentInlineSize: contentInlineSize);
+        // Per `multi-page-allocation-churn` — reuse a prior page's column layout from the cross-page
+        // cache so this transient measure doesn't re-shape every cell on every page (the O(n²)
+        // churn). RestoreMeasuredStateFromReuse pre-populates the deterministic, page-invariant
+        // measured state so MeasureContentHeight below returns immediately; on a miss we measure
+        // once + store. The dry-run extent below depends ONLY on row heights (offset-independent),
+        // so it is byte-identical to the un-cached path.
+        //
+        // INVARIANT (PR #211 review [P1]): this MEASURE-ONLY pass is the SOLE owner of the
+        // `TableMeasurementCache`. It measures at a PLACEHOLDER inline offset of 0 and uses a
+        // discarding sink (MeasureContentHeight never writes to `_sink`, and the buffered cell
+        // fragments are dropped on Dispose), so the offset-0 inline positions the cache's buffers
+        // carry are NEVER flushed. The EMIT path (PreMeasureTableIfNeeded → EmitTableInner) must
+        // NOT read this cache — it would place cells at x=0 for any indented table; it reuses the
+        // real-offset column layout via the `TableContinuation` instead.
+        object? tableReuse = null;
+        var tableMeasureHit = _tableMeasureCache is not null
+            && _tableMeasureCache.TryGet(wrapper, contentInlineSize, out tableReuse)
+            && tableReuse is not null;
+        if (tableMeasureHit)
+        {
+            transientLayouter.RestoreMeasuredStateFromReuse(tableReuse!);
+        }
         var transientLayout = new LayoutContext(_capturedFragmentainer)
         {
             Diagnostics = _diagnostics,
         };
         var contentHeight = transientLayouter.MeasureContentHeight(
             _capturedFragmentainer, ref transientLayout, cancellationToken);
+        if (!tableMeasureHit && _tableMeasureCache is not null
+            && transientLayouter.ExtractColumnLayoutCacheForReuse() is { } freshTableLayout)
+        {
+            _tableMeasureCache.Store(wrapper, contentInlineSize, freshTableLayout);
+        }
 
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
         // the caller is doing a measure pass for a wrapper whose
@@ -9903,6 +10273,52 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // resolves against the containing block's height; treating it as
         // auto would route balanced multicol into the wrong layout path.
         return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+    }
+
+    /// <summary>CSS 2.1 §10.6.3 — the painted border box of an AUTO-height
+    /// block-flow container must SPAN its in-flow children, not just its own
+    /// chrome (padding + border). Returns the border-box block size to EMIT
+    /// (= what the painter draws for background / border / border-radius):
+    /// the content-spanning <paramref name="effectiveBlockSize"/>, CAPPED to
+    /// the current page fragment so a subtree taller than the page paints a
+    /// page-bounded rectangle (its content resumes on later pages) rather than
+    /// a rectangle running off the page edge — the regression that reverted
+    /// the first attempt (`auto-height-emit-vs-pagination`).
+    ///
+    /// <para>Byte-identical for every other box: explicit-height blocks, leaves
+    /// (<paramref name="effectiveBlockSize"/> == <paramref name="borderBoxBlockSize"/>),
+    /// and flex / grid / table / multicol wrappers (excluded by
+    /// <see cref="IsBlockFlowContainerOwnedByBlockLayouter"/> — they own their own
+    /// block sizing via the F2 wrapper-resize path) all return
+    /// <paramref name="borderBoxBlockSize"/> unchanged. Crucially this affects
+    /// ONLY the emitted fragment the painter consumes: pagination, the cursor
+    /// advance, the break checks, and continuation accounting keep using the
+    /// chrome <paramref name="borderBoxBlockSize"/> and the uncapped
+    /// effective extent, so page splitting stays byte-identical.</para></summary>
+    private static double ResolveAutoHeightEmittedBlockSize(
+        Box box, double borderBoxBlockSize, double effectiveBlockSize,
+        double blockOffset, FragmentainerContext? fragmentainer)
+    {
+        if (effectiveBlockSize <= borderBoxBlockSize
+            || !IsHeightAuto(box)
+            || !IsBlockFlowContainerOwnedByBlockLayouter(box))
+        {
+            return borderBoxBlockSize;
+        }
+
+        var spanned = effectiveBlockSize;
+        if (fragmentainer is { SuppressBlockPagination: false })
+        {
+            // The rectangle starts at blockOffset (page-relative) and must not
+            // extend past the fragmentainer bottom; cap to the page remainder,
+            // never below the chrome.
+            var pageRemaining = fragmentainer.BlockSize - blockOffset;
+            spanned = pageRemaining > borderBoxBlockSize
+                ? Math.Min(spanned, pageRemaining)
+                : borderBoxBlockSize;
+        }
+
+        return Math.Max(borderBoxBlockSize, spanned);
     }
 
     /// <summary>Per Phase 3 Task 16 cycle 4a (PR #82, following the

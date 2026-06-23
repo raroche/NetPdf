@@ -31,8 +31,10 @@ containing block), and Flexbox stays **100%** with a new percentage-gap case
 (`column-gap`/`row-gap` percentages resolve against the container content box).
 Earlier: the flex/grid gap PR took Flexbox to 100% + Grid fixed-track gaps to 100%,
 and the box-model PR took CSS 2.2 to 93.3% (`box-sizing: border-box` block axis +
-`LengthPx` min/max). The one remaining CSS 2.2 gap is auto-height shrink-to-fit
-(see below).
+`LengthPx` min/max). The Phase-3 closeout PR then took CSS 2.2 to **100%** (30/30) —
+the last gap, auto-height emit (§10.6.3), now spans an auto-height block's children
+in the painted border box, capped to the page fragment (`auto-height-emit-vs-pagination`
+closed).
 
 ## How the gate works — per-case baseline, not a pass-rate floor
 
@@ -78,24 +80,25 @@ metrics) so they're deterministic without a font dependency.
 
 ## Known gaps (the failing cases — each is a real, documented approximation)
 
-- **`auto` height shrink-to-fit** (CSS 2.1 §10.6.3) — NetPdf emits an auto block
-  height of `0 + padding + border`. Sibling placement + pagination already use
-  the subtree visual extent (flow is correct), but the box's own emitted
-  background/border under-sizes. Growing the EMITTED height destabilizes
-  multi-page block-flow pagination (forced-overflow instead of clean splits), so
-  it stays deferred — see `auto-height-emit-vs-pagination` in
-  [docs/deferrals.md](../../docs/deferrals.md).
-- **`break-before: page`** (Fragmentation §3.1) — forced-break metadata isn't
-  propagated from the box yet.
+**None — every curated case now passes** (CSS 2.2 100% · Fragmentation 100% ·
+Flexbox 100% · Grid 100%). There are currently no `KnownGap` cases. Documented
+approximations that aren't represented as a failing geometry case (e.g. cross-page
+box-decoration repetition, single-paragraph line splitting) live in
+[docs/deferrals.md](../../docs/deferrals.md) — add a `KnownGap` case here when one
+becomes expressible as a `BoxFragment` geometry assertion.
 
-**Closed by the sizing-residuals PR (post-`0.7.0-beta`):** grid `fr` tracks subtract
-the gutters from their distributed free space (Grid → 100%); percentage min/max-width/
-height resolve against the containing block (CSS 2.2 → 96.7%); percentage `column-gap`/
-`row-gap` resolve against the container content box (the new `flex-percentage-column-gap`
-case). **Closed by the flex/grid gap PR:** flex + grid `gap` / `column-gap` / `row-gap`
-length gutters + an explicit `width` on a flex/grid container. **Closed earlier
-(box-model PR):** `box-sizing: border-box` (block-axis emit + subtree measure + floats)
-and `LengthPx` min/max-width/height clamping on explicit AND auto/fill sizes.
+**Closed by the Phase-3 closeout PR (post-`0.7.0-beta`):** auto-height emit (§10.6.3) —
+an auto-height block's painted border box now spans its in-flow children, capped to the
+page fragment (CSS 2.2 → **100%**; `auto-height-emit-vs-pagination`). **Closed by the
+CSS Fragmentation control PR:** `break-before` / `break-after` (+ legacy `page-break-*`)
+forced breaks propagate through fitting ancestors (Fragmentation → 100%). **Closed by the
+sizing-residuals PR:** grid `fr` tracks subtract the gutters from their distributed free
+space (Grid → 100%); percentage min/max-width/height resolve against the containing block;
+percentage `column-gap`/`row-gap` resolve against the container content box. **Closed by
+the flex/grid gap PR:** flex + grid `gap` / `column-gap` / `row-gap` length gutters + an
+explicit `width` on a flex/grid container. **Closed earlier (box-model PR):**
+`box-sizing: border-box` (block-axis emit + subtree measure + floats) and `LengthPx`
+min/max-width/height clamping on explicit AND auto/fill sizes.
 
 These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
 [docs/compatibility-matrix.md](../../docs/compatibility-matrix.md).

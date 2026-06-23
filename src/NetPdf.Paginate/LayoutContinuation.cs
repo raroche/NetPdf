@@ -59,6 +59,25 @@ internal sealed record InlineContinuation(
     int ClusterIndex,
     object? LayouterState = null) : LayoutContinuation;
 
+/// <summary>Per `inline-only-block-line-splitting` — INTRA-block LINE
+/// fragmentation of an inline-only (text-bearing) block whose wrapped lines are
+/// taller than a whole fragmentainer. The lines that fit are emitted on the
+/// current page; the block resumes its INTERNAL line flow at line
+/// <paramref name="ResumeLineIndex"/> (0-based index into the block's wrapped
+/// <c>LineFragment[]</c>) on the next page. Carried in
+/// <see cref="BlockContinuation.LayouterState"/> at the block's own child index
+/// (so <see cref="BlockContinuation.ResumeAtChild"/> points AT the block, not
+/// past it) — the same in-LayouterState resume pattern as
+/// <see cref="GridContinuation"/> / <see cref="MulticolContinuation"/> /
+/// <see cref="TableContinuation"/>'s <c>RowSplitOffset</c>, but for line index
+/// instead of row/cell offset. The resume page re-runs the (deterministic)
+/// inline pass and re-slices from <paramref name="ResumeLineIndex"/>, so the
+/// shaped-run buffers don't cross the page boundary. orphans / widows
+/// (CSS Fragmentation L3 §4) are honored at the cut by the layouter reading the
+/// block's own computed values.</summary>
+internal sealed record InlineOnlyLineSplitContinuation(
+    int ResumeLineIndex) : LayoutContinuation;
+
 /// <summary>Table split between rows. <paramref name="RepeatHead"/> +
 /// <paramref name="RepeatFoot"/> control whether <c>&lt;thead&gt;</c> /
 /// <c>&lt;tfoot&gt;</c> are re-emitted on the new page (Task 13 cycle 2

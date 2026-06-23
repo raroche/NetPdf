@@ -181,6 +181,11 @@ internal static class PdfRenderPipeline
         // re-shaping per site + per page. A measured CONTENT extent is deterministic for its
         // keyed inputs, so output is byte-identical.
         var gridMeasureCache = new GridMeasurementCache();
+        // Per `multi-page-allocation-churn` — one cross-page table measurement cache, so a table
+        // that fragments across pages is fully measured (column split + cell shaping) ONCE rather
+        // than re-shaped per page by the subtree-extent pass (the O(n²) churn). Page-invariant +
+        // deterministic, so output is byte-identical.
+        var tableMeasureCache = new TableMeasurementCache();
         // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; resolved ONCE here as
         // the document-level defaults for the resolver (per-paragraph overrides await line
         // splitting — `inline-only-block-line-splitting`). BoxBuilder roots the tree at a
@@ -212,6 +217,7 @@ internal static class PdfRenderPipeline
                     var layout = new LayoutContext(fragmentainer)
                     {
                         GridMeasureCache = gridMeasureCache,
+                        TableMeasureCache = tableMeasureCache,
                     };
                     // Document-level orphans/widows (resolved once above) drive the resolver
                     // instead of the hardcoded 2/2.

@@ -289,12 +289,12 @@ gap; the rates below are the honest engine measurement, not aspiration; see
 
 1. ✅ All 4 invoice corpus files render to a valid PDF (visual fidelity polish lands in Phase 4).
 2. ✅ The Anvil sample (`04-anvil-running-elements.html`) renders with the footer + "Page N of M" appearing on every page.
-3. ✅ W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 96.7%** (29/30); MET after the box-model fixes (`box-sizing: border-box` on the block axis + emit/measure consistency + floats; min/max-width/height clamping on explicit AND auto/fill sizes — now incl. PERCENTAGE min/max, resolved against the containing block). One residual gap deferred: auto-height shrink-to-fit of the emitted box (`auto-height-emit-vs-pagination`).
+3. ✅ W3C CSS 2.2 layout test pass-rate ≥ 90% — **MEASURED 100%** (30/30); MET after the box-model fixes (`box-sizing: border-box` on the block axis + emit/measure consistency + floats; min/max-width/height clamping on explicit AND auto/fill sizes — now incl. PERCENTAGE min/max, resolved against the containing block) and the auto-height emit fix (§10.6.3 — an auto-height block's painted border box spans its in-flow children, capped to the page fragment; `auto-height-emit-vs-pagination` closed).
 4. ✅ W3C Flexbox test pass-rate ≥ 85% — **MEASURED 100%** (19/19); MET after `gap` / `column-gap` / `row-gap` gutters (length AND percentage; consuming free space before grow/shrink + justify-content) + the container honoring its own explicit `width` (+ `margin: 0 auto` centering).
 5. ✅ W3C Grid Level 1 test pass-rate ≥ 70% — **MEASURED 100%** (15/15); MET after the gap gutters (incl. spanned items + auto-height extent + `fr` tracks subtracting the gutters from their free space + percentage gaps).
-6. ✅ W3C Fragmentation test pass-rate ≥ 80% — **MEASURED 90.0%** (9/10).
+6. ✅ W3C Fragmentation test pass-rate ≥ 80% — **MEASURED 100%** (12/12); MET after the CSS Fragmentation control PR (`break-before` / `break-after` + legacy `page-break-*` forced breaks propagate through fitting ancestors).
 7. 🟡 Performance: 3-page invoice ≤ 200 ms p50; 20-page report ≤ 1.5 s p50 — **signed off measured-with-documented-residuals**: layout-pipeline smoke-gated (`PerformanceGateTests`: 3-pg ~42 ms, 22-pg ~400 ms, synthetic fonts + table content); the full-pipeline (images + web fonts) BenchmarkDotNet flow is not yet a build gate.
-8. 🟡 Memory: linear growth with page count — **signed off measured-with-documented-residuals**: retained heap flat (gated); per-page ALLOCATION linearity still open (`multi-page-allocation-churn` — super-linear transient allocations; a slope gate is large-doc hardening).
+8. ✅ Memory: linear growth with page count — retained heap flat (gated) AND per-page ALLOCATION ~constant across page count (gated, `PerformanceGateTests.Multi_page_allocation_per_page_stays_constant_with_page_count`): a fragmenting table is measured ONCE per conversion + reused across pages via the cross-page `TableMeasurementCache`, so the prior ~O(n²) churn (`multi-page-allocation-churn`, closed) is gone (~5 MiB/page flat).
 9. ✅ AOT smoke test still passes.
 10. ✅ Determinism: byte-equal output for byte-equal input.
 11. 🟡 CHANGELOG updated, `0.7.0-beta` tagged — CHANGELOG entry staged in the release PR (this PR); the `0.7.0-beta` git tag is created by the maintainer after merge (per the CHANGELOG staging convention).
@@ -303,11 +303,13 @@ gap; the rates below are the honest engine measurement, not aspiration; see
 the `0.7.0-beta` release (commit `af1c210`) signed off at CSS 2.2 93.3% / Flexbox
 100% / Grid 93.3% / Fragmentation 90%; the post-beta sizing-residuals work then
 raised them to **CSS 2.2 96.7% / Flexbox 100% / Grid 100% / Fragmentation 90%** (the
-current HEAD numbers above). Criteria 7–8 (perf + memory) are signed off
-**measured-with-documented-residuals** — smoke-gated, NOT the full-pipeline /
-allocation-slope standard (the residuals are tracked in
-[../deferrals.md](../deferrals.md), e.g. `multi-page-allocation-churn`). Criteria
-1–2 + 9–10 hold. The only remaining step is the `0.7.0-beta` tag (criterion 11),
+current HEAD numbers above). Criterion 7 (perf) was signed off at the beta
+**measured-with-documented-residuals** — smoke-gated, NOT the full-pipeline
+standard (the full image + web-font benchmark stays a Phase-4 corpus task). Criterion
+8 (memory) is now **fully met** post-beta: the per-page allocation-slope gate landed
+when the `multi-page-allocation-churn` O(n²) churn was fixed (the table is measured
+once per conversion + reused across pages). Criteria 1–2 + 9–10 hold. The only
+remaining step is the `0.7.0-beta` tag (criterion 11),
 applied by the maintainer to `af1c210`.
 
 ## Common pitfalls

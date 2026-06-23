@@ -5387,12 +5387,11 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Cycle7b_integer_ident_syntax_is_deferred_with_specific_diagnostic()
+    public void Integer_ident_occurrence_resolves_to_the_nth_named_line()
     {
-        // Per PR-#106 review F2 #4 — `grid-row-start: foo 2`
-        // (occurrence syntax) falls back to auto with a diagnostic
-        // pointing at grid-implicit-named-area-and-occurrence-syntax-
-        // deferral. Documents the gap and enables grep-from-source.
+        // grid-implicit-named-area-and-occurrence-syntax (removal condition b) — `grid-row-start: foo 2`
+        // resolves to the 2nd line named `foo`. Rows `[foo] 100px [foo] 100px` put `foo` at lines 1 and 2;
+        // `foo 2` = line 2 → the item starts at the 2nd row (blockOffset 100), single cell. No diagnostic.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -5406,7 +5405,6 @@ public sealed class GridLayouterTests
         var colsTrack = BuildLengthTrackList(new[] { 50.0 });
         var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
 
-        // `grid-row-start: foo 2` — 2nd occurrence of foo.
         var style = MakeStyle();
         var rowValue = GridLineValue.ForNamedLineNumber("foo", 2);
         style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowValue);
@@ -5416,20 +5414,94 @@ public sealed class GridLayouterTests
 
         RunGridLayouter(grid, sink, diag, shaper);
 
-        // Falls back to auto + emits the diagnostic.
-        Assert.Single(sink.Fragments);
-        var diagnostic = Assert.Single(diag.Diagnostics, d =>
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
-        Assert.Contains("occurrence", diagnostic.Message);
-        Assert.Contains("grid-implicit-named-area-and-occurrence-syntax-deferral",
-            diagnostic.Message);
     }
 
     [Fact]
-    public void Cycle7b_span_ident_syntax_is_deferred_with_specific_diagnostic()
+    public void Span_ident_in_end_spans_to_the_next_named_line()
     {
-        // Per PR-#106 review F2 #4 — `grid-row-start: span foo`
-        // also falls back with a deferral-tagged diagnostic.
+        // grid-implicit-named-area-and-occurrence-syntax (removal condition c) — `grid-row: 1 / span foo`
+        // spans from line 1 to the next line named `foo`. Rows `100px [foo] 100px [foo] 100px` put `foo`
+        // at lines 2 and 3; from start line 1 the next `foo` is line 2 → the item spans rows 1..2-edge =
+        // the first row only (blockOffset 0, blockSize 100). No diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForLineNumber(1));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForSpanName("foo"));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Named_line_start_end_pair_resolves_a_grid_area_placement()
+    {
+        // grid-implicit-named-area-and-occurrence-syntax (removal condition a) — `[foo-start] … [foo-end]`
+        // line pairs (without a grid-template-areas entry) place a `grid-row: foo` item at the foo region,
+        // resolved via the named-line map (foo-start / foo-end). Rows
+        // `[foo-start] 100px 100px [foo-end] 100px` → foo-start=line 1, foo-end=line 3 → rows 1..2 (the
+        // first two tracks, blockOffset 0, blockSize 200). No diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo-start"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo-end"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForNamedLine("foo"));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForNamedLine("foo"));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 200);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Span_ident_on_the_start_edge_is_deferred_with_specific_diagnostic()
+    {
+        // `span <custom-ident>` on the START edge (`grid-row-start: span foo`) still falls back — it
+        // needs the auto-placement span algorithm to count the lines (unlike the END-edge span-by-name
+        // with a definite start, which IS resolved). Narrowed residual of
+        // grid-implicit-named-area-and-occurrence-syntax-deferral.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();

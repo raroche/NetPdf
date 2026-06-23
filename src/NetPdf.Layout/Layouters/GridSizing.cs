@@ -2822,6 +2822,66 @@ internal static class GridSizing
         return null;
     }
 
+    /// <summary>CSS Grid L1 §8.3 — resolve the <c>&lt;integer&gt; &lt;custom-ident&gt;</c> form
+    /// (e.g. <c>grid-row-start: foo 2</c>): the Nth line LITERALLY named <paramref name="ident"/>.
+    /// A positive <paramref name="occurrence"/> counts 1-based from the first such line; a negative
+    /// counts back from the last (<c>foo -1</c> = the last <c>foo</c> line). Only lines named exactly
+    /// <paramref name="ident"/> are counted — the implicit <c>-start</c>/<c>-end</c> lines have other
+    /// names, so the bare-ident <c>-start</c>/<c>-end</c> resolution does NOT apply to this form.
+    /// Returns <see langword="null"/> when the name is absent or the occurrence is out of range
+    /// (grid-implicit-named-area-and-occurrence-syntax).</summary>
+    private static int? ResolveNamedLineOccurrence(
+        string ident, int occurrence, Dictionary<string, List<int>> namedLines)
+    {
+        if (occurrence == 0
+            || !namedLines.TryGetValue(ident, out var lines) || lines.Count == 0)
+        {
+            return null;
+        }
+        var index = occurrence > 0 ? occurrence - 1 : lines.Count + occurrence;
+        return (uint)index < (uint)lines.Count ? lines[index] : null;
+    }
+
+    /// <summary>CSS Grid L1 §8.3 — resolve <c>span &lt;custom-ident&gt;</c> / <c>span &lt;custom-ident&gt;
+    /// &lt;integer&gt;</c> (e.g. <c>grid-row-end: span foo</c>): the edge spans to the Nth line named
+    /// <paramref name="ident"/> strictly AFTER <paramref name="fromLine"/> (<paramref name="count"/>
+    /// defaults to 1 = the next such line). Only lines named exactly <paramref name="ident"/> count.
+    /// Returns <see langword="null"/> when fewer than N such lines exist past the start
+    /// (grid-implicit-named-area-and-occurrence-syntax).</summary>
+    private static int? ResolveSpanToNamedLine(
+        string ident, int fromLine, int count, Dictionary<string, List<int>> namedLines)
+    {
+        if (!namedLines.TryGetValue(ident, out var lines)) return null;
+        var n = Math.Max(1, count);
+        var seen = 0;
+        // `lines` is sorted ascending (BuildNamedLineMap) — the n-th line strictly greater than fromLine.
+        foreach (var line in lines)
+        {
+            if (line <= fromLine) continue;
+            if (++seen == n) return line;
+        }
+        return null;
+    }
+
+    /// <summary>CSS Grid L1 §8.3 — resolve the END edge of a DEFINITE-start item for the named/occurrence
+    /// / span-by-name forms (<c>span foo</c>, <c>foo 2</c>) to an absolute end line number, given the
+    /// resolved <paramref name="startLine"/>. Returns <see langword="null"/> for the plain
+    /// auto/span-N/integer ends (the caller's existing inline handling applies) or when the named form
+    /// doesn't resolve (grid-implicit-named-area-and-occurrence-syntax).</summary>
+    private static int? ResolveNamedEndEdgeLine(
+        GridLineValue end, int startLine, Dictionary<string, List<int>> namedLines)
+    {
+        if (end.Kind == GridLineKind.Span && end.NamedLine is not null)
+        {
+            return ResolveSpanToNamedLine(end.NamedLine, startLine, end.LineNumber, namedLines);
+        }
+        if (end.Kind == GridLineKind.LineNumber && end.NamedLine is not null)
+        {
+            return ResolveNamedLineOccurrence(end.NamedLine, end.LineNumber, namedLines);
+        }
+        return null;
+    }
+
     private static PlacementSpec ReadPlacement(
         ComputedStyle style, bool isRow, GridTemplateAreas areas,
         Dictionary<string, List<int>> namedLines, SizingContext ctx)
@@ -2834,8 +2894,12 @@ internal static class GridSizing
         {
             if (start.NamedLine is not null)
             {
+                // `span <custom-ident>` on the START edge (or an auto start) needs the auto-placement
+                // span algorithm to count the lines, so it remains approximated — the END-edge span-by-
+                // name (with a definite start) IS resolved. See grid-implicit-named-area-and-occurrence-
+                // syntax-deferral (narrowed residual).
                 return EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "`span <custom-ident>` syntax (see grid-implicit-"
+                    "`span <custom-ident>` on the start edge (see grid-implicit-"
                     + "named-area-and-occurrence-syntax-deferral)");
             }
             // Per §8.3.1 — `span 0` normalizes to `span 1`.
@@ -2868,16 +2932,19 @@ internal static class GridSizing
                 + "occurrence forms)");
         }
 
-        // (3) start: LineNumber + NamedLine qualifier (= `foo 2`).
-        // Per PR-#106 review F2 #4 — occurrence-aware resolution is
-        // tracked in grid-implicit-named-area-and-occurrence-syntax-
-        // deferral. Falls back to auto with a deferral-tagged
-        // diagnostic so authors see the gap.
+        // (3) start: LineNumber + NamedLine qualifier (= `foo 2`) — CSS Grid §8.3 occurrence syntax:
+        // the Nth line literally named `foo`. Resolves via the named-line occurrence map; an out-of-range
+        // occurrence (no Nth `foo` line) still falls back to auto with the deferral-tagged diagnostic.
         if (start.Kind == GridLineKind.LineNumber && start.NamedLine is not null)
         {
+            var occLine = ResolveNamedLineOccurrence(start.NamedLine, start.LineNumber, namedLines);
+            if (occLine is int startLineNum)
+            {
+                return CombineLineStartWithEnd(startLineNum, end, isRow, namedLines, ctx);
+            }
             return EmitPlacementApproximatedAndFallToAuto(ctx,
-                "`<integer> <custom-ident>` occurrence syntax (see "
-                + "grid-implicit-named-area-and-occurrence-syntax-deferral)");
+                $"`<integer> <custom-ident>` '{start.NamedLine} {start.LineNumber}' — fewer than "
+                + $"{Math.Abs(start.LineNumber)} line(s) named '{start.NamedLine}'");
         }
 
         // (3) start: auto — let end drive
@@ -2935,9 +3002,20 @@ internal static class GridSizing
                 return new PlacementSpec(
                     PlacementKind.Definite, end.LineNumber - 1, 1);
             }
+            if (end.Kind == GridLineKind.LineNumber && end.NamedLine is not null)
+            {
+                // auto-start with a definite end `<integer> <custom-ident>` (e.g. `grid-row-end: foo 2`)
+                // — the Nth `foo` line, implicit span 1 → single cell ending at it (§8.5), same as the
+                // bare-named + integer end cases above.
+                var occEnd = ResolveNamedLineOccurrence(end.NamedLine, end.LineNumber, namedLines);
+                if (occEnd is int occEndLine)
+                {
+                    return new PlacementSpec(PlacementKind.Definite, occEndLine - 1, 1);
+                }
+            }
             return EmitPlacementApproximatedAndFallToAuto(ctx,
                 $"grid-*-start: auto / grid-*-end: {end.Kind} "
-                + "(negative-line / named-line in end — cycle-7 scope)");
+                + "(negative-line / unresolved named-line in end — cycle-7 scope)");
         }
 
         // (4) start: integer line number (no named ident)
@@ -2949,12 +3027,21 @@ internal static class GridSizing
             return new PlacementSpec(PlacementKind.Definite, startLine, 1);
         }
 
+        // CSS Grid §8.3 named-end forms (`span foo` / `foo N`) from a definite integer start, e.g.
+        // `grid-row: 1 / span foo`. Unresolved names fall through to the existing handling below.
+        var namedEndFromInt = ResolveNamedEndEdgeLine(end, startLine, namedLines);
+        if (namedEndFromInt is int namedEndLineFromInt)
+        {
+            return SpanBetweenLines(startLine, namedEndLineFromInt);
+        }
+
         if (end.Kind == GridLineKind.Span)
         {
             if (end.NamedLine is not null)
             {
                 EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "span <named-line> in grid-*-end — using start with span 1");
+                    $"`span {end.NamedLine}` in grid-*-end — no `{end.NamedLine}` line after the start; "
+                    + "using start with span 1");
                 return new PlacementSpec(PlacementKind.Definite, startLine, 1);
             }
             var span = Math.Max(1, end.LineNumber);
@@ -3017,12 +3104,21 @@ internal static class GridSizing
         {
             return new PlacementSpec(PlacementKind.Definite, startLine, 1);
         }
+        // CSS Grid §8.3 named-end forms — `span <ident>` (span to the next `<ident>` line after the
+        // start) and `<integer> <ident>` (the Nth `<ident>` line). Resolves against the occurrence map;
+        // an unresolved name falls through to the existing fallback below.
+        var namedEnd = ResolveNamedEndEdgeLine(end, startLine, namedLines);
+        if (namedEnd is int namedEndLine)
+        {
+            return SpanBetweenLines(startLine, namedEndLine);
+        }
         if (end.Kind == GridLineKind.Span)
         {
             if (end.NamedLine is not null)
             {
                 EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "span <named-line> in grid-*-end — using start with span 1");
+                    $"`span {end.NamedLine}` in grid-*-end — no `{end.NamedLine}` line after the start; "
+                    + "using start with span 1");
                 return new PlacementSpec(PlacementKind.Definite, startLine, 1);
             }
             var span = Math.Max(1, end.LineNumber);

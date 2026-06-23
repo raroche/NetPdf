@@ -585,8 +585,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // justify-content mapping through the SAME `isReverse` path. Column directions (block main axis)
         // are unaffected by `direction` on the MAIN axis — the column cross-axis RTL case is a separate,
         // still-deferred concern (docs/deferrals.md#flex-layouter-features).
-        if (!isColumn && _rootBox.Style.IsRtl())
+        var isRtl = _rootBox.Style.IsRtl();
+        if (!isColumn && isRtl)
             isReverse = !isReverse;
+        // flex-layouter-features — a COLUMN flex container's cross axis IS the inline axis, so
+        // `direction: rtl` permutes its cross-start / cross-end (inline-start = RIGHT under RTL),
+        // exactly like `wrap-reverse` permutes the cross axis per CSS Flexbox L1 §6.3. The two flips
+        // combine (XOR) below into `isCrossAxisReversed`, so a column-rtl container anchors
+        // align-items / align-content at the right edge and a wrap-reverse + column-rtl cancels back.
+        // ROW RTL is handled by the main-axis `isReverse` above (a row's cross axis is the block axis,
+        // unaffected by `direction`), so this is column-only.
+        var isColumnRtl = isColumn && isRtl;
         var (mainSizeProperty, crossSizeProperty) = GetAxisProperties(flexDirection);
 
         // Per Phase 3 Task 15 L6 — read flex-wrap. When the value is
@@ -620,6 +629,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // code remains registered for backward compat / cross-reference
         // (older versions could have emitted it).
         var isWrapReverse = flexWrap == FlexWrapValue.WrapReverse;
+        // The per-item cross anchor is reversed when `wrap-reverse` permutes the cross axis OR a column
+        // container is RTL (see `isColumnRtl` above) — combined so the two cancel. Drives the per-item
+        // align-items / align-self anchor (`ComputeAlignItemsPlacement`). The per-LINE stacking
+        // (`CrossAxisFlow.IsReversed`) deliberately stays on `isWrapReverse` alone (see its callsite).
+        var isCrossAxisReversed = isWrapReverse ^ isColumnRtl;
 
         // Resolve the container's main-axis + cross-axis content extents
         // + offsets. For row direction the main axis is the inline axis
@@ -1224,6 +1238,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // reuse without re-deriving the formula. See
         // <see cref="CrossAxisFlow"/>'s xmldoc for the coordinate-
         // system contract.
+        // Line STACKING reversal is driven by `isWrapReverse` only — NOT the column-rtl combined flag.
+        // A column-rtl container's per-item cross anchor flips (below, via `isCrossAxisReversed`), which
+        // correctly right-anchors the common single-line (nowrap) case; reversing the line stack here too
+        // would double-count against the (unstretched) line cross size. Reversing the line-to-line
+        // STACKING order for a MULTI-LINE column-rtl wrap is the remaining residual
+        // (docs/deferrals.md#flex-layouter-features) — items within each line are already anchored right.
         var crossFlow = new CrossAxisFlow(
             IsReversed: isWrapReverse,
             ContentCrossOffset: contentCrossOffset,
@@ -1433,7 +1453,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                             lineCrossExtent, itemCrossSize,
                             itemIsCrossSizeAuto,
                             lineCrossCursor,
-                            isCrossAxisReversed: isWrapReverse);
+                            isCrossAxisReversed: isCrossAxisReversed);
                 }
 
                 // Per Phase 3 Task 15 L5 — for reversed directions,

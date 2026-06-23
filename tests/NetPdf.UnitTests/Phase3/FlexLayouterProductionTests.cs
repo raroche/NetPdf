@@ -790,6 +790,113 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Column_rtl_align_items_flex_start_anchors_at_the_inline_right()
+    {
+        // flex-layouter-features (narrowed) — a COLUMN flex container's cross axis is the inline axis,
+        // so `direction: rtl` puts cross-start on the RIGHT. `align-items: flex-start` therefore anchors
+        // items at the inline-RIGHT edge: crossSpace = 600 - 100 = 500 → InlineOffset = +500 (vs +0 under
+        // LTR, the L4 case). BlockOffsets (main axis) are unaffected by direction.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: flex-start;
+                    direction: rtl;
+                    width: 600px;
+                    height: 300px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? flexFragment = null;
+        var (a, b, c) = FindThreeItems(sink);
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.SourceElement?.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+
+        var wrapperInlineStart = flexFragment!.Value.InlineOffset;
+        // RTL column cross-start = inline-right → flex-start anchors at +crossSpace (500).
+        Assert.Equal(wrapperInlineStart + 500.0, a.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 500.0, b.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 500.0, c.InlineOffset, precision: 3);
+
+        // Main axis (block) unaffected by direction — items still stack 0/50/100.
+        var wrapperBlockStart = flexFragment.Value.BlockOffset;
+        Assert.Equal(wrapperBlockStart + 0.0, a.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 50.0, b.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, c.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Column_rtl_align_items_flex_end_anchors_at_the_inline_left()
+    {
+        // The symmetric case — under RTL column, `align-items: flex-end` anchors at the inline-LEFT
+        // (cross-end = left), so InlineOffset = +0. (Under LTR this would be +500.) Confirms the
+        // cross-start/cross-end permutation, not just a constant shift.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: flex-end;
+                    direction: rtl;
+                    width: 600px;
+                    height: 300px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? flexFragment = null;
+        var (a, b, c) = FindThreeItems(sink);
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.SourceElement?.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+
+        var wrapperInlineStart = flexFragment!.Value.InlineOffset;
+        // RTL column cross-end = inline-left → flex-end anchors at +0.
+        Assert.Equal(wrapperInlineStart + 0.0, a.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 0.0, b.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 0.0, c.InlineOffset, precision: 3);
+    }
+
+    [Fact]
     public async Task L5_production_html_flex_direction_row_reverse()
     {
         // Per Phase 3 Task 15 L5 — real HTML <div> with

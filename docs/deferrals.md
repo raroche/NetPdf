@@ -952,7 +952,8 @@ grepping the ID).
   wrapping, and multi-page container splitting. The residual approximations are enumerated
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
   `align-content: baseline`, margin-box in the alignment / justify-content free-space
-  math, RTL column cross-axis + vertical writing modes). Percentage gaps + percentage
+  math, RTL column MULTI-LINE line-stacking — the column-rtl per-item cross anchor
+  SHIPPED — + vertical writing modes). Percentage gaps + percentage
   item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
   pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
@@ -1143,11 +1144,20 @@ grepping the ID).
     `flex-direction: row` / `row-reverse` under `direction: rtl` flip the
     physical MAIN axis right-to-left (row+rtl ≡ row-reverse+ltr) —
     FlexLayouter XORs its reverse flag via `DirectionStyleExtensions.IsRtl`,
-    pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Still
-    deferred**: the COLUMN cross-axis under RTL (a column's cross axis is the
-    inline axis, so RTL flips cross-start — `align-items`/`align-self`
-    anchors), and all VERTICAL writing modes (`writing-mode` is not yet a
-    registered property; `row` in vertical-rl swaps the main + cross axes
+    pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Also shipped**
+    (residual long-tail): the COLUMN per-item cross anchor under RTL — a
+    `flex-direction: column; direction: rtl` container's cross axis is the
+    inline axis, so RTL permutes cross-start/cross-end; the per-item
+    `align-items`/`align-self` anchor now flips (`isCrossAxisReversed =
+    isWrapReverse ^ isColumnRtl`, fed to `ComputeAlignItemsPlacement`), so
+    `align-items: flex-start` right-anchors and `flex-end` left-anchors (pinned
+    by `Column_rtl_align_items_flex_{start,end}_anchors_at_the_inline_*`).
+    **Still deferred**: the line-to-line STACKING order for a MULTI-LINE
+    column-rtl `wrap` (the `CrossAxisFlow` reversal stays on `isWrapReverse`
+    alone to avoid double-counting the single-line case — items within each
+    line are correctly anchored, but the lines stack left-to-right not
+    right-to-left), and all VERTICAL writing modes (`writing-mode` is not yet
+    a registered property; `row` in vertical-rl swaps the main + cross axes
     onto the rotated block + inline directions).
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only

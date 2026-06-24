@@ -70,8 +70,9 @@ public sealed class FragmentationControlTests : System.IDisposable
     {
         // fragmentation-control-residuals (narrowed) — AngleSharp.Css 1.0.0-beta.144 DROPS the
         // recto / verso / all forced-break values; the CssPreprocessor now recovers them so they
-        // reach the cascade (KeywordResolver index) + the break reader honors them as page breaks
-        // (recto / verso land on a left/right page; the blank-page parity stays a documented residual).
+        // reach the cascade (KeywordResolver index) + the break reader honors them as a forced page
+        // break. Like left / right, recto / verso do NOT yet land on a specific left/right page — the
+        // blank-page side PARITY (inserting a blank page) stays a documented residual.
         var b = await ParseBox($"<div id='x' style='{css}'></div>");
         var slot = b.Style.Get(PropertyId.BreakBefore);
         Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);

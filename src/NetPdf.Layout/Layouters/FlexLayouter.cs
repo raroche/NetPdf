@@ -583,8 +583,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // `row-reverse` under LTR — and `row-reverse` under RTL flips back to left-to-right. RTL therefore
         // XORs the reverse flag, which (re)routes the main-axis emission AND the flex-start/flex-end
         // justify-content mapping through the SAME `isReverse` path. Column directions (block main axis)
-        // are unaffected by `direction` on the MAIN axis — the column cross-axis RTL case is a separate,
-        // still-deferred concern (docs/deferrals.md#flex-layouter-features).
+        // are unaffected by `direction` on the MAIN axis; the column CROSS-axis (inline) under RTL IS
+        // handled below via `isColumnRtl` / `isCrossAxisReversed` (PR #215 review).
         var isRtl = _rootBox.Style.IsRtl();
         if (!isColumn && isRtl)
             isReverse = !isReverse;
@@ -629,10 +629,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // code remains registered for backward compat / cross-reference
         // (older versions could have emitted it).
         var isWrapReverse = flexWrap == FlexWrapValue.WrapReverse;
-        // The per-item cross anchor is reversed when `wrap-reverse` permutes the cross axis OR a column
-        // container is RTL (see `isColumnRtl` above) — combined so the two cancel. Drives the per-item
-        // align-items / align-self anchor (`ComputeAlignItemsPlacement`). The per-LINE stacking
-        // (`CrossAxisFlow.IsReversed`) deliberately stays on `isWrapReverse` alone (see its callsite).
+        // The cross axis is reversed when `wrap-reverse` permutes it OR a column container is RTL (see
+        // `isColumnRtl` above) — combined so the two cancel. PR #215 review [P1]: ONE flag drives BOTH
+        // the per-LINE stacking (`CrossAxisFlow.IsReversed`) AND the per-ITEM align-items / align-self
+        // anchor (`ComputeAlignItemsPlacement`), so line distribution and item placement agree. (A
+        // `self-start`/`self-end` item overrides the container component with its OWN direction — see
+        // the per-item callsite.)
         var isCrossAxisReversed = isWrapReverse ^ isColumnRtl;
 
         // Resolve the container's main-axis + cross-axis content extents

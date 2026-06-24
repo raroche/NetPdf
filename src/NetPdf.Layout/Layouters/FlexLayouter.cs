@@ -3302,7 +3302,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // This buffer is FLUSHED into the final tree at the item's position (the flex item
             // emission), so its out-of-flow descendants must emit — opt out of the measure-mode
             // skip (speculative-measure cycle).
-            suppressOutOfFlowEmission: false);
+            isSpeculativeMeasure: false);
 
     /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
     /// is content-determined (so content measurement should size it). True iff

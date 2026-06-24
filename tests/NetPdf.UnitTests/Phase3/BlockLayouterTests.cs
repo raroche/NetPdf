@@ -7835,6 +7835,47 @@ public sealed class BlockLayouterTests
         });
     }
 
+    [Fact]
+    public void Speculative_measure_does_not_persist_percentage_padding_onto_the_shared_style()
+    {
+        // Task 2 — the engine-wide latent bug. A speculative max-content probe (availInline 1e6) used
+        // to resolve a child's `padding-left: 10%` IN PLACE against the 1e6 basis (→ 100000px LengthPx)
+        // and PERSIST it onto the SHARED ComputedStyle, corrupting the real layout + paint (which then
+        // read the 100000px slot, idempotently skipping re-resolution). A speculative measure now
+        // leaves the slot Percentage (it reads as 0 per intrinsic sizing); only a NON-speculative
+        // (emission) measure resolves + persists it against the real containing size.
+        using var shaper = new SyntheticShaperResolver();
+
+        static Box BuildParentWithPercentPaddedChild(out Box child)
+        {
+            var childStyle = MakeStyle();
+            childStyle.Set(PropertyId.PaddingLeft, ComputedSlot.FromPercentage(10));
+            SetLengthPx(childStyle, PropertyId.Height, 10);   // ensure the child is laid out
+            var parent = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+            parent.AppendChild(child);
+            return parent;
+        }
+
+        // (a) Speculative measure — the slot STAYS Percentage (no 1e6-derived value persisted).
+        var specParent = BuildParentWithPercentPaddedChild(out var specChild);
+        _ = NestedContentMeasurer.Measure(
+            specParent, availInlineContentSize: 1_000_000.0, blockBudget: 800,
+            shaperResolver: shaper, writingMode: WritingMode.HorizontalTb, isRtl: false,
+            cancellationToken: CancellationToken.None, isSpeculativeMeasure: true);
+        Assert.Equal(ComputedSlotTag.Percentage, specChild.Style.Get(PropertyId.PaddingLeft).Tag);
+
+        // (b) Non-speculative (emission) measure — resolves + persists against the REAL inline size.
+        var emitParent = BuildParentWithPercentPaddedChild(out var emitChild);
+        _ = NestedContentMeasurer.Measure(
+            emitParent, availInlineContentSize: 200.0, blockBudget: 800,
+            shaperResolver: shaper, writingMode: WritingMode.HorizontalTb, isRtl: false,
+            cancellationToken: CancellationToken.None, isSpeculativeMeasure: false);
+        var emitSlot = emitChild.Style.Get(PropertyId.PaddingLeft);
+        Assert.Equal(ComputedSlotTag.LengthPx, emitSlot.Tag);
+        Assert.Equal(20.0, emitSlot.AsLengthPx(), precision: 3);   // 10% of the real 200px inline size
+    }
+
     private sealed class SyntheticShaperResolver : IShaperResolver
     {
         private readonly HbShaper _shaper = new(SyntheticFont.Build(), fontSizePx: 12);

@@ -77,13 +77,15 @@ internal static class NestedContentMeasurer
         CancellationToken cancellationToken,
         IPaginateDiagnosticsSink? diagnostics = null,
         bool intrinsicSizingMode = false,
-        // Speculative-measure cycle — DEFAULT true: this is the *Measurer*, and out-of-flow
-        // (abspos / fixed) descendants don't contribute to a box's intrinsic inline width or
-        // §10.6.7 auto block size, so skipping their emission leaves ContentInlineExtent /
-        // ContentBlockExtent unchanged while avoiding a fully-laid-out (and recursively
-        // re-measured) abspos subtree the caller drops. EMISSION callers that FLUSH this buffer
-        // into the final tree (FlexLayouter's item-content flush) MUST pass false.
-        bool suppressOutOfFlowEmission = true)
+        // Speculative-measure cycle — DEFAULT true: this is the *Measurer*. It gates two
+        // measure-mode behaviors that both leave the measured extents unchanged: (1) out-of-flow
+        // (abspos / fixed) descendants aren't emitted (they don't contribute to intrinsic inline
+        // width or §10.6.7 auto block size, and laying out + recursively re-measuring a dropped
+        // subtree is wasted); (2) percentage padding resolves to 0 (intrinsic sizing) WITHOUT
+        // persisting the speculative (e.g. 1e6 max-content) basis onto the shared style. EMISSION
+        // callers that FLUSH this buffer into the final tree (FlexLayouter's item-content flush)
+        // MUST pass false so they emit out-of-flow descendants + resolve real percentage padding.
+        bool isSpeculativeMeasure = true)
     {
         // Speculative-measure recursion-depth budget — past the cap, return a degenerate
         // 0-extent buffer + surface a diagnostic (never silently). The cap is generous enough
@@ -133,8 +135,9 @@ internal static class NestedContentMeasurer
             // content (else the block-only child loop skips the box's text).
             layoutRootInlineContent: true,
             // Out-of-flow descendants don't affect the measured intrinsic extents and the
-            // caller (when this is a pure measure) drops the buffer, so skip their emission.
-            suppressOutOfFlowEmission: suppressOutOfFlowEmission);
+            // caller (when this is a pure measure) drops the buffer, so skip their emission;
+            // percentage padding likewise resolves to 0 without persisting (intrinsic sizing).
+            isSpeculativeMeasure: isSpeculativeMeasure);
         // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
         // opportunities so they don't collapse min-content to glyph width (mirrors the
         // table cell min-content pass via TableLayouter.MeasureCellContent).

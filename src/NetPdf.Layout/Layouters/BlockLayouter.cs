@@ -291,21 +291,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// nested flex is measured at its FULL extent, not projected to one page).</summary>
     private readonly bool _disableFlexPagination;
 
-    /// <summary>Speculative-measure cycle — when <see langword="true"/>, the
-    /// out-of-flow emission passes (<see cref="EmitAbsolutelyPositionedChildren"/> /
-    /// <see cref="EmitFixedPositionedChildren"/>) are SKIPPED. Set by EXTENT-ONLY
-    /// speculative measures (the intrinsic min/max-content probes whose buffer is read
-    /// for <c>ContentInlineExtent</c> / <c>ContentBlockExtent</c> and then DROPPED — see
-    /// <see cref="NestedContentMeasurer"/> + <c>TableLayouter.MeasureCellContent</c>'s
-    /// min/max passes). Out-of-flow boxes do NOT contribute to a box's intrinsic inline
-    /// width or its §10.6.7 auto block size (CSS 2.2 §10.3.7 / §10.6 — abspos / fixed are
-    /// taken out of normal flow), so the measured extents are unchanged → byte-identical;
-    /// the win is skipping a fully-laid-out abspos subtree (and its own nested measures —
-    /// ~exponential for nested auto-sized boxes) whose fragments the caller throws away.
-    /// NEVER set by an emission caller that FLUSHES the buffer into the final tree
-    /// (FlexLayouter's item-content flush, the table cell's <c>contentBuffer</c>) — those
-    /// must still emit the out-of-flow descendants.</summary>
-    private readonly bool _suppressOutOfFlowEmission;
+    /// <summary>Speculative-measure cycle — <see langword="true"/> when this layouter is an
+    /// EXTENT-ONLY intrinsic measure (a min/max-content probe whose buffer is read for
+    /// <c>ContentInlineExtent</c> / <c>ContentBlockExtent</c> and then DROPPED — see
+    /// <see cref="NestedContentMeasurer"/> + <c>TableLayouter.MeasureCellContent</c>'s min/max
+    /// passes), as opposed to a real layout (or an emission caller that FLUSHES its buffer into
+    /// the final tree). It gates two measure-mode behaviors, both keeping the measured extents
+    /// the same as the real layout → byte-identical:
+    /// <list type="number">
+    ///   <item>The out-of-flow emission passes (<see cref="EmitAbsolutelyPositionedChildren"/> /
+    ///   <see cref="EmitFixedPositionedChildren"/>) are SKIPPED — abspos / fixed boxes don't
+    ///   contribute to a box's intrinsic inline width or §10.6.7 auto block size (CSS 2.2
+    ///   §10.3.7 / §10.6), so the win is not laying out (+ recursively re-measuring) a subtree
+    ///   the caller throws away.</item>
+    ///   <item>Percentage padding is NOT resolved in place against the (speculative, e.g. 1e6
+    ///   max-content) containing size — per intrinsic sizing a percentage padding resolves to 0
+    ///   (CSS Sizing §4.1 — its basis is indefinite), and persisting the 1e6-derived value would
+    ///   corrupt the SHARED <c>ComputedStyle</c> the real layout + paint read later
+    ///   (<see cref="ComputedStyleLayoutExtensions.ResolveUsedPercentPaddingInPlace"/> rewrites
+    ///   the slot in place). Leaving the slot Percentage makes it read as 0 during the probe and
+    ///   stay resolvable against the REAL containing size in the final layout.</item>
+    /// </list>
+    /// NEVER set by an emission caller (FlexLayouter's item-content flush, the table cell's
+    /// <c>contentBuffer</c>) — those must emit out-of-flow descendants AND resolve real
+    /// percentage padding.</summary>
+    private readonly bool _isSpeculativeMeasure;
 
     /// <summary>Non-block-pagination arc (flex item CONTENT layout) — when
     /// <see langword="true"/>, a NESTED BlockLayouter whose <c>_rootBox</c> is
@@ -526,7 +536,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         bool disableGridPagination = false,
         bool layoutRootInlineContent = false,
         bool disableFlexPagination = false,
-        bool suppressOutOfFlowEmission = false)
+        bool isSpeculativeMeasure = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -562,7 +572,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _disableGridPagination = disableGridPagination;
         _layoutRootInlineContent = layoutRootInlineContent;
         _disableFlexPagination = disableFlexPagination;
-        _suppressOutOfFlowEmission = suppressOutOfFlowEmission;
+        _isSpeculativeMeasure = isSpeculativeMeasure;
     }
 
     /// <inheritdoc />
@@ -600,7 +610,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         if (_incomingContinuation is null
             && !_absoluteChildrenEmitted
-            && !_suppressOutOfFlowEmission
+            && !_isSpeculativeMeasure
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)
         {
@@ -621,7 +631,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // fresh BlockLayouter is constructed per page, so the fixed box
         // still emits once per page.
         if (!_fixedChildrenEmitted
-            && !_suppressOutOfFlowEmission
+            && !_isSpeculativeMeasure
             && _rootBox.Kind == BoxKind.Root
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)
@@ -1399,7 +1409,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the top/bottom ones); a % HEIGHT resolves against the fragmentainer's definite
             // content height below (percent-height cycle).
             var pctBase = fragmentainer.ContentInlineSize;
-            child.Style.ResolveUsedPercentPaddingInPlace(pctBase);   // paint reads the slots later.
+            if (!_isSpeculativeMeasure)   // a speculative measure leaves % padding as 0 (intrinsic sizing) — no persist.
+                child.Style.ResolveUsedPercentPaddingInPlace(pctBase);   // paint reads the slots later.
             var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctBase);
             var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctBase);
@@ -4895,7 +4906,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
             // Body % lengths (body-percent cycle) — same §8.3/§8.4 inline-axis base as the outer
             // dispatch path, here the parent's content box.
-            child.Style.ResolveUsedPercentPaddingInPlace(contentInlineSize);   // paint reads the slots later.
+            if (!_isSpeculativeMeasure)   // a speculative measure leaves % padding as 0 (intrinsic sizing) — no persist.
+                child.Style.ResolveUsedPercentPaddingInPlace(contentInlineSize);   // paint reads the slots later.
             var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
             var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, contentInlineSize);
             var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, contentInlineSize);
@@ -6319,7 +6331,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Box-model reads — the SHARED float model (percent-aware on the inline axis against
         // the BFC content box + the used-%-padding in-place rewrite for paint; % height stays
         // deferred). See <see cref="ReadFloatBoxModel"/>.
-        var box = ReadFloatBoxModel(child, _bfcContentInlineSize);
+        var box = ReadFloatBoxModel(child, _bfcContentInlineSize, _isSpeculativeMeasure);
         var marginStart = box.MarginStart;
         var marginInlineStart = box.MarginInlineStart;
         var borderBoxBlockSize = box.BorderBoxBlockSize;
@@ -6460,7 +6472,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // lengths, so a `% margin-top`/`% padding-top` float could pass
         // break planning and only overflow after EmitFloat resolved the
         // percentages; the shared model keeps both percent-aware).
-        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize);
+        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _isSpeculativeMeasure);
 
         // Per post-PR-31 review (P1 #3 + Copilot #1) — use the
         // FloatManager peek API which mirrors PlaceFloat's stacking
@@ -6492,9 +6504,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// idempotent (the BFC inline size is constant for the document), so the
     /// <see cref="WouldFloatOverflow"/> pre-check calling this before a deferral re-check is
     /// harmless.</summary>
-    private static FloatBoxModel ReadFloatBoxModel(Box child, double bfcInlineSizePx)
+    private static FloatBoxModel ReadFloatBoxModel(
+        Box child, double bfcInlineSizePx, bool isSpeculativeMeasure)
     {
-        child.Style.ResolveUsedPercentPaddingInPlace(bfcInlineSizePx);   // paint reads the slots later.
+        if (!isSpeculativeMeasure)   // a speculative measure leaves % padding as 0 (intrinsic sizing) — no persist.
+            child.Style.ResolveUsedPercentPaddingInPlace(bfcInlineSizePx);   // paint reads the slots later.
         var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, bfcInlineSizePx);
         var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, bfcInlineSizePx);
         var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, bfcInlineSizePx);
@@ -6607,7 +6621,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the BFC content box + the used-%-padding in-place rewrite for paint; % height stays
         // deferred; `auto` Width reads 0 — cycle 3 will shrink-to-fit per CSS 2.2 §10.3.5).
         // See <see cref="ReadFloatBoxModel"/>.
-        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize);
+        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _isSpeculativeMeasure);
         var marginStart = box.MarginStart;
         var marginInlineStart = box.MarginInlineStart;
         var borderBoxBlockSize = box.BorderBoxBlockSize;
@@ -7010,11 +7024,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double DeclaredWidthPx,    // 0 when `width: auto` (default)
         double? LineHeightOverridePx); // null = `normal` → font-size × 1.2; an explicit value (incl. 0) is used
 
-    private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(Box block, double containingInlinePx)
+    private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(
+        Box block, double containingInlinePx, bool isSpeculativeMeasure)
     {
         // Rewrite % padding to used px FIRST (body-percent cycle) — TextPainter's content-origin
-        // inset reads the same slots at paint time.
-        block.Style.ResolveUsedPercentPaddingInPlace(containingInlinePx);
+        // inset reads the same slots at paint time. SKIPPED during a speculative measure: % padding
+        // resolves to 0 (intrinsic sizing) and the slot stays Percentage so the speculative
+        // containing size never persists onto the SHARED style (the real layout resolves it later).
+        if (!isSpeculativeMeasure)
+            block.Style.ResolveUsedPercentPaddingInPlace(containingInlinePx);
         // §10.3.3 auto margins (auto-margins cycle) — the same distribution as the block paths,
         // so a text-bearing `width: …; margin: 0 auto` block centres like an empty one. The
         // declared width must be explicit (the fill path's auto margins stay 0).
@@ -7963,7 +7981,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         emitted = false;
         cancellationToken.ThrowIfCancellationRequested();
 
-        var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock, fragmentainer.ContentInlineSize);
+        var metrics = ReadInlineOnlyBlockMetrics(
+            inlineOnlyBlock, fragmentainer.ContentInlineSize, _isSpeculativeMeasure);
         // PR-#182 Copilot review — when this block is the NESTED-content ROOT
         // (flex / grid item content via `_layoutRootInlineContent`), the OUTER
         // layouter already positioned the item INCLUDING its margins, so the
@@ -8533,7 +8552,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken)
     {
         marginBoxExtentAdvance = 0;
-        var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock, parentContentInlineSize);
+        var metrics = ReadInlineOnlyBlockMetrics(
+            inlineOnlyBlock, parentContentInlineSize, _isSpeculativeMeasure);
         var computation = ComputeInlineOnlyBlockLayout(
             inlineOnlyBlock, metrics, containingInlineSize: parentContentInlineSize,
             out var notSupportedMessage, out var atomicInlineSkipCount, cancellationToken);
@@ -8617,7 +8637,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         out double visualChunkBelowBorderTopPx,
         CancellationToken cancellationToken)
     {
-        var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock, parentContentInlineSize);
+        var metrics = ReadInlineOnlyBlockMetrics(
+            inlineOnlyBlock, parentContentInlineSize, _isSpeculativeMeasure);
         var computation = ComputeInlineOnlyBlockLayout(
             inlineOnlyBlock,
             metrics,

@@ -2613,6 +2613,42 @@ public sealed class GridLayouterProductionTests
         Assert.Equal(100, c.Value.BlockSize, precision: 3);
     }
 
+    [Fact]
+    public async Task Production_html_span_ident_start_with_definite_end_in_implicit_lines_spans_one_back()
+    {
+        // PR #217 review [P2] (production CSS) + Copilot — `grid-row: span foo / 5` placed via REAL CSS
+        // (parsing + cascade + shorthand expansion), with the definite end (line 5) in the IMPLICIT
+        // lines PAST a 2-track explicit grid. Per §8.3 the implicit lines between the grid end and
+        // line 5 are assumed named `foo`, so `span foo` goes back ONE line (to line 4) — it must NOT
+        // jump to the explicit `foo` at line 1 (which would over-span all 4 rows).
+        //   rows: [foo] 100px 100px (foo = line 1; explicit lines 1..3), grid-auto-rows: 50px.
+        //   item at line 4 → 5: blockOffset = 200 (two 100px rows) + 50 (implicit row 3) = 250;
+        //   blockSize = 50 (one implicit row). The buggy explicit-only scan would give 0 / 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: [foo] 100px 100px;
+                    grid-auto-rows: 50px;
+                    grid-template-columns: 100px;
+                    width: 100px;
+                }
+                .item { grid-row: span foo / 5; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="item"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var item = FindByClass(sink, "item");
+        Assert.NotNull(item);
+        Assert.Equal(250, item!.Value.BlockOffset, precision: 3);
+        Assert.Equal(50, item.Value.BlockSize, precision: 3);
+    }
+
     // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================

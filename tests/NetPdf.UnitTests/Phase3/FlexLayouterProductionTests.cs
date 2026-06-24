@@ -896,6 +896,157 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperInlineStart + 0.0, c.InlineOffset, precision: 3);
     }
 
+    // ---- PR #215 review [P1]/[P2] — column-rtl cross-axis: wrap line stacking,
+    // wrap-reverse cancellation, non-stretch align-content, mixed-direction self-*, start vs flex-start.
+
+    private static BoxFragment? FindFragByClass(
+        RecordingFragmentSink sink, string className, BoxKind? kind = null)
+    {
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.SourceElement?.GetAttribute("class") != className) continue;
+            if (kind is null || f.Box.Kind == kind) return f;
+        }
+        return null;
+    }
+
+    [Fact]
+    public async Task Column_rtl_wrap_single_line_non_stretch_align_content_anchors_line_at_the_right()
+    {
+        // PR #215 review [P1] — the documented residual was too narrow: even a SINGLE produced line
+        // under `flex-wrap: wrap` with `align-content: flex-start` (so the line is NOT stretched to the
+        // container) must start at the cross-start, which under column-rtl is the inline-RIGHT. The line
+        // (cross size = item width 100) packs at the right: InlineOffset = 600 - 100 = +500. Pre-fix the
+        // line stacked on the left (CrossAxisFlow used isWrapReverse only). align-items:flex-start within
+        // that line stays at the line's right edge.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; flex-wrap:wrap;
+                        align-content:flex-start; align-items:flex-start; direction:rtl;
+                        width:600px; height:300px; }
+                .item-a { width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.Equal(flex!.Value.InlineOffset + 500.0, a!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Column_rtl_wrap_stacks_lines_from_the_right()
+    {
+        // PR #215 review [P1] — a MULTI-LINE column-rtl wrap stacks lines from the physical right. Two
+        // 60px-tall items in a 100px-tall column wrap to two lines (columns); align-content:stretch
+        // (default) grows each line to 300px inline. Under RTL line 0 (DOM-first) takes the RIGHT half
+        // [300,600] and line 1 the LEFT half [0,300]; align-items:flex-start anchors each item at its
+        // line's right edge → item0 at 600-100=500, item1 at 300-100=200.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; flex-wrap:wrap;
+                        align-items:flex-start; direction:rtl; width:600px; height:100px; }
+                .item-a { width:100px; height:60px; }
+                .item-b { width:100px; height:60px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        var b = FindFragByClass(sink, "item-b");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        var start = flex!.Value.InlineOffset;
+        Assert.Equal(start + 500.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(start + 200.0, b!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Column_rtl_wrap_reverse_cancels_back_to_the_left()
+    {
+        // PR #215 review [P1] — `wrap-reverse` AND column-rtl each permute the cross axis, so together
+        // they CANCEL (isCrossAxisReversed = isWrapReverse ^ isColumnRtl = false): align-items:flex-start
+        // anchors at the inline-LEFT (+0), like an LTR non-wrap-reverse column.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; flex-wrap:wrap-reverse;
+                        align-items:flex-start; direction:rtl; width:600px; height:300px; }
+                .item-a { width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.Equal(flex!.Value.InlineOffset + 0.0, a!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Column_rtl_align_items_start_matches_flex_start()
+    {
+        // PR #215 review [P2] — `start` and `flex-start` coincide under a non-wrap-reverse column-rtl
+        // (both = the container's cross-start = inline-right), so `align-items: start` also right-anchors
+        // at +500. (They diverge only under wrap-reverse, a separate pre-existing concern.)
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; align-items:start; direction:rtl;
+                        width:600px; height:300px; }
+                .item-a { width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.Equal(flex!.Value.InlineOffset + 500.0, a!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Column_rtl_self_start_self_end_resolve_against_the_item_direction()
+    {
+        // PR #215 review [P2] — `self-start`/`self-end` resolve against the ITEM's own direction, not the
+        // container's. In an RTL column: an LTR child with `align-self: self-start` anchors at ITS start
+        // (inline-LEFT, +0); an LTR child with `align-self: self-end` anchors at ITS end (inline-RIGHT,
+        // +500); a (container-relative) `flex-start` child still anchors at the container cross-start
+        // (inline-RIGHT, +500). Pre-fix the container RTL flip wrongly pushed self-start to the right.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; align-items:flex-start; direction:rtl;
+                        width:600px; height:400px; }
+                .ss { direction:ltr; align-self:self-start; width:100px; height:50px; }
+                .se { direction:ltr; align-self:self-end; width:100px; height:50px; }
+                .fs { align-self:flex-start; width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="ss"></div><div class="se"></div><div class="fs"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var ss = FindFragByClass(sink, "ss");
+        var se = FindFragByClass(sink, "se");
+        var fs = FindFragByClass(sink, "fs");
+        Assert.NotNull(flex);
+        Assert.NotNull(ss);
+        Assert.NotNull(se);
+        Assert.NotNull(fs);
+        var start = flex!.Value.InlineOffset;
+        Assert.Equal(start + 0.0, ss!.Value.InlineOffset, precision: 3);    // LTR self-start → item-left
+        Assert.Equal(start + 500.0, se!.Value.InlineOffset, precision: 3);  // LTR self-end → item-right
+        Assert.Equal(start + 500.0, fs!.Value.InlineOffset, precision: 3);  // flex-start → container cross-start (right)
+    }
+
     [Fact]
     public async Task L5_production_html_flex_direction_row_reverse()
     {

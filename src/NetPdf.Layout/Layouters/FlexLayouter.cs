@@ -1238,14 +1238,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // reuse without re-deriving the formula. See
         // <see cref="CrossAxisFlow"/>'s xmldoc for the coordinate-
         // system contract.
-        // Line STACKING reversal is driven by `isWrapReverse` only — NOT the column-rtl combined flag.
-        // A column-rtl container's per-item cross anchor flips (below, via `isCrossAxisReversed`), which
-        // correctly right-anchors the common single-line (nowrap) case; reversing the line stack here too
-        // would double-count against the (unstretched) line cross size. Reversing the line-to-line
-        // STACKING order for a MULTI-LINE column-rtl wrap is the remaining residual
-        // (docs/deferrals.md#flex-layouter-features) — items within each line are already anchored right.
+        // PR #215 review [P1] — the cross-axis orientation is resolved ONCE (`isCrossAxisReversed`)
+        // and shared between the per-LINE stacking (here) AND the per-ITEM anchor (below), so a
+        // column-rtl `wrap` stacks lines from the physical right and a wrap-reverse from the physical
+        // top, consistently. The double-count an earlier cut hit came from feeding `PhysicalLineOffset`
+        // the UNSTRETCHED `line.LineCrossSize` while the items used the (stretched/container) effective
+        // extent — fixed below by passing `lineCrossExtent` to `PhysicalLineOffset` (the SAME extent the
+        // item placement uses), so a single full-extent line reverses to a no-op.
         var crossFlow = new CrossAxisFlow(
-            IsReversed: isWrapReverse,
+            IsReversed: isCrossAxisReversed,
             ContentCrossOffset: contentCrossOffset,
             ContainerCrossSize: containerCrossSize);
 
@@ -1261,22 +1262,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Per Phase 3 Task 15 L11 post-PR-#71 F#1 + L14 — convert
-            // the swapped-axis cursor to a physical cross-offset for
-            // emission. The cursor walks in the swapped axis (always
-            // increasing toward the swapped cross-end); the helper
-            // returns the line's TOP edge in the wrapper's content-
-            // box coordinate system per the
-            // <see cref="CrossAxisFlow.PhysicalLineOffset"/> formula.
-            var lineCrossCursor = crossFlow.PhysicalLineOffset(
-                swappedAxisCursor, line.LineCrossSize);
-
             // Per Phase 3 Task 15 L6 — `align-items` operates against
             // EACH LINE'S cross-extent (CSS Flexbox L1 §6.3): items on
             // a line center / end-pack / stretch relative to that
             // line's max item cross-size, not the container's full
-            // cross-extent. For nowrap (single line), line.LineCrossSize
-            // equals containerCrossSize so behavior is identical to L5.
+            // cross-extent. For nowrap (single line), the line fills the
+            // container cross extent so behavior is identical to L5.
             //
             // For wrapping, the line's cross extent is max(item cross-
             // size) of the items it contains; an explicit container
@@ -1290,6 +1281,21 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             var lineCrossExtent = isWrapping
                 ? line.LineCrossSize
                 : containerCrossSize;
+
+            // Per Phase 3 Task 15 L11 post-PR-#71 F#1 + L14 — convert
+            // the swapped-axis cursor to a physical cross-offset for
+            // emission. The cursor walks in the swapped axis (always
+            // increasing toward the swapped cross-end); the helper
+            // returns the line's TOP edge in the wrapper's content-
+            // box coordinate system per the
+            // <see cref="CrossAxisFlow.PhysicalLineOffset"/> formula.
+            // PR #215 review [P1] — pass the line's EFFECTIVE cross extent
+            // (`lineCrossExtent`, = the container extent for nowrap, the
+            // stretched line size for wrap) — NOT the raw `line.LineCrossSize`
+            // — so a reversed full-extent line is a no-op and the per-line +
+            // per-item reversals use the same extent (no double-count).
+            var lineCrossCursor = crossFlow.PhysicalLineOffset(
+                swappedAxisCursor, lineCrossExtent);
 
             // Flex baseline-alignment cycle — the line's baseline reference: the MAX
             // first-baseline over the line's baseline-aligned items (CSS Box Alignment
@@ -1439,21 +1445,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
                 else
                 {
-                    // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — under
-                    // wrap-reverse the cross-axis is swapped uniformly:
-                    // each LINE's cross-start = the line's PHYSICAL-
-                    // BOTTOM edge (for row + horizontal-tb LTR). Pass
-                    // `isWrapReverse` to ComputeAlignItemsPlacement so
-                    // flex-start/flex-end positional values swap within
-                    // the line. Column `baseline` reaches here too and
-                    // falls back to flex-start in the helper.
+                    // The cross-axis anchor reversal: `flex-start`/`flex-end`/`start`/`end` resolve
+                    // against the CONTAINER (`isCrossAxisReversed` = isWrapReverse ^ isColumnRtl). PR
+                    // #215 review [P2] — `self-start`/`self-end` instead resolve against the ITEM's own
+                    // `direction`, so a column container's RTL flip uses the item's direction, not the
+                    // container's (an LTR child with `align-self: self-start` in an RTL column stays
+                    // left). The wrap-reverse component is preserved for both; for an item whose
+                    // direction matches the container this is identical to `isCrossAxisReversed`
+                    // (byte-identical — only a mixed-direction self-* item diverges).
+                    var anchorReversed = effectiveAlign.IsSelfRelative
+                        ? isWrapReverse ^ (isColumn && item.Style.IsRtl())
+                        : isCrossAxisReversed;
                     (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                         ComputeAlignItemsPlacement(
                             effectiveAlign.Value, effectiveAlign.Mode,
                             lineCrossExtent, itemCrossSize,
                             itemIsCrossSizeAuto,
                             lineCrossCursor,
-                            isCrossAxisReversed: isCrossAxisReversed);
+                            isCrossAxisReversed: anchorReversed);
                 }
 
                 // Per Phase 3 Task 15 L5 — for reversed directions,

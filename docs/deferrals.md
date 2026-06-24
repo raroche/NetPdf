@@ -2237,11 +2237,14 @@ flags the categories):
     `grid-template-areas` entry (the §8.4 implicit named area's PLACEMENT
     effect, achieved through the line map).
 - **Missing** —
-  - **`span <custom-ident>` on the START edge / an auto start** (e.g.
-    `grid-row-start: span foo`, or `grid-row: auto / span foo`) — the span
-    count depends on where auto-placement lands the opposite edge, so it
+  - **`span <custom-ident>` on the START edge with an AUTO / indefinite end**
+    (e.g. `grid-row-start: span foo`, or `grid-row: auto / span foo`) — the
+    span count depends on where auto-placement lands the opposite edge, so it
     needs the auto-placement span algorithm; still falls back to auto with
-    `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`.
+    `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`. (SHIPPED — the START-edge span
+    with a DEFINITE end, e.g. `grid-row: span foo / 5`, now spans BACKWARD from
+    the end to the Nth `foo` line before it via `ResolveSpanToNamedLineBackward`
+    + `ResolveDefiniteLine`, the mirror of the end-edge span-by-name.)
   - **Negative-occurrence start-side implicit fill** (e.g. `foo -3` with too
     few `foo` lines) — the reverse (negative) direction's implicit lines (at
     0, −1, …) are not synthesised; an underflowing negative occurrence still

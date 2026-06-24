@@ -320,9 +320,46 @@ public sealed class FragmentationControlTests : System.IDisposable
             "<div style='display:flex;break-after:page'><div>x</div></div><div>second</div>"));
     }
 
+    [Fact]
+    public void In_an_rtl_document_break_before_right_is_a_verso_page_so_no_blank_is_inserted()
+    {
+        // CSS Fragmentation L3 §3.1 — in RTL, page 1 (a recto) is the physical LEFT page, so a physical
+        // RIGHT page is a verso (even). `break-before:right` after the recto page 1 wants an even page;
+        // page 2 IS even → no blank → 2 pages. (The same markup in LTR wants an odd page → a blank is
+        // inserted → 3 pages, cf. Break_before_right_inserts_a_blank.) `recto` / `verso` don't swap.
+        Assert.Equal(2, RtlPages(
+            "<div>first</div><div style='break-before:right'>second</div>"));
+    }
+
+    [Fact]
+    public void In_an_rtl_document_break_before_left_is_a_recto_page_so_a_blank_is_inserted()
+    {
+        // The mirror — in RTL the physical LEFT page is the recto (odd). `break-before:left` wants an
+        // odd page; page 2 is even → a blank is inserted → 3 pages. (In LTR `left` = verso = even → no
+        // blank → 2 pages, cf. Break_before_left_lands_on_a_verso_page.)
+        Assert.Equal(3, RtlPages(
+            "<div>first</div><div style='break-before:left'>second</div>"));
+    }
+
+    [Fact]
+    public void In_an_rtl_document_break_before_recto_still_needs_an_odd_page()
+    {
+        // `recto` / `verso` are page-NUMBER parities (page 1 is a recto), direction-independent —
+        // `break-before:recto` wants an odd page in RTL too; page 2 is even → blank → 3 pages.
+        Assert.Equal(3, RtlPages(
+            "<div>first</div><div style='break-before:recto'>second</div>"));
+    }
+
     private static int Pages(string bodyHtml)
     {
         var html = "<!doctype html><html><body style='margin:0'>" + bodyHtml + "</body></html>";
+        return NetPdf.HtmlPdf.ConvertDetailed(html).PageCount;
+    }
+
+    private static int RtlPages(string bodyHtml)
+    {
+        var html = "<!doctype html><html><body style='margin:0;direction:rtl'>"
+            + bodyHtml + "</body></html>";
         return NetPdf.HtmlPdf.ConvertDetailed(html).PageCount;
     }
 

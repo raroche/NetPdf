@@ -141,10 +141,10 @@ grepping the ID).
   the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
   default), so per-paragraph overrides aren't honored yet.
 - **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
-  bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting);
-  (3) RTL parity (the driver assumes LTR; `left`/`right` are PHYSICAL and unchanged, but `recto`/
-  `verso` follow the page progression so an RTL document should swap recto↔verso). (left/right/recto/
-  verso PARITY blank-page insertion + `recto`/`verso`/`all` parsing SHIPPED.)
+  bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+  (left/right/recto/verso PARITY blank-page insertion — INCLUDING RTL, where the PHYSICAL `left`/
+  `right` swap their page-number parity while `recto`/`verso` stay (page 1 is a recto) — the
+  first-page starting side, + `recto`/`verso`/`all` parsing all SHIPPED.)
 - **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
   on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
 - **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);

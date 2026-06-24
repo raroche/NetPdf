@@ -498,10 +498,11 @@ internal static class ComputedStyleLayoutExtensions
 
     /// <summary>Per CSS Fragmentation L3 §3.1 + CSS Page L3 §3.4.1 — the PAGE-PARITY constraint of a
     /// forced <c>break-before</c> (or the legacy <c>page-break-before</c> alias): which side / parity
-    /// of page the following content must land on. <c>left</c> / <c>right</c> are PHYSICAL (the left /
-    /// right page of the spread); <c>recto</c> / <c>verso</c> follow the page PROGRESSION (recto = the
-    /// side reading starts — physical right in LTR, physical left in RTL — so they swap with the page
-    /// direction, while <c>left</c> / <c>right</c> do not). <c>page</c> / <c>always</c> / <c>all</c>
+    /// of page the following content must land on. <c>recto</c> / <c>verso</c> follow the page
+    /// PROGRESSION — page 1 is a recto, so recto = odd / verso = even is a page-NUMBER parity that does
+    /// not depend on direction. <c>left</c> / <c>right</c> are PHYSICAL: the recto's physical side
+    /// flips with the page direction (right in LTR, left in RTL), so <c>left</c> / <c>right</c> SWAP
+    /// their parity in RTL while <c>recto</c> / <c>verso</c> do not. <c>page</c> / <c>always</c> / <c>all</c>
     /// (and any non-forced value) carry NO parity constraint → <see cref="PageParity.Any"/>. The
     /// driver inserts a blank <c>@page :blank</c> when a forced break would otherwise land on the
     /// wrong parity.</summary>

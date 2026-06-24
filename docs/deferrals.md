@@ -186,27 +186,43 @@ grepping the ID).
   box-decoration-break: slice (top padding on the first slice, bottom on the last; a non-first slice's
   block-start padding is cut via `BoxFragment.SuppressBlockStartChrome` so the painter starts the content
   at the border-box top). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
-  it is an interior line, not the paragraph end).
-- **Missing** — a block-axis BORDER still gates the split (`CanSplitInlineOnlyLines`): a tall single block
-  with a block-axis border falls back to the whole-block force-overflow, because suppressing a border on a
-  fragmentation cut needs per-edge / border-radius-aware painting (box-decoration-break: slice for the
-  border, not just padding). The cost-model also doesn't yet weigh the split (`orphans` is read but the
-  geometric fill already satisfies it; widows is enforced directly).
-- **Trigger** — a SINGLE `<p>`/`<div>` with a block-axis BORDER whose text is taller than one whole page
-  (rare) — it overflows the bottom of its starting page rather than splitting.
+  it is an interior line, not the paragraph end). A box whose decoration would NOT slice as one
+  unfragmented box — a background image / gradient, box-shadow, border-radius, or outline
+  (`Box.HasUnsliceableDecoration`, computed at build time since background-image / box-shadow aren't
+  computed-style slots) — is gated OUT of splitting (it would repaint per slice) and force-overflows; a
+  solid background-color slices fine (PR #220 review [P1]). The page-invariant computation (shaped lines +
+  atomic content) is cached per conversion (`InlineOnlyMeasurementCache`, threaded through `LayoutContext`
+  like the table/grid measure caches) so a paragraph that splits across N pages is shaped ONCE, not
+  re-shaped on every resume page (the ~O(pageCount × content) churn — PR #220 review [P2]).
+- **Missing** — a block-axis BORDER or a non-uniform DECORATION (background image / gradient, box-shadow,
+  border-radius, outline) still gates the split (`CanSplitInlineOnlyLines` + `Box.HasUnsliceableDecoration`):
+  such a block falls back to the whole-block force-overflow, because slicing it correctly needs
+  box-decoration-break: slice to paint the decoration as ONE box that is then cut (partial / per-edge
+  borders, a continuous gradient, a single shadow / outline / rounded corner across the slices) — slice-
+  aware `FragmentPainter` metadata, not the per-fragment repaint it does today. The cost-model also doesn't
+  yet weigh the split (`orphans` is read but the geometric fill already satisfies it; widows is enforced
+  directly).
+- **Trigger** — a SINGLE `<p>`/`<div>` with a block-axis BORDER or a non-uniform decoration (gradient /
+  background-image / box-shadow / border-radius / outline) whose text is taller than one whole page (rare)
+  — it overflows the bottom of its starting page rather than splitting.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
-  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `EmitInlineOnlyBlockSlice` +
-  `CanSplitInlineOnlyLines`); `src/NetPdf.Paginate/LayoutContinuation.cs`
+  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndPadding` /
+  `EmitInlineOnlyBlockSlice` + `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
+  `src/NetPdf.Layout/Layouters/InlineOnlyMeasurementCache.cs`; `src/NetPdf.Layout/Boxes/Box.cs` +
+  `BoxBuilder.cs` (`HasUnsliceableDecoration`); `src/NetPdf.Paginate/LayoutContinuation.cs`
   (`InlineOnlyLineSplitContinuation`).
 - **Added** — 2026-06-20 as the line-level residual of block-granularity prose pagination; NARROWED
   2026-06-22 when text-only line splitting + orphans/widows shipped. (The recursion guards a real content
   extent via `InlineOnlyBreakMinExtentPx` so a ZERO-extent anonymous block — flex/grid content the recursion
   walks, placed past the page edge — does NOT spuriously break: the earlier flex/grid regression where both
   triggering blocks had `chunk == 0` at `start > pageBlockSize`.)
-- **Removal condition** — a single inline-only block with a block-axis BORDER, taller than a page, splits
-  its lines across pages too (box-decoration-break: slice suppresses the border on the fragmentation-cut
-  edges, border-radius included). (Atomics, block-axis padding, and intermediate-slice justification all
-  shipped 2026-06-24.)
+- **Removal condition** — a single inline-only block with a block-axis BORDER **or a non-uniform decoration
+  (gradient / background-image / box-shadow / border-radius / outline)**, taller than a page, splits its
+  lines across pages too — a slice-aware `FragmentPainter` paints the decoration as one box that is then
+  cut (partial / per-edge borders, a continuous gradient, one shadow / outline / rounded corner across the
+  slices). (Atomics, block-axis padding, intermediate-slice justification, the gate for unsliceable
+  decorations, the final-slice end-padding reservation, and the cross-page measurement cache all shipped
+  2026-06-24.)
 
 ---
 

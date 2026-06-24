@@ -118,6 +118,17 @@ internal sealed class Box
     /// on shaping + line breaking, not box generation.</summary>
     public ComputedStyle? FirstLetterStyle { get; internal set; }
 
+    /// <summary>inline-only-block-line-splitting (box-decoration-break: slice) — <see langword="true"/>
+    /// when this box carries a box decoration that does NOT slice correctly per page fragment: a
+    /// background image / gradient, a box-shadow, a border-radius, or an outline. Each would repaint
+    /// INDEPENDENTLY per slice (a restarted gradient, a per-slice rounded corner / shadow / outline)
+    /// instead of behaving as one unfragmented box that is then sliced. A solid <c>background-color</c>
+    /// slices fine, so it does NOT set this. Computed at build time (the cascade exposes
+    /// <c>background-image</c> / <c>box-shadow</c>, which are not computed-style slots the layouter can
+    /// read); line splitting (<c>CanSplitInlineOnlyLines</c>) checks it to fall back to whole-block
+    /// force-overflow for such boxes. Default <see langword="false"/>.</summary>
+    public bool HasUnsliceableDecoration { get; internal set; }
+
     /// <summary>The immediate children in document order. Backed by a
     /// <see cref="ReadOnlyCollection{T}"/> wrapper (Task 11 hardening Rec 3) —
     /// casting to <see cref="IList{T}"/> + mutating throws

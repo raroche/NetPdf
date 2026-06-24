@@ -236,6 +236,9 @@ internal static class BoxBuilder
         // box's name to select `@page <name>` (multi-page driver / PR #179 review P1).
         var box = Box.ForElement(
             kind, style, element, NetPdf.Css.PagedMedia.AtPageRules.ResolveUsedPageName(element, cascade));
+        // box-decoration-break: slice — flag a box whose decoration can't slice per page fragment, so
+        // inline-only line splitting force-overflows the whole block for it (PR #220 review [P1]).
+        box.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(style, elementRules);
 
         // Per Task 14: collect ::first-line / ::first-letter cascade styles
         // for Phase 3 line-layout to apply during fragment rendering. Box
@@ -1824,6 +1827,37 @@ internal static class BoxBuilder
         else if (trimmed.Equals("ltr", StringComparison.OrdinalIgnoreCase))
             style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(0));
         // `auto` / unknown → keep the inherited direction (the bidi first-strong heuristic is a residual).
+    }
+
+    /// <summary>box-decoration-break: slice (the initial value) requires a box's decoration to behave as
+    /// ONE unfragmented box that is then sliced. NetPdf paints each line-split page fragment
+    /// independently, so a non-uniform decoration would repaint per slice (a restarted gradient /
+    /// background image, a per-slice rounded corner / shadow / outline). Flag those so inline-only line
+    /// splitting force-overflows the whole block instead (PR #220 review [P1]); a solid background-color
+    /// is uniform and slices fine. <c>background-image</c> / <c>box-shadow</c> are read from the CASCADE
+    /// (they are not computed-style slots the layouter can read); border-radius / outline from the
+    /// computed <paramref name="style"/>.</summary>
+    private static bool HasUnsliceableSliceDecoration(ComputedStyle style, ResolvedRuleSet? rules)
+    {
+        if (IsAuthoredNonNone(rules, "background-image") || IsAuthoredNonNone(rules, "box-shadow"))
+            return true;
+        if (style.ReadLengthPxOrZero(PropertyId.BorderTopLeftRadius) > 0.01
+            || style.ReadLengthPxOrZero(PropertyId.BorderTopRightRadius) > 0.01
+            || style.ReadLengthPxOrZero(PropertyId.BorderBottomRightRadius) > 0.01
+            || style.ReadLengthPxOrZero(PropertyId.BorderBottomLeftRadius) > 0.01)
+            return true;
+        // An outline draws around the WHOLE box (outline-style not `none` (index 0) + a positive width).
+        return style.ReadKeywordOrDefault(PropertyId.OutlineStyle, defaultIndex: 0) != 0
+            && style.ReadLengthPxOrZero(PropertyId.OutlineWidth) > 0.01;
+    }
+
+    /// <summary>Whether a cascade winner for <paramref name="property"/> is authored to a non-<c>none</c>
+    /// value (so e.g. a real <c>background-image</c> / <c>box-shadow</c>, not the initial / unset).</summary>
+    private static bool IsAuthoredNonNone(ResolvedRuleSet? rules, string property)
+    {
+        var v = rules?.GetWinner(property)?.ResolvedValue;
+        return !string.IsNullOrWhiteSpace(v)
+            && !v.Equals("none", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.

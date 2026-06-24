@@ -311,6 +311,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// </list></summary>
     private MeasurePurpose _measurePurpose;
 
+    /// <summary>Per `inline-only-block-line-splitting` (PR #220 review [P2]) — the cross-page cache of a
+    /// split inline-only block's shaped layout, captured from <c>layout.InlineOnlyMeasureCache</c> at
+    /// <see cref="AttemptLayout"/> entry so the dispatch AND the recursive split-emit (which has no
+    /// <c>LayoutContext</c> in scope) both reuse it instead of re-shaping the paragraph every page.
+    /// <see langword="null"/> ⇒ no shared cache (each page re-shapes — the prior behavior).</summary>
+    private InlineOnlyMeasurementCache? _inlineOnlyMeasureCache;
+
     /// <summary>Non-block-pagination arc (flex item CONTENT layout) — when
     /// <see langword="true"/>, a NESTED BlockLayouter whose <c>_rootBox</c> is
     /// itself an inline-only block container (every direct child inline-level)
@@ -603,6 +610,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Capture the pass purpose from the (transitive) context so the gate sites + nested
         // specialized layouters inherit an intrinsic / definite-extent measure (PR #218 [P1 #1]).
         _measurePurpose = layout.MeasurePurpose;
+        _inlineOnlyMeasureCache = layout.InlineOnlyMeasureCache as InlineOnlyMeasurementCache;
         var result = AttemptLayoutInFlow(
             fragmentainer, ref layout, resolver, strategy, cancellationToken);
 
@@ -7289,6 +7297,39 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the diagnostic is emitted by the caller (which has access to
     /// the layout's diagnostic sink). Caller treats sentinel the
     /// same as "no content" (no fragment, advance loop).</para></summary>
+    /// <summary>Per `inline-only-block-line-splitting` (PR #220 review [P2]) — a cache-aware wrapper over
+    /// <see cref="ComputeInlineOnlyBlockLayout"/>. The multi-page driver re-runs the whole layout once
+    /// per page, so a paragraph that splits across N pages was re-SHAPED (all text + every inline-block
+    /// atomic's content) every page. The shaped computation is page-invariant + deterministic for the
+    /// block + its content inline size, so it is cached (only in a real <see cref="MeasurePurpose.Layout"/>
+    /// pass — a speculative measure probes at other widths) and reused on resume pages; a cache hit skips
+    /// the re-shape AND the one-time diagnostics (already emitted on the page that first shaped it).
+    /// Byte-identical: a reused computation equals a re-shape.</summary>
+    private InlineOnlyBlockComputation? ComputeInlineOnlyBlockLayoutCached(
+        Box inlineOnlyBlock,
+        InlineOnlyBlockMetrics metrics,
+        double containingInlineSize,
+        out string? notSupportedMessage,
+        out int atomicInlineSkipCount,
+        CancellationToken cancellationToken)
+    {
+        if (_measurePurpose == MeasurePurpose.Layout && _inlineOnlyMeasureCache is { } cache
+            && cache.TryGet(inlineOnlyBlock, containingInlineSize, out var cached)
+            && cached is InlineOnlyBlockComputation hit)
+        {
+            notSupportedMessage = null;   // the diagnostics fired on the page that first shaped it
+            atomicInlineSkipCount = 0;
+            return hit;
+        }
+        var computation = ComputeInlineOnlyBlockLayout(
+            inlineOnlyBlock, metrics, containingInlineSize,
+            out notSupportedMessage, out atomicInlineSkipCount, cancellationToken);
+        if (computation is { } c && _measurePurpose == MeasurePurpose.Layout
+            && _inlineOnlyMeasureCache is { } store)
+            store.Store(inlineOnlyBlock, containingInlineSize, c);
+        return computation;
+    }
+
     private InlineOnlyBlockComputation? ComputeInlineOnlyBlockLayout(
         Box inlineOnlyBlock,
         InlineOnlyBlockMetrics metrics,
@@ -7743,7 +7784,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         a, valign, lineTopPx, thisLineHeightPx, baselineTopPx - numericRaisePx,
                         ascentPx, descentPx, fontSizePx);
                     placements.Add(new InlineAtomicPlacement(
-                        a.Box, lineAlignOffsetPx + justifyAccumPx + sliceStartXPx + a.MarginInlineStartPx,
+                        a.Box, li,
+                        lineAlignOffsetPx + justifyAccumPx + sliceStartXPx + a.MarginInlineStartPx,
                         borderBoxTopPx, a.BorderBoxWidthPx, a.BorderBoxHeightPx));
                 }
                 // Accumulate THIS slice's interior word-gaps AFTER placing any atomic in it (an atomic is
@@ -7909,6 +7951,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// cache).</summary>
     private readonly record struct InlineAtomicPlacement(
         Box Box,
+        // The 0-based index of the wrapped line this atomic belongs to — recorded at layout so line
+        // splitting can filter atomics to a page slice by line (robust to vertical-align / zero-height /
+        // negative margins moving the rendered top coordinate — PR #220 review [P2]).
+        int LineIndex,
         double ContentInlineOffsetPx,
         double ContentBlockOffsetPx,
         double WidthPx,
@@ -8055,7 +8101,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // collapse arithmetic. This matches the cycle 1 behavior;
         // cycle 2 will integrate with the collapse chain.
         var topShift = metrics.MarginBlockStart;
-        var computation = ComputeInlineOnlyBlockLayout(
+        var computation = ComputeInlineOnlyBlockLayoutCached(
             inlineOnlyBlock,
             metrics,
             containingInlineSize: fragmentainer.ContentInlineSize,
@@ -8107,7 +8153,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         var comp = computation.Value;
-        var canSplitLines = CanSplitInlineOnlyLines(metrics, comp);
+        var canSplitLines = CanSplitInlineOnlyLines(inlineOnlyBlock, metrics, comp);
 
         // `inline-only-block-line-splitting` — RESUME a previously line-split block. It re-enters
         // at the top of a fresh page (a fragmentation break suppresses the block's own margin +
@@ -8366,8 +8412,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             var contentInlineOrigin = fragmentInlineOffset
                 + metrics.BorderInlineStart + metrics.PaddingInlineStart;
+            // box-decoration-break: slice — a non-first slice's block-START chrome is CUT, so its atomics
+            // (and the nested content flushed below them) start at the border-box top, matching the text's
+            // contentTopPx (PR #220 review [P1] — was always adding the block-start chrome, so images /
+            // inline-blocks on page 2+ shifted down by the top padding). Inline-axis chrome is unchanged
+            // (present on every slice).
             var contentBlockOrigin = blockOffsetFromContentOrigin
-                + metrics.BorderBlockStart + metrics.PaddingBlockStart;
+                + (suppressBlockStartChrome
+                    ? 0.0
+                    : metrics.BorderBlockStart + metrics.PaddingBlockStart);
             foreach (var placement in placements)
             {
                 var atomicInlineOrigin = contentInlineOrigin + placement.ContentInlineOffsetPx;
@@ -8427,22 +8480,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return sum;
     }
 
-    /// <summary>Whether the block's wrapped lines CAN be sliced across pages: more than one
-    /// line (a single line can't split), pure text (no atomic-inline placements / inline-block
-    /// content — their content-relative offsets would mis-place under a slice), and no
-    /// block-axis chrome (so a slice's geometry is exactly its stacked line heights + the
-    /// continuation lands cleanly at the page top with no top padding/border to re-apply). A
-    /// padded/bordered or atomic-bearing tall block falls back to whole-block force-overflow
-    /// (a documented residual of `inline-only-block-line-splitting`).</summary>
+    /// <summary>Whether the block's wrapped lines CAN be sliced across pages. Text, inline atomics
+    /// (inline-block / <c>&lt;img&gt;</c>), and block-axis PADDING all slice (box-decoration-break: slice
+    /// — <c>EmitInlineOnlyBlockSlice</c> re-bases atomic placements per slice and puts the block-start
+    /// padding on the first slice, the block-end padding on the last). Requires more than one line (a
+    /// single line can't split) and NO block-axis BORDER (suppressing a border on a fragmentation cut
+    /// needs per-edge / border-radius-aware painting — a residual). A box carrying a decoration that
+    /// wouldn't slice as ONE unfragmented box — a background image / gradient, box-shadow, border-radius,
+    /// or outline (<see cref="Box.HasUnsliceableDecoration"/>) — also falls back to whole-block
+    /// force-overflow so it isn't repainted independently per slice (PR #220 review [P1]). A bordered /
+    /// decorated tall block is a documented residual of `inline-only-block-line-splitting`.</summary>
     private static bool CanSplitInlineOnlyLines(
-        InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp)
-        // inline-only-block-line-splitting — text, inline-atomic (inline-block / `<img>`), AND
-        // block-axis PADDING content slices. EmitInlineOnlyBlockSlice re-bases the atomic placements to
-        // each slice (an atomic never crosses a line, and lines don't split, so it never straddles a
-        // slice boundary) and applies box-decoration-break: slice to the block-axis padding (top padding
-        // only on the first slice, bottom only on the last). A block-axis BORDER still gates the split —
-        // suppressing a border on the cut edge needs per-edge / border-radius-aware painting (residual).
+        Box block, InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp)
         => comp.InlineResult.Lines.Length > 1
+            && !block.HasUnsliceableDecoration
             && (metrics.BorderBlockStart + metrics.BorderBlockEnd) < InlineOnlyLineSplitEpsilonPx;
 
     /// <summary>Number of lines from <paramref name="startLine"/> that fit in
@@ -8494,6 +8545,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return fit;
     }
 
+    /// <summary>box-decoration-break: slice — a FINAL slice (all remaining lines fit) must also fit its
+    /// block-END padding on the page. When the lines fit but the lines + that padding don't, push the
+    /// last line (and so the padding) to the next page, where it becomes that page's final slice; keep at
+    /// least one line here, so a single line + padding that can't fit on a whole page still force-
+    /// overflows for forward progress (PR #220 review [P1]). A NON-final slice carries no block-end
+    /// padding, so it is returned unchanged.</summary>
+    private static (int Fit, int EndLine) ReserveFinalSliceEndPadding(
+        InlineOnlyBlockComputation comp, int startLine, int endLine, int total,
+        int fit, double availableBlockPx, double endPaddingPx)
+    {
+        if (endLine >= total && endPaddingPx > InlineOnlyLineSplitEpsilonPx && fit > 1
+            && SumInlineOnlyLineHeights(comp, startLine, endLine, total) + endPaddingPx
+                > availableBlockPx + InlineOnlyLineSplitEpsilonPx)
+        {
+            fit -= 1;
+            endLine = startLine + fit;
+        }
+        return (fit, endLine);
+    }
+
     /// <summary>Emits lines <c>[startLine, endLine)</c> of a (text-only, chrome-free)
     /// inline-only block as ONE <see cref="BoxFragment"/> at the page-relative border-box top,
     /// reusing <see cref="EmitInlineOnlyBlockFragment"/> via a sliced computation (a sub-array
@@ -8540,17 +8611,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var slicedContents = comp.InlineBlockContents;
         if (comp.AtomicPlacements is { Count: > 0 } allPlacements)
         {
+            // Keep the atomics whose OWNING LINE is in this slice — filter by the layout-recorded
+            // LineIndex (robust to vertical-align / zero-height / negative margins moving the rendered
+            // top, PR #220 review [P2]) and re-base their block offset to the slice's content origin
+            // (original line `startLine` becomes block-offset 0).
             var sliceStartTop = SumInlineOnlyLineHeights(comp, 0, startLine, total);
-            var sliceEndTop = sliceStartTop + slicedContent;
             var kept = new System.Collections.Generic.List<InlineAtomicPlacement>();
             System.Collections.Generic.Dictionary<Box, InlineAtomicContent>? keptContents = null;
             foreach (var p in allPlacements)
             {
-                // The placement's block offset is its line's top within the whole block's content; keep
-                // it iff that line is in [startLine, endLine).
-                if (p.ContentBlockOffsetPx < sliceStartTop - InlineOnlyLineSplitEpsilonPx
-                    || p.ContentBlockOffsetPx >= sliceEndTop - InlineOnlyLineSplitEpsilonPx)
-                    continue;
+                if (p.LineIndex < startLine || p.LineIndex >= endLine) continue;
                 kept.Add(p with { ContentBlockOffsetPx = p.ContentBlockOffsetPx - sliceStartTop });
                 if (comp.InlineBlockContents is { } all && all.TryGetValue(p.Box, out var content))
                     (keptContents ??= new System.Collections.Generic.Dictionary<Box, InlineAtomicContent>())[p.Box] = content;
@@ -8625,6 +8695,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var available = fragmentainer.BlockSize - blockBorderBoxTop - topPad;
         var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
         var endLine = System.Math.Min(startLine + fit, total);
+        (fit, endLine) = ReserveFinalSliceEndPadding(
+            comp, startLine, endLine, total, fit, available, metrics.PaddingBlockEnd);
 
         EmitInlineOnlyBlockSlice(
             block, metrics, comp, startLine, endLine,
@@ -8677,7 +8749,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         marginBoxExtentAdvance = 0;
         var metrics = ReadInlineOnlyBlockMetrics(
             inlineOnlyBlock, parentContentInlineSize, _measurePurpose);
-        var computation = ComputeInlineOnlyBlockLayout(
+        var computation = ComputeInlineOnlyBlockLayoutCached(
             inlineOnlyBlock, metrics, containingInlineSize: parentContentInlineSize,
             out var notSupportedMessage, out var atomicInlineSkipCount, cancellationToken);
 
@@ -8713,7 +8785,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // fragmentainer → emit the whole block at the border-box top (the pre-existing
         // force-overflow path; `startLine` is 0 here because a split only ever resumes a
         // sliceable block).
-        if (!CanSplitInlineOnlyLines(metrics, comp)
+        if (!CanSplitInlineOnlyLines(inlineOnlyBlock, metrics, comp)
             || fragmentainer is not { SuppressBlockPagination: false })
         {
             EmitInlineOnlyBlockFragment(
@@ -8734,6 +8806,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var available = fragmentainer.BlockSize - blockBorderBoxTop - topPad;
         var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
         var endLine = System.Math.Min(startLine + fit, total);
+        (fit, endLine) = ReserveFinalSliceEndPadding(
+            comp, startLine, endLine, total, fit, available, metrics.PaddingBlockEnd);
         EmitInlineOnlyBlockSlice(
             inlineOnlyBlock, metrics, comp, startLine, endLine,
             inlineOffsetFromContentOrigin, blockBorderBoxTop);

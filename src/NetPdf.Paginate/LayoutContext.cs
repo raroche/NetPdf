@@ -173,6 +173,16 @@ internal ref struct LayoutContext
     /// shared cache wired; the dispatch path still reuses the continuation's cache.</summary>
     public object? TableMeasureCache;
 
+    /// <summary>Per `inline-only-block-line-splitting` (PR #220 review [P2]) — the cross-page cache of a
+    /// split inline-only block's shaped layout, allocated ONCE at the root pipeline + threaded like
+    /// <see cref="TableMeasureCache"/>. A paragraph that splits across N pages was re-shaped (all text +
+    /// every inline-block atomic's content) on every resume page; this holds the page-invariant
+    /// computation keyed by the block + its content inline size so it is shaped once per conversion.
+    /// Typed <c>object?</c> (the concrete <c>InlineOnlyMeasurementCache</c> lives in NetPdf.Layout, cast
+    /// at the consumer); the computation is page-invariant + deterministic, so a hit is byte-identical.
+    /// <see langword="null"/> ⇒ no shared cache wired (each page re-shapes, the prior behavior).</summary>
+    public object? InlineOnlyMeasureCache;
+
     /// <summary>Document-scoped counter values per CSS Lists L3 §4.
     /// Keys are counter names (<c>page</c>, <c>pages</c>, author-defined);
     /// values are integer counter readings at the current layout
@@ -196,6 +206,7 @@ internal ref struct LayoutContext
         Diagnostics = null;
         GridMeasureCache = null;
         TableMeasureCache = null;
+        InlineOnlyMeasureCache = null;
         _counters = null;
     }
 

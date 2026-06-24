@@ -464,6 +464,73 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_split_padded_block_with_inline_atomics_keeps_every_atomic_on_its_page()
+    {
+        // PR #220 review [P1 #1 / P2] — when a block has BOTH block-axis padding AND inline atomics and
+        // splits, the atomics on RESUME pages must NOT be shifted down by the (cut) block-start padding,
+        // and each atomic is associated to its slice by its LINE INDEX (robust to vertical-align moving
+        // its rendered top). Every inline-block background renders exactly once — none lost or pushed off
+        // the page.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"width:30px;padding-top:40px;padding-bottom:40px\">");
+        for (var i = 0; i < 150; i++)
+            sb.Append("x <span style=\"display:inline-block;width:8px;height:8px;vertical-align:top;")
+              .Append("background-color:#3366cc\"></span> ");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+
+        Assert.True(result.PageCount >= 2, $"the padded atomic block must split; got {result.PageCount}.");
+        Assert.Equal(150, CountOccurrences(Latin1(result.Pdf), " re f"));   // every atomic once
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void A_split_block_reserves_its_block_end_padding_on_the_final_page()
+    {
+        // PR #220 review [P1 #2] — the FINAL slice must fit its block-end padding on the page. With a
+        // large bottom padding the last page's lines + padding would otherwise spill past the page
+        // bottom; the fit pulls lines back so the padding fits. No line is lost, no overflow truncated.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><div style=\"margin:0;padding-bottom:400px\">");
+        for (var i = 0; i < 120; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L120</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+
+        Assert.True(result.PageCount >= 2, $"must split; got {result.PageCount}.");
+        Assert.Equal(121, TdCount(Latin1(result.Pdf)));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void A_tall_block_with_an_unsliceable_decoration_force_overflows_instead_of_slicing()
+    {
+        // PR #220 review [P1 #3] — box-decoration-break: slice repaints decorations per page fragment,
+        // which is wrong for a background image / gradient, border-radius, box-shadow, or outline (they
+        // would restart / repeat per slice). Such a block is gated OUT of line splitting and
+        // force-overflows; a solid background-color is uniform and still slices.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Doc(string style)
+        {
+            var sb = new StringBuilder($"<!DOCTYPE html><html><body><div style=\"margin:0;{style}\">");
+            for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+            return sb.Append("L200</div></body></html>").ToString();
+        }
+
+        var rounded = HtmlPdf.ConvertDetailed(Doc("border-radius:10px;background-color:#eee"), opts);
+        var solid = HtmlPdf.ConvertDetailed(Doc("background-color:#eee"), opts);
+
+        // The rounded block can't slice → force-overflows (content beyond the page) → truncation; the
+        // solid block slices cleanly across pages with no truncation.
+        Assert.Contains(rounded.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.DoesNotContain(solid.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.True(solid.PageCount >= 2, $"the solid-bg block should slice; got {solid.PageCount}.");
+        Assert.Equal(201, TdCount(Latin1(solid.Pdf)));   // solid: no line lost
+    }
+
+    [Fact]
     public void Single_tall_paragraph_line_split_honors_widows()
     {
         // CSS Fragmentation L3 §4.2 — the LAST page of a split paragraph keeps at least `widows`

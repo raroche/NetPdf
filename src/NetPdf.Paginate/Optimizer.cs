@@ -88,10 +88,12 @@ namespace NetPdf.Paginate;
 /// <see cref="CostModel.Score"/>'s <c>lineCountAfterBreak</c>
 /// argument so the widow check fires correctly.</para>
 ///
-/// <para><b>Page parity (<see cref="PageParity"/>).</b> NOT enforced
-/// by the optimizer in v1; the layouter is responsible for inserting
-/// blank fragmentainers post-DP to satisfy
-/// <c>break-before: left/right/recto/verso</c> per CSS Page L3 §3.4.1.</para>
+/// <para><b>Page parity (<see cref="PageParity"/>).</b> NOT enforced by the optimizer; the parity
+/// of a forced <c>break-before/after: left/right/recto/verso</c> is read into
+/// <see cref="BreakOpportunity.ForceParity"/> + carried out of the layouter
+/// (<c>BlockLayouter.ForcedBreakParityForNextPage</c>), and the DRIVER (<c>PdfRenderPipeline</c>)
+/// inserts a blank <c>@page :blank</c> page when the resumed content would otherwise land on the
+/// wrong-parity page per CSS Page L3 §3.4.1.</para>
 /// </summary>
 internal static class Optimizer
 {

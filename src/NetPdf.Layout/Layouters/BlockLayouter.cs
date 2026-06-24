@@ -605,6 +605,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         LayoutAttemptStrategy strategy,
         CancellationToken cancellationToken = default)
     {
+        // Reset the forced-break parity per attempt; the child loop sets it if a forced
+        // left/right/recto/verso break ends this page.
+        _forcedBreakParityForNextPage = PageParity.Any;
         var result = AttemptLayoutInFlow(
             fragmentainer, ref layout, resolver, strategy, cancellationToken);
 
@@ -655,6 +658,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the coordinator's rewind/retry cycle, mirroring
     /// <see cref="_absoluteChildrenEmitted"/>.</summary>
     private bool _fixedChildrenEmitted;
+
+    /// <summary>CSS Page L3 §3.4.1 — the page-parity constraint of the forced
+    /// <c>break-before</c> / <c>break-after</c> (<c>left</c> / <c>right</c> / <c>recto</c> /
+    /// <c>verso</c>) that ENDED this page, if any. A forced break always ends the page (it is
+    /// suppressed only at the fragmentainer start), so it is captured at the
+    /// <see cref="ResolveChildBreakMetadata"/> sites the moment the forced-parity break is read.
+    /// Reset to <see cref="PageParity.Any"/> per <see cref="AttemptLayout"/> entry. The driver
+    /// (<c>PdfRenderPipeline</c>) reads <see cref="ForcedBreakParityForNextPage"/> after the page
+    /// commits and inserts a blank <c>@page :blank</c> when the resumed content would otherwise
+    /// land on the wrong-parity page.</summary>
+    private PageParity _forcedBreakParityForNextPage = PageParity.Any;
+
+    /// <summary>The page-parity (<c>left</c>/<c>right</c>/<c>recto</c>/<c>verso</c>) the content
+    /// resuming on the NEXT page must land on, set when a forced-parity break ended this page;
+    /// <see cref="PageParity.Any"/> otherwise. Read by the driver for blank-page insertion.</summary>
+    public PageParity ForcedBreakParityForNextPage => _forcedBreakParityForNextPage;
 
 
     /// <summary>Per Phase 3 Task 19 cycle 2a — border-box geometry (in
@@ -2461,13 +2480,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var prevEmittedChild = lastEmittedIdx >= 0 && lastEmittedIdx < _rootBox.Children.Count
                 ? _rootBox.Children[lastEmittedIdx]
                 : null;
-            var (forceBreakBefore, avoidBreakHere) = ResolveChildBreakMetadata(
+            var (forceBreakBefore, avoidBreakHere, forceParityBefore) = ResolveChildBreakMetadata(
                 _rootBox, child, prevEmittedChild, suppressForce: atFragmentainerStart);
+            // CSS Page L3 §3.4.1 — a forced left/right/recto/verso break always ends the page
+            // (forced breaks are unconditional + suppressForce already guards the page start), so
+            // record its parity now for the driver's blank-page (`@page :blank`) insertion.
+            if (forceBreakBefore && forceParityBefore != PageParity.Any)
+                _forcedBreakParityForNextPage = forceParityBefore;
             var opportunity = BreakOpportunity.Block(
                 usedBlockSize: fragmentainer.UsedBlockSize,
                 chunkBlockSize: chunkForBreakCheck,
                 forceBreak: forceBreakBefore,
-                avoidBreak: avoidBreakHere);
+                avoidBreak: avoidBreakHere,
+                forceParity: forceParityBefore);
             var decision = resolver.ConsiderBreakAt(opportunity, fragmentainer);
 
             if (decision.Action == BreakAction.Rewind)
@@ -4734,13 +4759,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // via `childAvoidBreak`. The forced break is gated on the same forward-progress +
             // resolver state as the per-branch checks (`suppressForce: false` — the guard ensures
             // prior content, so a forced break at a fragmentainer start is a no-op per §3.1).
-            var (childForcedBreak, childAvoidBreak) = ResolveChildBreakMetadata(
+            var (childForcedBreak, childAvoidBreak, childForceParity) = ResolveChildBreakMetadata(
                 parent, child, prevInFlowChild, suppressForce: false);
             if (childForcedBreak
                 && propagatingResolver is not null
                 && propagatingFragmentainer is { SuppressBlockPagination: false }
                 && _sink.Cursor > sinkCursorAtRecursionEntry)
             {
+                // CSS Page L3 §3.4.1 — carry a nested forced left/right/recto/verso break's parity
+                // up for the driver's blank-page insertion (same instance owns the field).
+                if (childForceParity != PageParity.Any)
+                    _forcedBreakParityForNextPage = childForceParity;
                 return new BlockContinuation(ResumeAtChild: childIdx, ConsumedBlockSize: 0);
             }
             // Remember THIS child as the previous in-flow sibling for the next iteration's
@@ -7940,16 +7969,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// avoid</c> (every between-children boundary is an internal break of it), or this
     /// child has <c>break-before: avoid</c>, or the previous sibling has
     /// <c>break-after: avoid</c>.</summary>
-    private static (bool Force, bool Avoid) ResolveChildBreakMetadata(
+    private static (bool Force, bool Avoid, PageParity Parity) ResolveChildBreakMetadata(
         Box container, Box child, Box? prevSibling, bool suppressForce)
     {
-        var force = !suppressForce
-            && (child.Style.ForcesPageBreakBefore()
-                || (prevSibling is not null && prevSibling.Style.ForcesPageBreakAfter()));
+        var childForces = !suppressForce && child.Style.ForcesPageBreakBefore();
+        var prevForces = !suppressForce
+            && prevSibling is not null && prevSibling.Style.ForcesPageBreakAfter();
+        var force = childForces || prevForces;
+        // CSS Page L3 §3.4.1 — the forced break's page-parity constraint (left / right / recto /
+        // verso). Prefer the child's break-before; fall to the prior sibling's break-after.
+        var parity = childForces ? child.Style.ForcedPageBreakParityBefore()
+            : prevForces ? prevSibling!.Style.ForcedPageBreakParityAfter()
+            : PageParity.Any;
         var avoid = container.Style.AvoidsBreakInside()
             || child.Style.AvoidsPageBreakBefore()
             || (prevSibling is not null && prevSibling.Style.AvoidsPageBreakAfter());
-        return (force, avoid);
+        return (force, avoid, parity);
     }
 
     private LayoutAttemptResult? DispatchInlineOnlyBlock(
@@ -8122,14 +8157,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var inlinePrevEmittedChild = lastEmittedIdx >= 0 && lastEmittedIdx < _rootBox.Children.Count
             ? _rootBox.Children[lastEmittedIdx]
             : null;
-        var (inlineForceBreak, inlineAvoidBreak) = ResolveChildBreakMetadata(
+        var (inlineForceBreak, inlineAvoidBreak, inlineForceParity) = ResolveChildBreakMetadata(
             _rootBox, inlineOnlyBlock, inlinePrevEmittedChild,
             suppressForce: inlineAtFragmentainerStart);
+        // CSS Page L3 §3.4.1 — a forced left/right/recto/verso break before a text/prose block ends
+        // the page; record its parity for the driver's blank-page insertion.
+        if (inlineForceBreak && inlineForceParity != PageParity.Any)
+            _forcedBreakParityForNextPage = inlineForceParity;
         var opportunity = BreakOpportunity.Block(
             usedBlockSize: fragmentainer.UsedBlockSize,
             chunkBlockSize: chunkForBreakCheck,
             forceBreak: inlineForceBreak,
-            avoidBreak: inlineAvoidBreak);
+            avoidBreak: inlineAvoidBreak,
+            forceParity: inlineForceParity);
         var decision = resolver.ConsiderBreakAt(opportunity, fragmentainer);
 
         if (decision.Action == BreakAction.Rewind)

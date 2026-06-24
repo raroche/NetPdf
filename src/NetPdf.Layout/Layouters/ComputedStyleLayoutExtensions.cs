@@ -4,6 +4,7 @@
 using System;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
+using NetPdf.Paginate;
 
 namespace NetPdf.Layout.Layouters;
 
@@ -494,6 +495,52 @@ internal static class ComputedStyleLayoutExtensions
     /// <summary>Per §3.1 — does <c>break-after</c> / <c>page-break-after</c> force a page break?</summary>
     public static bool ForcesPageBreakAfter(this ComputedStyle style)
         => ForcesPageBreak(style, PropertyId.BreakAfter, PropertyId.PageBreakAfter);
+
+    /// <summary>Per CSS Page L3 §3.4.1 — the PAGE-PARITY constraint of a forced
+    /// <c>break-before</c> (or the legacy <c>page-break-before</c> alias): which side / parity of
+    /// page the following content must land on. <c>left</c> / <c>right</c> are writing-mode-relative
+    /// (the layouter/driver resolves them against the page direction); <c>recto</c> / <c>verso</c>
+    /// are absolute (right-hand / left-hand). <c>page</c> / <c>always</c> / <c>all</c> (and any
+    /// non-forced value) carry NO parity constraint → <see cref="PageParity.Any"/>. The driver
+    /// inserts a blank <c>@page :blank</c> when a forced break would otherwise land on the wrong
+    /// parity.</summary>
+    public static PageParity ForcedPageBreakParityBefore(this ComputedStyle style)
+        => ForcedPageBreakParity(style, PropertyId.BreakBefore, PropertyId.PageBreakBefore);
+
+    /// <summary>Per §3.4.1 — the page-parity constraint of a forced <c>break-after</c> /
+    /// <c>page-break-after</c>. See <see cref="ForcedPageBreakParityBefore"/>.</summary>
+    public static PageParity ForcedPageBreakParityAfter(this ComputedStyle style)
+        => ForcedPageBreakParity(style, PropertyId.BreakAfter, PropertyId.PageBreakAfter);
+
+    private static PageParity ForcedPageBreakParity(ComputedStyle style, PropertyId modern, PropertyId legacy)
+    {
+        // break-before/after keyword indices: 6 left · 7 right · 8 recto · 9 verso (5 page / 12 all
+        // carry no parity). A non-auto modern value is authoritative over the legacy alias.
+        var m = style.Get(modern);
+        if (m.Tag == ComputedSlotTag.Keyword)
+        {
+            var k = m.AsKeyword();
+            if (k != 0)
+                return k switch
+                {
+                    6 => PageParity.Left,
+                    7 => PageParity.Right,
+                    8 => PageParity.Recto,
+                    9 => PageParity.Verso,
+                    _ => PageParity.Any,   // page (5) / column (10) / region (11) / all (12)
+                };
+        }
+        // Legacy page-break-before/after: 3 left · 4 right (1 always carries no parity).
+        var l = style.Get(legacy);
+        if (l.Tag == ComputedSlotTag.Keyword)
+            return l.AsKeyword() switch
+            {
+                3 => PageParity.Left,
+                4 => PageParity.Right,
+                _ => PageParity.Any,
+            };
+        return PageParity.Any;
+    }
 
     /// <summary>Per §3.2 — does <c>break-before</c> / <c>page-break-before</c> request
     /// AVOIDING a page break before the box (<c>avoid</c> / <c>avoid-page</c>)?</summary>

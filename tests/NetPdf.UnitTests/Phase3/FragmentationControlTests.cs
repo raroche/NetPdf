@@ -55,9 +55,8 @@ public sealed class FragmentationControlTests : System.IDisposable
     [InlineData("break-before:right")]
     public async Task Break_before_left_right_force_a_page_break(string css)
     {
-        // left/right force a page break (the parity refinement — actually landing on a
-        // left/right page via blank-page insertion — is a documented residual; here they
-        // behave like `page`).
+        // left/right force a page break; the blank-page side PARITY (actually landing on a
+        // left/right page) now ships — see the Break_before_{left,right,…} page-count tests below.
         var b = await ParseBox($"<div id='x' style='{css}'></div>");
         Assert.True(b.Style.ForcesPageBreakBefore());
     }
@@ -71,8 +70,8 @@ public sealed class FragmentationControlTests : System.IDisposable
         // fragmentation-control-residuals (narrowed) — AngleSharp.Css 1.0.0-beta.144 DROPS the
         // recto / verso / all forced-break values; the CssPreprocessor now recovers them so they
         // reach the cascade (KeywordResolver index) + the break reader honors them as a forced page
-        // break. Like left / right, recto / verso do NOT yet land on a specific left/right page — the
-        // blank-page side PARITY (inserting a blank page) stays a documented residual.
+        // break. recto / verso now ALSO land on the correct page side (blank-page insertion) — see
+        // the Break_before_{recto,verso}_… page-count tests below.
         var b = await ParseBox($"<div id='x' style='{css}'></div>");
         var slot = b.Style.Get(PropertyId.BreakBefore);
         Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);
@@ -201,6 +200,56 @@ public sealed class FragmentationControlTests : System.IDisposable
     {
         // break-after:page on the FIRST text div pushes the next sibling to page 2.
         Assert.Equal(2, Pages("<div style='break-after:page'>first</div><div>second</div>"));
+    }
+
+    // CSS Page L3 §3.4.1 — left/right/recto/verso land the resumed content on a page of the named
+    // PARITY, inserting a blank `@page :blank` when needed. Page 1 is a recto (right-hand) page, so
+    // odd pages = recto/right, even = verso/left (LTR). "first" sits on page 1 (recto).
+
+    [Fact]
+    public void Break_before_left_lands_on_a_verso_page_without_a_blank()
+    {
+        // `break-before:left` → "second" wants a LEFT (verso / even) page; the next page (2) IS
+        // verso, so no blank is inserted → 2 pages (like a plain `page` break here).
+        Assert.Equal(2, Pages("<div>first</div><div style='break-before:left'>second</div>"));
+    }
+
+    [Fact]
+    public void Break_before_verso_lands_on_a_verso_page_without_a_blank()
+    {
+        // `verso` = left-hand = even page; same as `left` in LTR → 2 pages.
+        Assert.Equal(2, Pages("<div>first</div><div style='break-before:verso'>second</div>"));
+    }
+
+    [Fact]
+    public void Break_before_right_inserts_a_blank_to_land_on_a_recto_page()
+    {
+        // `break-before:right` → "second" wants a RIGHT (recto / odd) page; the next page (2) is
+        // verso (WRONG parity), so a blank `@page :blank` is inserted as page 2 and "second" lands
+        // on page 3 (recto) → 3 pages. This is the blank-page side parity that was the residual.
+        Assert.Equal(3, Pages("<div>first</div><div style='break-before:right'>second</div>"));
+    }
+
+    [Fact]
+    public void Break_before_recto_inserts_a_blank_to_land_on_a_recto_page()
+    {
+        // `recto` = right-hand = odd page; same as `right` in LTR → blank inserted → 3 pages.
+        Assert.Equal(3, Pages("<div>first</div><div style='break-before:recto'>second</div>"));
+    }
+
+    [Fact]
+    public void Break_after_right_inserts_a_blank_for_the_next_sibling()
+    {
+        // `break-after:right` on "first" → the next sibling must land on a recto (odd) page; page 2
+        // is verso, so a blank is inserted and "second" lands on page 3 → 3 pages.
+        Assert.Equal(3, Pages("<div style='break-after:right'>first</div><div>second</div>"));
+    }
+
+    [Fact]
+    public void Break_before_page_without_parity_does_not_insert_a_blank()
+    {
+        // Control — `break-before:page` carries no parity, so no blank is ever inserted → 2 pages.
+        Assert.Equal(2, Pages("<div>first</div><div style='break-before:page'>second</div>"));
     }
 
     [Fact]

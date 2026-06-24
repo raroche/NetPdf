@@ -189,7 +189,10 @@ grepping the ID).
   chrome is cut via `BoxFragment.SuppressBlockStartChrome` — the painter starts the content at the
   border-box top + skips the top border — and a non-last slice's block-end border via
   `BoxFragment.SuppressBlockEndChrome`, which `FragmentPainter.PaintBorders` honors with its
-  `suppressTopEdge` / `suppressBottomEdge` params). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
+  `suppressTopEdge` / `suppressBottomEdge` params). A NON-final slice FILLS the remaining fragmentainer
+  extent in the block axis (CSS Fragmentation — a broken box occupies the rest of the fragmentainer), so
+  its inline-axis borders + solid background span the page rather than stopping after the last fitting line;
+  the text-line extent stays separate (PR #221 review). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
   it is an interior line, not the paragraph end). A box whose decoration would NOT slice as one
   unfragmented box — a background image / gradient, box-shadow, border-radius, or outline
   (`Box.HasUnsliceableDecoration`, computed at build time since background-image / box-shadow aren't
@@ -210,8 +213,9 @@ grepping the ID).
   box-shadow / border-radius / outline) whose text is taller than one whole page (rare) — it overflows the
   bottom of its starting page rather than splitting.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
-  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndPadding` /
-  `EmitInlineOnlyBlockSlice` + `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
+  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndChrome` /
+  `EmitInlineOnlyBlockSlice` (+ `fillToBlockExtent`) + `ReportSliceForcedOverflowIfNeeded` +
+  `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
   `src/NetPdf.Layout/Layouters/InlineOnlyMeasurementCache.cs`; `src/NetPdf.Layout/Boxes/Box.cs` +
   `BoxBuilder.cs` (`HasUnsliceableDecoration`); `src/NetPdf/Rendering/FragmentPainter.cs`
   (`PaintBorders` `suppressTopEdge`/`suppressBottomEdge`); `src/NetPdf.Paginate/LayoutContinuation.cs`

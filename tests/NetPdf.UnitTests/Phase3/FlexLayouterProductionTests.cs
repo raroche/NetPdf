@@ -1094,6 +1094,120 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Row_wrap_reverse_align_self_end_does_not_follow_the_flex_permutation()
+    {
+        // PR #217 review [P2] coverage — the `end` counterpart to the `start` test. `end` is the
+        // CONTAINER writing-mode block-END (physical BOTTOM for a row), which `wrap-reverse` does
+        // NOT permute → `.en` stays at the bottom (+150). `flex-end` IS flex-flow-relative so
+        // `wrap-reverse` permutes it to the line's NEW cross-end (physical TOP) → `.fe` at +0.
+        // crossSpace = 200-50 = 150; the two items share the single line, block-aligned independently.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap-reverse; width:600px; height:200px; }
+                .en { align-self:end; width:100px; height:50px; }
+                .fe { align-self:flex-end; width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="en"></div><div class="fe"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var en = FindFragByClass(sink, "en");
+        var fe = FindFragByClass(sink, "fe");
+        Assert.NotNull(flex);
+        Assert.NotNull(en);
+        Assert.NotNull(fe);
+        Assert.Equal(flex!.Value.BlockOffset + 150.0, en!.Value.BlockOffset, precision: 3);  // end → bottom (unpermuted)
+        Assert.Equal(flex!.Value.BlockOffset + 0.0, fe!.Value.BlockOffset, precision: 3);     // flex-end → top (permuted)
+    }
+
+    [Fact]
+    public async Task Row_wrap_reverse_self_start_and_self_end_do_not_follow_the_flex_permutation()
+    {
+        // PR #217 review [P1] — `self-start` / `self-end` are the ITEM's own writing-mode edges, which
+        // `wrap-reverse` does NOT permute (the earlier code XOR-ed in `isWrapReverse`, wrongly moving
+        // them with the flex flow). A ROW container's cross axis is the block axis (direction-
+        // independent), so for these LTR items self-start = block-start = TOP (+0) and self-end =
+        // block-end = BOTTOM (+150), regardless of `wrap-reverse`. Covers BOTH `align-items` (`.ai`
+        // inherits `self-start`) and `align-self` (`.se`). Pre-fix these were inverted (+150 / +0).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap-reverse; align-items:self-start;
+                        width:600px; height:200px; }
+                .ai { width:100px; height:50px; }
+                .se { align-self:self-end; width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="ai"></div><div class="se"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var ai = FindFragByClass(sink, "ai");
+        var se = FindFragByClass(sink, "se");
+        Assert.NotNull(flex);
+        Assert.NotNull(ai);
+        Assert.NotNull(se);
+        Assert.Equal(flex!.Value.BlockOffset + 0.0, ai!.Value.BlockOffset, precision: 3);     // align-items:self-start → top
+        Assert.Equal(flex!.Value.BlockOffset + 150.0, se!.Value.BlockOffset, precision: 3);   // align-self:self-end → bottom
+    }
+
+    [Fact]
+    public async Task Row_wrap_reverse_safe_start_overflow_falls_back_to_the_flex_cross_start()
+    {
+        // PR #217 review [P2] — an overflowing `safe start` falls back to the FLEX-FLOW start, NOT the
+        // (container-logical) natural `start` orientation. Under `wrap-reverse` the flex cross-start is
+        // the line's permuted edge (physical BOTTOM for a row), so the 250px item packs its bottom at
+        // the line's bottom and overflows off the top: BlockOffset = contentStart + crossSpace =
+        // flex + (200-250) = flex - 50. (The buggy single-orientation path returned +0 — the unpermuted
+        // `start` edge.) Mirrors the existing `safe center` overflow test but with `wrap-reverse`.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap-reverse; align-items:safe start;
+                        width:600px; height:200px; }
+                .tall { width:100px; height:250px; }
+            </style></head><body>
+            <div class="flex"><div class="tall"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var tall = FindFragByClass(sink, "tall");
+        Assert.NotNull(flex);
+        Assert.NotNull(tall);
+        Assert.Equal(flex!.Value.BlockOffset - 50.0, tall!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Column_rtl_wrap_reverse_start_diverges_from_flex_start()
+    {
+        // PR #217 review [P2] coverage — column RTL plus `wrap-reverse`, where the two reversals CANCEL
+        // for the flex flow (isCrossAxisReversed = isWrapReverse ^ isColumnRtl = true ^ true = false) but
+        // NOT for the container writing-mode keyword. A column's cross axis is the inline axis, so under
+        // RTL the container's writing-mode start (`start`) = inline-RIGHT regardless of wrap → `.st` at
+        // +500; `flex-start` follows the cancelled flex flow → inline-LEFT → `.fs` at +0. crossSpace =
+        // 600-100 = 500. (Before the Container-keyword fix `start` collapsed onto `flex-start` at +0.)
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; flex-wrap:wrap-reverse; direction:rtl;
+                        align-items:flex-start; width:600px; height:400px; }
+                .st { align-self:start; width:100px; height:50px; }
+                .fs { align-self:flex-start; width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="st"></div><div class="fs"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var st = FindFragByClass(sink, "st");
+        var fs = FindFragByClass(sink, "fs");
+        Assert.NotNull(flex);
+        Assert.NotNull(st);
+        Assert.NotNull(fs);
+        Assert.Equal(flex!.Value.InlineOffset + 500.0, st!.Value.InlineOffset, precision: 3);  // start → inline-right (unpermuted)
+        Assert.Equal(flex!.Value.InlineOffset + 0.0, fs!.Value.InlineOffset, precision: 3);     // flex-start → inline-left (cancelled)
+    }
+
+    [Fact]
     public async Task L5_production_html_flex_direction_row_reverse()
     {
         // Per Phase 3 Task 15 L5 — real HTML <div> with

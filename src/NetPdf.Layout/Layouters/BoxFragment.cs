@@ -166,6 +166,16 @@ namespace NetPdf.Layout.Layouters;
 /// <param name="JustifyLastLine">text-align: justify-all cycle — when true the LAST line justifies too
 /// (CSS Text 3 §7.3), lifting the painter's last-line gate. Only meaningful with
 /// <paramref name="JustifyLines"/>. Default false = plain justify, byte-identical.</param>
+/// <param name="LastLineContinues">inline-only-block-line-splitting — when true this fragment is a
+/// NON-final slice of a paragraph that splits across pages (more lines follow on a later page), so the
+/// painter treats its last line as an interior (justifiable) line, NOT the paragraph end — under
+/// <c>text-align: justify</c> it justifies like any other line instead of staying start-aligned. Default
+/// false = the fragment IS the paragraph end (or a whole-block emit), byte-identical.</param>
+/// <param name="SuppressBlockStartChrome">inline-only-block-line-splitting (box-decoration-break: slice)
+/// — when true this fragment is a NON-first slice of a split block, so its block-start padding/border is
+/// CUT (the chrome was consumed by an earlier slice): the painter starts the content at the border-box
+/// top (skips the block-start border + padding it would otherwise inset by). Default false = the chrome
+/// is present (a first slice or a whole-block emit), byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -213,7 +223,18 @@ internal readonly record struct BoxFragment(
     // text-align: justify-all cycle — when true the LAST line justifies too (CSS Text 3 §7.3), lifting
     // the painter's last-line gate. Only meaningful with JustifyLines. DEFAULT false = plain justify
     // (last line start-aligned), byte-identical.
-    bool JustifyLastLine = false);
+    bool JustifyLastLine = false,
+    // inline-only-block-line-splitting — when true this fragment is a NON-final slice of a paragraph
+    // that splits across pages (more lines follow on a later page), so the painter must NOT treat its
+    // last line as the paragraph's last line: under text-align: justify it justifies that line like any
+    // interior line instead of leaving it start-aligned. DEFAULT false = paragraph end / whole-block
+    // emit, byte-identical.
+    bool LastLineContinues = false,
+    // inline-only-block-line-splitting (box-decoration-break: slice) — when true this is a NON-first
+    // slice of a split block, so its block-start padding/border is CUT: the painter starts the content
+    // at the border-box top instead of insetting by the block-start border + padding. DEFAULT false =
+    // chrome present (first slice / whole block), byte-identical.
+    bool SuppressBlockStartChrome = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

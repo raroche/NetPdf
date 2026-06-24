@@ -186,6 +186,10 @@ internal static class PdfRenderPipeline
         // than re-shaped per page by the subtree-extent pass (the O(n²) churn). Page-invariant +
         // deterministic, so output is byte-identical.
         var tableMeasureCache = new TableMeasurementCache();
+        // Per `inline-only-block-line-splitting` (PR #220 review [P2]) — one cross-page cache so a
+        // paragraph that splits across pages is shaped (text + inline-block atomic content) ONCE rather
+        // than re-shaped on every resume page. Page-invariant + deterministic, so output is byte-identical.
+        var inlineOnlyMeasureCache = new InlineOnlyMeasurementCache();
         // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; resolved ONCE here as
         // the document-level defaults for the resolver (per-paragraph overrides await line
         // splitting — `inline-only-block-line-splitting`). BoxBuilder roots the tree at a
@@ -235,6 +239,7 @@ internal static class PdfRenderPipeline
                     {
                         GridMeasureCache = gridMeasureCache,
                         TableMeasureCache = tableMeasureCache,
+                        InlineOnlyMeasureCache = inlineOnlyMeasureCache,
                     };
                     // Document-level orphans/widows (resolved once above) drive the resolver
                     // instead of the hardcoded 2/2.

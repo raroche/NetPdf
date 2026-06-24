@@ -52,25 +52,51 @@ internal static class AbsoluteLayouter
     /// longer produced here — the <c>BlockLayouter</c>'s null-containing-
     /// block path is the drop site.</summary>
     public static AbsolutePlacement ResolvePlacement(
-        Box box, AbsoluteContainingBlock cb)
+        Box box, AbsoluteContainingBlock cb,
+        (double Min, double Max)? inlineShrink = null,
+        System.Func<double, double>? measureContentHeightAtInlineWidth = null)
     {
         var style = box.Style;
+
+        // Inline-axis chrome (read once so the resolved content width can be derived for the
+        // block-axis content-height measure below).
+        var inlineBorderStart = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+        var inlinePaddingStart = ReadPxOrPct(style, PropertyId.PaddingLeft, cb.InlineSize);
+        var inlinePaddingEnd = ReadPxOrPct(style, PropertyId.PaddingRight, cb.InlineSize);
+        var inlineBorderEnd = style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var inlineChrome = inlineBorderStart + inlinePaddingStart + inlinePaddingEnd + inlineBorderEnd;
 
         // Inline axis (LTR, horizontal writing mode): left = inset-start,
         // right = inset-end, width = size. Percentages resolve against
         // the CB inline extent; padding percentages too (CSS 2.1 §8.4).
+        // `inlineShrink` (when the caller measured the content) makes an `auto` width that isn't
+        // pinned by both insets shrink-to-fit instead of filling (CSS 2.1 §10.3.7).
         var (inlineOffset, inlineSize) = SolveAxis(
             insetStart: ReadAutoOrPx(style, PropertyId.Left, cb.InlineSize),
             insetEnd: ReadAutoOrPx(style, PropertyId.Right, cb.InlineSize),
             size: ReadAutoOrPx(style, PropertyId.Width, cb.InlineSize),
             marginStart: ReadMarginAutoOrPx(style, PropertyId.MarginLeft, cb.InlineSize),
             marginEnd: ReadMarginAutoOrPx(style, PropertyId.MarginRight, cb.InlineSize),
-            borderStart: style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth),
-            paddingStart: ReadPxOrPct(style, PropertyId.PaddingLeft, cb.InlineSize),
-            paddingEnd: ReadPxOrPct(style, PropertyId.PaddingRight, cb.InlineSize),
-            borderEnd: style.ReadLengthPxOrZero(PropertyId.BorderRightWidth),
+            borderStart: inlineBorderStart,
+            paddingStart: inlinePaddingStart,
+            paddingEnd: inlinePaddingEnd,
+            borderEnd: inlineBorderEnd,
             cbExtent: cb.InlineSize,
-            isInlineAxis: true);
+            isInlineAxis: true,
+            shrinkMin: inlineShrink?.Min,
+            shrinkMax: inlineShrink?.Max);
+
+        // Block-axis content height (§10.6.4) depends on the RESOLVED inline content width — measure
+        // it now, at that width, so a content-sized `auto` height fits its content instead of filling.
+        // Passed as a degenerate [h, h] shrink range (min == max == the measured content height).
+        double? blockShrinkMin = null, blockShrinkMax = null;
+        if (measureContentHeightAtInlineWidth is not null)
+        {
+            var inlineContentWidth = System.Math.Max(0, inlineSize - inlineChrome);
+            var contentHeight = measureContentHeightAtInlineWidth(inlineContentWidth);
+            blockShrinkMin = contentHeight;
+            blockShrinkMax = contentHeight;
+        }
 
         // Block axis: top = inset-start, bottom = inset-end, height =
         // size. Per CSS 2.1 percentage top/bottom/height resolve against
@@ -89,7 +115,9 @@ internal static class AbsoluteLayouter
             paddingEnd: ReadPxOrPct(style, PropertyId.PaddingBottom, cb.InlineSize),
             borderEnd: style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth),
             cbExtent: cb.BlockSize,
-            isInlineAxis: false);
+            isInlineAxis: false,
+            shrinkMin: blockShrinkMin,
+            shrinkMax: blockShrinkMax);
 
         // SolveAxis already clamps a negative resolved content size to
         // 0 (CSS clamps used width/height to >= 0), so inlineSize /
@@ -114,7 +142,8 @@ internal static class AbsoluteLayouter
         double? insetStart, double? insetEnd, double? size,
         double? marginStart, double? marginEnd,
         double borderStart, double paddingStart, double paddingEnd, double borderEnd,
-        double cbExtent, bool isInlineAxis)
+        double cbExtent, bool isInlineAxis,
+        double? shrinkMin = null, double? shrinkMax = null)
     {
         var chrome = borderStart + paddingStart + paddingEnd + borderEnd;
         var startAuto = insetStart is null;
@@ -246,6 +275,20 @@ internal static class AbsoluteLayouter
             }
         }
 
+        // True shrink-to-fit (CSS 2.1 §10.3.7 inline) / content height (§10.6.4 block):
+        // an `auto` size NOT pinned by both insets uses the shrink-to-fit/content size, not the
+        // full available extent. The caller supplies the intrinsic CONTENT min/max (the box's
+        // content-box min-content / max-content for the inline axis; min == max == the measured
+        // content height for the block axis); we clamp the available `usedSize` (content) into
+        // `[shrinkMin, shrinkMax]` per `min(max(min-content, available), max-content)`. The fill case
+        // (both insets given) is EXACT and never reaches here (it's the `!startAuto && !endAuto`
+        // branch, which the caller leaves un-clamped by passing no shrink range).
+        var isShrinkToFit = sizeAuto && (startAuto || endAuto);
+        if (isShrinkToFit && shrinkMin is not null && shrinkMax is not null)
+        {
+            usedSize = System.Math.Min(System.Math.Max(shrinkMin.Value, usedSize), shrinkMax.Value);
+        }
+
         if (usedSize < 0) usedSize = 0;  // CSS used size >= 0.
         if (endAnchored)
         {
@@ -278,6 +321,27 @@ internal static class AbsoluteLayouter
             // Unset / Keyword (auto) / anything else → auto.
             _ => null,
         };
+    }
+
+    /// <summary><see langword="true"/> when the box's INLINE size is shrink-to-fit per CSS 2.1
+    /// §10.3.7: <c>width: auto</c> and NOT pinned by BOTH <c>left</c> and <c>right</c> (both pinned =
+    /// fill, which is exact). The caller measures the content min/max only in this case.</summary>
+    internal static bool NeedsInlineShrinkToFit(ComputedStyle style, double cbInlineSize)
+    {
+        if (ReadAutoOrPx(style, PropertyId.Width, cbInlineSize) is not null) return false; // explicit width
+        var leftGiven = ReadAutoOrPx(style, PropertyId.Left, cbInlineSize) is not null;
+        var rightGiven = ReadAutoOrPx(style, PropertyId.Right, cbInlineSize) is not null;
+        return !(leftGiven && rightGiven);
+    }
+
+    /// <summary><see langword="true"/> when the box's BLOCK size is content-height per CSS 2.1
+    /// §10.6.4: <c>height: auto</c> and NOT pinned by BOTH <c>top</c> and <c>bottom</c>.</summary>
+    internal static bool NeedsBlockContentHeight(ComputedStyle style, double cbBlockSize, double cbInlineSize)
+    {
+        if (ReadAutoOrPx(style, PropertyId.Height, cbBlockSize) is not null) return false; // explicit height
+        var topGiven = ReadAutoOrPx(style, PropertyId.Top, cbBlockSize) is not null;
+        var bottomGiven = ReadAutoOrPx(style, PropertyId.Bottom, cbBlockSize) is not null;
+        return !(topGiven && bottomGiven);
     }
 
     /// <summary>Read a margin property as a used px length, OR

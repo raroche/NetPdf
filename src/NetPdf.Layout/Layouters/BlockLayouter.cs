@@ -4107,6 +4107,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
     }
 
+    /// <summary>abspos-cycle-1 shrink-to-fit — measure a <c>position: absolute</c> box's CONTENT
+    /// extent (content-box coordinates) at <paramref name="availInline"/> available inline size, for
+    /// the CSS 2.1 §10.3.7 shrink-to-fit (inline) / §10.6.4 content-height (block) resolution.
+    /// <paramref name="intrinsic"/> enables min-content mode (break-word soft opportunities suppressed
+    /// so a long word isn't collapsed to glyph width). When the measure buffered the box's OWN
+    /// decoration fragment (extent already includes the box's border + padding) the chrome is
+    /// subtracted to yield a CONTENT size — <see cref="AbsoluteLayouter"/>'s solver re-adds chrome.</summary>
+    private double MeasureAbsContentExtent(
+        Box box, double availInline, bool intrinsic, bool inline,
+        WritingMode wm, bool rtl, CancellationToken cancellationToken)
+    {
+        var buffer = NestedContentMeasurer.Measure(
+            box, availInline,
+            blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+            shaperResolver: _shaperResolver,
+            writingMode: wm, isRtl: rtl,
+            cancellationToken: cancellationToken,
+            intrinsicSizingMode: intrinsic);
+        var extent = inline ? buffer.ContentInlineExtent : buffer.ContentBlockExtent;
+        if (buffer.ContainsDecorationOwnerFragment)
+        {
+            var chrome = box.Style.AxisBorderPaddingPx(inline ? PropertyId.Width : PropertyId.Height);
+            extent = System.Math.Max(0, extent - chrome);
+        }
+        return extent;
+    }
+
     private void EmitOneAbsoluteBox(
         Box child,
         AbsoluteContainingBlock icb,
@@ -4135,7 +4162,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return;
         }
 
-        var placement = AbsoluteLayouter.ResolvePlacement(child, containingBlock.Value);
+        // abspos-cycle-1 — true shrink-to-fit (auto width) + content height (auto height). When the
+        // box has content and an `auto` size NOT pinned by both insets, measure the content's intrinsic
+        // min/max-content (inline) and content height (block, at the resolved inline width) so the box
+        // sizes to its content rather than the full available extent (CSS 2.1 §10.3.7 / §10.6.4).
+        (double Min, double Max)? inlineShrink = null;
+        System.Func<double, double>? measureContentHeight = null;
+        if (child.Children.Count > 0)
+        {
+            var cbValue = containingBlock.Value;
+            var wm = layout.WritingMode;
+            var rtl = layout.IsRtl;
+            if (AbsoluteLayouter.NeedsInlineShrinkToFit(child.Style, cbValue.InlineSize))
+            {
+                var maxContent = MeasureAbsContentExtent(child, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx, intrinsic: false, inline: true, wm, rtl, cancellationToken);
+                var minContent = MeasureAbsContentExtent(child, 1.0, intrinsic: true, inline: true, wm, rtl, cancellationToken);
+                inlineShrink = (minContent, System.Math.Max(minContent, maxContent));
+            }
+            if (AbsoluteLayouter.NeedsBlockContentHeight(child.Style, cbValue.BlockSize, cbValue.InlineSize))
+            {
+                measureContentHeight = inlineContentWidth =>
+                    MeasureAbsContentExtent(child, inlineContentWidth, intrinsic: false, inline: false, wm, rtl, cancellationToken);
+            }
+        }
+        var placement = AbsoluteLayouter.ResolvePlacement(
+            child, containingBlock.Value, inlineShrink, measureContentHeight);
         if (!placement.IsResolved)
         {
             OptimizingBreakResolver.SafeEmit(

@@ -767,6 +767,52 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Equal(30.0, c.Value.BlockSize, precision: 3);
     }
 
+    // ----- abspos-cycle-1 true shrink-to-fit (auto width) + content height (auto height) -----
+
+    [Fact]
+    public async Task ShrinkToFit_abspos_sizes_to_its_content_not_the_full_available_extent()
+    {
+        // `position: absolute; top:10; left:20` with NO width/height → the box shrink-to-fits to its
+        // content (a fixed 80×40 child) instead of filling the page (was ~580×790). End-to-end through
+        // the measure (max/min-content inline + content height at the resolved width) → 80×40 at (20,10).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .abs { position: absolute; top: 10px; left: 20px; }
+                .child { width: 80px; height: 40px; }
+            </style></head><body>
+            <div class="abs"><div class="child"></div></div>
+            </body></html>
+            """;
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        Assert.Equal(20.0, abs!.Value.InlineOffset, precision: 3);
+        Assert.Equal(10.0, abs.Value.BlockOffset, precision: 3);
+        Assert.Equal(80.0, abs.Value.InlineSize, precision: 3);   // max-content (child width), not 580
+        Assert.Equal(40.0, abs.Value.BlockSize, precision: 3);    // content height, not 790
+    }
+
+    [Fact]
+    public async Task ContentHeight_abspos_with_explicit_width_fits_content_block_extent()
+    {
+        // Explicit `width: 100`, `height: auto` → the inline axis keeps the declared 100, the block axis
+        // is the content height (two 30px children stacked = 60), NOT the full available 790.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .abs { position: absolute; top: 5px; left: 5px; width: 100px; }
+                .a { height: 30px; }
+                .b { height: 30px; }
+            </style></head><body>
+            <div class="abs"><div class="a"></div><div class="b"></div></div>
+            </body></html>
+            """;
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        Assert.Equal(100.0, abs!.Value.InlineSize, precision: 3);
+        Assert.Equal(60.0, abs.Value.BlockSize, precision: 3);    // 30 + 30 content, not 790
+    }
+
     private static System.Collections.Generic.List<BoxFragment> FragmentsByClass(
         RecordingFragmentSink sink, string className) =>
         sink.Fragments.Where(f =>

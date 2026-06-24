@@ -2340,17 +2340,25 @@ flags the categories):
     clause and still centers even when the margins go negative.
   - ~~**Percentage** `top`/`left`/`width`/`height`~~ — SHIPPED in
     cycle 2b (resolve against the CB inline / block extent).
-  - **`auto` width/height (true shrink-to-fit / content height)** —
-    cycle 2b approximates an `auto` size NOT pinned by both insets as
-    the AVAILABLE extent (CB minus resolved insets + margins + chrome).
-    The pinned-both-insets case (fill) is EXACT. True shrink-to-fit
-    (inline) + content height (block) need intrinsic-size measurement
-    (the speculative-measure machinery TableLayouter uses) — a later
-    refinement. Per post-PR-#114 review P2#3: when the end inset
-    (`right`/`bottom`) exceeds the CB and the available size goes
-    negative, the size clamps to 0 but the END anchor is PRESERVED —
-    the box's start offset is recomputed from the end inset (a negative
-    offset) instead of being re-pinned to the static position 0.
+  - ~~**`auto` width/height (true shrink-to-fit / content height)**~~ —
+    **SHIPPED** (residual long-tail). An `auto` size NOT pinned by both
+    insets now shrink-to-fits (inline) / sizes to content height (block)
+    via `NestedContentMeasurer`: `EmitOneAbsoluteBox` measures the box's
+    content min-content + max-content INLINE extent (`BufferingMeasureSink.
+    ContentInlineExtent` at availInline ≈ ∞ / ≈ 0-with-intrinsic-mode) and
+    feeds them to `AbsoluteLayouter.ResolvePlacement` as the inline shrink
+    range, clamping the available width into `min(max(min-content,
+    available), max-content)` (CSS 2.1 §10.3.7); the block axis then
+    measures the CONTENT height at the RESOLVED inline content width (§10.6.4
+    ordering) via a callback. The pinned-both-insets case (fill) stays EXACT
+    (never clamped). Per post-PR-#114 review P2#3: when the end inset
+    (`right`/`bottom`) exceeds the CB and the available size goes negative,
+    the size clamps to 0 but the END anchor is PRESERVED. **Residual**:
+    `min-width`/`max-width`/`min-height`/`max-height` clamping of the
+    shrink-to-fit result isn't applied yet (the §10.3.7 formula clamps to
+    [min-content, max-content] but not the author's min/max box), and the
+    measure resolves percentage padding against the inner fragmentainer
+    rather than the CB inline extent (a rarely-used corner).
   - **Padding-box CB** — uses the recorded border box inset by border
     widths = the padding box (correct). [Resolved cycle 2a.]
   - **z-index paint ordering** — paints in source order; no z-index.

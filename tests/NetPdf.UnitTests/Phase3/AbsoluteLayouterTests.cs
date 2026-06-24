@@ -160,6 +160,79 @@ public sealed class AbsoluteLayouterTests
         Assert.Equal(790.0, p.BlockSize, precision: 3);  // 800 - 10
     }
 
+    // ---- abspos-cycle-1 true shrink-to-fit (inline) + content height (block), CSS 2.1 §10.3.7/§10.6.4.
+
+    [Fact]
+    public void Shrink_to_fit_width_uses_max_content_when_below_available()
+    {
+        // width auto, left 20, right auto → available = 600-20 = 580. With a measured content
+        // (min 50, max 100): shrink-to-fit = min(max(50, 580), 100) = 100 → the box sizes to its
+        // max-content, NOT the full 580 available.
+        var box = BuildAbsoluteBox(top: 10, left: 20, height: 30, widthAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb, inlineShrink: (50.0, 100.0));
+        Assert.True(p.IsResolved);
+        Assert.Equal(20.0, p.InlineOffset, precision: 3);
+        Assert.Equal(100.0, p.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Shrink_to_fit_width_clamps_to_available_when_max_content_exceeds_it()
+    {
+        // available 580, content (50, 900) → min(max(50, 580), 900) = 580 (fits available).
+        var box = BuildAbsoluteBox(top: 10, left: 20, height: 30, widthAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb, inlineShrink: (50.0, 900.0));
+        Assert.Equal(580.0, p.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Shrink_to_fit_width_min_content_wins_when_above_available()
+    {
+        // available 580, content (700, 900) → min(max(700, 580), 900) = 700 (min-content overflows,
+        // per §10.3.7 — the box never shrinks below its min-content).
+        var box = BuildAbsoluteBox(top: 10, left: 20, height: 30, widthAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb, inlineShrink: (700.0, 900.0));
+        Assert.Equal(700.0, p.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Both_insets_with_auto_width_ignores_shrink_and_fills()
+    {
+        // left 20 + right 30 BOTH given → fill (exact), NOT shrink-to-fit. available = 600-20-30 = 550;
+        // SolveAxis's fill branch never clamps even if a (stray) shrink range is passed.
+        var box = BuildAbsoluteBox(top: 10, left: 20, right: 30, height: 30, widthAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb, inlineShrink: (50.0, 100.0));
+        Assert.Equal(550.0, p.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Content_height_uses_the_measured_extent_not_the_available_extent()
+    {
+        // height auto, top 10, bottom auto → content height from the callback (75), NOT 790 (available).
+        var box = BuildAbsoluteBox(top: 10, left: 20, width: 50);
+        var p = AbsoluteLayouter.ResolvePlacement(
+            box, OriginCb, measureContentHeightAtInlineWidth: _ => 75.0);
+        Assert.True(p.IsResolved);
+        Assert.Equal(10.0, p.BlockOffset, precision: 3);
+        Assert.Equal(75.0, p.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Content_height_callback_receives_the_resolved_inline_content_width()
+    {
+        // §10.6.4 ordering — the block-height measure runs AT the resolved inline content width.
+        // width auto + left 20 + content (50, 100) → inline width 100 (no chrome); the callback must
+        // see 100.
+        var box = BuildAbsoluteBox(top: 10, left: 20, widthAuto: true);
+        double seenWidth = -1;
+        var p = AbsoluteLayouter.ResolvePlacement(
+            box, OriginCb,
+            inlineShrink: (50.0, 100.0),
+            measureContentHeightAtInlineWidth: w => { seenWidth = w; return 40.0; });
+        Assert.Equal(100.0, p.InlineSize, precision: 3);
+        Assert.Equal(100.0, seenWidth, precision: 3);
+        Assert.Equal(40.0, p.BlockSize, precision: 3);
+    }
+
     [Fact]
     public void Percentage_top_resolves_against_cb_block_extent()
     {

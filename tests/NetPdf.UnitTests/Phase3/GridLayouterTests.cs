@@ -5496,12 +5496,12 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Span_ident_on_the_start_edge_is_deferred_with_specific_diagnostic()
+    public void Span_ident_on_the_start_edge_with_an_auto_end_is_deferred_with_specific_diagnostic()
     {
-        // `span <custom-ident>` on the START edge (`grid-row-start: span foo`) still falls back — it
-        // needs the auto-placement span algorithm to count the lines (unlike the END-edge span-by-name
-        // with a definite start, which IS resolved). Narrowed residual of
-        // grid-implicit-named-area-and-occurrence-syntax-deferral.
+        // `span <custom-ident>` on the START edge with an AUTO end (`grid-row-start: span foo`, no end)
+        // still falls back — it needs the auto-placement span algorithm to count the lines. (The
+        // START-edge span WITH a definite end spans backward and IS resolved — see the next test.)
+        // Narrowed residual of grid-implicit-named-area-and-occurrence-syntax-deferral.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -5525,6 +5525,219 @@ public sealed class GridLayouterTests
         Assert.Contains("span <custom-ident>", diagnostic.Message);
         Assert.Contains("grid-implicit-named-area-and-occurrence-syntax-deferral",
             diagnostic.Message);
+    }
+
+    [Fact]
+    public void Span_ident_on_the_start_edge_with_a_definite_end_spans_backward()
+    {
+        // grid-implicit-named-area-and-occurrence-syntax — `grid-row: span foo / 3` (span-by-name START
+        // with a DEFINITE integer end) spans BACKWARD from line 3 to the previous `foo` line (the mirror
+        // of the END-edge span-by-name). Rows `[foo] 100px 100px 100px` put `foo` at line 1; the span
+        // runs line 1 → line 3 = rows 0+1 (blockOffset 0, blockSize 200). No diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForSpanName("foo"));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForLineNumber(3));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 200);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Span_ident_count_on_the_start_edge_with_a_definite_end_spans_backward_n()
+    {
+        // `grid-row: span foo 2 / 5` — span backward to the 2nd `foo` before line 5. Rows
+        // `[foo] 100px [foo] 100px 100px 100px` put `foo` at lines 1 and 3; from line 5 the 2nd `foo`
+        // back is line 1, so the span runs line 1 → line 5 = rows 0..3 (blockOffset 0, blockSize 400).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForSpanNameOccurrence("foo", 2));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForLineNumber(5));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 400);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Span_ident_on_the_start_edge_with_a_negative_definite_end_spans_backward()
+    {
+        // PR #217 review [P1] — `grid-row: span foo / -1`: a NEGATIVE integer end IS a definite line
+        // (it counts back from the explicit grid's end edge; `-1` = the last explicit line). Previously
+        // only positive ends were treated as definite, so this fell back to auto. Rows `[foo] 100 100
+        // 100` put foo at line 1; `-1` normalizes to line 4, so `span foo` backward from line 4 → line
+        // 1 = rows 0..2 (blockOffset 0, blockSize 300). No diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForSpanName("foo"));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForLineNumber(-1));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 300);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Span_ident_on_the_column_start_edge_with_a_definite_end_spans_backward()
+    {
+        // PR #217 review [P2] coverage — the COLUMN-axis mirror of the row backward span. Columns
+        // `[foo] 100 100 100` put foo at column line 1; `grid-column: span foo / 3` spans backward
+        // from line 3 to line 1 = columns 0+1 (inlineOffset 0, inlineSize 200). One 50px row gives the
+        // block extent. No diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(
+            BuildLengthTrackList(new[] { 50.0 }), colsTrack);
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridColumnStart, (object)GridLineValue.ForSpanName("foo"));
+        style.Set(PropertyId.GridColumnStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridColumnEnd, (object)GridLineValue.ForLineNumber(3));
+        style.Set(PropertyId.GridColumnEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Span_ident_count_on_the_start_edge_underflows_with_a_start_side_shortfall_diagnostic()
+    {
+        // PR #217 review [P2] — a DEFINITE end but not enough `foo` lines before it. `span foo 2 / 4`
+        // with foo only at line 3 (rows `100 100 [foo] 100`) needs a 2nd foo at line ≤ 0 (the implicit
+        // lines BEFORE the explicit grid), which stays deferred. The diagnostic must say so — NOT the
+        // "auto / indefinite end" message (the end here IS definite).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForSpanNameOccurrence("foo", 2));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForLineNumber(4));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        var diagnostic = Assert.Single(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+        Assert.Contains("before the definite end", diagnostic.Message);
+        Assert.Contains("implicit lines BEFORE the explicit grid", diagnostic.Message);
+        Assert.DoesNotContain("auto / indefinite end", diagnostic.Message);
+    }
+
+    [Fact]
+    public void Span_unresolved_ident_on_the_start_edge_with_a_definite_end_reports_the_unresolved_name()
+    {
+        // PR #217 review [P2] — a DEFINITE end but the span name doesn't exist. `span bar / 3` with no
+        // `bar` line falls back to auto with an UNRESOLVED-NAME diagnostic — distinct from both the
+        // start-side shortfall and the "auto / indefinite end" messages.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, BuildLengthTrackList(new[] { 50.0 }));
+
+        var style = MakeStyle();
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)GridLineValue.ForSpanName("bar"));
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)GridLineValue.ForLineNumber(3));
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(1));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        var diagnostic = Assert.Single(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+        Assert.Contains("no line named 'bar'", diagnostic.Message);
+        Assert.DoesNotContain("auto / indefinite end", diagnostic.Message);
     }
 
     // =====================================================================

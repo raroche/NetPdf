@@ -952,9 +952,9 @@ grepping the ID).
   wrapping, and multi-page container splitting. The residual approximations are enumerated
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
   `align-content: baseline`, margin-box in the alignment / justify-content free-space
-  math, `start`/`end` vs `flex-start`/`flex-end` under `wrap-reverse` — the RTL column
-  cross axis, per-item anchor AND line-stacking, now SHIPS — + vertical writing modes).
-  Percentage gaps + percentage
+  math, VERTICAL writing modes — the RTL column cross axis (per-item anchor AND
+  line-stacking) and the `start`/`end`/`self-start`/`self-end` vs `flex-start`/`flex-end`
+  `wrap-reverse` distinction now ship). Percentage gaps + percentage
   item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
   pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
@@ -1156,14 +1156,21 @@ grepping the ID).
     lines of a multi-line column-rtl `wrap` stack from the physical right, a
     single non-stretched `align-content: flex-start` line packs at the right,
     a `wrap-reverse` column-rtl cancels back, and `align-items: flex-start`
-    right-anchors / `flex-end` left-anchors. The `self-start`/`self-end`
-    logical keywords resolve against the ITEM's own `direction` (an LTR child
-    in an RTL column anchors at its own start), via the preserved
-    `ResolvedAlign*.IsSelfRelative` flag. Pinned by the `Column_rtl_*` tests.
-    **Still deferred**: `start`/`end` vs `flex-start`/`flex-end` divergence
-    under `wrap-reverse` (writing-mode-relative keywords should NOT follow the
-    flex permutation — a pre-existing logical-keyword gap, not column-rtl-
-    specific), and all VERTICAL writing modes (`writing-mode` is not yet a
+    right-anchors / `flex-end` left-anchors. **Also shipped** (residual
+    long-tail + PR #217 review): the `self-start`/`self-end` logical keywords
+    resolve against the ITEM's own `direction` (an LTR child in an RTL column
+    anchors at its own start) and `start`/`end` against the CONTAINER's
+    writing-mode/direction; NEITHER follows the `wrap-reverse` flex permutation
+    (unlike `flex-start`/`flex-end`). A single `CrossAlignReference` enum
+    (FlexRelative / Container / Subject) on `ResolvedAlign*` selects the
+    per-item reversal — the item's own direction for `self-*`, the container's
+    (`isColumnRtl`) for `start`/`end`, the full flex-flow `isCrossAxisReversed`
+    for `flex-*` — so under `wrap-reverse` `align-items: start` / `self-start`
+    stay at the writing-mode cross-start while `flex-start` permutes. The
+    `safe` overflow fallback resolves SEPARATELY to the flex-flow start (§5.3),
+    independent of that natural anchor. Pinned by the `Column_rtl_*` +
+    `Row_wrap_reverse_*` tests. **Still
+    deferred**: all VERTICAL writing modes (`writing-mode` is not yet a
     registered property; `row` in vertical-rl swaps the main + cross axes onto
     the rotated block + inline directions).
   - Outer-main-size + auto-margins in `justify-content` free-space
@@ -2232,11 +2239,14 @@ flags the categories):
     `grid-template-areas` entry (the §8.4 implicit named area's PLACEMENT
     effect, achieved through the line map).
 - **Missing** —
-  - **`span <custom-ident>` on the START edge / an auto start** (e.g.
-    `grid-row-start: span foo`, or `grid-row: auto / span foo`) — the span
-    count depends on where auto-placement lands the opposite edge, so it
+  - **`span <custom-ident>` on the START edge with an AUTO / indefinite end**
+    (e.g. `grid-row-start: span foo`, or `grid-row: auto / span foo`) — the
+    span count depends on where auto-placement lands the opposite edge, so it
     needs the auto-placement span algorithm; still falls back to auto with
-    `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`.
+    `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`. (SHIPPED — the START-edge span
+    with a DEFINITE end, e.g. `grid-row: span foo / 5`, now spans BACKWARD from
+    the end to the Nth `foo` line before it via `ResolveSpanToNamedLineBackward`
+    + `ResolveDefiniteLine`, the mirror of the end-edge span-by-name.)
   - **Negative-occurrence start-side implicit fill** (e.g. `foo -3` with too
     few `foo` lines) — the reverse (negative) direction's implicit lines (at
     0, −1, …) are not synthesised; an underflowing negative occurrence still

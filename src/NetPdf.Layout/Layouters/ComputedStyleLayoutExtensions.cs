@@ -992,7 +992,7 @@ internal static class ComputedStyleLayoutExtensions
     {
         var keyword = style.ReadKeywordOrDefault(PropertyId.AlignItems, defaultIndex: 0);
         var (value, mode) = DecodeSelfPositionGrid(keyword);
-        return new ResolvedAlignItems(value, mode, IsSelfRelativeSelfPosition(keyword));
+        return new ResolvedAlignItems(value, mode, DecodeCrossAlignReference(keyword));
     }
 
     /// <summary>Per Phase 3 Task 15 L9 post-PR-#69 architecture
@@ -1058,14 +1058,26 @@ internal static class ComputedStyleLayoutExtensions
         _ => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // unknown → safe default
     };
 
-    /// <summary>PR #215 review [P2] — <see langword="true"/> when the shared &lt;self-position&gt;
-    /// grid keyword is one of the SELF-relative forms (<c>self-start</c> / <c>self-end</c>, bare or
-    /// safe / unsafe — indices 9, 10, 16, 17, 23, 24). These resolve against the ITEM's own
-    /// <c>direction</c>, unlike <c>flex-start</c> / <c>flex-end</c> / <c>start</c> / <c>end</c> which
-    /// resolve against the container. The (value, mode) decode collapses them to FlexStart / FlexEnd;
-    /// this companion flag lets the layouter pick the item-direction reversal.</summary>
-    private static bool IsSelfRelativeSelfPosition(int keyword) =>
-        keyword is 9 or 10 or 16 or 17 or 23 or 24;
+    /// <summary>PR #217 review [P3] — classify the shared &lt;self-position&gt; grid keyword into the
+    /// cross-axis REFERENCE the alignment resolves against (CSS Box Alignment L3 §6.2). The (value,
+    /// mode) decode collapses every positional keyword to FlexStart / FlexEnd, so this companion
+    /// <see cref="CrossAlignReference"/> is what lets the layouter pick the correct reversal:
+    /// <list type="bullet">
+    ///   <item><see cref="CrossAlignReference.Subject"/> — <c>self-start</c> / <c>self-end</c> (bare or
+    ///   safe / unsafe — indices 9, 10, 16, 17, 23, 24): the ITEM's own <c>direction</c>.</item>
+    ///   <item><see cref="CrossAlignReference.Container"/> — <c>start</c> / <c>end</c> (bare or safe /
+    ///   unsafe — indices 7, 8, 14, 15, 21, 22): the alignment CONTAINER's writing-mode/direction,
+    ///   which <c>wrap-reverse</c> does NOT permute (unlike <c>flex-start</c> / <c>flex-end</c>).</item>
+    ///   <item><see cref="CrossAlignReference.FlexRelative"/> — everything else (incl.
+    ///   <c>flex-start</c> / <c>flex-end</c>): the flex-flow cross axis, which <c>wrap-reverse</c>
+    ///   DOES permute.</item>
+    /// </list>
+    /// A single enum (vs the former two mutually-exclusive booleans) makes the invalid
+    /// "both true" state unrepresentable.</summary>
+    private static CrossAlignReference DecodeCrossAlignReference(int keyword) =>
+        keyword is 9 or 10 or 16 or 17 or 23 or 24 ? CrossAlignReference.Subject
+        : keyword is 7 or 8 or 14 or 15 or 21 or 22 ? CrossAlignReference.Container
+        : CrossAlignReference.FlexRelative;
 
     /// <summary>Per Phase 3 Task 15 L9 — decode
     /// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
@@ -1111,7 +1123,7 @@ internal static class ComputedStyleLayoutExtensions
         }
         var (value, mode) = DecodeSelfPositionGrid(shifted);
         return new ResolvedAlignSelf(
-            AlignItemsValueToAlignSelfValue(value), mode, IsSelfRelativeSelfPosition(shifted));
+            AlignItemsValueToAlignSelfValue(value), mode, DecodeCrossAlignReference(shifted));
     }
 
     /// <summary>Per Phase 3 Task 15 L9 post-PR-#69 architecture rec —
@@ -1146,19 +1158,20 @@ internal static class ComputedStyleLayoutExtensions
         this ResolvedAlignSelf alignSelf,
         ResolvedAlignItems containerAlignItems)
     {
-        // PR #215 review [P2] — carry the item's own IsSelfRelative through (so a self-start /
-        // self-end align-self resolves against the item's direction); the Auto case inherits the
-        // container's value verbatim (incl. its IsSelfRelative, which is false for a container
-        // align-items since `self-*` on a container is invalid).
-        var s = alignSelf.IsSelfRelative;
+        // PR #215 review [P2] / #217 review [P3] — carry the item's own cross-axis REFERENCE through
+        // (so a self-start / self-end align-self resolves against the item's direction, a start / end
+        // against the container, etc.); the Auto case inherits the container's value verbatim (incl.
+        // its reference, which is FlexRelative for a container align-items since `self-*` on a
+        // container is invalid).
+        var r = alignSelf.Reference;
         return alignSelf.Value switch
         {
             AlignSelfValue.Auto => containerAlignItems,
-            AlignSelfValue.Stretch => new ResolvedAlignItems(AlignItemsValue.Stretch, alignSelf.Mode, s),
-            AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode, s),
-            AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode, s),
-            AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode, s),
-            AlignSelfValue.Baseline => new ResolvedAlignItems(AlignItemsValue.Baseline, alignSelf.Mode, s),
+            AlignSelfValue.Stretch => new ResolvedAlignItems(AlignItemsValue.Stretch, alignSelf.Mode, r),
+            AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode, r),
+            AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode, r),
+            AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode, r),
+            AlignSelfValue.Baseline => new ResolvedAlignItems(AlignItemsValue.Baseline, alignSelf.Mode, r),
             _ => containerAlignItems, // defensive — unknown self values fall back to container
         };
     }
@@ -1947,12 +1960,31 @@ internal enum AlignItemsValue : byte
 internal readonly record struct ResolvedAlignItems(
     AlignItemsValue Value,
     OverflowAlignmentMode Mode,
-    // PR #215 review [P2] — true for the `self-start` / `self-end` logical keywords (which
-    // resolve against the ITEM's own `direction`, not the container's) as opposed to
-    // `flex-start` / `flex-end` / `start` / `end` (container-relative). The keyword family
-    // is collapsed to FlexStart/FlexEnd for the placement math, but this flag is preserved so
-    // FlexLayouter can pick the item-direction reversal for the self-relative forms.
-    bool IsSelfRelative = false);
+    // PR #215 review [P2] / #217 review [P3] — the cross-axis REFERENCE this alignment resolves
+    // against. The keyword family is collapsed to FlexStart/FlexEnd for the placement math, but
+    // this companion enum is preserved so FlexLayouter can pick the correct reversal (the item's
+    // own direction for `self-*`, the container's for `start`/`end` — which `wrap-reverse` does
+    // NOT permute — or the flex-flow cross axis for `flex-*`). A single enum replaces the former
+    // pair of mutually-exclusive booleans, making the invalid "both set" state unrepresentable.
+    CrossAlignReference Reference = CrossAlignReference.FlexRelative);
+
+/// <summary>PR #217 review [P3] — the cross-axis REFERENCE a positional <c>align-items</c> /
+/// <c>align-self</c> value resolves against (CSS Box Alignment L3 §6.2). Distinguishes the three
+/// reversal families that all collapse to FlexStart / FlexEnd in <see cref="AlignItemsValue"/>.</summary>
+internal enum CrossAlignReference
+{
+    /// <summary><c>flex-start</c> / <c>flex-end</c> (and the non-positional values) — the flex-flow
+    /// cross axis, which <c>wrap-reverse</c> permutes.</summary>
+    FlexRelative = 0,
+
+    /// <summary><c>start</c> / <c>end</c> — the alignment CONTAINER's writing-mode/direction, which
+    /// <c>wrap-reverse</c> does NOT permute.</summary>
+    Container = 1,
+
+    /// <summary><c>self-start</c> / <c>self-end</c> — the alignment SUBJECT's (item's) own
+    /// writing-mode/direction.</summary>
+    Subject = 2,
+}
 
 /// <summary>Per Phase 3 Task 15 L9 — typed decode of
 /// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
@@ -2013,8 +2045,8 @@ internal enum AlignSelfValue : byte
 internal readonly record struct ResolvedAlignSelf(
     AlignSelfValue Value,
     OverflowAlignmentMode Mode,
-    // PR #215 review [P2] — see ResolvedAlignItems.IsSelfRelative.
-    bool IsSelfRelative = false);
+    // PR #215 review [P2] / #217 review [P3] — see ResolvedAlignItems.Reference.
+    CrossAlignReference Reference = CrossAlignReference.FlexRelative);
 
 /// <summary>Per Phase 3 Task 15 L7 — typed decode of
 /// <see cref="PropertyId.AlignContent"/> per CSS Box Alignment L3 §6 +

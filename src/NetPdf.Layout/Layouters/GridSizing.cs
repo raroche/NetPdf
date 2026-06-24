@@ -2904,6 +2904,78 @@ internal static class GridSizing
         return resolved;
     }
 
+    /// <summary>CSS Grid L1 §8.3 — resolve <c>span &lt;custom-ident&gt;</c> on the START edge of an item
+    /// with a DEFINITE end (e.g. <c>grid-row: span foo / 5</c>): the start spans BACKWARD from
+    /// <paramref name="fromLine"/> to the Nth line named <paramref name="ident"/> strictly BEFORE it (the
+    /// mirror of <see cref="ResolveSpanToNamedLine"/>).
+    ///
+    /// <para>Per §8.3's implicit-line assumption (Copilot review): when the definite end anchor lies in
+    /// the implicit lines PAST the explicit grid (<paramref name="fromLine"/> &gt;
+    /// <paramref name="explicitTrackCount"/> + 1 — e.g. a positive integer end, or a <c>foo N</c>
+    /// occurrence that overflowed forward), every implicit line between the explicit grid's end edge and
+    /// <paramref name="fromLine"/> is assumed named <paramref name="ident"/> and is counted FIRST
+    /// (descending), so the start doesn't skip the implicit region and jump back to an earlier explicit
+    /// occurrence (which would over-span). The remaining count is taken from explicit lines named exactly
+    /// <paramref name="ident"/> within the grid.</para>
+    ///
+    /// <para>A start-side shortfall (not enough lines before the end — which would need the implicit
+    /// lines BEFORE the explicit grid, line 0/−1/…) stays deferred (returns
+    /// <see langword="null"/>).</para></summary>
+    private static int? ResolveSpanToNamedLineBackward(
+        string ident, int fromLine, int count, Dictionary<string, List<int>> namedLines,
+        int explicitTrackCount)
+    {
+        var n = Math.Max(1, count);
+        var seen = 0;
+        // (a) §8.3 implicit-line assumption — implicit lines between the explicit grid's end edge and an
+        // implicit `fromLine` are assumed named `ident`. The first such line is `fromLine - 1`; count
+        // down to (but not including) the last explicit line. No-op when fromLine is within the grid, so
+        // a `span foo / 5` on a grid taller than line 5 is byte-identical to the explicit-only scan.
+        var lastExplicitLine = explicitTrackCount + 1;
+        for (var line = fromLine - 1; line > lastExplicitLine; line--)
+        {
+            if (++seen == n) return line;
+        }
+        // (b) explicit lines named exactly `ident`, strictly BEFORE fromLine (within the explicit grid).
+        if (namedLines.TryGetValue(ident, out var lines))
+        {
+            // `lines` is sorted ascending — scan DESCENDING for the n-th line strictly less than fromLine.
+            for (var i = lines.Count - 1; i >= 0; i--)
+            {
+                if (lines[i] >= fromLine) continue;
+                if (++seen == n) return lines[i];
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Resolve a grid line value to a single DEFINITE (positive 1-based) line number, when one
+    /// exists: a positive integer line, an <c>&lt;integer&gt; &lt;custom-ident&gt;</c> occurrence, or a
+    /// bare <c>&lt;custom-ident&gt;</c> (tries <c>-end</c> then bare). Returns <see langword="null"/> for
+    /// <c>auto</c>, a <c>span</c>, or an unresolved name — i.e. when the edge is NOT a single definite
+    /// line. Used to find the anchor for a backward start-side span-by-name.</summary>
+    private static int? ResolveDefiniteLine(
+        GridLineValue line, Dictionary<string, List<int>> namedLines, int explicitTrackCount)
+    {
+        if (line.Kind == GridLineKind.LineNumber && line.NamedLine is null)
+        {
+            // PR #217 review [P1] — a POSITIVE integer is the line as-is; a NEGATIVE integer counts
+            // back from the explicit grid's END edge (§8.3), normalized the same way as a negative
+            // integer START: `-1` → `explicitTrackCount + 1` (the last explicit line). Previously only
+            // positive ends were accepted, so `grid-row: span foo / -1` fell back to auto. Line 0 is
+            // invalid. (A negative that normalizes ≤ 0 is an implicit line before the grid — still a
+            // definite anchor; the backward span from it then defers if it underflows.)
+            if (line.LineNumber > 0) return line.LineNumber;
+            if (line.LineNumber < 0) return explicitTrackCount + 2 + line.LineNumber;
+            return null;
+        }
+        if (line.Kind == GridLineKind.LineNumber && line.NamedLine is not null)
+            return ResolveNamedLineOccurrence(line.NamedLine, line.LineNumber, namedLines, explicitTrackCount);
+        if (line.Kind == GridLineKind.NamedLine && line.NamedLine is not null)
+            return ResolveEndLineFromIdent(line.NamedLine, namedLines);
+        return null;
+    }
+
     /// <summary>CSS Grid L1 §8.3 — resolve the END edge of a DEFINITE-start item for the named/occurrence
     /// / span-by-name forms (<c>span foo</c>, <c>foo 2</c>) to an absolute end line number, given the
     /// resolved <paramref name="startLine"/>. Returns <see langword="null"/> for the plain
@@ -2939,13 +3011,38 @@ internal static class GridSizing
         {
             if (start.NamedLine is not null)
             {
-                // `span <custom-ident>` on the START edge (or an auto start) needs the auto-placement
-                // span algorithm to count the lines, so it remains approximated — the END-edge span-by-
-                // name (with a definite start) IS resolved. See grid-implicit-named-area-and-occurrence-
-                // syntax-deferral (narrowed residual).
+                // `span <custom-ident>` on the START edge. When the END is a DEFINITE line (a positive
+                // integer, an `<integer> <custom-ident>` occurrence, or a bare `<custom-ident>`), the
+                // start spans BACKWARD from it to the Nth `foo` line before it — the mirror of the
+                // resolved END-edge span-by-name (`grid-row: span foo / 5`). An AUTO / span / indefinite
+                // end still needs the auto-placement span algorithm, so it falls back to auto.
+                var backwardAnchor = ResolveDefiniteLine(end, namedLines, explicitTrackCount);
+                if (backwardAnchor is int anchorLine)
+                {
+                    var backStart = ResolveSpanToNamedLineBackward(
+                        start.NamedLine, anchorLine, start.LineNumber, namedLines, explicitTrackCount);
+                    if (backStart is int startLineNum)
+                    {
+                        return SpanBetweenLines(startLineNum, anchorLine);
+                    }
+                    // PR #217 review [P2] — the end IS a definite line but the backward named-line
+                    // search underflowed. Distinguish an UNRESOLVED name from a start-side shortfall
+                    // (the previous single message wrongly blamed an "auto / indefinite end" here).
+                    return EmitPlacementApproximatedAndFallToAuto(ctx,
+                        namedLines.ContainsKey(start.NamedLine)
+                            ? $"`span {start.NamedLine}` on the start edge — fewer than {Math.Max(1, start.LineNumber)} "
+                              + $"'{start.NamedLine}' line(s) exist before the definite end line {anchorLine}; "
+                              + "spanning further back needs the implicit lines BEFORE the explicit grid "
+                              + "(see grid-implicit-named-area-and-occurrence-syntax-deferral)"
+                            : $"`span {start.NamedLine}` on the start edge — no line named "
+                              + $"'{start.NamedLine}' before the definite end (see "
+                              + "grid-implicit-named-area-and-occurrence-syntax-deferral)");
+                }
+                // The end is auto / a span / an unresolvable indefinite line, so the backward anchor is
+                // unknown — the start needs the auto-placement span algorithm.
                 return EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "`span <custom-ident>` on the start edge (see grid-implicit-"
-                    + "named-area-and-occurrence-syntax-deferral)");
+                    "`span <custom-ident>` on the start edge with an auto / indefinite end (see "
+                    + "grid-implicit-named-area-and-occurrence-syntax-deferral)");
             }
             // Per §8.3.1 — `span 0` normalizes to `span 1`.
             var span = Math.Max(1, start.LineNumber);

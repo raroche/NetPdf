@@ -1447,24 +1447,40 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
                 else
                 {
-                    // The cross-axis anchor reversal: `flex-start`/`flex-end`/`start`/`end` resolve
-                    // against the CONTAINER (`isCrossAxisReversed` = isWrapReverse ^ isColumnRtl). PR
-                    // #215 review [P2] — `self-start`/`self-end` instead resolve against the ITEM's own
-                    // `direction`, so a column container's RTL flip uses the item's direction, not the
-                    // container's (an LTR child with `align-self: self-start` in an RTL column stays
-                    // left). The wrap-reverse component is preserved for both; for an item whose
-                    // direction matches the container this is identical to `isCrossAxisReversed`
-                    // (byte-identical — only a mixed-direction self-* item diverges).
-                    var anchorReversed = effectiveAlign.IsSelfRelative
-                        ? isWrapReverse ^ (isColumn && item.Style.IsRtl())
-                        : isCrossAxisReversed;
+                    // The NATURAL cross-axis anchor reversal, by keyword family (CSS Box Alignment
+                    // L3 §6.2):
+                    //   • `flex-start`/`flex-end` (FlexRelative) — the flex-flow cross-start, which
+                    //     `wrap-reverse` permutes → `isCrossAxisReversed` (isWrapReverse ^ isColumnRtl).
+                    //   • `start`/`end` (Container) — the CONTAINER's writing-mode/direction, which
+                    //     `wrap-reverse` does NOT permute → `isColumnRtl` only. Coincides with
+                    //     flex-start except under wrap-reverse, where they correctly diverge.
+                    //   • `self-start`/`self-end` (Subject) — the ITEM's OWN writing-mode/direction;
+                    //     `wrap-reverse` does NOT permute these either (PR #217 review [P1]). A ROW
+                    //     container's cross axis is the block axis (direction-independent); a COLUMN
+                    //     container's cross axis is the inline axis, so an LTR child in an RTL column
+                    //     stays at its own start → `isColumn && item.Style.IsRtl()` (NO wrap-reverse).
+                    // For an item matching the container's direction with no wrap-reverse these all
+                    // coincide → byte-identical; only wrap-reverse `start`/`end` and column-rtl
+                    // `self-*` diverge.
+                    var naturalReversed = effectiveAlign.Reference switch
+                    {
+                        CrossAlignReference.Container => isColumnRtl,
+                        CrossAlignReference.Subject => isColumn && item.Style.IsRtl(),
+                        _ => isCrossAxisReversed,
+                    };
+                    // PR #217 review [P2] — the `safe` overflow fallback is INDEPENDENT of the natural
+                    // anchor: per CSS Box Alignment L3 §5.3 an overflowing `safe` subject falls back to
+                    // the flex-flow start (flex-start), which IS the line's permuted cross-start under
+                    // `wrap-reverse`. So the helper takes the flex-flow `isCrossAxisReversed` for that
+                    // fallback separately from the (possibly container-/item-logical) natural orientation.
                     (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                         ComputeAlignItemsPlacement(
                             effectiveAlign.Value, effectiveAlign.Mode,
                             lineCrossExtent, itemCrossSize,
                             itemIsCrossSizeAuto,
                             lineCrossCursor,
-                            isCrossAxisReversed: anchorReversed);
+                            naturalCrossReversed: naturalReversed,
+                            safeFallbackReversed: isCrossAxisReversed);
                 }
 
                 // Per Phase 3 Task 15 L5 — for reversed directions,
@@ -2777,7 +2793,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             double itemCrossSize,
             bool itemIsCrossSizeAuto,
             double contentCrossOffset,
-            bool isCrossAxisReversed = false)
+            // PR #217 review [P2] — two SEPARATE orientations. `naturalCrossReversed` is the keyword's
+            // own reference (flex-flow / container-logical / item-logical) and drives the natural
+            // positional placement; `safeFallbackReversed` is the flex-flow cross-start the `safe`
+            // overflow fallback anchors to (CSS Box Alignment L3 §5.3). They differ for the logical
+            // `start`/`end`/`self-*` keywords under `wrap-reverse` / column-rtl.
+            bool naturalCrossReversed = false,
+            bool safeFallbackReversed = false)
     {
         // Stretch — auto-cross-sized items get resized to fill the
         // container's cross extent; explicitly-sized items keep their
@@ -2809,7 +2831,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // (`contentCrossOffset`) stays the same — only the FlexStart
         // / FlexEnd anchor flips.
         var crossSpace = containerCrossSize - itemCrossSize;
-        var natural = (value, isCrossAxisReversed) switch
+        var natural = (value, naturalCrossReversed) switch
         {
             (AlignItemsValue.FlexEnd, false) => contentCrossOffset + crossSpace,
             (AlignItemsValue.FlexEnd, true) => contentCrossOffset,
@@ -2832,15 +2854,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // negative crossSpace falls through to the natural return.
         if (crossSpace < 0)
         {
-            // Explicit `safe` modifier — always fall back to safe-start
-            // regardless of value. Per Phase 3 Task 15 L11 post-PR-#71
-            // F#2: safe-start under wrap-reverse is the line's NEW
-            // cross-start (= line bottom = contentCrossOffset +
-            // crossSpace, which is negative). Items pack at the new
-            // cross-start edge + overflow off the new cross-end edge.
+            // Explicit `safe` modifier — always fall back to the flex-flow start
+            // regardless of the keyword's natural reference (PR #217 review [P2]).
+            // Per Phase 3 Task 15 L11 post-PR-#71 F#2: that start under wrap-reverse
+            // is the line's NEW cross-start (= line bottom = contentCrossOffset +
+            // crossSpace, which is negative). Items pack at the new cross-start edge
+            // + overflow off the new cross-end edge. `safeFallbackReversed` is the
+            // flex-flow `isCrossAxisReversed` (NOT the container-/item-logical
+            // natural orientation), so a `safe start` / `safe self-start` that
+            // overflows still falls back to the flex cross-start.
             if (mode == OverflowAlignmentMode.Safe)
             {
-                var safeStartOffset = isCrossAxisReversed
+                var safeStartOffset = safeFallbackReversed
                     ? contentCrossOffset + crossSpace
                     : contentCrossOffset;
                 return (safeStartOffset, itemCrossSize);

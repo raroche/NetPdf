@@ -8255,8 +8255,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             {
                 // `inline-only-block-line-splitting` — the block is taller than a WHOLE page
                 // (it's alone at the top + still doesn't fit). When its lines are sliceable
-                // (text-only, chrome-free, multi-line), split them across pages instead of
-                // force-overflowing: emit the lines that fit here + resume the tail next page.
+                // (multi-line, no unsliceable decoration — text, inline atomics, and block-axis
+                // border + padding all slice), split them across pages instead of force-overflowing:
+                // emit the lines that fit here + resume the tail next page.
                 if (canSplitLines)
                 {
                     return EmitInlineOnlyBlockSplitting(
@@ -8272,9 +8273,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
 
                 // Forced overflow — the inline content is taller
-                // than the fragmentainer AND not sliceable (a single line, atomics, or
-                // block-axis chrome). Same loud-fail semantics
-                // as the in-flow path: emit anyway + diagnostic.
+                // than the fragmentainer AND not sliceable (a single line, or an unsliceable
+                // decoration — gradient / background-image / box-shadow / border-radius / outline).
+                // Same loud-fail semantics as the in-flow path: emit anyway + diagnostic.
                 var diagSink = layout.Diagnostics ?? _diagnostics;
                 OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
                     PaginateDiagnosticCodes.PaginationForcedOverflow001,
@@ -8462,7 +8463,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     // Lines[] sliced to the lines that fit + a fresh BlockOffset; an InlineOnlyLineSplit-
     // Continuation (carried in BlockContinuation.LayouterState) resumes the tail next page.
 
-    /// <summary>Tolerance (px) for the line-split fit accumulation + the chrome-free gate.</summary>
+    /// <summary>Tolerance (px) for the line-split fit accumulation + the block-end-chrome reservation.</summary>
     private const double InlineOnlyLineSplitEpsilonPx = 0.01;
 
     /// <summary>One wrapped line's block-axis height, matching the painter EXACTLY: the
@@ -8549,29 +8550,42 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <summary>box-decoration-break: slice — a FINAL slice (all remaining lines fit) must also fit its
-    /// block-END chrome (<paramref name="endChromePx"/> = block-end border + padding) on the page. When
-    /// the lines fit but the lines + that chrome don't, push the last line (and so the chrome) to the next
-    /// page, where it becomes that page's final slice; keep at least one line here, so a single line +
-    /// chrome that can't fit on a whole page still force-overflows for forward progress (PR #220 review
-    /// [P1]). A NON-final slice carries no block-end chrome, so it is returned unchanged.</summary>
-    private static (int Fit, int EndLine) ReserveFinalSliceEndPadding(
+    /// block-END chrome (<paramref name="endChromePx"/> = block-end border + padding) on the page. When the
+    /// lines fit but the lines + that chrome don't, pull lines back here so the chrome moves with them to a
+    /// new final page. CSS Fragmentation L3 §4.2 widows: pull back at least <paramref name="widows"/> lines
+    /// so the new final page keeps &gt;= widows (the old single-line pull-back could strand 1 line on the
+    /// final page and violate widows — PR #221 review [P1]); bound by <paramref name="orphans"/> (keep
+    /// &gt;= orphans on THIS page, which wins over widows when the page can't hold both), and always keep
+    /// &gt;= 1 line here for forward progress — so a single line + chrome that can't fit a whole page still
+    /// force-overflows. A NON-final slice carries no block-end chrome, so it is returned unchanged.</summary>
+    private static (int Fit, int EndLine) ReserveFinalSliceEndChrome(
         InlineOnlyBlockComputation comp, int startLine, int endLine, int total,
-        int fit, double availableBlockPx, double endChromePx)
+        int fit, double availableBlockPx, double endChromePx, int orphans, int widows)
     {
         if (endLine >= total && endChromePx > InlineOnlyLineSplitEpsilonPx && fit > 1
             && SumInlineOnlyLineHeights(comp, startLine, endLine, total) + endChromePx
                 > availableBlockPx + InlineOnlyLineSplitEpsilonPx)
         {
-            fit -= 1;
+            // Lines stay HERE; the rest (>= widows when the page can hold them) + the chrome go to a new
+            // final page. Keep >= orphans here (orphans bounds the widows pull-back per §4.2), and always
+            // >= 1 here (and so push >= 1) for forward progress.
+            var minKeepHere = System.Math.Min(System.Math.Max(1, orphans), fit - 1);  // >= orphans, leave >= 1 to push
+            var keepHere = fit - System.Math.Max(1, widows);                          // push >= widows
+            if (keepHere < minKeepHere) keepHere = minKeepHere;                        // orphans bound wins over widows
+            if (keepHere < 1) keepHere = 1;
+            if (keepHere > fit - 1) keepHere = fit - 1;                                // always push >= 1
+            fit = keepHere;
             endLine = startLine + fit;
         }
         return (fit, endLine);
     }
 
-    /// <summary>Emits lines <c>[startLine, endLine)</c> of a (text-only, chrome-free)
-    /// inline-only block as ONE <see cref="BoxFragment"/> at the page-relative border-box top,
-    /// reusing <see cref="EmitInlineOnlyBlockFragment"/> via a sliced computation (a sub-array
-    /// of <c>Lines</c> + matching per-line heights + the slice's content extent).</summary>
+    /// <summary>Emits lines <c>[startLine, endLine)</c> of an inline-only block as ONE
+    /// <see cref="BoxFragment"/> at the page-relative border-box top, reusing
+    /// <see cref="EmitInlineOnlyBlockFragment"/> via a sliced computation (a sub-array of <c>Lines</c> +
+    /// matching per-line heights + the slice's content extent). The block-axis chrome (border + padding)
+    /// is distributed across the slices per box-decoration-break: slice — block-start on the first, block-end
+    /// on the last — and a NON-final slice fills to <paramref name="fillToBlockExtent"/> (the page edge).</summary>
     private void EmitInlineOnlyBlockSlice(
         Box block, InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp,
         int startLine, int endLine, double inlineOffsetFromContentOrigin, double blockBorderBoxTop,
@@ -8738,8 +8752,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var available = remaining - topChrome;                        // room left for content after top chrome
         var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
         var endLine = System.Math.Min(startLine + fit, total);
-        (fit, endLine) = ReserveFinalSliceEndPadding(
-            comp, startLine, endLine, total, fit, available, endChrome);
+        (fit, endLine) = ReserveFinalSliceEndChrome(
+            comp, startLine, endLine, total, fit, available, endChrome, orphans, widows);
 
         var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
         var isFinalSlice = endLine >= total;
@@ -8832,7 +8846,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var comp = computation.Value;
         var marginStartAdvance = startLine == 0 ? metrics.MarginBlockStart : 0;
 
-        // Not sliceable (single line, atomics, or block-axis chrome) OR an unpaginated
+        // Not sliceable (single line or an unsliceable decoration) OR an unpaginated
         // fragmentainer → emit the whole block at the border-box top (the pre-existing
         // force-overflow path; `startLine` is 0 here because a split only ever resumes a
         // sliceable block).
@@ -8860,8 +8874,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var available = remaining - topChrome;                        // room left for content after top chrome
         var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
         var endLine = System.Math.Min(startLine + fit, total);
-        (fit, endLine) = ReserveFinalSliceEndPadding(
-            comp, startLine, endLine, total, fit, available, endChrome);
+        (fit, endLine) = ReserveFinalSliceEndChrome(
+            comp, startLine, endLine, total, fit, available, endChrome, orphans, widows);
         var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
         var isFinalSlice = endLine >= total;
         EmitInlineOnlyBlockSlice(

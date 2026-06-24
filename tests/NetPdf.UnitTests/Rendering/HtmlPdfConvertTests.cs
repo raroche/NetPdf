@@ -707,6 +707,33 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Final_slice_end_chrome_reservation_still_honors_widows()
+    {
+        // PR #221 review [P1] — when a final slice's lines fit but its block-end chrome (here a large
+        // padding-bottom) does NOT, lines pull back to a new final page. The OLD reservation pushed exactly
+        // ONE line, which could strand a single line on the final page and violate `widows`. The pull-back
+        // now moves at least `widows` lines (bounded by `orphans` on the page it leaves), so the final page
+        // keeps >= widows. line-height:30px on the 931px A4 content block makes the split deterministic; the
+        // 780px padding-bottom can't fit with the remaining lines (→ triggers the reservation) while
+        // widows(3)·30 + 780 = 870px <= 931px (→ the 3 widows lines DO fit on the final page).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<p style=\"margin:0;line-height:30px;padding-bottom:780px;widows:3;orphans:2\">");
+        for (var i = 0; i < 39; i++) sb.Append('W').Append(i).Append("<br>");
+        sb.Append("W39</p></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var perPage = TdCountsPerPage(Latin1(result.Pdf));
+
+        Assert.True(result.PageCount >= 2, $"the padded paragraph must split; got {result.PageCount}.");
+        Assert.Equal(40, TdCount(Latin1(result.Pdf)));   // no line lost
+        Assert.True(perPage[^1] >= 3,
+            $"widows:3 must keep >= 3 lines on the final page after the end-chrome pull-back (the old "
+            + $"single-line pull-back left 1); got [{string.Join(",", perPage)}].");
+    }
+
+    [Fact]
     public void Nested_div_wrapped_tall_paragraph_splits_its_lines_across_pages()
     {
         // The PRIMARY line-split path is the recursive wrapper (EmitInlineOnlyBlockInRecursion-
@@ -732,8 +759,9 @@ public sealed class HtmlPdfConvertTests
         // inline-only-block-line-splitting (box-decoration-break: slice) — a tall paragraph WITH
         // block-axis padding now SLICES its lines across pages (the top padding on the first slice, the
         // bottom on the last) instead of force-overflowing on the whole-block fallback. Every line still
-        // emits, no overflow is truncated, and it paginates like the chrome-free version. (A block-axis
-        // BORDER still force-overflows — the cut-edge border painting is the remaining residual.)
+        // emits, no overflow is truncated, and it paginates like the chrome-free version. (A square
+        // block-axis BORDER slices the same way; only a non-uniform decoration — gradient / bg-image /
+        // box-shadow / border-radius / outline — still force-overflows.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         string Doc(string pStyle)
         {

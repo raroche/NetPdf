@@ -413,6 +413,28 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_inline_block_bearing_paragraph_splits_its_lines_across_pages()
+    {
+        // inline-only-block-line-splitting (atomics) — a single inline-only block mixing text with
+        // inline-block atomics, taller than a page, now SLICES its lines across pages (re-basing each
+        // atomic to the page its line lands on) instead of force-overflowing the whole block. Every
+        // inline-block background renders EXACTLY ONCE across the pages — no atomic lost or duplicated.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><div style=\"width:30px\">");
+        for (var i = 0; i < 150; i++)
+            sb.Append("x <span style=\"display:inline-block;width:8px;height:8px;background-color:#3366cc\"></span> ");
+        sb.Append("</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var fills = CountOccurrences(Latin1(result.Pdf), " re f");
+
+        Assert.True(result.PageCount >= 2,
+            $"the atomic-bearing block must split its lines across pages; got {result.PageCount} page(s).");
+        Assert.Equal(150, fills);   // every inline-block background, once — no atomic lost / duplicated
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
     public void Single_tall_paragraph_line_split_honors_widows()
     {
         // CSS Fragmentation L3 §4.2 — the LAST page of a split paragraph keeps at least `widows`

@@ -8428,9 +8428,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// (a documented residual of `inline-only-block-line-splitting`).</summary>
     private static bool CanSplitInlineOnlyLines(
         InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp)
+        // inline-only-block-line-splitting — text AND inline-atomic (inline-block / `<img>`) content
+        // slices: EmitInlineOnlyBlockSlice re-bases the atomic placements to each slice (an atomic never
+        // crosses a line, and lines don't split, so it never straddles a slice boundary). Block-axis
+        // CHROME still gates the split (box-decoration-break:slice on the cut edges is the remaining
+        // residual — it needs partial border/padding painting).
         => comp.InlineResult.Lines.Length > 1
-            && comp.AtomicPlacements is null or { Count: 0 }
-            && comp.InlineBlockContents is null or { Count: 0 }
             && (metrics.BorderBlockStart + metrics.PaddingBlockStart
                 + metrics.BorderBlockEnd + metrics.PaddingBlockEnd) < InlineOnlyLineSplitEpsilonPx;
 
@@ -8515,13 +8518,50 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
         var slicedContent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
 
+        // inline-only-block-line-splitting (atomics) — slice the per-line baselines like the heights,
+        // and filter the inline-atomic placements to the lines in THIS slice, re-basing each to the
+        // slice's content origin (original line `startLine` becomes block-offset 0). The atomic's own
+        // positioned fragment then paints on the page its line landed on.
+        double[]? slicedBaselines = null;
+        if (comp.PerLineBaselineTopPx is { } pb)
+        {
+            slicedBaselines = new double[endLine - startLine];
+            for (var i = 0; i < slicedBaselines.Length; i++) slicedBaselines[i] = pb[startLine + i];
+        }
+        var slicedPlacements = comp.AtomicPlacements;
+        var slicedContents = comp.InlineBlockContents;
+        if (comp.AtomicPlacements is { Count: > 0 } allPlacements)
+        {
+            var sliceStartTop = SumInlineOnlyLineHeights(comp, 0, startLine, total);
+            var sliceEndTop = sliceStartTop + slicedContent;
+            var kept = new System.Collections.Generic.List<InlineAtomicPlacement>();
+            System.Collections.Generic.Dictionary<Box, InlineAtomicContent>? keptContents = null;
+            foreach (var p in allPlacements)
+            {
+                // The placement's block offset is its line's top within the whole block's content; keep
+                // it iff that line is in [startLine, endLine).
+                if (p.ContentBlockOffsetPx < sliceStartTop - InlineOnlyLineSplitEpsilonPx
+                    || p.ContentBlockOffsetPx >= sliceEndTop - InlineOnlyLineSplitEpsilonPx)
+                    continue;
+                kept.Add(p with { ContentBlockOffsetPx = p.ContentBlockOffsetPx - sliceStartTop });
+                if (comp.InlineBlockContents is { } all && all.TryGetValue(p.Box, out var content))
+                    (keptContents ??= new System.Collections.Generic.Dictionary<Box, InlineAtomicContent>())[p.Box] = content;
+            }
+            slicedPlacements = kept;
+            slicedContents = keptContents;
+        }
+
         var slicedComp = comp with
         {
             InlineResult = slicedInline,
-            // Chrome is ~0 (CanSplitInlineOnlyLines), so the border box == the content extent.
+            // box-decoration-break:slice chrome is the remaining residual (CanSplitInlineOnlyLines gates
+            // block-axis chrome out), so the slice's border box == its content extent.
             BorderBoxBlockSize = slicedContent,
             ContentBlockSize = slicedContent,
             PerLineHeightsPx = slicedHeights,
+            PerLineBaselineTopPx = slicedBaselines ?? comp.PerLineBaselineTopPx,
+            AtomicPlacements = slicedPlacements,
+            InlineBlockContents = slicedContents,
         };
         EmitInlineOnlyBlockFragment(
             block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop,

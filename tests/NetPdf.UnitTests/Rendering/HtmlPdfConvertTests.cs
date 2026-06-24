@@ -435,6 +435,35 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_padded_paragraph_splits_with_box_decoration_break_slice_padding()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a single inline-only block
+        // with block-axis PADDING, taller than a page, now SLICES its lines across pages instead of
+        // force-overflowing. The top padding sits above the content on the FIRST page only (so the first
+        // line is pushed down by it) and no line is lost. (A block-axis BORDER still force-overflows —
+        // the cut-edge border painting is the documented residual.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Html(string divStyle)
+        {
+            var b = new StringBuilder("<!DOCTYPE html><html><body><div style=\"" + divStyle + "\">");
+            for (var i = 0; i < 300; i++) b.Append('L').Append(i).Append("<br>");
+            b.Append("L300</div></body></html>");
+            return b.ToString();
+        }
+
+        var padded = HtmlPdf.ConvertDetailed(Html("margin:0;padding-top:30px;padding-bottom:30px"), opts);
+        var plain = HtmlPdf.ConvertDetailed(Html("margin:0"), opts);
+        var paddedPdf = Latin1(padded.Pdf);
+
+        Assert.True(padded.PageCount >= 2, $"the padded block must split its lines; got {padded.PageCount} page(s).");
+        Assert.Equal(301, TdCount(paddedPdf));   // every line, once — no loss / duplication
+        Assert.DoesNotContain(padded.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // box-decoration-break: slice — the first page's first line sits one top-padding lower than the
+        // un-padded block's. 30px = 22.5pt; PDF y is bottom-up, so the padded baseline is 22.5pt smaller.
+        Assert.Equal(FirstTd(Latin1(plain.Pdf)).Y - 22.5, FirstTd(paddedPdf).Y, precision: 1);
+    }
+
+    [Fact]
     public void Single_tall_paragraph_line_split_honors_widows()
     {
         // CSS Fragmentation L3 §4.2 — the LAST page of a split paragraph keeps at least `widows`
@@ -500,13 +529,13 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Padded_tall_paragraph_stays_on_the_whole_block_fallback_path()
+    public void Padded_tall_paragraph_now_slices_its_lines_across_pages()
     {
-        // The slice path is gated to CHROME-FREE blocks (CanSplitInlineOnlyLines): a tall paragraph
-        // WITH block-axis padding falls back to the whole-block force-overflow (slicing it would
-        // need box-decoration-break chrome arithmetic). It must NOT be lost — every line still
-        // emits — and it must NOT slice the way the chrome-free version does (it stays on fewer
-        // pages, force-overflowing rather than paginating cleanly).
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a tall paragraph WITH
+        // block-axis padding now SLICES its lines across pages (the top padding on the first slice, the
+        // bottom on the last) instead of force-overflowing on the whole-block fallback. Every line still
+        // emits, no overflow is truncated, and it paginates like the chrome-free version. (A block-axis
+        // BORDER still force-overflows — the cut-edge border painting is the remaining residual.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         string Doc(string pStyle)
         {
@@ -522,9 +551,9 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(100, TdCount(Latin1(plain.Pdf)));    // plain: all 100 lines present
         Assert.True(plain.PageCount >= 2,
             $"the chrome-free paragraph should slice across pages; got {plain.PageCount}.");
-        Assert.True(padded.PageCount < plain.PageCount,
-            $"the padded paragraph must stay on the whole-block fallback (fewer pages than the "
-            + $"sliced chrome-free version); padded={padded.PageCount}, plain={plain.PageCount}.");
+        Assert.True(padded.PageCount >= 2,
+            $"the padded paragraph must now slice across pages too; got {padded.PageCount}.");
+        Assert.DoesNotContain(padded.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
     }
 
     // Non-block pagination — regression lock-in (multi-page-driver.md, post-cycle-8 audit).

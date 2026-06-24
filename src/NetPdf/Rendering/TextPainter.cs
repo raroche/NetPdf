@@ -300,9 +300,14 @@ internal static class TextPainter
         var contentLeftPx = contentOriginLeftPx + fragment.InlineOffset
             + blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
             + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a NON-first slice's
+        // block-start border + padding is CUT (consumed by an earlier slice), so its content starts at
+        // the border-box top; the first slice / a whole block keeps the chrome inset (byte-identical).
         var contentTopPx = contentOriginTopPx + fragment.BlockOffset
-            + blockStyle.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
-            + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingTop);
+            + (fragment.SuppressBlockStartChrome
+                ? 0.0
+                : blockStyle.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
+                  + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingTop));
 
         // text-align / justify is distributed within the CONTENT box, not the border box: the glyph
         // origin already starts at contentLeftPx (border + padding added), so the available inline size

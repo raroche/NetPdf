@@ -171,6 +171,11 @@ namespace NetPdf.Layout.Layouters;
 /// painter treats its last line as an interior (justifiable) line, NOT the paragraph end — under
 /// <c>text-align: justify</c> it justifies like any other line instead of staying start-aligned. Default
 /// false = the fragment IS the paragraph end (or a whole-block emit), byte-identical.</param>
+/// <param name="SuppressBlockStartChrome">inline-only-block-line-splitting (box-decoration-break: slice)
+/// — when true this fragment is a NON-first slice of a split block, so its block-start padding/border is
+/// CUT (the chrome was consumed by an earlier slice): the painter starts the content at the border-box
+/// top (skips the block-start border + padding it would otherwise inset by). Default false = the chrome
+/// is present (a first slice or a whole-block emit), byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -224,7 +229,12 @@ internal readonly record struct BoxFragment(
     // last line as the paragraph's last line: under text-align: justify it justifies that line like any
     // interior line instead of leaving it start-aligned. DEFAULT false = paragraph end / whole-block
     // emit, byte-identical.
-    bool LastLineContinues = false);
+    bool LastLineContinues = false,
+    // inline-only-block-line-splitting (box-decoration-break: slice) — when true this is a NON-first
+    // slice of a split block, so its block-start padding/border is CUT: the painter starts the content
+    // at the border-box top instead of insetting by the block-start border + padding. DEFAULT false =
+    // chrome present (first slice / whole block), byte-identical.
+    bool SuppressBlockStartChrome = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

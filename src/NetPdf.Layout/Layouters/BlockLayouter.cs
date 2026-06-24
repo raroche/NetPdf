@@ -8303,6 +8303,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <param name="lastLineContinues">inline-only-block-line-splitting — true when this fragment is a
     /// NON-final slice of a paragraph that resumes on a later page, so the painter justifies its last
     /// line (it is an interior line, not the paragraph end). Default false.</param>
+    /// <param name="suppressBlockStartChrome">inline-only-block-line-splitting (box-decoration-break:
+    /// slice) — true when this is a NON-first slice, so its block-start padding/border is CUT and the
+    /// painter starts the content at the border-box top. Default false (first slice / whole block).</param>
     private void EmitInlineOnlyBlockFragment(
         Box inlineOnlyBlock,
         InlineOnlyBlockMetrics metrics,
@@ -8311,7 +8314,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double blockOffsetFromContentOrigin,
         // inline-only-block-line-splitting — true when this fragment is a NON-final slice of a paragraph
         // that resumes on a later page, so the painter justifies its last line (it isn't the paragraph end).
-        bool lastLineContinues = false)
+        bool lastLineContinues = false,
+        // box-decoration-break: slice — true when this is a NON-first slice, so its block-start chrome is
+        // cut (the painter starts the content at the border-box top).
+        bool suppressBlockStartChrome = false)
     {
         // Border-box inline-start offset = caller-supplied offset +
         // marginInlineStart. The caller's offset is already in the
@@ -8347,7 +8353,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // text-align: justify-all — the LAST line justifies too (lifts the painter's last-line gate).
             JustifyLastLine: inlineOnlyBlock.Style.ReadInlineJustifyAll(),
             // inline-only-block-line-splitting — a non-final slice's last line is an interior line.
-            LastLineContinues: lastLineContinues));
+            LastLineContinues: lastLineContinues,
+            // box-decoration-break: slice — a non-first slice's block-start chrome is cut.
+            SuppressBlockStartChrome: suppressBlockStartChrome));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the
@@ -8428,14 +8436,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// (a documented residual of `inline-only-block-line-splitting`).</summary>
     private static bool CanSplitInlineOnlyLines(
         InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp)
-        // inline-only-block-line-splitting — text AND inline-atomic (inline-block / `<img>`) content
-        // slices: EmitInlineOnlyBlockSlice re-bases the atomic placements to each slice (an atomic never
-        // crosses a line, and lines don't split, so it never straddles a slice boundary). Block-axis
-        // CHROME still gates the split (box-decoration-break:slice on the cut edges is the remaining
-        // residual — it needs partial border/padding painting).
+        // inline-only-block-line-splitting — text, inline-atomic (inline-block / `<img>`), AND
+        // block-axis PADDING content slices. EmitInlineOnlyBlockSlice re-bases the atomic placements to
+        // each slice (an atomic never crosses a line, and lines don't split, so it never straddles a
+        // slice boundary) and applies box-decoration-break: slice to the block-axis padding (top padding
+        // only on the first slice, bottom only on the last). A block-axis BORDER still gates the split —
+        // suppressing a border on the cut edge needs per-edge / border-radius-aware painting (residual).
         => comp.InlineResult.Lines.Length > 1
-            && (metrics.BorderBlockStart + metrics.PaddingBlockStart
-                + metrics.BorderBlockEnd + metrics.PaddingBlockEnd) < InlineOnlyLineSplitEpsilonPx;
+            && (metrics.BorderBlockStart + metrics.BorderBlockEnd) < InlineOnlyLineSplitEpsilonPx;
 
     /// <summary>Number of lines from <paramref name="startLine"/> that fit in
     /// <paramref name="availableBlockPx"/>, honoring widows; always &gt;= 1 so pagination
@@ -8551,12 +8559,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             slicedContents = keptContents;
         }
 
+        // box-decoration-break: slice — the block-axis PADDING is distributed across the slices: the top
+        // padding sits on the FIRST slice (above its content) and the bottom padding on the LAST. A
+        // block-axis border still gates the split (CanSplitInlineOnlyLines), so only padding is added.
+        // The slice's border box grows by whichever padding it carries (so the fragment's background
+        // spans it); a non-first slice's block-start padding is CUT (suppressBlockStartChrome — the
+        // painter then starts the content at the border-box top).
+        var sliceTopPad = startLine == 0 ? metrics.PaddingBlockStart : 0.0;
+        var sliceBottomPad = endLine == total ? metrics.PaddingBlockEnd : 0.0;
         var slicedComp = comp with
         {
             InlineResult = slicedInline,
-            // box-decoration-break:slice chrome is the remaining residual (CanSplitInlineOnlyLines gates
-            // block-axis chrome out), so the slice's border box == its content extent.
-            BorderBoxBlockSize = slicedContent,
+            BorderBoxBlockSize = sliceTopPad + slicedContent + sliceBottomPad,
             ContentBlockSize = slicedContent,
             PerLineHeightsPx = slicedHeights,
             PerLineBaselineTopPx = slicedBaselines ?? comp.PerLineBaselineTopPx,
@@ -8567,7 +8581,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop,
             // A non-final slice (more lines remain) continues on a later page, so its last line is an
             // interior line (justifies) rather than the paragraph end.
-            lastLineContinues: endLine < total);
+            lastLineContinues: endLine < total,
+            // box-decoration-break: slice — a non-first slice's block-start padding is cut.
+            suppressBlockStartChrome: startLine > 0);
     }
 
     /// <summary>Fail-fast guard on a resumed line index (PR #211 Copilot review): the producer
@@ -8603,8 +8619,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ValidateInlineResumeLine(startLine, total);
         var orphans = block.Style.ReadOrphansOrDefault();
         var widows = block.Style.ReadWidowsOrDefault();
-        // Chrome is ~0 (gated), so the content top == the border-box top.
-        var available = fragmentainer.BlockSize - blockBorderBoxTop;
+        // box-decoration-break: slice — the FIRST slice's content sits below the block-start padding, so
+        // it has that much less room; a resume slice carries no block-start padding (it was on slice 0).
+        var topPad = startLine == 0 ? metrics.PaddingBlockStart : 0.0;
+        var available = fragmentainer.BlockSize - blockBorderBoxTop - topPad;
         var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
         var endLine = System.Math.Min(startLine + fit, total);
 
@@ -8614,11 +8632,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         if (endLine >= total)
         {
-            // The block finished on this page — advance past the slice + its margin-bottom so
-            // a following sibling flows below it.
+            // The block finished on this page — advance past the slice (its top padding if this is also
+            // the first slice + the lines + its block-end padding) + margin-bottom so a following sibling
+            // flows below it.
             var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
             fragmentainer.UsedBlockSize = System.Math.Max(0,
-                blockBorderBoxTop + sliceExtent + metrics.MarginBlockEnd);
+                blockBorderBoxTop + topPad + sliceExtent + metrics.PaddingBlockEnd + metrics.MarginBlockEnd);
             return null;
         }
 
@@ -8709,8 +8728,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ValidateInlineResumeLine(startLine, total);
         var orphans = inlineOnlyBlock.Style.ReadOrphansOrDefault();
         var widows = inlineOnlyBlock.Style.ReadWidowsOrDefault();
-        // Chrome is ~0 (gated), so the content top == the border-box top.
-        var available = fragmentainer.BlockSize - blockBorderBoxTop;
+        // box-decoration-break: slice — the FIRST slice reserves its block-start padding above the
+        // content; a resume slice has none (it was consumed by slice 0).
+        var topPad = startLine == 0 ? metrics.PaddingBlockStart : 0.0;
+        var available = fragmentainer.BlockSize - blockBorderBoxTop - topPad;
         var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
         var endLine = System.Math.Min(startLine + fit, total);
         EmitInlineOnlyBlockSlice(
@@ -8720,7 +8741,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         if (endLine >= total)
         {
-            marginBoxExtentAdvance = marginStartAdvance + sliceExtent + metrics.MarginBlockEnd;
+            // The final slice carries the block-end padding; the first slice (marginStartAdvance != 0 ⇔
+            // startLine == 0) also carries the block-start padding + margin.
+            marginBoxExtentAdvance =
+                marginStartAdvance + topPad + sliceExtent + metrics.PaddingBlockEnd + metrics.MarginBlockEnd;
             return null;
         }
         // Lines remain → resume the tail at `endLine` on the next page.

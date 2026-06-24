@@ -253,6 +253,18 @@ public sealed class FragmentationControlTests : System.IDisposable
     }
 
     [Fact]
+    public void Break_after_right_parity_survives_a_parityless_break_before_page_on_the_next_block()
+    {
+        // Copilot review (PR #218) — `ResolveChildBreakMetadata` must NOT drop the prior sibling's
+        // `break-after:right` parity just because the next block ALSO forces a (parity-less)
+        // `break-before:page`. Both target the same break; the non-Any parity (right = recto) wins, so
+        // "second" lands on a recto page: page 1 (recto) "first", page 2 (verso) is wrong → a blank is
+        // inserted → "second" on page 3 → 3 pages. If the parity were dropped it would be 2.
+        Assert.Equal(3, Pages(
+            "<div style='break-after:right'>first</div><div style='break-before:page'>second</div>"));
+    }
+
+    [Fact]
     public void Break_before_left_on_the_first_content_starts_the_document_on_a_verso_page()
     {
         // PR #218 review [P1 #4] — CSS Page §3.6: `break-before:left` on the FIRST content selects a

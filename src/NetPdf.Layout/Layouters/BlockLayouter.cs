@@ -7987,10 +7987,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             && prevSibling is not null && prevSibling.Style.ForcesPageBreakAfter();
         var force = childForces || prevForces;
         // CSS Page L3 §3.4.1 — the forced break's page-parity constraint (left / right / recto /
-        // verso). Prefer the child's break-before; fall to the prior sibling's break-after.
-        var parity = childForces ? child.Style.ForcedPageBreakParityBefore()
-            : prevForces ? prevSibling!.Style.ForcedPageBreakParityAfter()
-            : PageParity.Any;
+        // verso). Prefer a NON-Any parity from either side (Copilot review): a child's
+        // `break-before: page` (parity-less) must NOT drop the prior sibling's `break-after: left`
+        // parity; only when the child's own break-before carries a parity does it win.
+        var childParity = childForces ? child.Style.ForcedPageBreakParityBefore() : PageParity.Any;
+        var prevParity = prevForces ? prevSibling!.Style.ForcedPageBreakParityAfter() : PageParity.Any;
+        var parity = childParity != PageParity.Any ? childParity : prevParity;
         var avoid = container.Style.AvoidsBreakInside()
             || child.Style.AvoidsPageBreakBefore()
             || (prevSibling is not null && prevSibling.Style.AvoidsPageBreakAfter());

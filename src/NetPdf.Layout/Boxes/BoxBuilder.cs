@@ -1841,14 +1841,41 @@ internal static class BoxBuilder
     {
         if (IsAuthoredNonNone(rules, "background-image") || IsAuthoredNonNone(rules, "box-shadow"))
             return true;
-        if (style.ReadLengthPxOrZero(PropertyId.BorderTopLeftRadius) > 0.01
-            || style.ReadLengthPxOrZero(PropertyId.BorderTopRightRadius) > 0.01
-            || style.ReadLengthPxOrZero(PropertyId.BorderBottomRightRadius) > 0.01
-            || style.ReadLengthPxOrZero(PropertyId.BorderBottomLeftRadius) > 0.01)
+        if (HasAnyBorderRadius(style))
             return true;
         // An outline draws around the WHOLE box (outline-style not `none` (index 0) + a positive width).
         return style.ReadKeywordOrDefault(PropertyId.OutlineStyle, defaultIndex: 0) != 0
             && style.ReadLengthPxOrZero(PropertyId.OutlineWidth) > 0.01;
+    }
+
+    /// <summary>The eight <c>border-radius</c> computed slots in the order the painter's
+    /// <c>ReadCornerRadii</c> reads them — the four corner HORIZONTAL radii plus the four INTERNAL
+    /// VERTICAL (elliptical <c>Rx / Ry</c> slash-form) radii. Any positive one rounds the box.</summary>
+    private static readonly PropertyId[] BorderRadiusSlots =
+    [
+        PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
+        PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius,
+        PropertyId.BorderTopLeftRadiusY, PropertyId.BorderTopRightRadiusY,
+        PropertyId.BorderBottomRightRadiusY, PropertyId.BorderBottomLeftRadiusY,
+    ];
+
+    /// <summary>Whether ANY border-radius corner is positive — an absolute LENGTH or a PERCENTAGE, on
+    /// the horizontal OR the internal vertical (slash-form) longhand. The slice gate
+    /// (<see cref="HasUnsliceableSliceDecoration"/>) must match what the painter's <c>ReadCornerRadii</c>
+    /// actually rounds: it reads all eight slots and resolves percentages, so a <c>border-radius:50%</c> or
+    /// a slash-form <c>40px / 8px</c> DOES round the box and must gate the split — otherwise the rounded
+    /// ring repaints per slice AND the uniform-rounded-border path returns before the cut-edge suppression
+    /// runs (PR #221 review [P1]). The old gate checked only the four absolute horizontal longhands, so
+    /// percentage radii and the vertical slash-form longhands slipped through.</summary>
+    private static bool HasAnyBorderRadius(ComputedStyle style)
+    {
+        foreach (var id in BorderRadiusSlots)
+        {
+            var slot = style.Get(id);
+            if (slot.Tag == ComputedSlotTag.LengthPx && slot.AsLengthPx() > 0.01) return true;
+            if (slot.Tag == ComputedSlotTag.Percentage && slot.AsPercentage() > 0.0) return true;
+        }
+        return false;
     }
 
     /// <summary>Whether a cascade winner for <paramref name="property"/> is authored to a non-<c>none</c>

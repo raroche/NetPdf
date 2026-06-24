@@ -531,6 +531,36 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_a_percentage_border_radius_force_overflows_instead_of_slicing()
+    {
+        // PR #221 review [P1] — the unsliceable-decoration gate previously checked only the four ABSOLUTE
+        // horizontal border-radius longhands, so a PERCENTAGE radius (border-radius:50%) or a single-corner
+        // percentage slipped through: the block would slice + repaint a rounded ring per page fragment AND
+        // hit the uniform-rounded-border early-return that skips the cut-edge suppression. The painter's
+        // ReadCornerRadii reads all eight radius slots (horizontal + internal vertical) and resolves
+        // percentages, so the gate must too. A rounded box force-overflows like an absolute-length radius
+        // does (the documented inline-only-block-line-splitting decoration residual); the no-radius control
+        // still slices.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Doc(string style)
+        {
+            var sb = new StringBuilder($"<!DOCTYPE html><html><body><div style=\"margin:0;{style}\">");
+            for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+            return sb.Append("L200</div></body></html>").ToString();
+        }
+
+        var pctAll = HtmlPdf.ConvertDetailed(Doc("border-radius:50%;background-color:#eee"), opts);
+        var pctOne = HtmlPdf.ConvertDetailed(Doc("border-top-left-radius:40%;background-color:#eee"), opts);
+        var square = HtmlPdf.ConvertDetailed(Doc("background-color:#eee"), opts);
+
+        // The percentage-rounded blocks can't slice → force-overflow → truncation; the square control slices.
+        Assert.Contains(pctAll.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Contains(pctOne.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.DoesNotContain(square.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(201, TdCount(Latin1(square.Pdf)));   // the no-radius control: no line lost
+    }
+
+    [Fact]
     public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block

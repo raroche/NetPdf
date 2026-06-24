@@ -90,7 +90,9 @@ internal sealed class GridMeasurementCache
         MeasurePassCount++;
         var extent = NestedContentMeasurer.Measure(
             item, availInline, blockBudget, shaper, writingMode, isRtl,
-            cancellationToken, diagnostics).ContentBlockExtent;
+            cancellationToken, diagnostics,
+            // A row block-extent at a definite column width — % padding resolves real (PR #218 [P1 #2]).
+            purpose: MeasurePurpose.DefiniteWidthExtent).ContentBlockExtent;
         _blockExtent[key] = extent;
         return extent;
     }

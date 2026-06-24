@@ -784,6 +784,60 @@ public sealed class AbsoluteLayouterProductionTests
     // ancestors record their geometry today — see deferrals.md).
 
     // ================================================================
+    //  Speculative-measure cycle — out-of-flow descendants are SKIPPED
+    //  during intrinsic measures (they don't affect the measured extent)
+    //  but still EMIT in the real layout. Tests both halves.
+    // ================================================================
+
+    [Fact]
+    public async Task Speculative_measure_of_a_content_sized_flex_item_excludes_its_abspos_descendant()
+    {
+        // A `flex-basis: content` item is sized by a SPECULATIVE intrinsic measure. Out-of-flow
+        // (abspos) descendants don't contribute to a box's intrinsic inline width (CSS 2.2 §10.3.7),
+        // so the 400px abspos child does NOT widen the item — its main size stays the text content
+        // width (~14.4px, the two-glyph advance). The speculative-measure cycle now ALSO skips
+        // laying that abspos subtree out at all during the probe (less work + ~exponential guard for
+        // nested auto-sized boxes); the measured extent is unchanged → byte-identical.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; width:600px; }
+                .item { position:relative; flex-basis:content; flex-grow:0; flex-shrink:0; }
+                .abs { position:absolute; top:0; left:0; width:400px; height:20px; }
+            </style></head><body>
+            <div class="flex"><div class="item">ab<div class="abs"></div></div></div>
+            </body></html>
+            """;
+        var (sink, _) = await RenderAsync(html);
+        var item = FindByClass(sink, "item");
+        Assert.NotNull(item);
+        Assert.True(item!.Value.InlineSize < 100.0,
+            $"the flex-item content measure must exclude the 400px abspos child; item width was {item.Value.InlineSize}");
+    }
+
+    [Fact]
+    public async Task Speculative_measure_skips_abspos_in_an_auto_table_cell_but_row_layout_still_emits_it()
+    {
+        // A `table-layout: auto` column is sized by the cell's SPECULATIVE min/max-content measures,
+        // which now skip out-of-flow descendants (the abspos doesn't affect the column's content
+        // width). The row-layout cell measure — whose buffer IS the cell content that flushes into
+        // the final tree — is NOT suppressed, so the abspos child still renders. Guards that the
+        // suppression didn't over-reach into the emission path (the abspos would vanish if it had).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                table { width:120px; table-layout:auto; }
+                td { position:relative; padding:0; }
+                .abs { position:absolute; top:0; left:0; width:400px; height:20px; }
+            </style></head><body>
+            <table><tr><td>ab<div class="abs"></div></td></tr></table>
+            </body></html>
+            """;
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);                                       // emission preserved — abspos still renders
+        Assert.Equal(400.0, abs!.Value.InlineSize, precision: 3);  // its own size is unchanged
+    }
+
+    // ================================================================
     //  Pipeline driver — mirrors GridLayouterProductionTests.
     // ================================================================
 

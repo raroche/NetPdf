@@ -7,6 +7,57 @@ using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Paginate;
 
+/// <summary>PR #218 review [P2 #5] — the PURPOSE of a layout pass, carried transitively on
+/// <see cref="LayoutContext.MeasurePurpose"/> so a nested specialized layouter (flex / grid / table /
+/// multicol) inherits it instead of starting a fresh real-layout pass. It decouples two independent
+/// policies — whether out-of-flow (abspos / fixed) descendants emit, and how percentage padding /
+/// margins resolve — that a single boolean conflated.</summary>
+internal enum MeasurePurpose
+{
+    /// <summary>Real layout (the default + a buffered emission that FLUSHES into the final tree, e.g.
+    /// the flex item-content flush or the table cell content): out-of-flow descendants EMIT and
+    /// percentages resolve against the real containing size.</summary>
+    Layout = 0,
+
+    /// <summary>An intrinsic min/max-content CONTRIBUTION probe (the box's indefinite-basis width
+    /// measure): out-of-flow descendants are SKIPPED (they don't contribute to intrinsic inline size)
+    /// AND cyclic percentage padding / margins contribute as 0 (CSS Sizing §5.2.1 — the basis is
+    /// indefinite). The buffer is read for an extent and dropped.</summary>
+    IntrinsicContribution = 1,
+
+    /// <summary>A block-extent (height) measure at a DEFINITE width: out-of-flow descendants are
+    /// SKIPPED (they don't contribute to the §10.6.7 auto block size) but percentages resolve against
+    /// the definite width (real). The buffer is read for an extent and dropped.</summary>
+    DefiniteWidthExtent = 2,
+}
+
+/// <summary>Policy helpers for <see cref="MeasurePurpose"/> (PR #218 review [P2 #5]).</summary>
+internal static class MeasurePurposeExtensions
+{
+    /// <summary>Whether out-of-flow (abspos / fixed) descendants are SKIPPED — true for both
+    /// extent-only measures (their buffer is dropped, and out-of-flow doesn't affect the extent).</summary>
+    public static bool SuppressesOutOfFlowEmission(this MeasurePurpose p)
+        => p is MeasurePurpose.IntrinsicContribution or MeasurePurpose.DefiniteWidthExtent;
+
+    /// <summary>Whether cyclic percentage padding / margins resolve to 0 (CSS Sizing §5.2.1) — true
+    /// only for the indefinite-basis intrinsic contribution probe.</summary>
+    public static bool ZeroesCyclicPercentInsets(this MeasurePurpose p)
+        => p == MeasurePurpose.IntrinsicContribution;
+
+    /// <summary>The effective purpose of a NESTED measure requested with <paramref name="requested"/>
+    /// from a pass whose purpose is the receiver. An <see cref="MeasurePurpose.IntrinsicContribution"/>
+    /// parent ALWAYS wins (its subtree's basis is indefinite, so a nested "definite-width" measure is
+    /// actually at the 1e6/1px probe width — still indefinite — and a flush still contributes 0 cyclic
+    /// padding); otherwise a non-Layout request OVERRIDES (e.g. a definite-width height probe inside a
+    /// real layout), while a flush / real (<see cref="MeasurePurpose.Layout"/>) request INHERITS the
+    /// parent — so an item-content flush inside a dropped measure stays a dropped measure rather than
+    /// leaking real-layout out-of-flow emission / percentage persistence.</summary>
+    public static MeasurePurpose ForNested(this MeasurePurpose parent, MeasurePurpose requested)
+        => parent == MeasurePurpose.IntrinsicContribution ? MeasurePurpose.IntrinsicContribution
+            : requested != MeasurePurpose.Layout ? requested
+            : parent;
+}
+
 /// <summary>
 /// Per Phase 3 plan — the document-scoped, layouter-side mutable state
 /// passed by-ref through the layout call tree. Distinct from
@@ -62,6 +113,15 @@ internal ref struct LayoutContext
     /// by the layouter when a page break commits + a new fragmentainer
     /// is allocated.</summary>
     public FragmentainerContext Fragmentainer;
+
+    /// <summary>PR #218 review [P1 #1 / P2 #5] — the PURPOSE of the current layout pass. Carried
+    /// transitively (this is a by-ref <c>ref struct</c>, so it flows down the call tree) so a nested
+    /// specialized layouter inherits an intrinsic / definite-extent measure instead of starting a
+    /// fresh real-layout pass that would emit out-of-flow content or persist probe-derived percentage
+    /// insets onto the shared style. Set by the measure entry points (<c>NestedContentMeasurer</c>,
+    /// <c>TableLayouter.MeasureCellContent</c>); <see cref="MeasurePurpose.Layout"/> for the driver's
+    /// real page layout.</summary>
+    public MeasurePurpose MeasurePurpose;
 
     /// <summary>Per post-Task-7 review (recommendation P1 #2) —
     /// ambient pagination diagnostics sink. Pre-fix, the
@@ -132,6 +192,7 @@ internal ref struct LayoutContext
         WritingMode = WritingMode.HorizontalTb;
         IsRtl = false;
         Fragmentainer = fragmentainer;
+        MeasurePurpose = MeasurePurpose.Layout;
         Diagnostics = null;
         GridMeasureCache = null;
         TableMeasureCache = null;

@@ -382,6 +382,20 @@ internal static class DiagnosticCodes
         "LAYOUT-TABLE-INTRINSIC-MEASUREMENT-BUDGET-EXCEEDED-001";
 
     /// <summary>
+    /// Emitted by the nested content measurer when speculative content
+    /// measurement (the intrinsic min/max-content probes for content-sized
+    /// flex / grid / table boxes) nests deeper than its budget. Each
+    /// content-sized box can spawn its own probes, so unbounded nesting is
+    /// ~exponential; past the cap the innermost box measures as 0-extent
+    /// rather than DoS-amplifying. The cap is generous — no real document
+    /// nests content-sized boxes this deep, so it never fires in practice.
+    /// Defends against hostile HTML with pathologically deep content-sized
+    /// box trees. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutMeasureNestingBudgetExceeded001 =
+        "LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001";
+
+    /// <summary>
     /// Per Phase 3 Task 13 cycle 1 hardening Finding 5 — emitted by the
     /// table layouter when the break resolver returns
     /// <c>BreakAction.Rewind</c> at a table row boundary. Cycle 1 does

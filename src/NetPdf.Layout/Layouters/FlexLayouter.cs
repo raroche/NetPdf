@@ -233,6 +233,12 @@ namespace NetPdf.Layout.Layouters;
 internal sealed class FlexLayouter : ILayouter, IDisposable
 {
     private readonly Box _rootBox;
+
+    /// <summary>PR #218 review [P1 #1] — the pass purpose captured from the (transitive) layout
+    /// context at <see cref="AttemptLayout"/> entry, so a flex container measured intrinsically
+    /// propagates that to its item-content measures (the flush + the intrinsic-basis probe) instead
+    /// of letting them emit out-of-flow content / persist a probe-derived percentage inset.</summary>
+    private MeasurePurpose _measurePurpose;
     private readonly IBlockFragmentSink _sink;
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
@@ -545,6 +551,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         ArgumentNullException.ThrowIfNull(fragmentainer);
         ArgumentNullException.ThrowIfNull(resolver);
         cancellationToken.ThrowIfCancellationRequested();
+        _measurePurpose = layout.MeasurePurpose;
 
         if (!_emissionConfigured)
         {
@@ -3298,7 +3305,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             shaperResolver: _shaperResolver,
             writingMode: writingMode, isRtl: isRtl,
             cancellationToken: cancellationToken,
-            diagnostics: itemDiagnostics);
+            diagnostics: itemDiagnostics,
+            // This buffer FLUSHES into the final tree at the item's position (the flex item
+            // emission), so it requests a real Layout pass (out-of-flow descendants emit, % padding
+            // resolves real). PR #218 review [P1 #1] — but if the flex CONTAINER is itself being
+            // measured intrinsically, ForNested inherits that so the flush stays a measure too.
+            purpose: _measurePurpose.ForNested(MeasurePurpose.Layout));
 
     /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
     /// is content-determined (so content measurement should size it). True iff

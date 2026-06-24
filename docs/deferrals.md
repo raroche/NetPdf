@@ -123,14 +123,16 @@ grepping the ID).
   avoid` / `break-before:avoid` / `break-after:avoid` set the boundary `AvoidBreak` flag;
   `orphans` / `widows` are registered + drive `BreakResolver.OrphansRequired` /
   `WidowsRequired`. The residuals below don't block a criterion.
-- **Behavior** — Forced page breaks (`page` / `left` / `right` + legacy `always` / `left` /
-  `right`) work end-to-end. `left` / `right` currently behave like `page` (force a break)
-  WITHOUT the parity refinement (inserting a blank page so the box lands on a left/right
-  page). `recto` / `verso` / `all` are registered + handled by the reader AND now parsed —
-  AngleSharp.Css 1.0.0-beta.144 dropped those three values before the cascade, so a
-  `CssPreprocessor` value-gated recovery (`IsRectoVersoAllBreakValue`) now emits them
-  verbatim so they reach the cascade + force a page break (`recto` / `verso` still lack the
-  blank-page parity refinement, like `left` / `right`). The
+- **Behavior** — Forced page breaks (`page` / `left` / `right` / `recto` / `verso` + legacy
+  `always` / `left` / `right`) work end-to-end, INCLUDING the blank-page side PARITY: a forced
+  `left` / `right` / `recto` / `verso` break reads its parity (`ForcedPageBreakParityBefore/After`
+  → `BreakOpportunity.ForceParity`, carried out of the layouter via
+  `BlockLayouter.ForcedBreakParityForNextPage`), and the driver (`PdfRenderPipeline`) inserts a
+  blank `@page :blank` page when the resumed content would otherwise land on the wrong-parity page
+  (CSS Page L3 §3.4.1; LTR recto/right = odd page, verso/left = even). `recto` / `verso` / `all`
+  are registered + handled by the reader AND parsed — AngleSharp.Css 1.0.0-beta.144 dropped those
+  three values before the cascade, so a `CssPreprocessor` value-gated recovery
+  (`IsRectoVersoAllBreakValue`) now emits them verbatim so they reach the cascade. The
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
   production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
@@ -138,22 +140,26 @@ grepping the ID).
   paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
   the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
   default), so per-paragraph overrides aren't honored yet.
-- **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion);
-  (2) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;
-  (3) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
-  (Parsing for `recto` / `verso` / `all` SHIPPED — the `CssPreprocessor` recovery above.)
+- **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
+  bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting);
+  (3) RTL parity (the driver assumes LTR; `left`/`right` are PHYSICAL and unchanged, but `recto`/
+  `verso` follow the page progression so an RTL document should swap recto↔verso). (left/right/recto/
+  verso PARITY blank-page insertion + `recto`/`verso`/`all` parsing SHIPPED.)
 - **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
   on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
 - **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);
   `src/NetPdf.Css/Parser/Preprocessing/CssPreprocessor.cs` (`IsRectoVersoAllBreakValue`
   recovery for the dropped values);
   `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ForcesPageBreak*` /
-  `AvoidsBreak*` / `ReadOrphans/WidowsOrDefault`); `BlockLayouter.cs` (the two break-decision
-  sites — top-level loop + `EmitBlockSubtreeRecursive`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`
-  (orphans/widows → resolver). Parity + line-splitting are the deeper follow-ups.
-- **Added** — the CSS Fragmentation control PR (registration + cascade→resolver wiring).
-- **Removal condition** — parity blank-page insertion ships, the optimizing resolver drives
-  production, and per-paragraph orphans/widows resolve at line-break time.
+  `ForcedPageBreakParity*` / `AvoidsBreak*` / `ReadOrphans/WidowsOrDefault`); `BlockLayouter.cs`
+  (the three break-decision sites that set `_forcedBreakParityForNextPage` — top-level loop +
+  `EmitBlockSubtreeRecursive` + `DispatchInlineOnlyBlock`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`
+  (the blank-page parity insertion `PageNumberHasParity` + orphans/widows → resolver). The
+  optimizing-resolver-in-production + line-splitting are the deeper follow-ups.
+- **Added** — the CSS Fragmentation control PR (registration + cascade→resolver wiring); the
+  blank-page side parity (Phase-3 residual long-tail).
+- **Removal condition** — the optimizing resolver drives production (so `*:avoid` bites), and
+  per-paragraph orphans/widows resolve at line-break time, and RTL parity swaps left↔right.
 
 ---
 

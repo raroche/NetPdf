@@ -584,6 +584,84 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_sliced_border_paints_each_block_axis_edge_on_the_right_slice_and_sides_fill_to_the_page_edge()
+    {
+        // PR #221 review [P1]/[P2#5] — slicing GEOMETRY, not just the rect count. Distinct per-edge colors +
+        // asymmetric widths prove: the block-start (top) border paints on the FIRST slice ONLY, the
+        // block-end (bottom) on the LAST slice ONLY, and the inline-axis (left/right) borders on EVERY
+        // slice. The side borders FILL each non-final slice to the page edge (a broken box occupies the
+        // remaining fragmentainer extent): on A4 with margin:0 the content block is 931px = 698.25pt, so a
+        // first slice anchored at the content top spans the full 698.25pt — not stopping after the last line.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\"><div style=\"margin:0;"
+            + "border-top:5px solid #ff0000;border-bottom:7px solid #00ff00;"      // red top, green bottom
+            + "border-left:3px solid #0000ff;border-right:9px solid #00ffff\">");   // blue left, cyan right
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the bordered block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // Per-edge suppression at the cuts: top on the first slice only, bottom on the last slice only.
+        Assert.Equal(1, CountOccurrences(pdf, "1 0 0 rg"));               // red top → first slice only
+        Assert.Equal(1, CountOccurrences(pdf, "0 1 0 rg"));               // green bottom → last slice only
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "0 0 1 rg")); // blue left → every slice
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "0 1 1 rg")); // cyan right → every slice
+        // Fill-to-edge: both side widths (3px → 2.25pt, 9px → 6.75pt) span the full 931px (698.25pt) content
+        // height on a non-final slice. Before the fix they stopped at the last fitting line, short of the page.
+        Assert.Contains("2.25 698.25 re f", pdf);   // blue left border fills to the page edge
+        Assert.Contains("6.75 698.25 re f", pdf);   // cyan right border fills to the page edge
+    }
+
+    [Fact]
+    public void A_nested_bordered_block_slices_through_the_recursion_and_fills_each_page()
+    {
+        // PR #221 review [P1]/[P2#5] — the recursion path (EmitInlineOnlyBlockInRecursionSplitting) must
+        // slice + fill-to-edge exactly like the top-level dispatch. A bordered paragraph nested in
+        // <div><section> (reached through the recursion, not the top-level dispatch) taller than a page
+        // slices, loses no line, and its side borders span the full A4 content height (698.25pt) on a
+        // non-final slice.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\"><div><section>"
+            + "<p style=\"margin:0;border:5px solid #000\">");
+        for (var i = 0; i < 200; i++) sb.Append('N').Append(i).Append("<br>");
+        sb.Append("N200</p></section></div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the nested bordered paragraph must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // all 201 lines, once each — no loss / dup
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Contains("3.75 698.25 re f", pdf);   // a non-final slice's 5px side border fills the page edge
+    }
+
+    [Fact]
+    public void A_block_start_border_taller_than_the_page_emits_a_forced_overflow_diagnostic()
+    {
+        // PR #221 review [P2] — when a slice's own block-axis chrome is taller than the fragmentainer (a
+        // block-start border taller than a whole page), the progress rule still admits one line so
+        // pagination advances, but the slice OVERFLOWS the page. That must surface
+        // PAGINATION-FORCED-OVERFLOW-001 — the same loud signal the non-sliceable force-overflow path
+        // emits — rather than a silently over-tall fragment, even though the block is "sliceable".
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;border-top:1200px solid #000\">");   // 1200px > 931px A4 content block
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
     public void Single_tall_paragraph_line_split_honors_widows()
     {
         // CSS Fragmentation L3 §4.2 — the LAST page of a split paragraph keeps at least `widows`

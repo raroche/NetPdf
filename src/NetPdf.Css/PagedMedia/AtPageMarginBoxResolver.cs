@@ -114,13 +114,15 @@ internal static class AtPageMarginBoxResolver
                 (all ??= ImmutableArray.CreateBuilder<ResolvedMarginBox>()).Add(box);
         }
         // Named pages (cycle 7): a `@page <name>` box never matches an anonymous representative context,
-        // so add a context per DECLARED page name (on a first/right page) — else a named-only margin box
-        // would be missed by the "has margin boxes" check + the prefetch.
+        // so add the SAME {first, non-first} × {left, right} × {blank, non-blank} match-sets per DECLARED
+        // page name — else a `chapter:left` / `chapter:blank` / `chapter:first:left` margin-box-only rule
+        // would be missed by the "has margin boxes" check + the prefetch (PR #219 review [P1]: was only
+        // first-right per name).
         foreach (var name in AtPageRules.DeclaredPageNames(sheets, media))
         {
-            var ctx = new AtPageRules.PageSelectorContext(0, IsBlank: false, AssignedPageName: name);
-            foreach (var box in ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx)))
-                (all ??= ImmutableArray.CreateBuilder<ResolvedMarginBox>()).Add(box);
+            foreach (var ctx in AtPageRules.RepresentativeContextsFor(name))
+                foreach (var box in ResolveFrom(AtPageRules.EnumeratePageRules(sheets, media, ctx)))
+                    (all ??= ImmutableArray.CreateBuilder<ResolvedMarginBox>()).Add(box);
         }
         return all is null ? ImmutableArray<ResolvedMarginBox>.Empty : all.ToImmutable();
     }

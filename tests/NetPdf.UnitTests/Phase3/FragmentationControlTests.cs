@@ -320,9 +320,110 @@ public sealed class FragmentationControlTests : System.IDisposable
             "<div style='display:flex;break-after:page'><div>x</div></div><div>second</div>"));
     }
 
+    [Fact]
+    public void In_an_rtl_document_break_before_right_is_a_verso_page_so_no_blank_is_inserted()
+    {
+        // CSS Fragmentation L3 §3.1 — in RTL, page 1 (a recto) is the physical LEFT page, so a physical
+        // RIGHT page is a verso (even). `break-before:right` after the recto page 1 wants an even page;
+        // page 2 IS even → no blank → 2 pages. (The same markup in LTR wants an odd page → a blank is
+        // inserted → 3 pages, cf. Break_before_right_inserts_a_blank.) `recto` / `verso` don't swap.
+        Assert.Equal(2, RtlPages(
+            "<div>first</div><div style='break-before:right'>second</div>"));
+    }
+
+    [Fact]
+    public void In_an_rtl_document_break_before_left_is_a_recto_page_so_a_blank_is_inserted()
+    {
+        // The mirror — in RTL the physical LEFT page is the recto (odd). `break-before:left` wants an
+        // odd page; page 2 is even → a blank is inserted → 3 pages. (In LTR `left` = verso = even → no
+        // blank → 2 pages, cf. Break_before_left_lands_on_a_verso_page.)
+        Assert.Equal(3, RtlPages(
+            "<div>first</div><div style='break-before:left'>second</div>"));
+    }
+
+    [Fact]
+    public void In_an_rtl_document_break_before_recto_still_needs_an_odd_page()
+    {
+        // `recto` / `verso` are page-NUMBER parities (page 1 is a recto), direction-independent —
+        // `break-before:recto` wants an odd page in RTL too; page 2 is even → blank → 3 pages.
+        Assert.Equal(3, RtlPages(
+            "<div>first</div><div style='break-before:recto'>second</div>"));
+    }
+
+    [Fact]
+    public void In_an_rtl_document_break_after_right_does_not_insert_a_blank()
+    {
+        // PR #219 review [P2 #6] — RTL `break-after`. In RTL the physical RIGHT page is a verso (even),
+        // so `break-after:right` on "first" (page 1 = recto) needs the next sibling on an EVEN page; page
+        // 2 IS even → no blank → 2 pages. (In LTR `break-after:right` wants odd → page 2 even → a blank →
+        // 3, cf. Break_after_right_inserts_a_blank_for_the_next_sibling.)
+        Assert.Equal(2, RtlPages(
+            "<div style='break-after:right'>first</div><div>second</div>"));
+    }
+
+    [Fact]
+    public void Html_break_before_left_starts_the_document_on_a_verso_page()
+    {
+        // CSS Page §3.6 + CSS Fragmentation §3.1.1 — a `break-before` on <html> (the spec's exact
+        // example) propagates to the document start, selecting a verso (left) STARTING page. PR #219
+        // review [P1 #3]: <html>/<body>'s OWN break-before was previously IGNORED (the walk started below
+        // <body>). A following `break-before:right` then lands on page 2 (a recto, because page 1 is
+        // verso) with no blank → 2 pages.
+        Assert.Equal(2, PagesHtml(
+            "<!doctype html><html style='break-before:left'><body style='margin:0'>"
+            + "<div>first</div><div style='break-before:right'>second</div></body></html>"));
+    }
+
+    [Fact]
+    public void Body_break_before_left_starts_the_document_on_a_verso_page()
+    {
+        // The same selecting-the-starting-side behavior via a `break-before` on <body> (PR #219 review
+        // [P1 #3] — also previously ignored, since the walk began with <body>'s CHILDREN).
+        Assert.Equal(2, PagesHtml(
+            "<!doctype html><html><body style='margin:0;break-before:left'>"
+            + "<div>first</div><div style='break-before:right'>second</div></body></html>"));
+    }
+
+    [Fact]
+    public void Nested_first_child_break_before_wins_over_its_ancestor_latest_in_flow()
+    {
+        // CSS Fragmentation §4.3 — when side-constrained forced breaks combine at the document start,
+        // "the value on the LATEST element in flow wins". The first content is a <section break-before:
+        // right> whose first child <p break-before:left> is later in flow, so `left` wins → a verso
+        // start. A following `break-before:right` lands on page 2 (a recto) → 2 pages. (Outer-wins would
+        // give `right` → recto start → the right break needs a blank → 3; PR #219 review [P2 #4].)
+        Assert.Equal(2, PagesHtml(
+            "<!doctype html><html><body style='margin:0'>"
+            + "<section style='break-before:right'><p style='break-before:left'>first</p></section>"
+            + "<div style='break-before:right'>second</div></body></html>"));
+    }
+
+    [Fact]
+    public void Parityless_break_before_on_html_does_not_shift_the_starting_side()
+    {
+        // CSS Page §3.6 — a parity-LESS forced break (`break-before: page`) on <html> forces a break at
+        // the document start, but any leading empty page is SUPPRESSED and `:first` matches the first
+        // PRINTED page, so it does NOT shift the starting side (page 1 stays recto). PR #219 review
+        // [P1 #2]: `page` / `always` / `all` carry no side. The following `break-before:right` then needs
+        // a blank → 3 pages (the same as no <html> break — cf. Without_a_first_page_side…).
+        Assert.Equal(3, PagesHtml(
+            "<!doctype html><html style='break-before:page'><body style='margin:0'>"
+            + "<div>first</div><div style='break-before:right'>second</div></body></html>"));
+    }
+
+    private static int PagesHtml(string fullHtml) =>
+        NetPdf.HtmlPdf.ConvertDetailed(fullHtml).PageCount;
+
     private static int Pages(string bodyHtml)
     {
         var html = "<!doctype html><html><body style='margin:0'>" + bodyHtml + "</body></html>";
+        return NetPdf.HtmlPdf.ConvertDetailed(html).PageCount;
+    }
+
+    private static int RtlPages(string bodyHtml)
+    {
+        var html = "<!doctype html><html><body style='margin:0;direction:rtl'>"
+            + bodyHtml + "</body></html>";
         return NetPdf.HtmlPdf.ConvertDetailed(html).PageCount;
     }
 

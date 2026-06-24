@@ -129,7 +129,9 @@ grepping the ID).
   → `BreakOpportunity.ForceParity`, carried out of the layouter via
   `BlockLayouter.ForcedBreakParityForNextPage`), and the driver (`PdfRenderPipeline`) inserts a
   blank `@page :blank` page when the resumed content would otherwise land on the wrong-parity page
-  (CSS Page L3 §3.4.1; LTR recto/right = odd page, verso/left = even). `recto` / `verso` / `all`
+  (CSS Page L3 §3.4.1; `recto`/`verso` are direction-independent page-number parities
+  (recto = odd, verso = even) while the PHYSICAL `left`/`right` swap in RTL (right = odd in LTR,
+  even in RTL), and a forced first-page side shifts page 1's parity). `recto` / `verso` / `all`
   are registered + handled by the reader AND parsed — AngleSharp.Css 1.0.0-beta.144 dropped those
   three values before the cascade, so a `CssPreprocessor` value-gated recovery
   (`IsRectoVersoAllBreakValue`) now emits them verbatim so they reach the cascade. The
@@ -141,10 +143,10 @@ grepping the ID).
   the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
   default), so per-paragraph overrides aren't honored yet.
 - **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
-  bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting);
-  (3) RTL parity (the driver assumes LTR; `left`/`right` are PHYSICAL and unchanged, but `recto`/
-  `verso` follow the page progression so an RTL document should swap recto↔verso). (left/right/recto/
-  verso PARITY blank-page insertion + `recto`/`verso`/`all` parsing SHIPPED.)
+  bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+  (left/right/recto/verso PARITY blank-page insertion — INCLUDING RTL, where the PHYSICAL `left`/
+  `right` swap their page-number parity while `recto`/`verso` stay (page 1 is a recto) — the
+  first-page starting side, + `recto`/`verso`/`all` parsing all SHIPPED.)
 - **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
   on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
 - **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);
@@ -159,7 +161,7 @@ grepping the ID).
 - **Added** — the CSS Fragmentation control PR (registration + cascade→resolver wiring); the
   blank-page side parity (Phase-3 residual long-tail).
 - **Removal condition** — the optimizing resolver drives production (so `*:avoid` bites), and
-  per-paragraph orphans/widows resolve at line-break time, and RTL parity swaps left↔right.
+  per-paragraph orphans/widows resolve at line-break time. (RTL page-side parity SHIPPED.)
 
 ---
 

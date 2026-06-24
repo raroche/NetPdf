@@ -498,10 +498,11 @@ internal static class ComputedStyleLayoutExtensions
 
     /// <summary>Per CSS Fragmentation L3 §3.1 + CSS Page L3 §3.4.1 — the PAGE-PARITY constraint of a
     /// forced <c>break-before</c> (or the legacy <c>page-break-before</c> alias): which side / parity
-    /// of page the following content must land on. <c>left</c> / <c>right</c> are PHYSICAL (the left /
-    /// right page of the spread); <c>recto</c> / <c>verso</c> follow the page PROGRESSION (recto = the
-    /// side reading starts — physical right in LTR, physical left in RTL — so they swap with the page
-    /// direction, while <c>left</c> / <c>right</c> do not). <c>page</c> / <c>always</c> / <c>all</c>
+    /// of page the following content must land on. <c>recto</c> / <c>verso</c> follow the page
+    /// PROGRESSION — page 1 is a recto, so recto = odd / verso = even is a page-NUMBER parity that does
+    /// not depend on direction. <c>left</c> / <c>right</c> are PHYSICAL: the recto's physical side
+    /// flips with the page direction (right in LTR, left in RTL), so <c>left</c> / <c>right</c> SWAP
+    /// their parity in RTL while <c>recto</c> / <c>verso</c> do not. <c>page</c> / <c>always</c> / <c>all</c>
     /// (and any non-forced value) carry NO parity constraint → <see cref="PageParity.Any"/>. The
     /// driver inserts a blank <c>@page :blank</c> when a forced break would otherwise land on the
     /// wrong parity.</summary>
@@ -542,6 +543,17 @@ internal static class ComputedStyleLayoutExtensions
             };
         return PageParity.Any;
     }
+
+    /// <summary>Per CSS Fragmentation L3 §4.3 — combine two forced-break page-parity constraints that
+    /// apply at the SAME break point: "When left, right, recto, and/or verso are combined, the value
+    /// specified on the LATEST element in the flow wins." So a non-<see cref="PageParity.Any"/>
+    /// <paramref name="later"/> wins; otherwise the <paramref name="earlier"/> constraint survives — a
+    /// parity-less forced break (<c>page</c> / <c>always</c> / <c>all</c>) must NOT erase a sibling's or
+    /// ancestor's side constraint. Used for both the sibling boundary (<c>prev.break-after</c> [earlier]
+    /// then <c>child.break-before</c> [later]) and the document-start first-in-flow-child chain
+    /// (outermost→innermost = earliest→latest in flow, §3.1.1 propagation).</summary>
+    public static PageParity CombineForcedParityLatestWins(PageParity earlier, PageParity later)
+        => later != PageParity.Any ? later : earlier;
 
     /// <summary>Per §3.2 — does <c>break-before</c> / <c>page-break-before</c> request
     /// AVOIDING a page break before the box (<c>avoid</c> / <c>avoid-page</c>)?</summary>

@@ -195,13 +195,20 @@ internal static class PdfRenderPipeline
         var fragRoot = ResolveDocumentRootForInheritedProps(phase2.BoxRoot);
         var documentOrphans = fragRoot.Style.ReadOrphansOrDefault();
         var documentWidows = fragRoot.Style.ReadWidowsOrDefault();
-        // CSS Page L3 §3.6 + review [P1 #4] — the document's STARTING page side. A forced
-        // `break-before: left | verso` on the FIRST in-flow content selects a verso (left) starting
-        // page WITHOUT a leading blank (the forced break itself is a no-op at the fragmentainer start
-        // per §3.1, so it can't be read from the page result — read it from the box tree here). It
-        // shifts every page's parity by one so page 1 is verso instead of the recto default.
+        // The document's block-level direction — for RTL, the physical `left` / `right` page parities
+        // swap (recto / verso don't); see PageNumberHasParity.
+        var documentIsRtl = fragRoot.Style.IsRtl();
+        // CSS Page L3 §3.6 + review [P1 #4] — the document's STARTING page side. A forced break-before
+        // on the FIRST in-flow content (incl. <html> / <body>'s OWN break-before — PR #219 review [P1 #3])
+        // that wants a VERSO (even) starting page selects it WITHOUT a leading blank (the forced break is
+        // a no-op at the fragmentainer start per §3.1, so it's read from the box tree here). It shifts
+        // every page's parity by one so page 1 is verso instead of the recto default. Direction-aware: a
+        // `left` start is verso in LTR but recto in RTL. Walk from the SYNTHETIC root so <html> / <body>
+        // contribute (their break-before propagates to the document start, §3.1.1).
+        var firstStartParity = FirstContentForcedStartParity(phase2.BoxRoot);
         var firstPageParityOffset =
-            FirstContentForcedStartParity(fragRoot) is PageParity.Left or PageParity.Verso ? 1 : 0;
+            firstStartParity != PageParity.Any && !PageNumberHasParity(1, firstStartParity, documentIsRtl)
+                ? 1 : 0;
         try
         {
             for (var pageIndex = 0; ; pageIndex++)
@@ -284,10 +291,11 @@ internal static class PdfRenderPipeline
                 // land on a page of that parity. The content resumes on the next page (1-based number
                 // = pageIndex + 2); if that page is the wrong parity, insert a blank `@page :blank`
                 // (a 0-fragment page) first so the content lands on the correct side. Consecutive
-                // pages alternate parity, so one blank always fixes it. (LTR mapping — see
-                // PageNumberHasParity; the RTL recto/verso swap is a tracked refinement.)
+                // pages alternate parity, so one blank always fixes it. Direction-aware (the physical
+                // left/right swap in RTL — see PageNumberHasParity).
                 if (forcedParityThisPage != PageParity.Any
-                    && !PageNumberHasParity(pageIndex + 2 + firstPageParityOffset, forcedParityThisPage))
+                    && !PageNumberHasParity(
+                        pageIndex + 2 + firstPageParityOffset, forcedParityThisPage, documentIsRtl))
                 {
                     pageFragments.Add(System.Array.Empty<BoxFragment>());
                     pageIndex++;   // the blank consumes a page index; the content resumes after it.
@@ -448,12 +456,15 @@ internal static class PdfRenderPipeline
             cancellationToken.ThrowIfCancellationRequested();
             var bodyFragments = pageFragments[pageIndex];
 
-            // The page's selector context (cycle 6 + 7): first-page + LTR parity + blank + the used `page`
-            // name of its first content box. Drives BOTH the per-page geometry AND the margin-box selectors.
+            // The page's selector context (cycle 6 + 7): first-page + parity + blank + the used `page`
+            // name of its first content box. Drives BOTH the per-page geometry AND the margin-box
+            // selectors. The :left/:right parity reflects the document direction + the forced first-page
+            // side, consistent with the forced-break parity (PageNumberHasParity).
             var pageName = FirstContentPageName(bodyFragments);
             var pageCtx = new AtPageRules.PageSelectorContext(
                 pageIndex, IsBlank: bodyFragments.Count == 0,
-                AssignedPageName: pageName.Length == 0 ? null : pageName);
+                AssignedPageName: pageName.Length == 0 ? null : pageName,
+                StartsOnVerso: firstPageParityOffset == 1, IsRtl: documentIsRtl);
 
             // Per-page geometry (size + margins + MediaBox) — equals the document default when no
             // per-page-specific @page rule applies (then byte-identical to the pre-cycle output).
@@ -653,32 +664,48 @@ internal static class PdfRenderPipeline
             "block axis now FLOWS onto further pages (deferrals.md#layout-to-pdf-pipeline).",
             DiagnosticSeverity.Warning));
 
-    // CSS Page L3 §3.6 — the forced break-before parity of the FIRST in-flow content box (recursing
-    // through the first-child chain, mirroring how a forced break propagates through a fitting
-    // ancestor), or PageParity.Any. Out-of-flow (abspos / fixed) leading children don't start the flow.
-    private static PageParity FirstContentForcedStartParity(Box root)
+    // CSS Fragmentation L3 §3.1.1 + §4.3 / CSS Page L3 §3.6 — the forced break-before page-parity that
+    // selects the document's STARTING side. A break-before on a first in-flow child propagates to its
+    // container (§3.1.1), so the root's OWN break-before AND every first-in-flow descendant's coincide
+    // at the document start; when these side-constrained breaks combine, "the value on the LATEST element
+    // in flow wins" (§4.3) — the first-in-flow-child chain runs outermost→innermost (earliest→latest), so
+    // the DEEPEST non-Any parity wins. The walk starts at the SYNTHETIC root so <html> / <body>'s OWN
+    // break-before is included (PR #219 review [P1 #3]; the synthetic root's own value is the Any default).
+    // A parity-LESS `break-before: page` / `always` / `all` carries no side, so it does NOT shift the
+    // starting side — CSS Page §3.6: any leading empty page it would force is suppressed and `:first`
+    // matches the first PRINTED page (PR #219 review [P1 #2]). Out-of-flow (abspos / fixed) leading
+    // children don't start the flow.
+    private static PageParity FirstContentForcedStartParity(Box syntheticRoot)
     {
-        foreach (var child in root.Children)
-        {
-            if (child.Style.IsOutOfFlow()) continue;
-            var own = child.Style.ForcedPageBreakParityBefore();
-            return own != PageParity.Any ? own : FirstContentForcedStartParity(child);
-        }
-        return PageParity.Any;
+        var parity = PageParity.Any;
+        for (Box? box = syntheticRoot; box is not null; box = FirstInFlowChild(box))
+            parity = ComputedStyleLayoutExtensions.CombineForcedParityLatestWins(
+                parity, box.Style.ForcedPageBreakParityBefore());
+        return parity;
     }
 
-    // CSS Page L3 §3.4.1 — does a 1-based page number satisfy a forced-break parity? Page 1 is a
-    // recto (the side reading starts). In LTR recto = physical right = odd page, verso = physical left
-    // = even. `left` / `right` are PHYSICAL (so left = even, right = odd) and do NOT swap with the page
-    // direction; `recto` / `verso` follow the page progression, so in RTL THEY swap (recto = even,
-    // verso = odd) — that RTL refinement is tracked (this LTR mapping is the page-1-is-recto default).
-    private static bool PageNumberHasParity(int pageNumber, PageParity parity)
+    private static Box? FirstInFlowChild(Box box)
     {
-        var isOdd = (pageNumber & 1) == 1;
+        foreach (var child in box.Children)
+            if (!child.Style.IsOutOfFlow()) return child;
+        return null;
+    }
+
+    // CSS Fragmentation L3 §3.1 — does a 1-based page number satisfy a forced-break parity? Delegates
+    // to the shared `PageProgression` (PR #219 review [P2 #5]) so this can't drift from the
+    // `@page :left`/`:right` selector parity (`PageSelectorContext.IsRightPage`). `recto` / `verso` are
+    // direction-independent page-NUMBER parities (recto = odd); the physical `left` / `right` swap in
+    // RTL (the recto is the physical LEFT page). The first-page starting side is folded into
+    // `pageNumber` by the caller (the `firstPageParityOffset`), so the progression is recto-first here.
+    private static bool PageNumberHasParity(int pageNumber, PageParity parity, bool isRtl)
+    {
+        var progression = new PageProgression(IsRtl: isRtl);
         return parity switch
         {
-            PageParity.Right or PageParity.Recto => isOdd,
-            PageParity.Left or PageParity.Verso => !isOdd,
+            PageParity.Recto => progression.IsRecto(pageNumber),
+            PageParity.Verso => !progression.IsRecto(pageNumber),
+            PageParity.Right => progression.IsRightPage(pageNumber),
+            PageParity.Left => !progression.IsRightPage(pageNumber),
             _ => true,   // PageParity.Any — no constraint.
         };
     }

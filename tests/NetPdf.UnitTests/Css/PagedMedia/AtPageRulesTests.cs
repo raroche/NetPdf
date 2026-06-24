@@ -42,6 +42,81 @@ public sealed class AtPageRulesTests
     }
 
     [Theory]
+    // (pageIndex, startsOnVerso, isRtl, expected IsRightPage)
+    [InlineData(0, false, false, true)]   // LTR recto-first: page 1 = right
+    [InlineData(0, true, false, false)]   // LTR, forced verso first page: page 1 = left
+    [InlineData(1, true, false, true)]    // …so page 2 = right
+    [InlineData(0, false, true, false)]   // RTL: the recto (page 1) is the physical LEFT page
+    [InlineData(1, false, true, true)]    // …so page 2 is the physical right
+    [InlineData(0, true, true, true)]     // RTL + verso-start: both flips → page 1 = right again
+    public void PageSelectorContext_IsRightPage_honors_starting_side_and_direction(
+        int pageIndex, bool startsOnVerso, bool isRtl, bool expectedRight)
+    {
+        // CSS Page §3.1 / §3.6 — :left / :right reflect the physical side, which the forced first-page
+        // side (StartsOnVerso) shifts and an RTL progression (IsRtl) swaps. Consistent with the
+        // forced-break parity. Defaults (false, false) keep the LTR recto-first base byte-identical.
+        var ctx = new AtPageRules.PageSelectorContext(pageIndex, StartsOnVerso: startsOnVerso, IsRtl: isRtl);
+        Assert.Equal(expectedRight, ctx.IsRightPage);
+    }
+
+    [Theory]
+    // (pageNumber, startsOnVerso, isRtl, expected IsRecto, expected IsRightPage)
+    [InlineData(1, false, false, true, true)]    // LTR recto-first: page 1 = recto = physical right
+    [InlineData(2, false, false, false, false)]  // page 2 = verso = physical left
+    [InlineData(1, true, false, false, false)]   // verso-first: page 1 = verso = left
+    [InlineData(1, false, true, true, false)]    // RTL: page 1 = recto but the physical LEFT page
+    [InlineData(2, false, true, false, true)]    // RTL: page 2 = verso = physical right
+    public void PageProgression_classifies_recto_and_physical_side(
+        int pageNumber, bool startsOnVerso, bool isRtl, bool expectedRecto, bool expectedRight)
+    {
+        // CSS Page §3.1 / CSS Fragmentation §3.1 — THE shared parity model (PR #219 review [P2 #5]):
+        // recto = odd page number (direction-INDEPENDENT); the physical right page = recto XOR rtl.
+        var prog = new PageProgression(startsOnVerso, isRtl);
+        Assert.Equal(expectedRecto, prog.IsRecto(pageNumber));
+        Assert.Equal(expectedRight, prog.IsRightPage(pageNumber));
+    }
+
+    [Theory]
+    [InlineData(0, false, false)]
+    [InlineData(3, true, false)]
+    [InlineData(5, false, true)]
+    [InlineData(8, true, true)]
+    public void PageSelectorContext_IsRightPage_agrees_with_PageProgression(
+        int pageIndex, bool startsOnVerso, bool isRtl)
+    {
+        // The @page :left/:right selector parity and the shared PageProgression must not drift (PR #219
+        // review [P2 #5]): the context is a 0-based index, the progression a 1-based page number.
+        var ctx = new AtPageRules.PageSelectorContext(pageIndex, StartsOnVerso: startsOnVerso, IsRtl: isRtl);
+        var prog = new PageProgression(startsOnVerso, isRtl);
+        Assert.Equal(prog.IsRightPage(pageIndex + 1), ctx.IsRightPage);
+    }
+
+    [Fact]
+    public void RepresentativeContexts_cover_a_first_left_page()
+    {
+        // PR #219 review [P1] — the structural/prefetch union's representative contexts must include a
+        // page that is BOTH first AND left, else a `:first:left` margin box is never represented. All
+        // {first, non-first} × {left, right} × {blank, non-blank} = 8 combos are present.
+        var set = AtPageRules.RepresentativeContexts;
+        Assert.Contains(set, c => c.IsFirstPage && !c.IsRightPage && !c.IsBlank);   // first, left, non-blank
+        Assert.Contains(set, c => c.IsFirstPage && !c.IsRightPage && c.IsBlank);    // first, left, blank
+        Assert.Contains(set, c => c.IsFirstPage && c.IsRightPage);                  // first, right
+        Assert.Contains(set, c => !c.IsFirstPage && !c.IsRightPage);               // non-first, left
+        Assert.Contains(set, c => !c.IsFirstPage && c.IsRightPage);                // non-first, right
+    }
+
+    [Fact]
+    public void RepresentativeContextsFor_a_name_covers_the_match_sets_with_that_name()
+    {
+        // PR #219 review [P1] — a named page is resolved across the SAME 8 match-sets so `chapter:left` /
+        // `chapter:blank` / `chapter:first:left` aren't dropped from the union.
+        var set = AtPageRules.RepresentativeContextsFor("chapter");
+        Assert.All(set, c => Assert.Equal("chapter", c.AssignedPageName));
+        Assert.Contains(set, c => c.IsFirstPage && !c.IsRightPage);                 // chapter:first:left
+        Assert.Contains(set, c => !c.IsFirstPage && !c.IsRightPage && c.IsBlank);   // chapter:left + :blank
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData(null)]

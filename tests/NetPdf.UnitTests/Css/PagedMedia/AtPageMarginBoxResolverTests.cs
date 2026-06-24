@@ -273,6 +273,33 @@ public sealed class AtPageMarginBoxResolverTests
     }
 
     [Fact]
+    public async Task ResolveAll_includes_a_first_left_box()
+    {
+        // PR #219 review [P1] — a `:first:left` margin box renders on a page that is BOTH the first page
+        // AND a left page (an RTL document, or a forced verso first page). The structural/prefetch union
+        // must include it; the prior representative set had only a first-RIGHT context, so a
+        // margin-box-ONLY `:first:left` rule vanished from the union — disabling margin-box painting +
+        // skipping its background-image prefetch on those pages.
+        var sheet = await BuildSheet("@page :first:left { @top-center { content: \"FL\" } }");
+        Assert.Contains(AtPageMarginBoxResolver.ResolveAll(new[] { sheet }, PrintContext),
+            b => b.Name == "top-center" && b.ContentRawValue == "\"FL\"");
+    }
+
+    [Theory]
+    [InlineData("@page chapter:left { @top-center { content: \"X\" } }")]
+    [InlineData("@page chapter:blank { @top-center { content: \"X\" } }")]
+    [InlineData("@page chapter:first:left { @top-center { content: \"X\" } }")]
+    public async Task ResolveAll_includes_named_side_and_blank_boxes(string css)
+    {
+        // PR #219 review [P1] — each declared page name is now resolved across ALL {first, non-first} ×
+        // {left, right} × {blank, non-blank} match-sets (not only first-right), so a `chapter:left` /
+        // `chapter:blank` / `chapter:first:left` margin-box-only rule stays in the union.
+        var sheet = await BuildSheet(css);
+        Assert.Contains(AtPageMarginBoxResolver.ResolveAll(new[] { sheet }, PrintContext),
+            b => b.Name == "top-center" && b.ContentRawValue == "\"X\"");
+    }
+
+    [Fact]
     public async Task DeclaredPageNames_collects_named_selectors_including_a_compounds_leading_name()
     {
         var sheet = await BuildSheet(

@@ -195,16 +195,21 @@ internal enum PageParity
 {
     /// <summary>No parity constraint. Default for most opportunities.</summary>
     Any = 0,
-    /// <summary><c>break-before: left</c> — break to a left page (verso
-    /// in LTR, recto in RTL).</summary>
+    /// <summary><c>break-before: left</c> — break to the physical LEFT page
+    /// (CSS Page L3 §3.4.1). PHYSICAL, so its page-number parity swaps with the
+    /// page direction: left = verso (even) in LTR, but recto (odd) in RTL.</summary>
     Left = 1,
-    /// <summary><c>break-before: right</c> — break to a right page (recto
-    /// in LTR, verso in RTL).</summary>
+    /// <summary><c>break-before: right</c> — break to the physical RIGHT page.
+    /// PHYSICAL, so its parity swaps with the page direction: right = recto (odd)
+    /// in LTR, but verso (even) in RTL.</summary>
     Right = 2,
-    /// <summary><c>break-before: recto</c> — break to a right-hand page
-    /// regardless of writing direction (per CSS Page L3 §3.4.1).</summary>
+    /// <summary><c>break-before: recto</c> — break to a recto page: the side the
+    /// page progression starts (page 1 is a recto). A direction-INDEPENDENT
+    /// page-NUMBER parity (recto = odd); the PHYSICAL side it denotes is the right
+    /// page in LTR and the left page in RTL (CSS Fragmentation L3 §3.1).</summary>
     Recto = 3,
-    /// <summary><c>break-before: verso</c> — break to a left-hand page
-    /// regardless of writing direction.</summary>
+    /// <summary><c>break-before: verso</c> — break to a verso page (the second
+    /// side of the progression). Direction-INDEPENDENT (verso = even); the PHYSICAL
+    /// side is the left page in LTR and the right page in RTL.</summary>
     Verso = 4,
 }

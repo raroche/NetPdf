@@ -7986,13 +7986,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var prevForces = !suppressForce
             && prevSibling is not null && prevSibling.Style.ForcesPageBreakAfter();
         var force = childForces || prevForces;
-        // CSS Page L3 §3.4.1 — the forced break's page-parity constraint (left / right / recto /
-        // verso). Prefer a NON-Any parity from either side (Copilot review): a child's
-        // `break-before: page` (parity-less) must NOT drop the prior sibling's `break-after: left`
-        // parity; only when the child's own break-before carries a parity does it win.
+        // CSS Fragmentation L3 §4.3 — combine the forced break's page-parity constraint (left / right /
+        // recto / verso) from both sides, "the value on the LATEST element in the flow wins": the child's
+        // break-before is later in flow than the prior sibling's break-after, so the child wins when it
+        // carries a parity; a child's parity-less `break-before: page` must NOT drop the prior sibling's
+        // `break-after: left` (shared helper, mirrors the document-start chain in PdfRenderPipeline).
         var childParity = childForces ? child.Style.ForcedPageBreakParityBefore() : PageParity.Any;
         var prevParity = prevForces ? prevSibling!.Style.ForcedPageBreakParityAfter() : PageParity.Any;
-        var parity = childParity != PageParity.Any ? childParity : prevParity;
+        var parity = ComputedStyleLayoutExtensions.CombineForcedParityLatestWins(prevParity, childParity);
         var avoid = container.Style.AvoidsBreakInside()
             || child.Style.AvoidsPageBreakBefore()
             || (prevSibling is not null && prevSibling.Style.AvoidsPageBreakAfter());

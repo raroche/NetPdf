@@ -8300,12 +8300,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// position of the BLOCK's BORDER-BOX block-start edge from
     /// the fragmentainer's content-area origin (= post-marginTop
     /// in the in-flow case).</param>
+    /// <param name="lastLineContinues">inline-only-block-line-splitting — true when this fragment is a
+    /// NON-final slice of a paragraph that resumes on a later page, so the painter justifies its last
+    /// line (it is an interior line, not the paragraph end). Default false.</param>
     private void EmitInlineOnlyBlockFragment(
         Box inlineOnlyBlock,
         InlineOnlyBlockMetrics metrics,
         InlineOnlyBlockComputation comp,
         double inlineOffsetFromContentOrigin,
-        double blockOffsetFromContentOrigin)
+        double blockOffsetFromContentOrigin,
+        // inline-only-block-line-splitting — true when this fragment is a NON-final slice of a paragraph
+        // that resumes on a later page, so the painter justifies its last line (it isn't the paragraph end).
+        bool lastLineContinues = false)
     {
         // Border-box inline-start offset = caller-supplied offset +
         // marginInlineStart. The caller's offset is already in the
@@ -8339,7 +8345,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // inter-word gaps (TextPainter splits at spaces). False (the default) byte-identical.
             JustifyLines: inlineOnlyBlock.Style.ReadInlineJustify(),
             // text-align: justify-all — the LAST line justifies too (lifts the painter's last-line gate).
-            JustifyLastLine: inlineOnlyBlock.Style.ReadInlineJustifyAll()));
+            JustifyLastLine: inlineOnlyBlock.Style.ReadInlineJustifyAll(),
+            // inline-only-block-line-splitting — a non-final slice's last line is an interior line.
+            LastLineContinues: lastLineContinues));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the
@@ -8516,7 +8524,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             PerLineHeightsPx = slicedHeights,
         };
         EmitInlineOnlyBlockFragment(
-            block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop);
+            block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop,
+            // A non-final slice (more lines remain) continues on a later page, so its last line is an
+            // interior line (justifies) rather than the paragraph end.
+            lastLineContinues: endLine < total);
     }
 
     /// <summary>Fail-fast guard on a resumed line index (PR #211 Copilot review): the producer

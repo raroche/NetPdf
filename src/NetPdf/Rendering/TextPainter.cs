@@ -414,7 +414,10 @@ internal static class TextPainter
             // `gapCount` is the interior word-separator-space count (trailing spaces sort last → excluded;
             // an inline ATOMIC is advance-only, not an opportunity — EmitJustifiedLine just advances past
             // it, and the layout shifts the atomic by the same gaps); an overflowing line (free ≤ 0) isn't squeezed.
-            var isLastLine = li == lines.Length - 1;
+            // inline-only-block-line-splitting — a NON-final slice of a split paragraph (LastLineContinues)
+            // continues on a later page, so its array-last line is NOT the paragraph's last line: treat it
+            // as an interior line so it justifies (CSS Text 3 §7.3) instead of staying start-aligned.
+            var isLastLine = li == lines.Length - 1 && !fragment.LastLineContinues;
             var justifyExtraPerGapPx = 0.0;
             var justifyGapCount = 0;
             if (fragment.JustifyLines && concatText is not null

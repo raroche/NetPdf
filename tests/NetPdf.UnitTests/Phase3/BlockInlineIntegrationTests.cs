@@ -1231,6 +1231,46 @@ public sealed class BlockInlineIntegrationTests
         if (expectedJustify) Assert.Equal(0.0, fragment.LineAlignFactor, precision: 3);
     }
 
+    [Theory]
+    [InlineData(5)]   // justify
+    [InlineData(7)]   // justify-all
+    public void A_split_paragraphs_non_final_slice_marks_its_last_line_continued(int justifyKeyword)
+    {
+        // inline-only-block-line-splitting — when a justified paragraph splits across pages, the
+        // first-page slice's last line is an INTERIOR line (the paragraph continues on the next page),
+        // so the fragment carries LastLineContinues=true → the painter justifies it instead of leaving it
+        // start-aligned as a paragraph end. A paragraph that FITS one page has LastLineContinues=false.
+        static BoxFragment FirstSlice(int blockSizePx, int justifyKw, out bool hasContinuation)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            var blockStyle = MakeStyle();
+            blockStyle.Set(PropertyId.TextAlign, ComputedSlot.FromKeyword(justifyKw));
+            var root = Box.CreateRoot(MakeStyle());
+            var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+            var text = new System.Text.StringBuilder();
+            for (var i = 0; i < 60; i++) text.Append("A ");   // many soft-wrap opportunities → many lines
+            block.AppendChild(Box.TextRun(text.ToString(), MakeStyle()));
+            root.AppendChild(block);
+            using var layouter = new BlockLayouter(root, sink, null, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: 30, blockSize: blockSizePx);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            var res = layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            hasContinuation = res.Outcome == LayoutAttemptOutcome.PageComplete && res.Continuation is not null;
+            return sink.Fragments[0];
+        }
+
+        var split = FirstSlice(blockSizePx: 50, justifyKeyword, out var splitContinues);
+        Assert.True(splitContinues, "a tall paragraph must split (leave a continuation)");
+        Assert.True(split.JustifyLines);
+        Assert.True(split.LastLineContinues, "a non-final slice's last line is an interior (justifiable) line");
+
+        var whole = FirstSlice(blockSizePx: 4000, justifyKeyword, out var wholeContinues);
+        Assert.False(wholeContinues, "the whole paragraph fits → no continuation");
+        Assert.False(whole.LastLineContinues, "the final/whole fragment's last line IS the paragraph end");
+    }
+
     [Fact]
     public void Inline_atomic_shifts_with_centered_text_align()
     {

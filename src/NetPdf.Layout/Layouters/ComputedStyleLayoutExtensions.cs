@@ -992,7 +992,7 @@ internal static class ComputedStyleLayoutExtensions
     {
         var keyword = style.ReadKeywordOrDefault(PropertyId.AlignItems, defaultIndex: 0);
         var (value, mode) = DecodeSelfPositionGrid(keyword);
-        return new ResolvedAlignItems(value, mode);
+        return new ResolvedAlignItems(value, mode, IsSelfRelativeSelfPosition(keyword));
     }
 
     /// <summary>Per Phase 3 Task 15 L9 post-PR-#69 architecture
@@ -1058,6 +1058,15 @@ internal static class ComputedStyleLayoutExtensions
         _ => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // unknown → safe default
     };
 
+    /// <summary>PR #215 review [P2] — <see langword="true"/> when the shared &lt;self-position&gt;
+    /// grid keyword is one of the SELF-relative forms (<c>self-start</c> / <c>self-end</c>, bare or
+    /// safe / unsafe — indices 9, 10, 16, 17, 23, 24). These resolve against the ITEM's own
+    /// <c>direction</c>, unlike <c>flex-start</c> / <c>flex-end</c> / <c>start</c> / <c>end</c> which
+    /// resolve against the container. The (value, mode) decode collapses them to FlexStart / FlexEnd;
+    /// this companion flag lets the layouter pick the item-direction reversal.</summary>
+    private static bool IsSelfRelativeSelfPosition(int keyword) =>
+        keyword is 9 or 10 or 16 or 17 or 23 or 24;
+
     /// <summary>Per Phase 3 Task 15 L9 — decode
     /// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
     /// Mirrors <see cref="ReadAlignItems"/>'s decoding (= the same
@@ -1101,7 +1110,8 @@ internal static class ComputedStyleLayoutExtensions
             return new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default);
         }
         var (value, mode) = DecodeSelfPositionGrid(shifted);
-        return new ResolvedAlignSelf(AlignItemsValueToAlignSelfValue(value), mode);
+        return new ResolvedAlignSelf(
+            AlignItemsValueToAlignSelfValue(value), mode, IsSelfRelativeSelfPosition(shifted));
     }
 
     /// <summary>Per Phase 3 Task 15 L9 post-PR-#69 architecture rec —
@@ -1136,14 +1146,19 @@ internal static class ComputedStyleLayoutExtensions
         this ResolvedAlignSelf alignSelf,
         ResolvedAlignItems containerAlignItems)
     {
+        // PR #215 review [P2] — carry the item's own IsSelfRelative through (so a self-start /
+        // self-end align-self resolves against the item's direction); the Auto case inherits the
+        // container's value verbatim (incl. its IsSelfRelative, which is false for a container
+        // align-items since `self-*` on a container is invalid).
+        var s = alignSelf.IsSelfRelative;
         return alignSelf.Value switch
         {
             AlignSelfValue.Auto => containerAlignItems,
-            AlignSelfValue.Stretch => new ResolvedAlignItems(AlignItemsValue.Stretch, alignSelf.Mode),
-            AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode),
-            AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode),
-            AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode),
-            AlignSelfValue.Baseline => new ResolvedAlignItems(AlignItemsValue.Baseline, alignSelf.Mode),
+            AlignSelfValue.Stretch => new ResolvedAlignItems(AlignItemsValue.Stretch, alignSelf.Mode, s),
+            AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode, s),
+            AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode, s),
+            AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode, s),
+            AlignSelfValue.Baseline => new ResolvedAlignItems(AlignItemsValue.Baseline, alignSelf.Mode, s),
             _ => containerAlignItems, // defensive — unknown self values fall back to container
         };
     }
@@ -1931,7 +1946,13 @@ internal enum AlignItemsValue : byte
 /// FlexLayouter has a single readable pattern for both axes.</summary>
 internal readonly record struct ResolvedAlignItems(
     AlignItemsValue Value,
-    OverflowAlignmentMode Mode);
+    OverflowAlignmentMode Mode,
+    // PR #215 review [P2] — true for the `self-start` / `self-end` logical keywords (which
+    // resolve against the ITEM's own `direction`, not the container's) as opposed to
+    // `flex-start` / `flex-end` / `start` / `end` (container-relative). The keyword family
+    // is collapsed to FlexStart/FlexEnd for the placement math, but this flag is preserved so
+    // FlexLayouter can pick the item-direction reversal for the self-relative forms.
+    bool IsSelfRelative = false);
 
 /// <summary>Per Phase 3 Task 15 L9 — typed decode of
 /// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
@@ -1991,7 +2012,9 @@ internal enum AlignSelfValue : byte
 /// </summary>
 internal readonly record struct ResolvedAlignSelf(
     AlignSelfValue Value,
-    OverflowAlignmentMode Mode);
+    OverflowAlignmentMode Mode,
+    // PR #215 review [P2] — see ResolvedAlignItems.IsSelfRelative.
+    bool IsSelfRelative = false);
 
 /// <summary>Per Phase 3 Task 15 L7 — typed decode of
 /// <see cref="PropertyId.AlignContent"/> per CSS Box Alignment L3 §6 +

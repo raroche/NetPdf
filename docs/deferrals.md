@@ -126,8 +126,11 @@ grepping the ID).
 - **Behavior** — Forced page breaks (`page` / `left` / `right` + legacy `always` / `left` /
   `right`) work end-to-end. `left` / `right` currently behave like `page` (force a break)
   WITHOUT the parity refinement (inserting a blank page so the box lands on a left/right
-  page). `recto` / `verso` / `all` are registered + handled by the reader but are NOT parsed
-  by AngleSharp.Css 1.0.0-beta.144 (the declaration is dropped before the cascade). The
+  page). `recto` / `verso` / `all` are registered + handled by the reader AND now parsed —
+  AngleSharp.Css 1.0.0-beta.144 dropped those three values before the cascade, so a
+  `CssPreprocessor` value-gated recovery (`IsRectoVersoAllBreakValue`) now emits them
+  verbatim so they reach the cascade + force a page break (`recto` / `verso` still lack the
+  blank-page parity refinement, like `left` / `right`). The
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
   production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
@@ -135,13 +138,15 @@ grepping the ID).
   paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
   the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
   default), so per-paragraph overrides aren't honored yet.
-- **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion); (2) parsing for
-  `recto` / `verso` / `all` (AngleSharp upgrade or a CssPreprocessor recovery entry);
-  (3) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;
-  (4) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+- **Missing** — (1) left/right/recto/verso PARITY (blank-page insertion);
+  (2) the production driver using the optimizing (cost-aware) resolver so `*:avoid` bites;
+  (3) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+  (Parsing for `recto` / `verso` / `all` SHIPPED — the `CssPreprocessor` recovery above.)
 - **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
   on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
 - **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);
+  `src/NetPdf.Css/Parser/Preprocessing/CssPreprocessor.cs` (`IsRectoVersoAllBreakValue`
+  recovery for the dropped values);
   `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ForcesPageBreak*` /
   `AvoidsBreak*` / `ReadOrphans/WidowsOrDefault`); `BlockLayouter.cs` (the two break-decision
   sites — top-level loop + `EmitBlockSubtreeRecursive`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`
@@ -947,7 +952,9 @@ grepping the ID).
   wrapping, and multi-page container splitting. The residual approximations are enumerated
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
   `align-content: baseline`, margin-box in the alignment / justify-content free-space
-  math, RTL column cross-axis + vertical writing modes). Percentage gaps + percentage
+  math, `start`/`end` vs `flex-start`/`flex-end` under `wrap-reverse` — the RTL column
+  cross axis, per-item anchor AND line-stacking, now SHIPS — + vertical writing modes).
+  Percentage gaps + percentage
   item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
   pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
@@ -1138,12 +1145,27 @@ grepping the ID).
     `flex-direction: row` / `row-reverse` under `direction: rtl` flip the
     physical MAIN axis right-to-left (row+rtl ≡ row-reverse+ltr) —
     FlexLayouter XORs its reverse flag via `DirectionStyleExtensions.IsRtl`,
-    pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Still
-    deferred**: the COLUMN cross-axis under RTL (a column's cross axis is the
-    inline axis, so RTL flips cross-start — `align-items`/`align-self`
-    anchors), and all VERTICAL writing modes (`writing-mode` is not yet a
-    registered property; `row` in vertical-rl swaps the main + cross axes
-    onto the rotated block + inline directions).
+    pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Also shipped**
+    (residual long-tail + PR #215 review): the COLUMN cross axis under RTL — a
+    `flex-direction: column; direction: rtl` container's cross axis is the
+    inline axis, so RTL permutes cross-start/cross-end. ONE orientation flag
+    (`isCrossAxisReversed = isWrapReverse ^ isColumnRtl`) drives BOTH the
+    per-LINE stacking (`CrossAxisFlow.IsReversed`, fed the line's effective
+    cross extent so a full-extent line reverses to a no-op) AND the per-ITEM
+    `align-items`/`align-self` anchor (`ComputeAlignItemsPlacement`). So the
+    lines of a multi-line column-rtl `wrap` stack from the physical right, a
+    single non-stretched `align-content: flex-start` line packs at the right,
+    a `wrap-reverse` column-rtl cancels back, and `align-items: flex-start`
+    right-anchors / `flex-end` left-anchors. The `self-start`/`self-end`
+    logical keywords resolve against the ITEM's own `direction` (an LTR child
+    in an RTL column anchors at its own start), via the preserved
+    `ResolvedAlign*.IsSelfRelative` flag. Pinned by the `Column_rtl_*` tests.
+    **Still deferred**: `start`/`end` vs `flex-start`/`flex-end` divergence
+    under `wrap-reverse` (writing-mode-relative keywords should NOT follow the
+    flex permutation — a pre-existing logical-keyword gap, not column-rtl-
+    specific), and all VERTICAL writing modes (`writing-mode` is not yet a
+    registered property; `row` in vertical-rl swaps the main + cross axes onto
+    the rotated block + inline directions).
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
     declared `width`, ignoring item margins / padding / borders /
@@ -2177,75 +2199,68 @@ flags the categories):
   split gives each 150 instead).
 
 ---
-
 ## grid-implicit-named-area-and-occurrence-syntax-deferral
 
 - **ID** — `grid-implicit-named-area-and-occurrence-syntax-deferral`
-- **Status** — `approximated`. Phase 3 Task 18 cycle 7b (post-
-  PR-#106 review). Replaces the
-  `grid-named-line-placement-deferral` (= the F11 placeholder added
-  in cycle 7a). Cycle 7b shipped the line-map lookup with first-
-  occurrence resolution + spec-correct ordering (`<ident>-start` /
-  `<ident>-end` tried before bare `<ident>`); the remaining gaps
-  are itemized below.
-- **Behavior** — Cycle 7b `GridSizing.ReadPlacement` resolves
-  `<custom-ident>` references via a per-axis named-line occurrence
-  map built from `grid-template-rows` / `grid-template-columns`
-  authored lines + `grid-template-areas`-derived implicit `<area>-
-  start` / `<area>-end` lines. Per CSS Grid L1 §8.3 the resolution
-  order is: for a start longhand, try `<ident>-start` (first
-  occurrence) → bare `<ident>` (first occurrence). For an end
-  longhand: `<ident>-end` (first occurrence) → bare `<ident>`.
-  Missing forms still fall back to auto-placement with
-  `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`:
-  - **Implicit named areas from author named-line pairs**: per
-    CSS Grid L1 §8.4, a `[foo-start] … [foo-end]` pair in
-    `grid-template-rows` AND `grid-template-columns` together
-    creates an IMPLICIT named area `foo` even when `foo` is
-    absent from `grid-template-areas`. Cycle 7b only derives
-    lines from areas — not areas from line-pairs.
-  - **`<integer> <custom-ident>`**: e.g., `grid-row-start: foo 2`
-    = the 2nd occurrence of line named `foo`. The parser AST
-    carries this via `GridLineValue.ForNamedLineNumber`; the
-    placement service falls back to auto.
-  - **`span <custom-ident>`**: e.g.,
-    `grid-row-end: span foo` = span to the next line named
-    `foo` after the start line. Parser via
-    `GridLineValue.ForSpanName`; placement falls back.
-  - **`span <custom-ident> <integer>`**: e.g.,
-    `grid-row-end: span foo 2` = span to the 2nd line named
-    `foo`. Parser via
-    `GridLineValue.ForSpanNameOccurrence`; placement falls back.
+- **Status** — `approximated` (NARROWED). Phase 3 Task 18 cycle 7b + the
+  residual-long-tail batch (occurrence syntax + end-edge span-by-name +
+  named-line-pair placement) + the PR #215 review (§8.3 forward implicit-line
+  assumption, negative-start normalization, `(name, line)` dedup); the
+  residuals below remain.
+- **Behavior** — `GridSizing.ReadPlacement` resolves `<custom-ident>`
+  references via the per-axis named-line occurrence map (`BuildNamedLineMap`:
+  name → sorted occurrence line numbers, including the implicit `<area>-start`
+  / `<area>-end` lines from `grid-template-areas`). Now SHIPPED (this batch):
+  - **`<integer> <custom-ident>`** (e.g. `grid-row-start: foo 2`) — the Nth
+    line literally named `foo` (`ResolveNamedLineOccurrence`; positive counts
+    1-based from the first, negative from the last). Resolved on both the
+    start and end edges.
+  - **`span <custom-ident>` / `span <custom-ident> <integer>`** (e.g.
+    `grid-row-end: span foo`) — on the END edge with a definite start, spans
+    to the Nth `foo` line strictly after the start (`ResolveSpanToNamedLine`).
+  - **§8.3 implicit-line assumption** (PR #215 review [P1]) — when fewer than
+    N explicit `foo` lines exist, a POSITIVE occurrence / forward span resolves
+    through the implicit lines past the explicit grid's end edge (each assumed
+    named `foo`), capped at `MaxImplicitTracksPerAxis`. So `foo 2` with one
+    explicit `foo`, and `1 / span foo 2` with too few `foo` lines, extend the
+    grid with implicit tracks instead of falling back to auto. The negative
+    integer start is normalized against the explicit-grid track count BEFORE
+    the named-end span math; the `(name, line)` set is deduplicated per §8.1.
+  - **Named-line-pair placement** — `[foo-start] … [foo-end]` line pairs
+    place a `grid-row: foo` / `grid-area: foo` item at the foo region via the
+    line-name lookups (`<ident>-start` / `<ident>-end`), even with no
+    `grid-template-areas` entry (the §8.4 implicit named area's PLACEMENT
+    effect, achieved through the line map).
 - **Missing** —
-  - A reverse implicit-named-area derivation pass that walks both
-    axes' line maps and registers a `GridAreaRect` in
-    `GridTemplateAreas.NameToRect` whenever `foo-start` AND
-    `foo-end` exist on BOTH axes.
-  - Occurrence-aware lookup helpers that accept a 1-based count
-    (with negative-counts-from-end semantics per §8.3).
-  - Span-by-name resolution that walks the occurrence list
-    forward from the resolved start line.
-- **Trigger** — corpus invoice / report uses
-  `[foo-start] … [foo-end]` line pairs without a corresponding
-  `grid-template-areas` entry, OR `grid-row-start: foo 2` / `span
-  foo` occurrence syntax, OR a user-reported case where the
-  authored line pair fails to produce an implicit `grid-area: foo`
-  resolution.
+  - **`span <custom-ident>` on the START edge / an auto start** (e.g.
+    `grid-row-start: span foo`, or `grid-row: auto / span foo`) — the span
+    count depends on where auto-placement lands the opposite edge, so it
+    needs the auto-placement span algorithm; still falls back to auto with
+    `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`.
+  - **Negative-occurrence start-side implicit fill** (e.g. `foo -3` with too
+    few `foo` lines) — the reverse (negative) direction's implicit lines (at
+    0, −1, …) are not synthesised; an underflowing negative occurrence still
+    falls back to auto. Only the forward (positive) implicit fill shipped.
+  - **Explicit implicit-area `GridAreaRect` registration** — the line-pair
+    placement works via the line map (above), but a `GridAreaRect` for the
+    derived area is not registered in `GridTemplateAreas.NameToRect`; anything
+    that reads `NameToRect` directly (rather than via the line lookups) won't
+    see the implicit area. Functionally redundant for placement today.
+- **Trigger** — `grid-row-start: span foo` / auto-start span-by-name in the
+  corpus, OR a consumer that reads `NameToRect` for an implicit (line-pair)
+  area.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `BuildNamedLineMap`
-    (= would build a NamedAreaMap by intersecting the two axes'
-    line maps for matching `*-start` / `*-end` pairs) +
-    `ReadPlacement` (= would consume occurrence counts +
-    span-by-name).
-- **Added** — Phase 3 Task 18 cycle 7b (post-PR-#106 review).
-- **Removal condition** — the reverse implicit-named-area
-  derivation ships AND `<integer> <custom-ident>` / `span <ident>`
-  / `span <ident> <int>` resolve correctly AND production-pipeline
-  tests pin (a) `[foo-start]…[foo-end]` line pairs producing an
-  implicit `grid-area: foo` rectangle, (b) `grid-row-start: foo 2`
-  resolving to the 2nd line named `foo`, and (c) `grid-row-end:
-  span foo` spanning to the next `foo` line after the start.
-
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ReadPlacement` (start-edge
+    span-by-name needs the auto-placement span count); `BuildNamedLineMap` /
+    `Resolve` (= would intersect the two axes' line maps to register a
+    `GridAreaRect` for matching `*-start` / `*-end` pairs).
+- **Added** — Phase 3 Task 18 cycle 7b (post-PR-#106 review); narrowed in the
+  residual long-tail batch when occurrence + end-span + line-pair placement
+  shipped.
+- **Removal condition** — `span <custom-ident>` resolves on the start / auto
+  edge too (via the auto-placement span algorithm) AND the negative-occurrence
+  start-side implicit fill is synthesised AND the implicit-area `GridAreaRect`
+  is registered in `NameToRect` for `*-start` / `*-end` line pairs.
 ---
 
 ## abspos-cycle-1-explicit-only

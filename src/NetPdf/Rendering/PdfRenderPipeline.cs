@@ -454,12 +454,15 @@ internal static class PdfRenderPipeline
             cancellationToken.ThrowIfCancellationRequested();
             var bodyFragments = pageFragments[pageIndex];
 
-            // The page's selector context (cycle 6 + 7): first-page + LTR parity + blank + the used `page`
-            // name of its first content box. Drives BOTH the per-page geometry AND the margin-box selectors.
+            // The page's selector context (cycle 6 + 7): first-page + parity + blank + the used `page`
+            // name of its first content box. Drives BOTH the per-page geometry AND the margin-box
+            // selectors. The :left/:right parity reflects the document direction + the forced first-page
+            // side, consistent with the forced-break parity (PageNumberHasParity).
             var pageName = FirstContentPageName(bodyFragments);
             var pageCtx = new AtPageRules.PageSelectorContext(
                 pageIndex, IsBlank: bodyFragments.Count == 0,
-                AssignedPageName: pageName.Length == 0 ? null : pageName);
+                AssignedPageName: pageName.Length == 0 ? null : pageName,
+                StartsOnVerso: firstPageParityOffset == 1, IsRtl: documentIsRtl);
 
             // Per-page geometry (size + margins + MediaBox) — equals the document default when no
             // per-page-specific @page rule applies (then byte-identical to the pre-cycle output).

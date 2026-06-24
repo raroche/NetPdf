@@ -96,20 +96,30 @@ internal static class AtPageRules
 
     /// <summary>Multi-page driver cycle 6 — the per-page selector context the resolvers match an
     /// <c>@page</c> selector against (CSS Page 3 §3.1): the 0-based <paramref name="PageIndex"/> (→
-    /// first-page + LTR parity), whether the page is intentionally <paramref name="IsBlank"/>, and the
-    /// NAMED page assigned to it (<paramref name="AssignedPageName"/> — cycle 7, the used value of the
-    /// <c>page</c> property on the page's break-triggering box; <see langword="null"/>/empty = unnamed). RTL
-    /// parity flip is out of scope (the basic LTR parity mapping).</summary>
+    /// first-page + <c>:left</c>/<c>:right</c> parity), whether the page is intentionally
+    /// <paramref name="IsBlank"/>, and the NAMED page assigned to it (<paramref name="AssignedPageName"/>
+    /// — cycle 7, the used value of the <c>page</c> property on the page's break-triggering box;
+    /// <see langword="null"/>/empty = unnamed). The <c>:left</c>/<c>:right</c> parity honors the document
+    /// direction (<paramref name="IsRtl"/>) and the forced first-page side
+    /// (<paramref name="StartsOnVerso"/>); see <see cref="IsRightPage"/>.</summary>
     public readonly record struct PageSelectorContext(
-        int PageIndex, bool IsBlank = false, string? AssignedPageName = null)
+        int PageIndex, bool IsBlank = false, string? AssignedPageName = null,
+        // CSS Page 3 §3.1 / §3.6 — when the first page starts on a VERSO (a forced
+        // `break-before: <verso side>` on the first content), every page's parity shifts by one; and
+        // for an RTL page progression the physical left / right sides swap. Both default to the LTR,
+        // recto-first base (so existing constructions stay byte-identical).
+        bool StartsOnVerso = false, bool IsRtl = false)
     {
         /// <summary>The first page (index 0) matches <c>:first</c>.</summary>
         public bool IsFirstPage => PageIndex == 0;
 
-        /// <summary>LTR page progression: the first page (index 0) is a RIGHT (recto) page and sides
-        /// alternate, so a <see langword="true"/> page matches <c>:right</c> and a <see langword="false"/>
-        /// one <c>:left</c> (CSS Page 3 §3.1). RTL flips this — out of scope (the basic parity mapping).</summary>
-        public bool IsRightPage => (PageIndex & 1) == 0;
+        /// <summary>Does this page match <c>:right</c> (the physical RIGHT page)? The first page is a
+        /// recto; <c>:right</c> alternates from there (CSS Page 3 §3.1). A <see cref="StartsOnVerso"/>
+        /// document shifts the parity (page 1 is a verso), and <see cref="IsRtl"/> swaps the physical
+        /// sides (the recto is the physical LEFT page in RTL) — consistent with the forced-break parity
+        /// in <c>PdfRenderPipeline.PageNumberHasParity</c>.</summary>
+        public bool IsRightPage =>
+            (((PageIndex + (StartsOnVerso ? 1 : 0)) & 1) == 0) != IsRtl;
     }
 
     /// <summary>Yields the <c>@page</c> rules applicable TO A GIVEN PAGE (cycle 6) in CASCADE

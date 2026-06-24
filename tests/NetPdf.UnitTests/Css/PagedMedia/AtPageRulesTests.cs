@@ -42,6 +42,24 @@ public sealed class AtPageRulesTests
     }
 
     [Theory]
+    // (pageIndex, startsOnVerso, isRtl, expected IsRightPage)
+    [InlineData(0, false, false, true)]   // LTR recto-first: page 1 = right
+    [InlineData(0, true, false, false)]   // LTR, forced verso first page: page 1 = left
+    [InlineData(1, true, false, true)]    // …so page 2 = right
+    [InlineData(0, false, true, false)]   // RTL: the recto (page 1) is the physical LEFT page
+    [InlineData(1, false, true, true)]    // …so page 2 is the physical right
+    [InlineData(0, true, true, true)]     // RTL + verso-start: both flips → page 1 = right again
+    public void PageSelectorContext_IsRightPage_honors_starting_side_and_direction(
+        int pageIndex, bool startsOnVerso, bool isRtl, bool expectedRight)
+    {
+        // CSS Page §3.1 / §3.6 — :left / :right reflect the physical side, which the forced first-page
+        // side (StartsOnVerso) shifts and an RTL progression (IsRtl) swaps. Consistent with the
+        // forced-break parity. Defaults (false, false) keep the LTR recto-first base byte-identical.
+        var ctx = new AtPageRules.PageSelectorContext(pageIndex, StartsOnVerso: startsOnVerso, IsRtl: isRtl);
+        Assert.Equal(expectedRight, ctx.IsRightPage);
+    }
+
+    [Theory]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData(null)]

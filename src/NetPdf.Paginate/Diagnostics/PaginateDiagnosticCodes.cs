@@ -131,6 +131,19 @@ internal static class PaginateDiagnosticCodes
     public const string LayoutTableIntrinsicMeasurementBudgetExceeded001 =
         "LAYOUT-TABLE-INTRINSIC-MEASUREMENT-BUDGET-EXCEEDED-001";
 
+    /// <summary>Emitted by <c>NestedContentMeasurer</c> when speculative content
+    /// measurement (the intrinsic min/max-content probes for content-sized flex / grid /
+    /// table boxes) nests deeper than <c>NestedContentMeasurer.MaxMeasureNestingDepth</c>.
+    /// Each content-sized box can spawn its OWN probes, so unbounded nesting is
+    /// ~exponential; past the cap the innermost box measures as 0-extent rather than
+    /// DoS-amplifying. The cap is generous — no real document nests content-sized boxes this
+    /// deep, so it never fires in practice. Defends against hostile HTML. Mirrors the table
+    /// intrinsic-measurement budget. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutMeasureNestingBudgetExceeded001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutMeasureNestingBudgetExceeded001 =
+        "LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001";
+
     /// <summary>Per Phase 3 Task 13 cycle 1 hardening Finding 5 —
     /// emitted by <c>TableLayouter</c> when the break resolver returns
     /// <see cref="BreakAction.Rewind"/> at a table row boundary. Cycle

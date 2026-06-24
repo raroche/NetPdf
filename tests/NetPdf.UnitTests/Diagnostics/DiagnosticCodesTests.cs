@@ -539,6 +539,37 @@ public sealed class DiagnosticCodesTests
     }
 
     // ============================================================
+    // Speculative-measure cycle (out-of-flow skip + nesting budget) —
+    // LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_measure_nesting_budget_exceeded_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutMeasureNestingBudgetExceeded001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_measure_nesting_budget_exceeded_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001",
+            DiagnosticCodes.LayoutMeasureNestingBudgetExceeded001);
+    }
+
+    [Fact]
+    public void Layout_measure_nesting_budget_exceeded_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutMeasureNestingBudgetExceeded001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutMeasureNestingBudgetExceeded001);
+    }
+
+    // ============================================================
     // Phase 3 Task 13 cycle 1 hardening Finding 5 —
     // LAYOUT-TABLE-REWIND-NOT-SUPPORTED-001 parity.
     // ============================================================

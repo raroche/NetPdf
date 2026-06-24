@@ -39,6 +39,21 @@ internal static class NestedContentMeasurer
     /// nested continuations) is the documented follow-up; see <c>docs/deferrals.md</c>.</para></summary>
     public const double EffectivelyUnboundedBlockBudgetPx = 1_000_000.0;
 
+    /// <summary>Speculative-measure recursion-depth budget. Each nested auto-sized box can
+    /// trigger its OWN intrinsic min/max-content probes, so unbounded nesting of content-sized
+    /// flex / grid / table boxes is ~exponential. This caps the speculative measure NESTING
+    /// depth: past it, <see cref="Measure"/> emits
+    /// <c>LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001</c> and returns an empty buffer (a
+    /// degenerate 0-extent measure) rather than DoS-amplifying. Generous — no real document
+    /// nests content-sized boxes this deep, so the cap never fires in practice (byte-identical),
+    /// and it defends against hostile HTML. Mirrors the table intrinsic-measurement budget.</summary>
+    public const int MaxMeasureNestingDepth = 96;
+
+    // Tracks the live speculative-measure recursion depth on the layout thread (layout is
+    // single-threaded per conversion; a balanced try/finally keeps it correct + deterministic).
+    [ThreadStatic]
+    private static int _nestingDepth;
+
     /// <summary>Lay out <paramref name="box"/>'s content at
     /// <paramref name="availInlineContentSize"/> available inline size into a
     /// new buffer. <paramref name="blockBudget"/> sizes the inner
@@ -61,8 +76,29 @@ internal static class NestedContentMeasurer
         bool isRtl,
         CancellationToken cancellationToken,
         IPaginateDiagnosticsSink? diagnostics = null,
-        bool intrinsicSizingMode = false)
+        bool intrinsicSizingMode = false,
+        // Speculative-measure cycle — DEFAULT true: this is the *Measurer*, and out-of-flow
+        // (abspos / fixed) descendants don't contribute to a box's intrinsic inline width or
+        // §10.6.7 auto block size, so skipping their emission leaves ContentInlineExtent /
+        // ContentBlockExtent unchanged while avoiding a fully-laid-out (and recursively
+        // re-measured) abspos subtree the caller drops. EMISSION callers that FLUSH this buffer
+        // into the final tree (FlexLayouter's item-content flush) MUST pass false.
+        bool suppressOutOfFlowEmission = true)
     {
+        // Speculative-measure recursion-depth budget — past the cap, return a degenerate
+        // 0-extent buffer + surface a diagnostic (never silently). The cap is generous enough
+        // that real documents never reach it, so this is byte-identical in practice.
+        if (_nestingDepth >= MaxMeasureNestingDepth)
+        {
+            diagnostics?.Emit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutMeasureNestingBudgetExceeded001,
+                Message: $"Speculative content measurement nested deeper than the budget "
+                    + $"({MaxMeasureNestingDepth}); the innermost box measures as 0-extent. "
+                    + "This defends against pathologically deep content-sized box trees.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+            return new BufferingMeasureSink(decorationOwner: box);
+        }
+
         // The box is its own content's decoration owner: a content fragment
         // whose box IS this box (the inline-only-root case) paints text only.
         var buffer = new BufferingMeasureSink(decorationOwner: box);
@@ -95,15 +131,28 @@ internal static class NestedContentMeasurer
             // The common item (`<div>text</div>`) has DIRECT inline children;
             // opt the nested layouter into emitting the inline-only ROOT's own
             // content (else the block-only child loop skips the box's text).
-            layoutRootInlineContent: true);
+            layoutRootInlineContent: true,
+            // Out-of-flow descendants don't affect the measured intrinsic extents and the
+            // caller (when this is a pure measure) drops the buffer, so skip their emission.
+            suppressOutOfFlowEmission: suppressOutOfFlowEmission);
         // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
         // opportunities so they don't collapse min-content to glyph width (mirrors the
         // table cell min-content pass via TableLayouter.MeasureCellContent).
         layouter.SetIntrinsicSizingMode(intrinsicSizingMode);
         using var resolver = new BreakResolver();
-        _ = layouter.AttemptLayout(
-            innerFragmentainer, ref innerLayout, resolver,
-            LayoutAttemptStrategy.LastResort, cancellationToken);
+        // Count THIS speculative measure against the nesting budget while its content (which
+        // may spawn its own nested measures) lays out; the balanced finally keeps it correct.
+        _nestingDepth++;
+        try
+        {
+            _ = layouter.AttemptLayout(
+                innerFragmentainer, ref innerLayout, resolver,
+                LayoutAttemptStrategy.LastResort, cancellationToken);
+        }
+        finally
+        {
+            _nestingDepth--;
+        }
         return buffer;
     }
 }

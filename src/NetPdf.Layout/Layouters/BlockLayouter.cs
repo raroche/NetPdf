@@ -291,6 +291,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// nested flex is measured at its FULL extent, not projected to one page).</summary>
     private readonly bool _disableFlexPagination;
 
+    /// <summary>Speculative-measure cycle — when <see langword="true"/>, the
+    /// out-of-flow emission passes (<see cref="EmitAbsolutelyPositionedChildren"/> /
+    /// <see cref="EmitFixedPositionedChildren"/>) are SKIPPED. Set by EXTENT-ONLY
+    /// speculative measures (the intrinsic min/max-content probes whose buffer is read
+    /// for <c>ContentInlineExtent</c> / <c>ContentBlockExtent</c> and then DROPPED — see
+    /// <see cref="NestedContentMeasurer"/> + <c>TableLayouter.MeasureCellContent</c>'s
+    /// min/max passes). Out-of-flow boxes do NOT contribute to a box's intrinsic inline
+    /// width or its §10.6.7 auto block size (CSS 2.2 §10.3.7 / §10.6 — abspos / fixed are
+    /// taken out of normal flow), so the measured extents are unchanged → byte-identical;
+    /// the win is skipping a fully-laid-out abspos subtree (and its own nested measures —
+    /// ~exponential for nested auto-sized boxes) whose fragments the caller throws away.
+    /// NEVER set by an emission caller that FLUSHES the buffer into the final tree
+    /// (FlexLayouter's item-content flush, the table cell's <c>contentBuffer</c>) — those
+    /// must still emit the out-of-flow descendants.</summary>
+    private readonly bool _suppressOutOfFlowEmission;
+
     /// <summary>Non-block-pagination arc (flex item CONTENT layout) — when
     /// <see langword="true"/>, a NESTED BlockLayouter whose <c>_rootBox</c> is
     /// itself an inline-only block container (every direct child inline-level)
@@ -509,7 +525,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IShaperResolver? shaperResolver = null,
         bool disableGridPagination = false,
         bool layoutRootInlineContent = false,
-        bool disableFlexPagination = false)
+        bool disableFlexPagination = false,
+        bool suppressOutOfFlowEmission = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -545,6 +562,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _disableGridPagination = disableGridPagination;
         _layoutRootInlineContent = layoutRootInlineContent;
         _disableFlexPagination = disableFlexPagination;
+        _suppressOutOfFlowEmission = suppressOutOfFlowEmission;
     }
 
     /// <inheritdoc />
@@ -582,6 +600,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         if (_incomingContinuation is null
             && !_absoluteChildrenEmitted
+            && !_suppressOutOfFlowEmission
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)
         {
@@ -602,6 +621,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // fresh BlockLayouter is constructed per page, so the fixed box
         // still emits once per page.
         if (!_fixedChildrenEmitted
+            && !_suppressOutOfFlowEmission
             && _rootBox.Kind == BoxKind.Root
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)

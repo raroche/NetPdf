@@ -1048,6 +1048,52 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Row_wrap_reverse_align_items_start_does_not_follow_the_flex_permutation()
+    {
+        // flex-layouter-features residual — `align-items: start` is the CONTAINER writing-mode start,
+        // which `wrap-reverse` does NOT permute (unlike `flex-start`). A ROW container's cross axis is
+        // the block axis; writing-mode block-start = TOP. So under `wrap-reverse` the item stays at the
+        // top: BlockOffset = +0 (vs `flex-start` → +150, the next test). crossSpace = 200-50 = 150.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap-reverse; align-items:start;
+                        width:600px; height:200px; }
+                .item-a { width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.Equal(flex!.Value.BlockOffset + 0.0, a!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Row_wrap_reverse_align_items_flex_start_follows_the_permutation()
+    {
+        // The contrast — `flex-start` IS flex-flow-relative, so `wrap-reverse` permutes it: the item
+        // anchors at the line's permuted cross-start (physical BOTTOM for a row), BlockOffset = +150.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap-reverse; align-items:flex-start;
+                        width:600px; height:200px; }
+                .item-a { width:100px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.Equal(flex!.Value.BlockOffset + 150.0, a!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
     public async Task L5_production_html_flex_direction_row_reverse()
     {
         // Per Phase 3 Task 15 L5 — real HTML <div> with

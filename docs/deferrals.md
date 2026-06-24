@@ -952,9 +952,9 @@ grepping the ID).
   wrapping, and multi-page container splitting. The residual approximations are enumerated
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
   `align-content: baseline`, margin-box in the alignment / justify-content free-space
-  math, `start`/`end` vs `flex-start`/`flex-end` under `wrap-reverse` — the RTL column
-  cross axis, per-item anchor AND line-stacking, now SHIPS — + vertical writing modes).
-  Percentage gaps + percentage
+  math, VERTICAL writing modes — the RTL column cross axis (per-item anchor AND
+  line-stacking) AND the `start`/`end` vs `flex-start`/`flex-end` `wrap-reverse`
+  distinction now SHIP). Percentage gaps + percentage
   item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
   pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
@@ -1160,10 +1160,15 @@ grepping the ID).
     logical keywords resolve against the ITEM's own `direction` (an LTR child
     in an RTL column anchors at its own start), via the preserved
     `ResolvedAlign*.IsSelfRelative` flag. Pinned by the `Column_rtl_*` tests.
-    **Still deferred**: `start`/`end` vs `flex-start`/`flex-end` divergence
-    under `wrap-reverse` (writing-mode-relative keywords should NOT follow the
-    flex permutation — a pre-existing logical-keyword gap, not column-rtl-
-    specific), and all VERTICAL writing modes (`writing-mode` is not yet a
+    **Also shipped** (residual long-tail): `start`/`end` resolve against the
+    CONTAINER's writing-mode/direction and do NOT follow the `wrap-reverse`
+    flex permutation (unlike `flex-start`/`flex-end`) — a second
+    `IsContainerLogical` flag on `ResolvedAlign*` drives the
+    container-direction-only (`isColumnRtl`) reversal at the per-item anchor,
+    so under `wrap-reverse` `align-items: start` stays at the writing-mode
+    cross-start while `flex-start` permutes (pinned by the
+    `Row_wrap_reverse_align_items_{start,flex_start}_*` tests). **Still
+    deferred**: all VERTICAL writing modes (`writing-mode` is not yet a
     registered property; `row` in vertical-rl swaps the main + cross axes onto
     the rotated block + inline directions).
   - Outer-main-size + auto-margins in `justify-content` free-space

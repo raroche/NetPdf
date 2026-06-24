@@ -1447,17 +1447,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
                 else
                 {
-                    // The cross-axis anchor reversal: `flex-start`/`flex-end`/`start`/`end` resolve
-                    // against the CONTAINER (`isCrossAxisReversed` = isWrapReverse ^ isColumnRtl). PR
-                    // #215 review [P2] — `self-start`/`self-end` instead resolve against the ITEM's own
-                    // `direction`, so a column container's RTL flip uses the item's direction, not the
-                    // container's (an LTR child with `align-self: self-start` in an RTL column stays
-                    // left). The wrap-reverse component is preserved for both; for an item whose
-                    // direction matches the container this is identical to `isCrossAxisReversed`
-                    // (byte-identical — only a mixed-direction self-* item diverges).
-                    var anchorReversed = effectiveAlign.IsSelfRelative
-                        ? isWrapReverse ^ (isColumn && item.Style.IsRtl())
-                        : isCrossAxisReversed;
+                    // The cross-axis anchor reversal, by keyword family (CSS Box Alignment L3 §6.2):
+                    //   • `flex-start`/`flex-end` — flex-flow-relative: the container cross-start, which
+                    //     `wrap-reverse` permutes → `isCrossAxisReversed` (isWrapReverse ^ isColumnRtl).
+                    //   • `start`/`end` — the CONTAINER's writing-mode/direction, which `wrap-reverse`
+                    //     does NOT permute → `isColumnRtl` only (no wrap-reverse component). Coincides
+                    //     with flex-start except under wrap-reverse, where they now diverge correctly.
+                    //   • `self-start`/`self-end` — the ITEM's OWN writing-mode/direction (PR #215 [P2])
+                    //     → the item's direction; an LTR child in an RTL column stays at its own start.
+                    // For an item matching the container's direction with no wrap-reverse these all
+                    // coincide → byte-identical; only wrap-reverse `start`/`end` and mixed-direction
+                    // `self-*` diverge.
+                    var anchorReversed = effectiveAlign.IsContainerLogical
+                        ? isColumnRtl
+                        : effectiveAlign.IsSelfRelative
+                            ? isWrapReverse ^ (isColumn && item.Style.IsRtl())
+                            : isCrossAxisReversed;
                     (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                         ComputeAlignItemsPlacement(
                             effectiveAlign.Value, effectiveAlign.Mode,

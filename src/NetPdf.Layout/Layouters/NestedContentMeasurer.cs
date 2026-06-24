@@ -77,20 +77,21 @@ internal static class NestedContentMeasurer
         CancellationToken cancellationToken,
         IPaginateDiagnosticsSink? diagnostics = null,
         bool intrinsicSizingMode = false,
-        // Speculative-measure cycle — DEFAULT true: this is the *Measurer*. It gates two
-        // measure-mode behaviors that both leave the measured extents unchanged: (1) out-of-flow
-        // (abspos / fixed) descendants aren't emitted (they don't contribute to intrinsic inline
-        // width or §10.6.7 auto block size, and laying out + recursively re-measuring a dropped
-        // subtree is wasted); (2) percentage padding resolves to 0 (intrinsic sizing) WITHOUT
-        // persisting the speculative (e.g. 1e6 max-content) basis onto the shared style. EMISSION
-        // callers that FLUSH this buffer into the final tree (FlexLayouter's item-content flush)
-        // MUST pass false so they emit out-of-flow descendants + resolve real percentage padding.
-        bool isSpeculativeMeasure = true)
+        // PR #218 review [P1 #1 / P2 #5] — the EFFECTIVE measure purpose for this nested pass
+        // (already combined with the caller's parent purpose via MeasurePurpose.ForNested). It is set
+        // on the inner LayoutContext so it propagates TRANSITIVELY into any nested specialized
+        // layouter (a flex/grid/table descendant inherits the intrinsic / definite-extent measure
+        // instead of starting a fresh real-layout pass that would emit out-of-flow content or persist
+        // a probe-derived percentage inset). DEFAULT IntrinsicContribution (the *Measurer*'s common
+        // case); emission callers that FLUSH this buffer pass MeasurePurpose.Layout.
+        MeasurePurpose purpose = MeasurePurpose.IntrinsicContribution)
     {
-        // Speculative-measure recursion-depth budget — past the cap, return a degenerate
-        // 0-extent buffer + surface a diagnostic (never silently). The cap is generous enough
-        // that real documents never reach it, so this is byte-identical in practice.
-        if (_nestingDepth >= MaxMeasureNestingDepth)
+        // Recursion-depth budget — ONLY for speculative (non-Layout) measures: a Layout pass FLUSHES
+        // its buffer into the final tree, so capping it would silently DROP real content (PR #218
+        // review [P1 #3]). Past the cap, return a degenerate 0-extent buffer + a diagnostic (never
+        // silently). The cap is generous enough that real documents never reach it → byte-identical.
+        var speculative = purpose != MeasurePurpose.Layout;
+        if (speculative && _nestingDepth >= MaxMeasureNestingDepth)
         {
             diagnostics?.Emit(new PaginateDiagnostic(
                 Code: PaginateDiagnosticCodes.LayoutMeasureNestingBudgetExceeded001,
@@ -112,6 +113,8 @@ internal static class NestedContentMeasurer
             WritingMode = writingMode,
             IsRtl = isRtl,
             Diagnostics = diagnostics,
+            // Carries the purpose transitively into the nested layouter (+ its own nested measures).
+            MeasurePurpose = purpose,
         };
         using var layouter = new BlockLayouter(
             rootBox: box,
@@ -133,19 +136,15 @@ internal static class NestedContentMeasurer
             // The common item (`<div>text</div>`) has DIRECT inline children;
             // opt the nested layouter into emitting the inline-only ROOT's own
             // content (else the block-only child loop skips the box's text).
-            layoutRootInlineContent: true,
-            // Out-of-flow descendants don't affect the measured intrinsic extents and the
-            // caller (when this is a pure measure) drops the buffer, so skip their emission;
-            // percentage padding likewise resolves to 0 without persisting (intrinsic sizing).
-            isSpeculativeMeasure: isSpeculativeMeasure);
+            layoutRootInlineContent: true);
         // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
         // opportunities so they don't collapse min-content to glyph width (mirrors the
         // table cell min-content pass via TableLayouter.MeasureCellContent).
         layouter.SetIntrinsicSizingMode(intrinsicSizingMode);
         using var resolver = new BreakResolver();
-        // Count THIS speculative measure against the nesting budget while its content (which
-        // may spawn its own nested measures) lays out; the balanced finally keeps it correct.
-        _nestingDepth++;
+        // Count THIS speculative measure against the nesting budget while its content (which may
+        // spawn its own nested measures) lays out; balanced + ONLY for speculative measures.
+        if (speculative) _nestingDepth++;
         try
         {
             _ = layouter.AttemptLayout(
@@ -154,7 +153,7 @@ internal static class NestedContentMeasurer
         }
         finally
         {
-            _nestingDepth--;
+            if (speculative) _nestingDepth--;
         }
         return buffer;
     }

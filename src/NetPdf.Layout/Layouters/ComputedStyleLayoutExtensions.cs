@@ -496,14 +496,15 @@ internal static class ComputedStyleLayoutExtensions
     public static bool ForcesPageBreakAfter(this ComputedStyle style)
         => ForcesPageBreak(style, PropertyId.BreakAfter, PropertyId.PageBreakAfter);
 
-    /// <summary>Per CSS Page L3 §3.4.1 — the PAGE-PARITY constraint of a forced
-    /// <c>break-before</c> (or the legacy <c>page-break-before</c> alias): which side / parity of
-    /// page the following content must land on. <c>left</c> / <c>right</c> are writing-mode-relative
-    /// (the layouter/driver resolves them against the page direction); <c>recto</c> / <c>verso</c>
-    /// are absolute (right-hand / left-hand). <c>page</c> / <c>always</c> / <c>all</c> (and any
-    /// non-forced value) carry NO parity constraint → <see cref="PageParity.Any"/>. The driver
-    /// inserts a blank <c>@page :blank</c> when a forced break would otherwise land on the wrong
-    /// parity.</summary>
+    /// <summary>Per CSS Fragmentation L3 §3.1 + CSS Page L3 §3.4.1 — the PAGE-PARITY constraint of a
+    /// forced <c>break-before</c> (or the legacy <c>page-break-before</c> alias): which side / parity
+    /// of page the following content must land on. <c>left</c> / <c>right</c> are PHYSICAL (the left /
+    /// right page of the spread); <c>recto</c> / <c>verso</c> follow the page PROGRESSION (recto = the
+    /// side reading starts — physical right in LTR, physical left in RTL — so they swap with the page
+    /// direction, while <c>left</c> / <c>right</c> do not). <c>page</c> / <c>always</c> / <c>all</c>
+    /// (and any non-forced value) carry NO parity constraint → <see cref="PageParity.Any"/>. The
+    /// driver inserts a blank <c>@page :blank</c> when a forced break would otherwise land on the
+    /// wrong parity.</summary>
     public static PageParity ForcedPageBreakParityBefore(this ComputedStyle style)
         => ForcedPageBreakParity(style, PropertyId.BreakBefore, PropertyId.PageBreakBefore);
 

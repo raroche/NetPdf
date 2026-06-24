@@ -4749,8 +4749,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             layout: ref layout,
             cancellationToken: cancellationToken,
             intrinsicSizingMode: true,
-            // Pure measure — the buffer is read for min-content then dropped; skip out-of-flow.
-            isSpeculativeMeasure: true);
+            // Intrinsic probe — the buffer is read for min-content then dropped (cyclic % → 0).
+            measurePurpose: MeasurePurpose.IntrinsicContribution);
         var minContent = minBuffer.MaxInlineExtentFromCellOrigin;
 
         // Max-content pass — cellInlineSize = 1e6 (effectively
@@ -4765,8 +4765,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             layout: ref layout,
             cancellationToken: cancellationToken,
             intrinsicSizingMode: false,
-            // Pure measure — the buffer is read for max-content then dropped; skip out-of-flow.
-            isSpeculativeMeasure: true);
+            // Intrinsic probe — the buffer is read for max-content then dropped (cyclic % → 0).
+            measurePurpose: MeasurePurpose.IntrinsicContribution);
         var maxContent = maxBuffer.MaxInlineExtentFromCellOrigin;
 
         // Defensive: clamp max-content to 1e6 in case the inner layout
@@ -5316,18 +5316,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// count for min-content sizing). <c>overflow-wrap: anywhere</c>
     /// opportunities continue to fire. Defaults to
     /// <see langword="false"/> for the final main-measure pass.</param>
-    /// <param name="isSpeculativeMeasure">Speculative-measure cycle —
-    /// when <see langword="true"/>, the inner <see cref="BlockLayouter"/>
-    /// SKIPS its out-of-flow (abspos / fixed) emission passes AND leaves
-    /// percentage padding unresolved (so it reads as 0 per intrinsic sizing
-    /// rather than persisting the 1e6 max-content basis onto the shared
-    /// style). Neither affects a cell's intrinsic min/max-content width, so
-    /// the measured extent is unchanged. Set <see langword="true"/> only by the
-    /// intrinsic min/max probes (whose buffer is dropped). Defaults to
-    /// <see langword="false"/> for the row-layout measure, whose buffer is
-    /// flushed as the cell's content (so its out-of-flow descendants must emit
-    /// and its percentage padding must resolve against the real cell
-    /// width).</param>
+    /// <param name="measurePurpose">PR #218 review [P1 #1 / P2 #5] — the REQUESTED purpose of the
+    /// cell content pass, COMBINED with the outer table's purpose
+    /// (<see cref="MeasurePurposeExtensions.ForNested"/>): the intrinsic min/max probes pass
+    /// <see cref="MeasurePurpose.IntrinsicContribution"/> (out-of-flow skipped, cyclic % → 0); the
+    /// row-layout measure passes <see cref="MeasurePurpose.Layout"/> — its buffer flushes as the
+    /// cell's content, so it emits out-of-flow descendants + resolves real % padding (UNLESS the
+    /// whole table is itself being measured intrinsically, in which case it inherits that).</param>
     /// <returns>Tuple of the buffered fragments, the buffered cell-
     /// internal diagnostic sink, and the cell's box-model inline edges
     /// (= border-inline-start + padding-inline-start +
@@ -5345,11 +5340,9 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         ref LayoutContext layout,
         CancellationToken cancellationToken,
         bool intrinsicSizingMode = false,
-        // Speculative-measure cycle — opt-in for the INTRINSIC min/max-content probes (whose
-        // buffer is read for a width then dropped): skip out-of-flow emission (it doesn't affect
-        // the measured extent). DEFAULT false — the row-layout cell measure flushes its buffer as
-        // the cell's `contentBuffer`, so it must still emit out-of-flow descendants.
-        bool isSpeculativeMeasure = false)
+        // The REQUESTED measure purpose (combined with the outer purpose via ForNested above).
+        // DEFAULT Layout — the row-layout cell measure flushes its buffer as the cell's content.
+        MeasurePurpose measurePurpose = MeasurePurpose.Layout)
     {
         // The cell is a block-flow container. Wrap it in a Root box
         // would require allocating a parent — the simpler approach is
@@ -5459,6 +5452,10 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             Diagnostics = cellDiagnosticSink,
             WritingMode = layout.WritingMode,
             IsRtl = layout.IsRtl,
+            // PR #218 review [P1 #1] — combine with the OUTER purpose so a cell measured inside an
+            // intrinsic table measure inherits it (the row-layout cell content otherwise requests
+            // Layout — its buffer flushes as the cell content; the min/max probes request Intrinsic).
+            MeasurePurpose = layout.MeasurePurpose.ForNested(measurePurpose),
         };
 
         using var cellLayouter = new BlockLayouter(
@@ -5480,10 +5477,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // PR-#182 review P1 — same reasoning for a paginatable
             // column-FLEX inside a cell (its discarded PageComplete
             // would drop the deferred items); suppress flex pagination.
-            disableFlexPagination: true,
-            // Speculative-measure cycle — the min/max intrinsic probes skip out-of-flow emission
-            // (false for the row-layout measure, whose buffer is flushed as the cell content).
-            isSpeculativeMeasure: isSpeculativeMeasure);
+            disableFlexPagination: true);
 
         // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
         // propagate the intrinsic-sizing-mode flag into the nested

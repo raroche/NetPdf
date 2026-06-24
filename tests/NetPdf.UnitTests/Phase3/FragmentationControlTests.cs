@@ -253,6 +253,29 @@ public sealed class FragmentationControlTests : System.IDisposable
     }
 
     [Fact]
+    public void Break_before_left_on_the_first_content_starts_the_document_on_a_verso_page()
+    {
+        // PR #218 review [P1 #4] — CSS Page §3.6: `break-before:left` on the FIRST content selects a
+        // verso (left) STARTING page (page 1), WITHOUT a leading blank. So a following
+        // `break-before:right` lands on page 2 — now a RECTO, because page 1 is verso — with NO blank
+        // → 2 pages. Without the starting-side offset page 1 would be recto, page 2 verso, and the
+        // right break would insert a blank → 3 pages (cf. Break_before_right_inserts_a_blank, which has
+        // a non-forced first block so page 1 stays recto).
+        Assert.Equal(2, Pages(
+            "<div style='break-before:left'>first</div><div style='break-before:right'>second</div>"));
+    }
+
+    [Fact]
+    public void Without_a_first_page_side_a_right_break_after_a_left_aligned_first_block_inserts_a_blank()
+    {
+        // Contrast — the FIRST block has no forced break, so page 1 stays recto (no starting-side
+        // offset); the second block's `break-before:right` (recto) then needs page 2 (verso) → a blank
+        // is inserted → 3 pages. Confirms the offset above comes from the first block's break-before.
+        Assert.Equal(3, Pages(
+            "<div>first</div><div style='break-before:right'>second</div>"));
+    }
+
+    [Fact]
     public void Forced_break_on_grandchild_prose_propagates_through_a_fitting_ancestor()
     {
         // PR #207 review [P2#4] — a forced break on nested PROSE splits its fitting

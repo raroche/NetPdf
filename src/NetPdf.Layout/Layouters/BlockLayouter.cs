@@ -291,31 +291,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// nested flex is measured at its FULL extent, not projected to one page).</summary>
     private readonly bool _disableFlexPagination;
 
-    /// <summary>Speculative-measure cycle — <see langword="true"/> when this layouter is an
-    /// EXTENT-ONLY intrinsic measure (a min/max-content probe whose buffer is read for
-    /// <c>ContentInlineExtent</c> / <c>ContentBlockExtent</c> and then DROPPED — see
-    /// <see cref="NestedContentMeasurer"/> + <c>TableLayouter.MeasureCellContent</c>'s min/max
-    /// passes), as opposed to a real layout (or an emission caller that FLUSHES its buffer into
-    /// the final tree). It gates two measure-mode behaviors, both keeping the measured extents
-    /// the same as the real layout → byte-identical:
+    /// <summary>PR #218 review [P1 #1 / P2 #5] — the PURPOSE of this layout pass, captured at
+    /// <see cref="AttemptLayout"/> entry from <c>layout.MeasurePurpose</c> so it is TRANSITIVE: a
+    /// nested specialized layouter (flex / grid / table) inherits the measure via the by-ref
+    /// <see cref="LayoutContext"/> instead of starting a fresh real-layout pass. It drives two
+    /// independent policies, both keeping a measure's extents the same as the real layout:
     /// <list type="number">
-    ///   <item>The out-of-flow emission passes (<see cref="EmitAbsolutelyPositionedChildren"/> /
-    ///   <see cref="EmitFixedPositionedChildren"/>) are SKIPPED — abspos / fixed boxes don't
-    ///   contribute to a box's intrinsic inline width or §10.6.7 auto block size (CSS 2.2
-    ///   §10.3.7 / §10.6), so the win is not laying out (+ recursively re-measuring) a subtree
-    ///   the caller throws away.</item>
-    ///   <item>Percentage padding is NOT resolved in place against the (speculative, e.g. 1e6
-    ///   max-content) containing size — per intrinsic sizing a percentage padding resolves to 0
-    ///   (CSS Sizing §4.1 — its basis is indefinite), and persisting the 1e6-derived value would
-    ///   corrupt the SHARED <c>ComputedStyle</c> the real layout + paint read later
-    ///   (<see cref="ComputedStyleLayoutExtensions.ResolveUsedPercentPaddingInPlace"/> rewrites
-    ///   the slot in place). Leaving the slot Percentage makes it read as 0 during the probe and
-    ///   stay resolvable against the REAL containing size in the final layout.</item>
-    /// </list>
-    /// NEVER set by an emission caller (FlexLayouter's item-content flush, the table cell's
-    /// <c>contentBuffer</c>) — those must emit out-of-flow descendants AND resolve real
-    /// percentage padding.</summary>
-    private readonly bool _isSpeculativeMeasure;
+    ///   <item><b>Out-of-flow emission</b> (<see cref="MeasurePurposeExtensions.SuppressesOutOfFlowEmission"/>)
+    ///   — the abspos / fixed passes (<see cref="EmitAbsolutelyPositionedChildren"/> /
+    ///   <see cref="EmitFixedPositionedChildren"/>) are SKIPPED for any extent-only measure
+    ///   (they don't contribute to intrinsic inline width or §10.6.7 auto block size).</item>
+    ///   <item><b>Cyclic percentage insets</b>
+    ///   (<see cref="MeasurePurposeExtensions.ZeroesCyclicPercentInsets"/>) — for an
+    ///   <see cref="MeasurePurpose.IntrinsicContribution"/> probe the percentage padding / margin
+    ///   resolution base is 0 (CSS Sizing §5.2.1 — the basis is indefinite); a
+    ///   <see cref="MeasurePurpose.DefiniteWidthExtent"/> measure resolves them against its definite
+    ///   width. Only a <see cref="MeasurePurpose.Layout"/> pass PERSISTS the resolved value onto the
+    ///   shared style for paint.</item>
+    /// </list></summary>
+    private MeasurePurpose _measurePurpose;
 
     /// <summary>Non-block-pagination arc (flex item CONTENT layout) — when
     /// <see langword="true"/>, a NESTED BlockLayouter whose <c>_rootBox</c> is
@@ -535,8 +529,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IShaperResolver? shaperResolver = null,
         bool disableGridPagination = false,
         bool layoutRootInlineContent = false,
-        bool disableFlexPagination = false,
-        bool isSpeculativeMeasure = false)
+        bool disableFlexPagination = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -572,7 +565,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _disableGridPagination = disableGridPagination;
         _layoutRootInlineContent = layoutRootInlineContent;
         _disableFlexPagination = disableFlexPagination;
-        _isSpeculativeMeasure = isSpeculativeMeasure;
     }
 
     /// <inheritdoc />
@@ -608,12 +600,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Reset the forced-break parity per attempt; the child loop sets it if a forced
         // left/right/recto/verso break ends this page.
         _forcedBreakParityForNextPage = PageParity.Any;
+        // Capture the pass purpose from the (transitive) context so the gate sites + nested
+        // specialized layouters inherit an intrinsic / definite-extent measure (PR #218 [P1 #1]).
+        _measurePurpose = layout.MeasurePurpose;
         var result = AttemptLayoutInFlow(
             fragmentainer, ref layout, resolver, strategy, cancellationToken);
 
         if (_incomingContinuation is null
             && !_absoluteChildrenEmitted
-            && !_isSpeculativeMeasure
+            && !_measurePurpose.SuppressesOutOfFlowEmission()
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)
         {
@@ -634,7 +629,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // fresh BlockLayouter is constructed per page, so the fixed box
         // still emits once per page.
         if (!_fixedChildrenEmitted
-            && !_isSpeculativeMeasure
+            && !_measurePurpose.SuppressesOutOfFlowEmission()
             && _rootBox.Kind == BoxKind.Root
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)
@@ -1427,9 +1422,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // resolve against the containing block's INLINE size (CSS 2.2 §8.3/§8.4 — including
             // the top/bottom ones); a % HEIGHT resolves against the fragmentainer's definite
             // content height below (percent-height cycle).
-            var pctBase = fragmentainer.ContentInlineSize;
-            if (!_isSpeculativeMeasure)   // a speculative measure leaves % padding as 0 (intrinsic sizing) — no persist.
-                child.Style.ResolveUsedPercentPaddingInPlace(pctBase);   // paint reads the slots later.
+            // PR #218 review [P1 #2 / P2 #5] — cyclic % padding/margins resolve against 0 in an
+            // INTRINSIC contribution probe (CSS Sizing §5.2.1 — the basis is indefinite), and against
+            // the definite width otherwise. Only a real layout PERSISTS the resolved % padding for
+            // paint; a dropped measure must leave the shared slot Percentage.
+            var realInlineBase = fragmentainer.ContentInlineSize;
+            var pctBase = _measurePurpose.ZeroesCyclicPercentInsets() ? 0.0 : realInlineBase;
+            if (_measurePurpose == MeasurePurpose.Layout)
+                child.Style.ResolveUsedPercentPaddingInPlace(realInlineBase);   // paint reads the slots later.
             var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctBase);
             var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctBase);
@@ -4935,16 +4935,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
             // Body % lengths (body-percent cycle) — same §8.3/§8.4 inline-axis base as the outer
             // dispatch path, here the parent's content box.
-            if (!_isSpeculativeMeasure)   // a speculative measure leaves % padding as 0 (intrinsic sizing) — no persist.
+            // PR #218 review [P1 #2 / P2 #5] — cyclic % padding/margins → 0 for an intrinsic probe
+            // (CSS Sizing §5.2.1), real against the definite width otherwise; only a real layout
+            // persists the resolved % padding for paint.
+            var pctInsetBase = _measurePurpose.ZeroesCyclicPercentInsets() ? 0.0 : contentInlineSize;
+            if (_measurePurpose == MeasurePurpose.Layout)
                 child.Style.ResolveUsedPercentPaddingInPlace(contentInlineSize);   // paint reads the slots later.
-            var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
-            var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, contentInlineSize);
-            var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, contentInlineSize);
-            var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, contentInlineSize);
+            var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctInsetBase);
+            var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, pctInsetBase);
+            var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, pctInsetBase);
+            var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, pctInsetBase);
             var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-            var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, contentInlineSize);
-            var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, contentInlineSize);
+            var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctInsetBase);
+            var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, pctInsetBase);
             // % height resolves against the parent's DEFINITE content height (0 = indefinite →
             // auto, CSS 2.2 §10.5 — percent-height cycle).
             var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
@@ -6360,7 +6364,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Box-model reads — the SHARED float model (percent-aware on the inline axis against
         // the BFC content box + the used-%-padding in-place rewrite for paint; % height stays
         // deferred). See <see cref="ReadFloatBoxModel"/>.
-        var box = ReadFloatBoxModel(child, _bfcContentInlineSize, _isSpeculativeMeasure);
+        var box = ReadFloatBoxModel(child, _bfcContentInlineSize, _measurePurpose);
         var marginStart = box.MarginStart;
         var marginInlineStart = box.MarginInlineStart;
         var borderBoxBlockSize = box.BorderBoxBlockSize;
@@ -6501,7 +6505,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // lengths, so a `% margin-top`/`% padding-top` float could pass
         // break planning and only overflow after EmitFloat resolved the
         // percentages; the shared model keeps both percent-aware).
-        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _isSpeculativeMeasure);
+        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _measurePurpose);
 
         // Per post-PR-31 review (P1 #3 + Copilot #1) — use the
         // FloatManager peek API which mirrors PlaceFloat's stacking
@@ -6534,22 +6538,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <see cref="WouldFloatOverflow"/> pre-check calling this before a deferral re-check is
     /// harmless.</summary>
     private static FloatBoxModel ReadFloatBoxModel(
-        Box child, double bfcInlineSizePx, bool isSpeculativeMeasure)
+        Box child, double bfcInlineSizePx, MeasurePurpose measurePurpose)
     {
-        if (!isSpeculativeMeasure)   // a speculative measure leaves % padding as 0 (intrinsic sizing) — no persist.
+        // PR #218 review [P1 #2 / P2 #5] — cyclic % padding/margins → 0 for an intrinsic probe (CSS
+        // Sizing §5.2.1), real against the BFC width otherwise; only a real layout persists for paint.
+        var pctInsetBase = measurePurpose.ZeroesCyclicPercentInsets() ? 0.0 : bfcInlineSizePx;
+        if (measurePurpose == MeasurePurpose.Layout)
             child.Style.ResolveUsedPercentPaddingInPlace(bfcInlineSizePx);   // paint reads the slots later.
-        var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, bfcInlineSizePx);
-        var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, bfcInlineSizePx);
-        var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, bfcInlineSizePx);
-        var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, bfcInlineSizePx);
+        var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctInsetBase);
+        var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, pctInsetBase);
+        var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, pctInsetBase);
+        var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, pctInsetBase);
         var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
         var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
         var borderInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
         var borderInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-        var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, bfcInlineSizePx);
-        var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, bfcInlineSizePx);
-        var paddingInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, bfcInlineSizePx);
-        var paddingInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, bfcInlineSizePx);
+        var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctInsetBase);
+        var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, pctInsetBase);
+        var paddingInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, pctInsetBase);
+        var paddingInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, pctInsetBase);
         var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
         var contentInline = child.Style.ReadLengthOrPercentPx(PropertyId.Width, bfcInlineSizePx);
 
@@ -6650,7 +6657,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the BFC content box + the used-%-padding in-place rewrite for paint; % height stays
         // deferred; `auto` Width reads 0 — cycle 3 will shrink-to-fit per CSS 2.2 §10.3.5).
         // See <see cref="ReadFloatBoxModel"/>.
-        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _isSpeculativeMeasure);
+        var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _measurePurpose);
         var marginStart = box.MarginStart;
         var marginInlineStart = box.MarginInlineStart;
         var borderBoxBlockSize = box.BorderBoxBlockSize;
@@ -7054,19 +7061,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double? LineHeightOverridePx); // null = `normal` → font-size × 1.2; an explicit value (incl. 0) is used
 
     private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(
-        Box block, double containingInlinePx, bool isSpeculativeMeasure)
+        Box block, double containingInlinePx, MeasurePurpose measurePurpose)
     {
         // Rewrite % padding to used px FIRST (body-percent cycle) — TextPainter's content-origin
-        // inset reads the same slots at paint time. SKIPPED during a speculative measure: % padding
-        // resolves to 0 (intrinsic sizing) and the slot stays Percentage so the speculative
-        // containing size never persists onto the SHARED style (the real layout resolves it later).
-        if (!isSpeculativeMeasure)
+        // inset reads the same slots at paint time. Only a real layout PERSISTS; a dropped measure
+        // leaves the slot Percentage so the speculative containing size never reaches the shared
+        // style. PR #218 review [P1 #2 / P2 #5] — cyclic % padding/margins → 0 for an intrinsic probe
+        // (CSS Sizing §5.2.1), real against the definite width otherwise (width + auto-margin
+        // distribution still use the real `containingInlinePx`).
+        var pctInsetBase = measurePurpose.ZeroesCyclicPercentInsets() ? 0.0 : containingInlinePx;
+        if (measurePurpose == MeasurePurpose.Layout)
             block.Style.ResolveUsedPercentPaddingInPlace(containingInlinePx);
         // §10.3.3 auto margins (auto-margins cycle) — the same distribution as the block paths,
         // so a text-bearing `width: …; margin: 0 auto` block centres like an empty one. The
         // declared width must be explicit (the fill path's auto margins stay 0).
-        var marginInlineStart = block.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, containingInlinePx);
-        var marginInlineEnd = block.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, containingInlinePx);
+        var marginInlineStart = block.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, pctInsetBase);
+        var marginInlineEnd = block.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, pctInsetBase);
         var declaredWidth = block.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
         if (HasExplicitWidth(block))
         {
@@ -7093,16 +7103,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the containing block's INLINE size (CSS 2.2 §8.3/§8.4/§10.2), like the block paths.
             MarginInlineStart: marginInlineStart,
             MarginInlineEnd: marginInlineEnd,
-            MarginBlockStart: block.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, containingInlinePx),
-            MarginBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, containingInlinePx),
+            MarginBlockStart: block.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctInsetBase),
+            MarginBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, pctInsetBase),
             BorderInlineStart: block.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth),
             BorderInlineEnd: block.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth),
             BorderBlockStart: block.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth),
             BorderBlockEnd: block.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth),
-            PaddingInlineStart: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, containingInlinePx),
-            PaddingInlineEnd: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, containingInlinePx),
-            PaddingBlockStart: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, containingInlinePx),
-            PaddingBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, containingInlinePx),
+            PaddingInlineStart: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, pctInsetBase),
+            PaddingInlineEnd: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, pctInsetBase),
+            PaddingBlockStart: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctInsetBase),
+            PaddingBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, pctInsetBase),
             DeclaredWidthPx: block.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx),
             // line-height: read from the block's own style (sub-cycle
             // 1 simple rule — uniform across the block). The line-height
@@ -8017,7 +8027,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         var metrics = ReadInlineOnlyBlockMetrics(
-            inlineOnlyBlock, fragmentainer.ContentInlineSize, _isSpeculativeMeasure);
+            inlineOnlyBlock, fragmentainer.ContentInlineSize, _measurePurpose);
         // PR-#182 Copilot review — when this block is the NESTED-content ROOT
         // (flex / grid item content via `_layoutRootInlineContent`), the OUTER
         // layouter already positioned the item INCLUDING its margins, so the
@@ -8593,7 +8603,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     {
         marginBoxExtentAdvance = 0;
         var metrics = ReadInlineOnlyBlockMetrics(
-            inlineOnlyBlock, parentContentInlineSize, _isSpeculativeMeasure);
+            inlineOnlyBlock, parentContentInlineSize, _measurePurpose);
         var computation = ComputeInlineOnlyBlockLayout(
             inlineOnlyBlock, metrics, containingInlineSize: parentContentInlineSize,
             out var notSupportedMessage, out var atomicInlineSkipCount, cancellationToken);
@@ -8678,7 +8688,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken)
     {
         var metrics = ReadInlineOnlyBlockMetrics(
-            inlineOnlyBlock, parentContentInlineSize, _isSpeculativeMeasure);
+            inlineOnlyBlock, parentContentInlineSize, _measurePurpose);
         var computation = ComputeInlineOnlyBlockLayout(
             inlineOnlyBlock,
             metrics,
@@ -9984,7 +9994,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
                         shaperResolver: _shaperResolver,
                         writingMode: WritingMode.HorizontalTb, isRtl: false,
-                        cancellationToken: cancellationToken);
+                        cancellationToken: cancellationToken,
+                        // A cross/block-extent measure at the item's definite inline width — % padding
+                        // resolves against it (PR #218 [P1 #2]); inherits an intrinsic outer measure.
+                        purpose: _measurePurpose.ForNested(MeasurePurpose.DefiniteWidthExtent));
                     measureCache[item] = buffer;
                 }
                 if (IsRowCrossSizeContentDetermined(item))
@@ -10126,7 +10139,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         blockBudget: _capturedFragmentainer?.BlockSize ?? 1_000_000,
                         shaperResolver: _shaperResolver,
                         writingMode: WritingMode.HorizontalTb, isRtl: false,
-                        cancellationToken: cancellationToken);
+                        cancellationToken: cancellationToken,
+                        // A main/block-extent measure at the item's definite inline width (PR #218 [P1 #2]).
+                        purpose: _measurePurpose.ForNested(MeasurePurpose.DefiniteWidthExtent));
                     // The item's main BORDER box = measured content + its block chrome for
                     // BLOCK-CHILD content; an inline-only-root buffer's extent already folds
                     // in the item's own border + padding (flex box-sizing cycle).
@@ -10595,7 +10610,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     blockBudget: measureBudget,
                     shaperResolver: _shaperResolver,
                     writingMode: WritingMode.HorizontalTb, isRtl: false,
-                    cancellationToken: cancellationToken).ContentBlockExtent;
+                    cancellationToken: cancellationToken,
+                    // Grid row block-extent at the column's definite width — % padding real (PR #218 [P1 #2]).
+                    purpose: _measurePurpose.ForNested(MeasurePurpose.DefiniteWidthExtent)).ContentBlockExtent;
                 measureCache[key] = extent;
                 return extent;
             };

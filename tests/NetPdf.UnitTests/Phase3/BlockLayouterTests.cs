@@ -7857,23 +7857,54 @@ public sealed class BlockLayouterTests
             return parent;
         }
 
-        // (a) Speculative measure — the slot STAYS Percentage (no 1e6-derived value persisted).
+        // (a) Intrinsic contribution measure — the slot STAYS Percentage, so a 1e6-derived value
+        // never persists onto the shared style; the cyclic % padding also resolves against 0 in the
+        // measure geometry (PR #218 review [P1 #2], verified at the read sites — `pctBase` 0 for an
+        // intrinsic purpose; the masked fill-width geometry isn't a clean assertion seam here).
         var specParent = BuildParentWithPercentPaddedChild(out var specChild);
         _ = NestedContentMeasurer.Measure(
             specParent, availInlineContentSize: 1_000_000.0, blockBudget: 800,
             shaperResolver: shaper, writingMode: WritingMode.HorizontalTb, isRtl: false,
-            cancellationToken: CancellationToken.None, isSpeculativeMeasure: true);
+            cancellationToken: CancellationToken.None, purpose: MeasurePurpose.IntrinsicContribution);
         Assert.Equal(ComputedSlotTag.Percentage, specChild.Style.Get(PropertyId.PaddingLeft).Tag);
 
-        // (b) Non-speculative (emission) measure — resolves + persists against the REAL inline size.
+        // (b) Real (emission) measure — resolves + persists against the REAL inline size.
         var emitParent = BuildParentWithPercentPaddedChild(out var emitChild);
         _ = NestedContentMeasurer.Measure(
             emitParent, availInlineContentSize: 200.0, blockBudget: 800,
             shaperResolver: shaper, writingMode: WritingMode.HorizontalTb, isRtl: false,
-            cancellationToken: CancellationToken.None, isSpeculativeMeasure: false);
+            cancellationToken: CancellationToken.None, purpose: MeasurePurpose.Layout);
         var emitSlot = emitChild.Style.Get(PropertyId.PaddingLeft);
         Assert.Equal(ComputedSlotTag.LengthPx, emitSlot.Tag);
         Assert.Equal(20.0, emitSlot.AsLengthPx(), precision: 3);   // 10% of the real 200px inline size
+    }
+
+    [Fact]
+    public void MeasurePurpose_policies_and_nesting_combination()
+    {
+        // PR #218 review [P2 #5] — the enum's two independent policies + the transitive combination.
+        // Out-of-flow is skipped by both extent-only measures; real layout emits.
+        Assert.False(MeasurePurpose.Layout.SuppressesOutOfFlowEmission());
+        Assert.True(MeasurePurpose.IntrinsicContribution.SuppressesOutOfFlowEmission());
+        Assert.True(MeasurePurpose.DefiniteWidthExtent.SuppressesOutOfFlowEmission());
+        // Cyclic % insets resolve to 0 ONLY for the indefinite-basis intrinsic probe.
+        Assert.True(MeasurePurpose.IntrinsicContribution.ZeroesCyclicPercentInsets());
+        Assert.False(MeasurePurpose.DefiniteWidthExtent.ZeroesCyclicPercentInsets());
+        Assert.False(MeasurePurpose.Layout.ZeroesCyclicPercentInsets());
+        // ForNested [P1 #1]: an intrinsic parent ALWAYS wins (a flush / definite request inside an
+        // intrinsic measure stays intrinsic); else a non-Layout request overrides + a Layout request
+        // inherits the parent.
+        Assert.Equal(MeasurePurpose.IntrinsicContribution,
+            MeasurePurpose.IntrinsicContribution.ForNested(MeasurePurpose.Layout));
+        Assert.Equal(MeasurePurpose.IntrinsicContribution,
+            MeasurePurpose.IntrinsicContribution.ForNested(MeasurePurpose.DefiniteWidthExtent));
+        Assert.Equal(MeasurePurpose.DefiniteWidthExtent,
+            MeasurePurpose.Layout.ForNested(MeasurePurpose.DefiniteWidthExtent));
+        Assert.Equal(MeasurePurpose.IntrinsicContribution,
+            MeasurePurpose.DefiniteWidthExtent.ForNested(MeasurePurpose.IntrinsicContribution));
+        Assert.Equal(MeasurePurpose.DefiniteWidthExtent,
+            MeasurePurpose.DefiniteWidthExtent.ForNested(MeasurePurpose.Layout));
+        Assert.Equal(MeasurePurpose.Layout, MeasurePurpose.Layout.ForNested(MeasurePurpose.Layout));
     }
 
     private sealed class SyntheticShaperResolver : IShaperResolver

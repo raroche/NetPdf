@@ -575,7 +575,11 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 MeasurePassCount++;
                 var extent = NestedContentMeasurer.Measure(
                     item, availInline, measureBlockBudget, _shaperResolver,
-                    measureWritingMode, measureIsRtl, cancellationToken)
+                    measureWritingMode, measureIsRtl, cancellationToken,
+                    // Row block-extent at the column's definite width — % padding real (PR #218 [P1 #2]).
+                    // (A grid measured inside an intrinsic outer measure keeps real % here — a latent
+                    // residual; the out-of-flow skip + no-persist that #1 needs still hold.)
+                    purpose: MeasurePurpose.DefiniteWidthExtent)
                     .ContentBlockExtent;
                 measureCache[key] = extent;
                 return extent;

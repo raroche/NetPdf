@@ -207,9 +207,13 @@ internal static class FragmentPainter
                 }
             }
 
-            // Borders (foreground — always painted regardless of PrintBackgrounds).
+            // Borders (foreground — always painted regardless of PrintBackgrounds). A sliced inline-only
+            // block (box-decoration-break: slice) draws each block-axis border once: the block-start (top)
+            // border edge is skipped on a non-first slice, the block-end (bottom) on a non-last slice.
             PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref styleApproximationReported);
+                currentColorArgb, diagnostics, ref styleApproximationReported,
+                suppressTopEdge: fragment.SuppressBlockStartChrome,
+                suppressBottomEdge: fragment.SuppressBlockEndChrome);
 
             // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
             // and it does NOT affect layout. Always painted (it's not a background). It shares the
@@ -855,9 +859,11 @@ internal static class FragmentPainter
     internal static void PaintBorders(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported) =>
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported,
+        bool suppressTopEdge = false, bool suppressBottomEdge = false) =>
         PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-            BorderEdgeCurrentColors.Uniform(currentColorArgb), diagnostics, ref styleApproximationReported);
+            BorderEdgeCurrentColors.Uniform(currentColorArgb), diagnostics, ref styleApproximationReported,
+            suppressTopEdge, suppressBottomEdge);
 
     /// <summary>Per-edge-currentcolor overload (per-edge currentcolor cycle): each edge's
     /// <c>border-*-color: currentcolor</c> (or its initial) falls back to that edge's OWNER colour
@@ -866,7 +872,13 @@ internal static class FragmentPainter
     internal static void PaintBorders(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        in BorderEdgeCurrentColors currentColors, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
+        in BorderEdgeCurrentColors currentColors, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported,
+        // box-decoration-break: slice (inline-only line splitting) — skip the block-start (top) / block-end
+        // (bottom) border edge on a fragmentation CUT, so a sliced bordered block draws each block-axis
+        // border once (top on the first slice, bottom on the last) instead of boxing every slice. Only the
+        // square per-edge path honors this; a sliceable block never has a border-radius (it's gated out of
+        // splitting), so the rounded ring / clip paths above are never reached for a cut fragment.
+        bool suppressTopEdge = false, bool suppressBottomEdge = false)
     {
         // A zero-area or non-finite border box has no edges to stroke. The body path guards this
         // upstream (PaintFragments skips width/height <= 0), but the page-margin-box painter forwards
@@ -931,12 +943,14 @@ internal static class FragmentPainter
             ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var bx, out var by, out var bw, out var bh);
             page.BeginRoundedRectangleClip(bx, by, bw, bh, ToPt(radiiPx));
         }
-        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
-            currentColors.Top, diagnostics, ref styleApproximationReported);
+        if (!suppressTopEdge)
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
+                currentColors.Top, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
             currentColors.Right, diagnostics, ref styleApproximationReported);
-        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
-            currentColors.Bottom, diagnostics, ref styleApproximationReported);
+        if (!suppressBottomEdge)
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
+                currentColors.Bottom, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
             currentColors.Left, diagnostics, ref styleApproximationReported);
         if (rounded) page.RestoreGraphicsState();

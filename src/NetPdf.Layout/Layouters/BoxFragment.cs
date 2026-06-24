@@ -174,8 +174,13 @@ namespace NetPdf.Layout.Layouters;
 /// <param name="SuppressBlockStartChrome">inline-only-block-line-splitting (box-decoration-break: slice)
 /// — when true this fragment is a NON-first slice of a split block, so its block-start padding/border is
 /// CUT (the chrome was consumed by an earlier slice): the painter starts the content at the border-box
-/// top (skips the block-start border + padding it would otherwise inset by). Default false = the chrome
-/// is present (a first slice or a whole-block emit), byte-identical.</param>
+/// top (skips the block-start border + padding it would otherwise inset by) and does not draw the
+/// block-start (top) border edge. Default false = the chrome is present (a first slice or a whole-block
+/// emit), byte-identical.</param>
+/// <param name="SuppressBlockEndChrome">inline-only-block-line-splitting (box-decoration-break: slice) —
+/// when true this is a NON-last slice of a split block, so its block-END border is CUT: the painter does
+/// not draw the block-end (bottom) border edge. The inline-axis borders still paint on every slice.
+/// Default false (last slice / whole block), byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -232,9 +237,16 @@ internal readonly record struct BoxFragment(
     bool LastLineContinues = false,
     // inline-only-block-line-splitting (box-decoration-break: slice) — when true this is a NON-first
     // slice of a split block, so its block-start padding/border is CUT: the painter starts the content
-    // at the border-box top instead of insetting by the block-start border + padding. DEFAULT false =
-    // chrome present (first slice / whole block), byte-identical.
-    bool SuppressBlockStartChrome = false);
+    // at the border-box top instead of insetting by the block-start border + padding, AND FragmentPainter
+    // does not draw the block-start (top) border edge. DEFAULT false = chrome present (first slice /
+    // whole block), byte-identical.
+    bool SuppressBlockStartChrome = false,
+    // inline-only-block-line-splitting (box-decoration-break: slice) — when true this is a NON-last slice
+    // of a split block, so its block-END border is CUT: FragmentPainter does not draw the block-end
+    // (bottom) border edge (the block-end padding simply isn't part of a non-last slice's border box).
+    // The inline-axis (left/right) borders still paint on every slice. DEFAULT false = block-end border
+    // present (last slice / whole block), byte-identical.
+    bool SuppressBlockEndChrome = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

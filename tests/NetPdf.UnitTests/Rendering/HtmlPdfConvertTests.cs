@@ -531,6 +531,29 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block
+        // with a block-axis border now slices instead of force-overflowing: the block-start border paints
+        // on the FIRST slice, the block-end border on the LAST, the inline-axis (left/right) borders on
+        // EVERY slice, and NONE on the fragmentation cuts. So the border edges total (2 × pages) + 2, not
+        // 4 × pages (the per-slice-boxed bug). No line is lost, no overflow truncated.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder("<!DOCTYPE html><html><body><div style=\"margin:0;border:5px solid #000\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the bordered block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // left + right border on every slice (2 × pages) + the top on the first + the bottom on the last.
+        Assert.Equal(2 * result.PageCount + 2, CountOccurrences(pdf, " re f"));
+    }
+
+    [Fact]
     public void Single_tall_paragraph_line_split_honors_widows()
     {
         // CSS Fragmentation L3 §4.2 — the LAST page of a split paragraph keeps at least `widows`

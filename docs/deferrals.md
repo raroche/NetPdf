@@ -168,8 +168,9 @@ grepping the ID).
 ## inline-only-block-line-splitting
 
 - **ID** — `inline-only-block-line-splitting`
-- **Status** — `approximated` (intra-paragraph LINE splitting + orphans/widows SHIP for the common case;
-  blocks with block-axis chrome or atomic inlines still force-overflow).
+- **Status** — `approximated` (intra-paragraph LINE splitting + orphans/widows + inline-atomic content +
+  block-axis PADDING (box-decoration-break: slice) + intermediate-slice justification all SHIP; only a
+  block-axis BORDER still force-overflows).
 - **Behavior** — A SINGLE inline-only (text-bearing) block taller than a whole fragmentainer now SLICES its
   own wrapped lines across pages instead of force-overflowing: the lines that fit are emitted on the current
   page, the remainder resumes on the next via an `InlineOnlyLineSplitContinuation` (carried in
@@ -179,15 +180,20 @@ grepping the ID).
   page boundary (the resume page re-runs the deterministic inline pass + re-slices). CSS Fragmentation L3 §4
   orphans / widows are honored at the cut, read off the block's OWN computed value (so per-paragraph
   `widows` / `orphans` work). Block-granularity prose pagination (multi-paragraph, the common case) still
-  moves whole one-line paragraphs to the next page.
-- **Missing** — the slice path is gated to TEXT-ONLY, CHROME-FREE blocks (`CanSplitInlineOnlyLines`): a tall
-  single block with block-axis padding/border OR inline-block / `<img>` atomics still falls back to the
-  whole-block force-overflow (the atomic content-relative offsets + box-decoration-break:slice chrome
-  arithmetic aren't sliced yet). Also: an intermediate slice's last line isn't justified
-  (`text-align: justify` treats it as the paragraph end), and the cost-model doesn't yet weigh the split
-  (`orphans` is read but the geometric fill already satisfies it; widows is enforced directly).
-- **Trigger** — a SINGLE `<p>`/`<div>` with block-axis padding/border OR an inline atomic, whose text is
-  taller than one whole page (rare) — it overflows the bottom of its starting page rather than splitting.
+  moves whole one-line paragraphs to the next page. Inline ATOMICS (inline-block / `<img>`) slice too —
+  `EmitInlineOnlyBlockSlice` filters each atomic placement to its slice's lines + re-bases its block
+  offset (an atomic never crosses a line, so it never straddles a cut). Block-axis PADDING slices per
+  box-decoration-break: slice (top padding on the first slice, bottom on the last; a non-first slice's
+  block-start padding is cut via `BoxFragment.SuppressBlockStartChrome` so the painter starts the content
+  at the border-box top). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
+  it is an interior line, not the paragraph end).
+- **Missing** — a block-axis BORDER still gates the split (`CanSplitInlineOnlyLines`): a tall single block
+  with a block-axis border falls back to the whole-block force-overflow, because suppressing a border on a
+  fragmentation cut needs per-edge / border-radius-aware painting (box-decoration-break: slice for the
+  border, not just padding). The cost-model also doesn't yet weigh the split (`orphans` is read but the
+  geometric fill already satisfies it; widows is enforced directly).
+- **Trigger** — a SINGLE `<p>`/`<div>` with a block-axis BORDER whose text is taller than one whole page
+  (rare) — it overflows the bottom of its starting page rather than splitting.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
   + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `EmitInlineOnlyBlockSlice` +
   `CanSplitInlineOnlyLines`); `src/NetPdf.Paginate/LayoutContinuation.cs`
@@ -197,9 +203,10 @@ grepping the ID).
   extent via `InlineOnlyBreakMinExtentPx` so a ZERO-extent anonymous block — flex/grid content the recursion
   walks, placed past the page edge — does NOT spuriously break: the earlier flex/grid regression where both
   triggering blocks had `chunk == 0` at `start > pageBlockSize`.)
-- **Removal condition** — a single inline-only block WITH block-axis chrome OR inline atomics, taller than a
-  page, splits its lines across pages too (box-decoration-break:slice chrome on the first/last fragment;
-  atomic placements re-indexed to the resumed lines), and an intermediate slice's last line justifies.
+- **Removal condition** — a single inline-only block with a block-axis BORDER, taller than a page, splits
+  its lines across pages too (box-decoration-break: slice suppresses the border on the fragmentation-cut
+  edges, border-radius included). (Atomics, block-axis padding, and intermediate-slice justification all
+  shipped 2026-06-24.)
 
 ---
 

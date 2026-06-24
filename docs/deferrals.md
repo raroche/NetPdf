@@ -953,8 +953,8 @@ grepping the ID).
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
   `align-content: baseline`, margin-box in the alignment / justify-content free-space
   math, VERTICAL writing modes — the RTL column cross axis (per-item anchor AND
-  line-stacking) AND the `start`/`end` vs `flex-start`/`flex-end` `wrap-reverse`
-  distinction now SHIP). Percentage gaps + percentage
+  line-stacking) and the `start`/`end`/`self-start`/`self-end` vs `flex-start`/`flex-end`
+  `wrap-reverse` distinction now ship). Percentage gaps + percentage
   item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
   pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
@@ -1156,18 +1156,20 @@ grepping the ID).
     lines of a multi-line column-rtl `wrap` stack from the physical right, a
     single non-stretched `align-content: flex-start` line packs at the right,
     a `wrap-reverse` column-rtl cancels back, and `align-items: flex-start`
-    right-anchors / `flex-end` left-anchors. The `self-start`/`self-end`
-    logical keywords resolve against the ITEM's own `direction` (an LTR child
-    in an RTL column anchors at its own start), via the preserved
-    `ResolvedAlign*.IsSelfRelative` flag. Pinned by the `Column_rtl_*` tests.
-    **Also shipped** (residual long-tail): `start`/`end` resolve against the
-    CONTAINER's writing-mode/direction and do NOT follow the `wrap-reverse`
-    flex permutation (unlike `flex-start`/`flex-end`) — a second
-    `IsContainerLogical` flag on `ResolvedAlign*` drives the
-    container-direction-only (`isColumnRtl`) reversal at the per-item anchor,
-    so under `wrap-reverse` `align-items: start` stays at the writing-mode
-    cross-start while `flex-start` permutes (pinned by the
-    `Row_wrap_reverse_align_items_{start,flex_start}_*` tests). **Still
+    right-anchors / `flex-end` left-anchors. **Also shipped** (residual
+    long-tail + PR #217 review): the `self-start`/`self-end` logical keywords
+    resolve against the ITEM's own `direction` (an LTR child in an RTL column
+    anchors at its own start) and `start`/`end` against the CONTAINER's
+    writing-mode/direction; NEITHER follows the `wrap-reverse` flex permutation
+    (unlike `flex-start`/`flex-end`). A single `CrossAlignReference` enum
+    (FlexRelative / Container / Subject) on `ResolvedAlign*` selects the
+    per-item reversal — the item's own direction for `self-*`, the container's
+    (`isColumnRtl`) for `start`/`end`, the full flex-flow `isCrossAxisReversed`
+    for `flex-*` — so under `wrap-reverse` `align-items: start` / `self-start`
+    stay at the writing-mode cross-start while `flex-start` permutes. The
+    `safe` overflow fallback resolves SEPARATELY to the flex-flow start (§5.3),
+    independent of that natural anchor. Pinned by the `Column_rtl_*` +
+    `Row_wrap_reverse_*` tests. **Still
     deferred**: all VERTICAL writing modes (`writing-mode` is not yet a
     registered property; `row` in vertical-rl swaps the main + cross axes onto
     the rotated block + inline directions).

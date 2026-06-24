@@ -8337,6 +8337,29 @@ public sealed class HtmlPdfConvertTests
     }
 
 
+    [Fact]
+    public void Rtl_first_left_only_margin_box_still_paints_on_the_first_page()
+    {
+        // PR #219 review [P1] — a document whose ONLY @page margin box is `:first:left` must still paint.
+        // The "does any margin box render anywhere" gate (the structural union) has to include a
+        // first-LEFT representative context, else the WHOLE margin pass is skipped and the box never
+        // renders. In an RTL document page 1 is the physical LEFT page, so `:first:left` matches it; in
+        // LTR page 1 is the first-RIGHT page, so the SAME rule must NOT paint there.
+        const string sheet = "<style>@page :first:left { @bottom-center { content: \"FOOT\" } }</style>";
+        var rtlWith = TdCount(Latin1(HtmlPdf.Convert(
+            "<!doctype html><html><head>" + sheet + "</head>"
+            + "<body style='direction:rtl;margin:0'>x</body></html>")));
+        var ltrWith = TdCount(Latin1(HtmlPdf.Convert(
+            "<!doctype html><html><head>" + sheet + "</head>"
+            + "<body style='margin:0'>x</body></html>")));
+        var rtlBaseline = TdCount(Latin1(HtmlPdf.Convert(
+            "<!doctype html><html><body style='direction:rtl;margin:0'>x</body></html>")));
+        var ltrBaseline = TdCount(Latin1(HtmlPdf.Convert(
+            "<!doctype html><html><body style='margin:0'>x</body></html>")));
+        Assert.True(rtlWith > rtlBaseline, "RTL first page is a left page → :first:left footer must paint");
+        Assert.Equal(ltrBaseline, ltrWith);   // LTR first page is a RIGHT page → :first:left must NOT paint
+    }
+
     /// <summary>Count of <c>Td</c> text-position operators. <c>TextPainter</c> emits one <c>Td</c> per
     /// painted SLICE (per line, per run-slice), so a multi-run line can yield several — but for the
     /// single-run synthetic-font content here it's effectively one per line, so more lines (e.g. wrapped

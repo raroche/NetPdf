@@ -116,10 +116,12 @@ internal static class AtPageRules
         /// <summary>Does this page match <c>:right</c> (the physical RIGHT page)? The first page is a
         /// recto; <c>:right</c> alternates from there (CSS Page 3 §3.1). A <see cref="StartsOnVerso"/>
         /// document shifts the parity (page 1 is a verso), and <see cref="IsRtl"/> swaps the physical
-        /// sides (the recto is the physical LEFT page in RTL) — consistent with the forced-break parity
-        /// in <c>PdfRenderPipeline.PageNumberHasParity</c>.</summary>
+        /// sides (the recto is the physical LEFT page in RTL). Delegates to the shared
+        /// <see cref="PageProgression"/> (1-based page number = <see cref="PageIndex"/> + 1) so the
+        /// selector parity can't drift from the forced-break parity in
+        /// <c>PdfRenderPipeline.PageNumberHasParity</c> — PR #219 review [P2 #5].</summary>
         public bool IsRightPage =>
-            (((PageIndex + (StartsOnVerso ? 1 : 0)) & 1) == 0) != IsRtl;
+            new PageProgression(StartsOnVerso, IsRtl).IsRightPage(PageIndex + 1);
     }
 
     /// <summary>Yields the <c>@page</c> rules applicable TO A GIVEN PAGE (cycle 6) in CASCADE
@@ -162,21 +164,38 @@ internal static class AtPageRules
     }
 
     /// <summary>The DISTINCT page contexts whose <c>@page</c> selector match-sets differ — every
-    /// combination of {first+right, left, right} × {blank, non-blank} (page 0 = first = recto/right;
-    /// parity from index). The structural "does any margin box render anywhere" + prefetch UNION
-    /// resolves each of these and combines the result, rather than cascading all selectors together
-    /// (post-PR-#178 review P1): a single combined cascade lets a later bare <c>content: none</c>
-    /// suppress an earlier <c>@page :left { … content }</c> from the union, which would wrongly drop the
-    /// page-specific box (and under-prefetch its background image). Resolving per representative context
-    /// keeps any box that renders on SOME page.</summary>
+    /// combination of {first, non-first} × {right, left} × {blank, non-blank} (8 in all), for an
+    /// optional page <paramref name="name"/>. The structural "does any margin box render anywhere" +
+    /// prefetch UNION resolves each of these and combines the result, rather than cascading all
+    /// selectors together (post-PR-#178 review P1): a single combined cascade lets a later bare
+    /// <c>content: none</c> suppress an earlier <c>@page :left { … content }</c> from the union, which
+    /// would wrongly drop the page-specific box (and under-prefetch its background image). Resolving per
+    /// representative context keeps any box that renders on SOME page. A first-LEFT page IS reachable —
+    /// an RTL document, or a forced verso first page — so <c>:first:left</c> /
+    /// <c>&lt;name&gt;:first:left</c> boxes must be represented (PR #219 review [P1]: the prior set had
+    /// only first-right and resolved each named page only as first-right, so a <c>chapter:left</c> /
+    /// <c>chapter:blank</c> / <c>:first:left</c> margin-box-only rule could vanish from the union —
+    /// disabling margin-box painting + skipping its background-image prefetch).</summary>
+    internal static IEnumerable<PageSelectorContext> RepresentativeContextsFor(string? name)
+    {
+        // Index 0 (+ StartsOnVerso for the LEFT side) gives a FIRST page of each physical side; indices
+        // 1 & 2 give a NON-first page of each side. (IsRightPage derives the side; StartsOnVerso flips
+        // the first page to LEFT without affecting IsFirstPage.)
+        for (var blank = 0; blank <= 1; blank++)
+        {
+            var isBlank = blank == 1;
+            yield return new PageSelectorContext(0, isBlank, name);                      // first, right
+            yield return new PageSelectorContext(0, isBlank, name, StartsOnVerso: true); // first, left
+            yield return new PageSelectorContext(1, isBlank, name);                      // non-first, left
+            yield return new PageSelectorContext(2, isBlank, name);                      // non-first, right
+        }
+    }
+
+    /// <summary>The anonymous (no page name) representative contexts — every
+    /// {first, non-first} × {right, left} × {blank, non-blank} match-set; see
+    /// <see cref="RepresentativeContextsFor"/>.</summary>
     internal static readonly ImmutableArray<PageSelectorContext> RepresentativeContexts =
-        ImmutableArray.Create(
-            new PageSelectorContext(0, IsBlank: false),   // first, right
-            new PageSelectorContext(1, IsBlank: false),   // left
-            new PageSelectorContext(2, IsBlank: false),   // right, non-first
-            new PageSelectorContext(0, IsBlank: true),    // first, right, blank
-            new PageSelectorContext(1, IsBlank: true),    // left, blank
-            new PageSelectorContext(2, IsBlank: true));   // right, non-first, blank
+        ImmutableArray.CreateRange(RepresentativeContextsFor(null));
 
     private static IEnumerable<PageRule> Walk(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorKind want)

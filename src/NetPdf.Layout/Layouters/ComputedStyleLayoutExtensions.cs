@@ -544,6 +544,17 @@ internal static class ComputedStyleLayoutExtensions
         return PageParity.Any;
     }
 
+    /// <summary>Per CSS Fragmentation L3 §4.3 — combine two forced-break page-parity constraints that
+    /// apply at the SAME break point: "When left, right, recto, and/or verso are combined, the value
+    /// specified on the LATEST element in the flow wins." So a non-<see cref="PageParity.Any"/>
+    /// <paramref name="later"/> wins; otherwise the <paramref name="earlier"/> constraint survives — a
+    /// parity-less forced break (<c>page</c> / <c>always</c> / <c>all</c>) must NOT erase a sibling's or
+    /// ancestor's side constraint. Used for both the sibling boundary (<c>prev.break-after</c> [earlier]
+    /// then <c>child.break-before</c> [later]) and the document-start first-in-flow-child chain
+    /// (outermost→innermost = earliest→latest in flow, §3.1.1 propagation).</summary>
+    public static PageParity CombineForcedParityLatestWins(PageParity earlier, PageParity later)
+        => later != PageParity.Any ? later : earlier;
+
     /// <summary>Per §3.2 — does <c>break-before</c> / <c>page-break-before</c> request
     /// AVOIDING a page break before the box (<c>avoid</c> / <c>avoid-page</c>)?</summary>
     public static bool AvoidsPageBreakBefore(this ComputedStyle style)

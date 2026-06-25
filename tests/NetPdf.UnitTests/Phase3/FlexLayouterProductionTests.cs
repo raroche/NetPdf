@@ -5148,6 +5148,159 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(FlexWrapValue.NoWrap, flex.Style.ReadFlexWrap());
     }
 
+    [Fact]
+    public async Task Production_html_align_content_baseline_falls_back_to_safe_start_not_stretch()
+    {
+        // CSS Box Alignment L3 §5.3 + §9 — `align-content: baseline` (and `first baseline`) on a FLEX
+        // container is NOT line-baseline alignment: flex lines aren't a baseline-sharing group (only flex
+        // ITEMS / table cells / grid items are), so it uses the SPEC FALLBACK = safe START. It was wrongly
+        // approximated as `stretch`, which GROWS the lines. Three 80px items in a 100px-wide, 400px-tall
+        // wrapping ROW flex wrap to three 50px-tall lines (150px content, 250px free cross space). With
+        // safe-start the lines pack at the block-START at their natural 50px pitch (item-c at +100); the
+        // old `stretch` would distribute the 250px and put item-c at ~+267.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap; align-content:baseline; align-items:flex-start;
+                        width:100px; height:400px; }
+                .item-a,.item-b,.item-c { width:80px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div><div class="item-c"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        var b = FindFragByClass(sink, "item-b");
+        var c = FindFragByClass(sink, "item-c");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        var top = flex!.Value.BlockOffset;
+        Assert.Equal(top + 0.0, a!.Value.BlockOffset, precision: 3);    // line 0 at the cross-start
+        Assert.Equal(top + 50.0, b!.Value.BlockOffset, precision: 3);   // line 1 at natural 50px pitch
+        Assert.Equal(top + 100.0, c!.Value.BlockOffset, precision: 3);  // line 2 — NOT stretched to ~+267
+    }
+
+    [Fact]
+    public async Task Production_html_align_content_last_baseline_falls_back_to_safe_end()
+    {
+        // CSS Box Alignment L3 §5.3 — `align-content: last baseline` uses the spec fallback = safe END
+        // (the mirror of the `baseline` → safe start case above). The three 50px lines (150px content)
+        // pack at the block-END of the 400px container: free cross 250px → line 0 at +250, line 2 at +350.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap; align-content:last baseline; align-items:flex-start;
+                        width:100px; height:400px; }
+                .item-a,.item-b,.item-c { width:80px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div><div class="item-c"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        var c = FindFragByClass(sink, "item-c");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.NotNull(c);
+        var top = flex!.Value.BlockOffset;
+        Assert.Equal(top + 250.0, a!.Value.BlockOffset, precision: 3);   // lines packed at the cross-END
+        Assert.Equal(top + 350.0, c!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_align_content_baseline_logical_start_ignores_row_wrap_reverse()
+    {
+        // PR #221 review [P1] — the baseline fallback is LOGICAL safe start, which (unlike flex-start)
+        // does NOT follow the flex-flow `wrap-reverse` reversal. A wrapping ROW flex with
+        // `align-content: baseline` + `flex-wrap: wrap-reverse` still packs its line stack at the LOGICAL
+        // cross-START (physical TOP) at the natural 50px pitch — items at block {0,50,100} — whereas
+        // `align-content: flex-start` + wrap-reverse would pack at the physical BOTTOM ({250,300,350}).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap-reverse; align-content:baseline; align-items:flex-start;
+                        width:100px; height:400px; }
+                .item-a,.item-b,.item-c { width:80px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div><div class="item-c"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        Assert.NotNull(flex);
+        var top = flex!.Value.BlockOffset;
+        var offsets = new List<double>
+        {
+            FindFragByClass(sink, "item-a")!.Value.BlockOffset - top,
+            FindFragByClass(sink, "item-b")!.Value.BlockOffset - top,
+            FindFragByClass(sink, "item-c")!.Value.BlockOffset - top,
+        };
+        offsets.Sort();
+        Assert.Equal(0.0, offsets[0], precision: 3);     // stack at the LOGICAL top, not the flex-flow bottom
+        Assert.Equal(50.0, offsets[1], precision: 3);
+        Assert.Equal(100.0, offsets[2], precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_align_content_baseline_logical_start_is_inline_right_under_column_rtl()
+    {
+        // PR #221 review [P1] — for a COLUMN flex the cross axis is the inline axis, so the baseline
+        // fallback's LOGICAL start is the RTL inline-start = physical RIGHT. `align-content: baseline` +
+        // `direction: rtl` packs the line stack at the right (inline {400,500}), NOT stretched across the
+        // width (the old approximation). The column-RTL flip is applied by CrossAxisFlow, not by the
+        // baseline fallback (which only un-does wrap-reverse).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-direction:column; flex-wrap:wrap; align-content:baseline;
+                        align-items:flex-start; direction:rtl; width:600px; height:100px; }
+                .item-a,.item-b { width:100px; height:60px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        Assert.NotNull(flex);
+        var left = flex!.Value.InlineOffset;
+        var offsets = new List<double>
+        {
+            FindFragByClass(sink, "item-a")!.Value.InlineOffset - left,
+            FindFragByClass(sink, "item-b")!.Value.InlineOffset - left,
+        };
+        offsets.Sort();
+        Assert.Equal(400.0, offsets[0], precision: 3);   // two columns packed at the inline RIGHT
+        Assert.Equal(500.0, offsets[1], precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_align_content_baseline_logical_start_survives_column_rtl_wrap_reverse()
+    {
+        // PR #221 review [P1] — the strongest case: COLUMN + rtl + wrap-reverse. The baseline fallback's
+        // LOGICAL inline-start is the RTL right REGARDLESS of wrap-reverse, so `align-content: baseline`
+        // packs at the right (min inline = +400). `align-content: flex-start` is FLEX-FLOW-relative, which
+        // rtl + wrap-reverse combine to flip to the LEFT (min inline = +0) — so the two DIFFER, proving the
+        // baseline fallback does not follow the flex-flow reversal.
+        string Doc(string ac) =>
+            "<!DOCTYPE html><html><head><style>.flex { display:flex; flex-direction:column; flex-wrap:wrap-reverse;"
+            + " align-items:flex-start; align-content:" + ac + "; direction:rtl; width:600px; height:100px; }"
+            + " .item-a,.item-b { width:100px; height:60px; }</style></head>"
+            + "<body><div class=\"flex\"><div class=\"item-a\"></div><div class=\"item-b\"></div></div></body></html>";
+
+        var (baseSink, _, _) = await RenderViaFullPipelineAsync(Doc("baseline"));
+        var (fsSink, _, _) = await RenderViaFullPipelineAsync(Doc("flex-start"));
+
+        static double MinInline(RecordingFragmentSink sink)
+        {
+            var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer)!.Value.InlineOffset;
+            var a = FindFragByClass(sink, "item-a")!.Value.InlineOffset - flex;
+            var b = FindFragByClass(sink, "item-b")!.Value.InlineOffset - flex;
+            return System.Math.Min(a, b);
+        }
+        Assert.Equal(400.0, MinInline(baseSink), precision: 3);   // baseline → logical RTL start = right
+        Assert.Equal(0.0, MinInline(fsSink), precision: 3);       // flex-start → flex-flow flip to the left
+    }
+
     /// <summary>Per Phase 3 Task 15 L15 — depth-first walk to locate
     /// the first <see cref="BoxKind.FlexContainer"/> in the box tree.
     /// Shared between the L15 production tests; returns

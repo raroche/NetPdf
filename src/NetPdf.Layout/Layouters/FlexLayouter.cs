@@ -170,11 +170,12 @@ namespace NetPdf.Layout.Layouters;
 ///   <c>height</c> when set, else the max of the items' natural block-
 ///   sizes (= the spec's max-content cross-size simplification for the
 ///   L1 default single-line case; sub-cycle L4+ will refine). The
-///   following families fall through to <c>stretch</c> (the safe
-///   default): <c>baseline</c> / <c>first baseline</c> /
-///   <c>last baseline</c> (text-shaping integration needed) and
-///   <c>anchor-center</c> (CSS Anchor Positioning, out of Flexbox L1
-///   scope). The per-item <c>align-self</c> override SHIPPED in
+///   <c>align-content</c> baseline family resolves to its SPEC FALLBACK
+///   (CSS Box Alignment L3 §5.3 — flex lines are not a baseline-sharing
+///   group, so baseline content-alignment doesn't apply): <c>baseline</c> /
+///   <c>first baseline</c> → safe start, <c>last baseline</c> → safe end.
+///   <c>anchor-center</c> still falls through to <c>stretch</c> (CSS Anchor
+///   Positioning, out of Flexbox L1 scope). The per-item <c>align-self</c> override SHIPPED in
 ///   Phase 3 Task 15 L9 (per CSS Box Alignment §4.3); see
 ///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
 ///   <item><b>Item main-size resolution</b> (per Phase 3 Task 15
@@ -1006,7 +1007,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var freeCrossSpace = containerCrossSize - sumLineCrossExtents - crossGapTotal;
 
         var (lineStartOffset, lineBetweenSpacing, lineStretchAddend) =
-            ComputeAlignContentOffsets(resolvedAC, freeCrossSpace, lines.Count, isWrapping);
+            ComputeAlignContentOffsets(resolvedAC, freeCrossSpace, lines.Count, isWrapping, isWrapReverse);
 
         // Per Phase 3 Task 15 L7 — apply the stretch addend BEFORE the
         // emission loop. When align-content: stretch (the default per
@@ -2646,7 +2647,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ResolvedAlignContent resolved,
             double freeCrossSpace,
             int lineCount,
-            bool isWrapping)
+            bool isWrapping,
+            bool isWrapReverse)
     {
         // F#1 — short-circuit only when no lines OR nowrap. A wrapping
         // container with one produced line still gets align-content
@@ -2668,13 +2670,28 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             return (0, 0, 0);
         }
 
+        // PR #221 review [P1] — baseline content-alignment doesn't apply to a flex container's lines
+        // (CSS Box Alignment §5.3 — they're not a baseline-sharing group), so FirstBaseline / LastBaseline
+        // fall back HERE to LOGICAL safe start / safe end. Logical start/end is the writing-mode cross
+        // edge, which — unlike flex-start/flex-end — does NOT follow the flex-flow `wrap-reverse` reversal:
+        // under wrap-reverse the logical start IS the flex-flow END, so pre-invert the mapping. (The
+        // column-RTL cross flip is already applied downstream by CrossAxisFlow.PhysicalLineOffset via
+        // isCrossAxisReversed, so it must NOT be folded in here — only wrap-reverse distinguishes logical
+        // from flex-flow on this axis.)
+        var effectiveValue = resolved.Value switch
+        {
+            AlignContentValue.FirstBaseline => isWrapReverse ? AlignContentValue.FlexEnd : AlignContentValue.FlexStart,
+            AlignContentValue.LastBaseline => isWrapReverse ? AlignContentValue.FlexStart : AlignContentValue.FlexEnd,
+            _ => resolved.Value,
+        };
+
         // Compute the NATURAL offset for the value (ignoring overflow
         // for now). This is the spec-defined offset assuming positive
         // free space exists; the overflow branch below either preserves
         // it (positional values + the unsafe modifier) or replaces it
         // with safe-start fallback (distribution values + stretch +
         // the safe modifier).
-        var natural = resolved.Value switch
+        var natural = effectiveValue switch
         {
             AlignContentValue.FlexEnd => (freeCrossSpace, 0.0, 0.0),
             AlignContentValue.Center => (freeCrossSpace / 2.0, 0.0, 0.0),
@@ -2710,13 +2727,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // values keep their natural (possibly-negative) offset.
             // Stretch falls back because a negative stretchAddend would
             // shrink lines, which the spec forbids.
-            return resolved.Value switch
+            return effectiveValue switch
             {
                 AlignContentValue.SpaceBetween or
                 AlignContentValue.SpaceAround or
                 AlignContentValue.SpaceEvenly or
                 AlignContentValue.Stretch => (0, 0, 0),
-                _ => natural, // FlexStart / FlexEnd / Center — allow overflow
+                _ => natural, // FlexStart / FlexEnd / Center (+ resolved baseline) — allow overflow
             };
         }
 

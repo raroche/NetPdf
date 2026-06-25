@@ -5712,20 +5712,15 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L7_hardening_baseline_keyword_resolves_to_stretch_approximation()
+    public void Baseline_align_content_falls_back_to_safe_start_per_spec()
     {
-        // Per Phase 3 Task 15 L7 post-PR-#67 hardening F#6 — the three
-        // <baseline-position> keywords (baseline, first baseline, last
-        // baseline) are admitted by the BuildAlignContentTable but L7
-        // approximates them all as Stretch (= the safe default; proper
-        // baseline alignment is text-shaping integration scope, L8+).
-        // Pre-F#6 the table didn't include the baseline keywords at all
-        // → AngleSharp+cascade would either drop the declaration or
-        // emit an invalid-value diagnostic. Post-F#6 the keyword
-        // resolves cleanly + behaves identically to align-content:
-        // stretch. Smoke test: align-content: baseline (index 5) on a
-        // multi-line wrap container → stretched lines (same expected
-        // output as align-content: stretch).
+        // CSS Box Alignment L3 §5.3 + §9 (PR #221 review Task 2) — `align-content: baseline` (index 5)
+        // on a flex container is NOT line-baseline alignment: flex lines aren't a baseline-sharing group,
+        // so it uses the SPEC FALLBACK = safe start. This corrects the prior L7 approximation that mapped
+        // all three <baseline-position> keywords to `stretch` (which GROWS the lines). With safe-start the
+        // wrapped lines pack at the cross-START at their NATURAL pitch (50px), not stretched to fill the
+        // container — so the second line's items sit at +50, where the old stretch approximation put them
+        // at +100.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -5764,12 +5759,12 @@ public sealed class FlexLayouterTests
             }
         }
         Assert.Equal(4, itemFragments.Count);
-        // Same expected output as align-content: stretch — baseline
-        // approximates to stretch in L7.
+        // Safe-start fallback: line 0 (items 0,1) at the cross-start, line 1 (items 2,3) one NATURAL
+        // line-height (50px) below — NOT stretched to +100 as the prior `→ stretch` approximation did.
         Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
         Assert.Equal(0.0, itemFragments[1].BlockOffset, precision: 3);
-        Assert.Equal(100.0, itemFragments[2].BlockOffset, precision: 3);
-        Assert.Equal(100.0, itemFragments[3].BlockOffset, precision: 3);
+        Assert.Equal(50.0, itemFragments[2].BlockOffset, precision: 3);
+        Assert.Equal(50.0, itemFragments[3].BlockOffset, precision: 3);
     }
 
     [Fact]

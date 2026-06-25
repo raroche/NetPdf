@@ -169,8 +169,9 @@ grepping the ID).
 
 - **ID** — `inline-only-block-line-splitting`
 - **Status** — `approximated` (intra-paragraph LINE splitting + orphans/widows + inline-atomic content +
-  block-axis PADDING (box-decoration-break: slice) + intermediate-slice justification all SHIP; only a
-  block-axis BORDER still force-overflows).
+  block-axis PADDING + a square block-axis BORDER (box-decoration-break: slice) + intermediate-slice
+  justification all SHIP; only a non-uniform DECORATION — gradient / bg-image / box-shadow / border-radius
+  / outline — still force-overflows).
 - **Behavior** — A SINGLE inline-only (text-bearing) block taller than a whole fragmentainer now SLICES its
   own wrapped lines across pages instead of force-overflowing: the lines that fit are emitted on the current
   page, the remainder resumes on the next via an `InlineOnlyLineSplitContinuation` (carried in
@@ -182,10 +183,16 @@ grepping the ID).
   `widows` / `orphans` work). Block-granularity prose pagination (multi-paragraph, the common case) still
   moves whole one-line paragraphs to the next page. Inline ATOMICS (inline-block / `<img>`) slice too —
   `EmitInlineOnlyBlockSlice` filters each atomic placement to its slice's lines + re-bases its block
-  offset (an atomic never crosses a line, so it never straddles a cut). Block-axis PADDING slices per
-  box-decoration-break: slice (top padding on the first slice, bottom on the last; a non-first slice's
-  block-start padding is cut via `BoxFragment.SuppressBlockStartChrome` so the painter starts the content
-  at the border-box top). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
+  offset (an atomic never crosses a line, so it never straddles a cut). Block-axis PADDING and a square
+  block-axis BORDER slice per box-decoration-break: slice (the block-start border + padding on the FIRST
+  slice, the block-end on the LAST, the inline-axis borders on EVERY slice; a non-first slice's block-start
+  chrome is cut via `BoxFragment.SuppressBlockStartChrome` — the painter starts the content at the
+  border-box top + skips the top border — and a non-last slice's block-end border via
+  `BoxFragment.SuppressBlockEndChrome`, which `FragmentPainter.PaintBorders` honors with its
+  `suppressTopEdge` / `suppressBottomEdge` params). A NON-final slice FILLS the remaining fragmentainer
+  extent in the block axis (CSS Fragmentation — a broken box occupies the rest of the fragmentainer), so
+  its inline-axis borders + solid background span the page rather than stopping after the last fitting line;
+  the text-line extent stays separate (PR #221 review). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
   it is an interior line, not the paragraph end). A box whose decoration would NOT slice as one
   unfragmented box — a background image / gradient, box-shadow, border-radius, or outline
   (`Box.HasUnsliceableDecoration`, computed at build time since background-image / box-shadow aren't
@@ -194,34 +201,36 @@ grepping the ID).
   atomic content) is cached per conversion (`InlineOnlyMeasurementCache`, threaded through `LayoutContext`
   like the table/grid measure caches) so a paragraph that splits across N pages is shaped ONCE, not
   re-shaped on every resume page (the ~O(pageCount × content) churn — PR #220 review [P2]).
-- **Missing** — a block-axis BORDER or a non-uniform DECORATION (background image / gradient, box-shadow,
-  border-radius, outline) still gates the split (`CanSplitInlineOnlyLines` + `Box.HasUnsliceableDecoration`):
-  such a block falls back to the whole-block force-overflow, because slicing it correctly needs
-  box-decoration-break: slice to paint the decoration as ONE box that is then cut (partial / per-edge
-  borders, a continuous gradient, a single shadow / outline / rounded corner across the slices) — slice-
-  aware `FragmentPainter` metadata, not the per-fragment repaint it does today. The cost-model also doesn't
-  yet weigh the split (`orphans` is read but the geometric fill already satisfies it; widows is enforced
-  directly).
-- **Trigger** — a SINGLE `<p>`/`<div>` with a block-axis BORDER or a non-uniform decoration (gradient /
-  background-image / box-shadow / border-radius / outline) whose text is taller than one whole page (rare)
-  — it overflows the bottom of its starting page rather than splitting.
+- **Missing** — a non-uniform DECORATION (background image / gradient, box-shadow, border-radius, outline)
+  still gates the split (`Box.HasUnsliceableDecoration`): such a block falls back to the whole-block
+  force-overflow, because slicing it correctly needs box-decoration-break: slice to paint the decoration as
+  ONE box that is then cut (a continuous gradient, a single shadow / outline / rounded corner across the
+  slices, the rounded-border RING decomposed per cut) — slice-aware `FragmentPainter` metadata (the box's
+  original extent + each slice's offset), not the per-fragment repaint it does today. The cost-model also
+  doesn't yet weigh the split (`orphans` is read but the geometric fill already satisfies it; widows is
+  enforced directly).
+- **Trigger** — a SINGLE `<p>`/`<div>` with a non-uniform decoration (gradient / background-image /
+  box-shadow / border-radius / outline) whose text is taller than one whole page (rare) — it overflows the
+  bottom of its starting page rather than splitting.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
-  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndPadding` /
-  `EmitInlineOnlyBlockSlice` + `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
+  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndChrome` /
+  `EmitInlineOnlyBlockSlice` (+ `fillToBlockExtent`) + `ReportSliceForcedOverflowIfNeeded` +
+  `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
   `src/NetPdf.Layout/Layouters/InlineOnlyMeasurementCache.cs`; `src/NetPdf.Layout/Boxes/Box.cs` +
-  `BoxBuilder.cs` (`HasUnsliceableDecoration`); `src/NetPdf.Paginate/LayoutContinuation.cs`
+  `BoxBuilder.cs` (`HasUnsliceableDecoration`); `src/NetPdf/Rendering/FragmentPainter.cs`
+  (`PaintBorders` `suppressTopEdge`/`suppressBottomEdge`); `src/NetPdf.Paginate/LayoutContinuation.cs`
   (`InlineOnlyLineSplitContinuation`).
 - **Added** — 2026-06-20 as the line-level residual of block-granularity prose pagination; NARROWED
   2026-06-22 when text-only line splitting + orphans/widows shipped. (The recursion guards a real content
   extent via `InlineOnlyBreakMinExtentPx` so a ZERO-extent anonymous block — flex/grid content the recursion
   walks, placed past the page edge — does NOT spuriously break: the earlier flex/grid regression where both
   triggering blocks had `chunk == 0` at `start > pageBlockSize`.)
-- **Removal condition** — a single inline-only block with a block-axis BORDER **or a non-uniform decoration
-  (gradient / background-image / box-shadow / border-radius / outline)**, taller than a page, splits its
-  lines across pages too — a slice-aware `FragmentPainter` paints the decoration as one box that is then
-  cut (partial / per-edge borders, a continuous gradient, one shadow / outline / rounded corner across the
-  slices). (Atomics, block-axis padding, intermediate-slice justification, the gate for unsliceable
-  decorations, the final-slice end-padding reservation, and the cross-page measurement cache all shipped
+- **Removal condition** — a single inline-only block with a **non-uniform decoration (gradient /
+  background-image / box-shadow / border-radius / outline)**, taller than a page, splits its lines across
+  pages too — a slice-aware `FragmentPainter` paints the decoration as one box that is then cut (a
+  continuous gradient, one shadow / outline / rounded corner / rounded border across the slices, via slice
+  metadata). (Atomics, block-axis padding, a square border, intermediate-slice justification, the gate for
+  unsliceable decorations, the final-slice end-padding reservation, and the cross-page measurement cache all shipped
   2026-06-24.)
 
 ---
@@ -974,7 +983,8 @@ grepping the ID).
   sizing-residuals PR): all four `flex-direction` values, `flex-wrap` (incl.
   `wrap-reverse`), `justify-content` / `align-items` / `align-self` / `align-content`
   (positional + safe/unsafe overflow + **`align-items`/`align-self: baseline`** on the
-  row cross axis), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto +
+  row cross axis + **`align-content` baseline → its spec fallback**, safe start / safe end
+  per §5.3 — flex lines are not a baseline-sharing group), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto +
   **`content` / `max-content` / `min-content` intrinsic keywords on the nowrap row main
   axis**) with the §9.7 step-4 min/max clamping iteration, the **`flex` shorthand** (§7.4
   grammar, via `FlexShorthandExpander`), `order`, `gap` / `column-gap` / `row-gap`
@@ -982,7 +992,7 @@ grepping the ID).
   `width` + `margin: 0 auto` centering, RTL `row` main-axis flip, anonymous-item
   wrapping, and multi-page container splitting. The residual approximations are enumerated
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
-  `align-content: baseline`, margin-box in the alignment / justify-content free-space
+  margin-box in the alignment / justify-content free-space
   math, VERTICAL writing modes — the RTL column cross axis (per-item anchor AND
   line-stacking) and the `start`/`end`/`self-start`/`self-end` vs `flex-start`/`flex-end`
   `wrap-reverse` distinction now ship). Percentage gaps + percentage
@@ -1121,10 +1131,11 @@ grepping the ID).
   to overflow equally on both sides for `center`). **Post-PR-#67 F#6
   baseline keyword family:** the three `<baseline-position>` keywords
   (`baseline` / `first baseline` / `last baseline`) admitted by CSS
-  Box Alignment L3 §6.3 are added to BuildAlignContentTable (29-entry
-  table) but currently approximate to `stretch` — proper baseline
-  alignment is text-shaping-integration scope (L9+; see the bullet
-  below).
+  Box Alignment L3 §6.3 are in BuildAlignContentTable (29-entry table)
+  and now resolve to their **spec FALLBACK** — `baseline` / `first
+  baseline` → safe start, `last baseline` → safe end (§5.3) — NOT
+  `stretch` (which was the prior, wrong approximation). See the bullet
+  below for why flex lines have no line-baseline alignment.
   **Per Phase 3 Task 15 L8** — `flex-grow` / `flex-shrink` /
   `flex-basis` ship the §7 + §9.7 flexibility algorithm. Per line:
   compute each item's hypothetical main-size from its `flex-basis`
@@ -1160,17 +1171,23 @@ grepping the ID).
     diagnostic no longer fires (the approximation is gone). The
     diagnostic code remains registered in `PaginateDiagnosticCodes`
     for backward-compat / cross-reference.
-  - **`align-content` proper `<baseline-position>` alignment** (CSS
-    Box Alignment L3 §6.3): post-PR-#67 F#6 admits the three baseline
-    keywords (`baseline` / `first baseline` / `last baseline`) into
-    BuildAlignContentTable but the reader maps all three to `stretch`
-    as a safe approximation. Proper baseline alignment requires
-    text-shaping integration to align the LINES (not the items) by their
-    baselines on the cross axis; the companion **`align-items: baseline`
-    SHIPPED** (Flex L1 completion — see below) but `align-content: baseline`
-    still maps to `stretch`. The cascade slot is lossless so pre-authored
-    `align-content: baseline` declarations activate the new behavior
-    without a re-author.
+  - **`align-content` `<baseline-position>` — SHIPPED** (CSS Box Alignment L3 §5.3 + §9, PR #221
+    review Task 2): the earlier note here had the premise WRONG — there is NO "align the LINES by their
+    baselines" behavior to implement. Baseline CONTENT-alignment does not apply to a flex container's
+    lines (flex lines are not a baseline-sharing group — only flex ITEMS / table cells / grid items are),
+    so per §5.3 it uses the FALLBACK alignment, which is what `ReadAlignContent` now returns: `baseline` /
+    `first baseline` → **safe start**, `last baseline` → **safe end** (was wrongly approximated as
+    `stretch`, which grows the lines). The companion **`align-items: baseline`** (Flex L1 completion — see
+    below) is the genuinely different feature: it baseline-aligns the ITEMS within a line, where the items
+    ARE the baseline-sharing group. Verified spec-side via the W3C css-align-3 fallback rule before
+    implementing (the deferral comment's "text-shaping integration" was the inaccurate premise). PR #221
+    SECOND review hardened it: the keywords are PRESERVED as `AlignContentValue.FirstBaseline` /
+    `LastBaseline` (not collapsed to flex-start/end at decode), so the fallback is applied at LAYOUT time and
+    is LOGICAL — `ComputeAlignContentOffsets` pre-inverts the start/end by `isWrapReverse` so it does NOT
+    follow the flex-flow reversal (the column-RTL flip stays in `CrossAxisFlow.PhysicalLineOffset`). RESIDUAL
+    (§5.4): when the flex container is ITSELF a baseline-aligned flex item it could participate in its
+    parent's baseline-sharing group instead of falling back — NetPdf doesn't track baseline-sharing-group
+    participation yet, so it always falls back today; the preserved value lets a future cycle honor §5.4.
   - Writing-mode + column-cross-axis `direction` integration for
     `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped** (task 6):
     `flex-direction: row` / `row-reverse` under `direction: rtl` flip the
@@ -1204,16 +1221,22 @@ grepping the ID).
     deferred**: all VERTICAL writing modes (`writing-mode` is not yet a
     registered property; `row` in vertical-rl swaps the main + cross axes onto
     the rotated block + inline directions).
-  - Outer-main-size + auto-margins in `justify-content` free-space
-    calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
-    declared `width`, ignoring item margins / padding / borders /
-    auto margins. Per spec the free-space calculation uses each
-    item's resolved margin-box main-axis size, and auto margins
-    consume free space BEFORE `justify-content` distributes the
-    remainder. Sub-cycle 3+ will add the outer-size pre-pass.
-    Until then, items with non-zero margins will produce slightly-
-    off `justify-content` placements (e.g., space-between will
-    leave less between-item space than the spec dictates).
+  - **Outer-main-size + auto-margins on the MAIN axis** (CSS Flexbox L1 §9.2 step 4 / §9.5 / §8.1):
+    the main-axis placement currently IGNORES each item's main-axis margins entirely — the free-space
+    pre-pass sums only resolved (border-box) main sizes (`LineMainSize`), the cursor advances by
+    `itemMainSize` with NO margin, and the emitted offset is the bare cursor. So a flex item with a
+    main-axis margin is MIS-PLACED (its margin collapses to 0 on the main axis) AND the
+    `justify-content` free space is over-counted. Per spec: free space uses each item's resolved
+    MARGIN-box main size; a main-axis `auto` margin consumes positive free space BEFORE
+    `justify-content` (and is 0 when free space ≤ 0); reversed flows (`row-reverse` / `column-reverse`)
+    swap the leading/trailing margin. **Assessed 2026-06-24 (PR #221 Task 3) as a DEDICATED effort, not
+    a byte-identical narrowing:** fixing FIXED margins changes output for the COMMON case (any flex
+    container with margined items), so it would RE-PIN the byte-identity baselines (LayoutSnapshots /
+    PaginationGolden / RealDocuments / RenderingCorpus) — a reference-output change that needs maintainer
+    sign-off, NOT a unilateral byte-identical change. The auto-margins sub-part + the reversed-flow
+    leading/trailing swap are the intricate pieces. (A prior session reached the same assessment and
+    deferred it; the code paths are `FlexLayouter` L1170-1172 `LineMainSize`, L1341 free space, L1351 /
+    L1713 the main cursor, and L1531 the reversed-axis emission.)
   - Writing-mode-aware `left` / `right` mapping for
     `justify-content` (L2 maps both to `flex-start` / `flex-end`
     under the L1 default LTR + `flex-direction: row`; L3+ will

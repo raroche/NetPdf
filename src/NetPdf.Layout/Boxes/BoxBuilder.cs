@@ -817,6 +817,11 @@ internal static class BoxBuilder
             : BoxPseudo.After;
 
         var pseudoBox = Box.ForPseudo(kind, pseudoStyle, host, pseudo);
+        // box-decoration-break: slice — a ::before / ::after with a non-uniform decoration (radius / image
+        // / shadow / outline) must gate line splitting too, so tall generated content doesn't slice +
+        // repaint the decoration per fragment (PR #221 review [P2] — element boxes set this at the
+        // ForElement site, pseudo boxes were missed). `ruleSet` is the pseudo's own cascade.
+        pseudoBox.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(pseudoStyle, ruleSet);
         if (generatedText.Length > 0)
         {
             pseudoBox.AppendChild(Box.TextRun(generatedText, pseudoStyle, host));
@@ -1121,6 +1126,12 @@ internal static class BoxBuilder
             // here (no source, no pseudo).
             blockified = Box.Anonymous(blockKind, inlineChild.Style);
         }
+
+        // box-decoration-break: slice — blockification builds a FRESH box, so carry the unsliceable-
+        // decoration flag across (PR #221 review [P2] — it was lost, so a blockified inline-block with a
+        // radius / image / shadow / outline could slice + repaint per fragment). Anonymous boxes never
+        // carry a decoration, so the copy is false → correct there too.
+        blockified.HasUnsliceableDecoration = inlineChild.HasUnsliceableDecoration;
 
         // Transfer children. Box.AppendChild requires the child be
         // parent-less, so detach from the old box first.
@@ -1844,8 +1855,10 @@ internal static class BoxBuilder
         if (HasAnyBorderRadius(style))
             return true;
         // An outline draws around the WHOLE box (outline-style not `none` (index 0) + a positive width).
+        // Match the painter's exact predicate (PaintOutline paints when width > 0), not a 0.01 epsilon, so
+        // a sub-0.01px outline can't slip the gate and then paint per slice (PR #221 review [P2]).
         return style.ReadKeywordOrDefault(PropertyId.OutlineStyle, defaultIndex: 0) != 0
-            && style.ReadLengthPxOrZero(PropertyId.OutlineWidth) > 0.01;
+            && style.ReadLengthPxOrZero(PropertyId.OutlineWidth) > 0;
     }
 
     /// <summary>The eight <c>border-radius</c> computed slots in the order the painter's
@@ -1866,14 +1879,17 @@ internal static class BoxBuilder
     /// a slash-form <c>40px / 8px</c> DOES round the box and must gate the split — otherwise the rounded
     /// ring repaints per slice AND the uniform-rounded-border path returns before the cut-edge suppression
     /// runs (PR #221 review [P1]). The old gate checked only the four absolute horizontal longhands, so
-    /// percentage radii and the vertical slash-form longhands slipped through.</summary>
+    /// percentage radii and the vertical slash-form longhands slipped through. The predicate is the
+    /// painter's EXACT <c>&gt; 0</c> (matching <c>CornerRadii.AnyPositive</c> / <c>ReadCornerRadii</c>'s
+    /// <c>Math.Max(0, …)</c>), NOT a 0.01 epsilon — a 0.005px radius rounds the box in the painter, so it
+    /// must gate too (PR #221 review [P2]).</summary>
     private static bool HasAnyBorderRadius(ComputedStyle style)
     {
         foreach (var id in BorderRadiusSlots)
         {
             var slot = style.Get(id);
-            if (slot.Tag == ComputedSlotTag.LengthPx && slot.AsLengthPx() > 0.01) return true;
-            if (slot.Tag == ComputedSlotTag.Percentage && slot.AsPercentage() > 0.0) return true;
+            if (slot.Tag == ComputedSlotTag.LengthPx && slot.AsLengthPx() > 0) return true;
+            if (slot.Tag == ComputedSlotTag.Percentage && slot.AsPercentage() > 0) return true;
         }
         return false;
     }

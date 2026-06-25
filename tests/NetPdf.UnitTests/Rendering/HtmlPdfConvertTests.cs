@@ -561,6 +561,24 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_a_sub_epsilon_border_radius_force_overflows_instead_of_slicing()
+    {
+        // PR #221 review [P2] — the slice gate must use the painter's EXACT `> 0` radius predicate
+        // (CornerRadii.AnyPositive), not a 0.01 epsilon: a 0.005px border-radius rounds the box in the
+        // painter, so it must gate line splitting too (else it slices + enters the rounded-ring path that
+        // skips cut-edge suppression). The pre-fix `> 0.01` let it through.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body><div style=\"margin:0;border-radius:0.005px;background-color:#eee\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
     public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block

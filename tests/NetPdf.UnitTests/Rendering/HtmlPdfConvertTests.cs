@@ -507,10 +507,10 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void A_tall_block_with_an_unsliceable_decoration_force_overflows_instead_of_slicing()
     {
-        // PR #220 review [P1 #3] — box-decoration-break: slice repaints decorations per page fragment,
-        // which is wrong for a background image / gradient, border-radius, box-shadow, or outline (they
-        // would restart / repeat per slice). Such a block is gated OUT of line splitting and
-        // force-overflows; a solid background-color is uniform and still slices.
+        // PR #220 review [P1 #3] — box-decoration-break: slice would repaint a NON-sliceable decoration per
+        // page fragment, which is wrong for a border-radius or box-shadow (they would restart / repeat per
+        // slice). Such a block is gated OUT of line splitting and force-overflows. A background image /
+        // gradient / outline and a solid background-color DO slice (continuously) — PR #222.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         string Doc(string style)
         {
@@ -588,9 +588,12 @@ public sealed class HtmlPdfConvertTests
         // no overflow is truncated. (box-shadow / border-radius still
         // force-overflow — those slice-aware painters are the remaining residual.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        // line-height:50px leaves a real fill gap below the last line on each page, so the composite box's
+        // PHYSICAL extent (filled slices) is meaningfully taller than the natural line-height sum — the
+        // page-fill-gap bug [P1] would shorten the axis, which the axis==summed-clips check below catches.
         var sb = new StringBuilder(
             "<!DOCTYPE html><html><body style=\"margin:0\">"
-            + "<div style=\"margin:0;background:linear-gradient(#f00,#00f)\">");
+            + "<div style=\"margin:0;line-height:50px;background:linear-gradient(#f00,#00f)\">");
         for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
         sb.Append("L200</div></body></html>");
 
@@ -602,6 +605,23 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
         // The gradient shading (`W n /Shn sh Q`) is painted once per slice → continuous across pages.
         Assert.Equal(result.PageCount, CountOccurrences(pdf, " sh Q"));
+
+        // PR #222 review [P2-tests] — assert CONTINUITY, not just the op count (a decoration restarting
+        // from zero per page would also count once per page). Each page paints a DISTINCT axial shading
+        // (a restart-from-zero would emit identical coords the reuse cache would dedupe), and the vertical
+        // gradient AXIS spans the composite box reconstructed from the ACTUAL fragment areas — so its
+        // length equals the SUMMED slice-clip heights (PR #222 review [P1]; the pre-fix natural-line-height
+        // sum would be SHORTER than the filled slices).
+        var axisLengths = AxialShadingAxisLengths(pdf);
+        var clipHeights = GradientClipHeights(pdf);
+        Assert.Equal(result.PageCount, axisLengths.Count);   // one DISTINCT shading per slice (no dedupe)
+        Assert.Equal(result.PageCount, clipHeights.Count);
+        Assert.All(axisLengths, len => Assert.Equal(axisLengths[0], len, precision: 1)); // same whole-box axis
+        var summedClips = 0.0;
+        foreach (var h in clipHeights) summedClips += h;
+        Assert.Equal(summedClips, axisLengths[0], precision: 1);   // the axis spans EXACTLY the slice union
+        Assert.True(summedClips > clipHeights[0] + 1.0,            // multi-slice: the union exceeds slice 0
+            $"the gradient must span multiple physical slices; summed={summedClips}, first={clipHeights[0]}.");
     }
 
     [Fact]
@@ -626,6 +646,11 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
         // The repeating image fills via a tiling pattern (`/Pattern cs /Pn scn`) once per slice.
         Assert.Equal(result.PageCount, CountOccurrences(pdf, " scn "));
+        // PR #222 review [P2-tests] — continuity, not just count. The tile grid is anchored to the WHOLE
+        // composite box, so each page's pattern has a DISTINCT /Matrix phase → a DISTINCT pattern object
+        // (RegisterTilingPattern dedupes on the anchor, so a restart-from-zero — identical per-slice phase
+        // on identical pages — would collapse to ONE shared pattern object across pages).
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "/PatternType 1"));
     }
 
     [Fact]
@@ -637,9 +662,10 @@ public sealed class HtmlPdfConvertTests
         // slice, the bottom on the last, the sides on every slice. So the ring is painted once per slice, no
         // line is lost, no overflow truncated. (box-shadow / border-radius still force-overflow.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        // line-height:50px → real per-page fill gaps, so the whole-box ring is much taller than one slice.
         var sb = new StringBuilder(
             "<!DOCTYPE html><html><body style=\"margin:0\">"
-            + "<div style=\"margin:0;outline:5px solid #ff00ff\">");
+            + "<div style=\"margin:0;line-height:50px;outline:5px solid #ff00ff\">");
         for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
         sb.Append("L200</div></body></html>");
 
@@ -651,6 +677,47 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
         // The magenta outline ring (`1 0 1 rg`) is painted once per slice (clipped to each).
         Assert.Equal(result.PageCount, CountOccurrences(pdf, "1 0 1 rg"));
+        // PR #222 review [P2-tests] — continuity, not just count. The ring fill's OUTER rect is the WHOLE
+        // composite box (the slice just CLIPS it), so its height is identical on every page (a
+        // restart-from-zero per-slice ring would give a slice-sized, page-varying rect). And the box is
+        // reconstructed from the ACTUAL fragment areas [P1] — the PageCount−1 FILLED slices (one A4 content
+        // height ≈ 698.25pt each) alone exceed (PageCount−1)×698, whereas the pre-fix natural line-height
+        // sum (the gaps removed) falls SHORT of that bound. The per-cut clip continuity (top edge first
+        // slice / bottom last / sides all) follows from the whole-box ring.
+        var ringHeights = OutlineRingOuterHeights(pdf);
+        Assert.Equal(result.PageCount, ringHeights.Count);
+        Assert.All(ringHeights, h => Assert.Equal(ringHeights[0], h, precision: 1));   // same whole-box ring
+        Assert.True(ringHeights[0] >= (result.PageCount - 1) * 698.0,
+            $"the ring must span the filled composite box ({result.PageCount} pages); got {ringHeights[0]}.");
+    }
+
+    [Fact]
+    public void A_sliced_background_image_with_content_box_clip_does_not_over_clip_cut_edges()
+    {
+        // PR #222 review [P2] / Copilot [4] — `background-clip: content-box` on a SLICED block must NOT inset
+        // the CUT edges (where the block-start / block-end border + padding is suppressed), else a blank
+        // strip is clipped at the top of a non-first slice / the bottom of a non-last slice. With padding:20
+        // + content-box clip, a MIDDLE slice's bg-image clip covers the FULL filled slice (no top/bottom
+        // inset); only the box's REAL top (slice 0) + bottom (last slice) inset by the padding. background-
+        // repeat:no-repeat keeps the tiler on the per-tile path so the clip is an explicit `re W n` rect.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;padding:20px;background-clip:content-box;"
+            + $"background-repeat:no-repeat;background-image:url({PngDataUri(16, 16)})\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 3, $"need >= 3 pages for a middle slice; got {result.PageCount}.");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // A MIDDLE slice fills the page (≈ 698.25pt of A4 content) and its cut edges are NOT inset, so a
+        // FULL-page-height bg-image clip exists. The pre-fix code inset BOTH cut edges by the 20px (15pt)
+        // padding on every slice, so NO clip reached the full page height (the over-clipped blank strips).
+        var clipHeights = BackgroundImageClipHeights(pdf);
+        Assert.Contains(clipHeights, h => System.Math.Abs(h - 698.25) < 1.0);
     }
 
     [Fact]
@@ -2049,6 +2116,67 @@ public sealed class HtmlPdfConvertTests
             idx += needle.Length;
         }
         return n;
+    }
+
+    /// <summary>PR #222 review [P2-tests] — the vertical axis length (|y0 − y1|) of every axial-shading
+    /// (<c>/Coords [x0 y0 x1 y1]</c>) in the PDF, in object order. A vertical linear-gradient sliced across
+    /// pages paints one DISTINCT shading per page whose axis spans the WHOLE composite box, so the lengths
+    /// are all equal and equal the summed slice-clip heights (continuity across the page-fill gaps).</summary>
+    private static List<double> AxialShadingAxisLengths(string pdf)
+    {
+        var list = new List<double>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, @"/Coords\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\]"))
+        {
+            var y0 = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+            var y1 = double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
+            list.Add(Math.Abs(y0 - y1));
+        }
+        return list;
+    }
+
+    /// <summary>PR #222 review [P2-tests] — the clip-rect HEIGHT (pt) of each gradient paint
+    /// (<c>x y w h re W n /Shn sh</c>) in the PDF, in stream order = page order. Each is a slice's painted
+    /// extent; they sum to the whole composite box's PHYSICAL extent (= the axis length above).</summary>
+    private static List<double> GradientClipHeights(string pdf)
+    {
+        var list = new List<double>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, @"(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+W\s+n\s+/Sh\d+\s+sh"))
+        {
+            list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
+        }
+        return list;
+    }
+
+    /// <summary>PR #222 review [P2] / Copilot [4] — the HEIGHT (pt) of each rectangular clip
+    /// (<c>x y w h re W n</c> NOT immediately driving a shading) in the PDF. In a doc whose only clipped
+    /// paint is a sliced background-image, these are the per-slice background-clip rects: a middle slice's
+    /// covers the full filled slice (cut edges not inset), so a full-page-height clip appears.</summary>
+    private static List<double> BackgroundImageClipHeights(string pdf)
+    {
+        var list = new List<double>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, @"(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+W\s+n(?!\s*/Sh)"))
+        {
+            list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
+        }
+        return list;
+    }
+
+    /// <summary>PR #222 review [P2-tests] — the OUTER-rect height (pt) of each magenta outline ring fill
+    /// (<c>1 0 1 rg  ox oy ow oh re  ix iy iw ih re  f*</c>) in the PDF. A sliced outline paints the ring
+    /// over the WHOLE composite box (the slice only CLIPS it), so the outer height is identical on every
+    /// page and spans well past a single slice.</summary>
+    private static List<double> OutlineRingOuterHeights(string pdf)
+    {
+        var list = new List<double>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, @"1 0 1 rg\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+f\*"))
+        {
+            list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
+        }
+        return list;
     }
 
     [Fact]

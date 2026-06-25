@@ -192,13 +192,25 @@ internal static class FragmentPainter
                         bgOriginTopPx = (topPx - fragment.DecorationBlockOffsetPx) + oT;
                         bgOriginHeightPx = Math.Max(0, fragment.DecorationBlockExtentPx - oT - oB);
                     }
+                    // box-decoration-break: slice (PR #222 review [P2] / Copilot [4]) — on a CUT-edge slice
+                    // the block-start / block-end border + padding is SUPPRESSED (the content starts at the
+                    // border-box top / the bottom border is skipped), so the background-CLIP must NOT inset
+                    // that edge — else `background-clip: padding-box | content-box` leaves a blank strip at the
+                    // top of a non-first slice / the bottom of a non-last slice. Zero the clip's block-start
+                    // inset when the start chrome is cut, the block-end inset when the end chrome is cut. The
+                    // POSITIONING area above keeps the WHOLE-box insets (the box's real top / bottom
+                    // border + padding IS present on slice 0 / the last slice), so tile continuity is
+                    // unaffected. The default border-box clip (cT = cB = 0) is already correct → byte-identical.
+                    var clipTopInsetPx = fragment.SuppressBlockStartChrome ? 0.0 : cT;
+                    var clipBottomInsetPx = fragment.SuppressBlockEndChrome ? 0.0 : cB;
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt,
                         leftPx + oL, bgOriginTopPx, Math.Max(0, widthPx - oL - oR), bgOriginHeightPx,
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
-                        clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,
-                        clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB),
+                        clipLeftPx: leftPx + cL, clipTopPx: topPx + clipTopInsetPx,
+                        clipWidthPx: Math.Max(0, widthPx - cL - cR),
+                        clipHeightPx: Math.Max(0, heightPx - clipTopInsetPx - clipBottomInsetPx),
                         clipRadiiPx: clipRadiiPx);
                 }
 

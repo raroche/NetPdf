@@ -277,11 +277,51 @@ public sealed class MulticolLayouterTests
         foreach (var r in rules)
         {
             Assert.Equal(4, r.InlineSize, precision: 3);    // column-rule-width
-            Assert.Equal(60, r.BlockSize, precision: 3);    // content height
+            Assert.Equal(60, r.BlockSize, precision: 3);    // the used COLUMN box height (= the 60px container)
             Assert.Equal(0, r.BlockOffset, precision: 3);   // content-box top
             Assert.True(r.IsColumnRule);
             Assert.Same(multicol, r.Box);                   // container style for the painter
         }
+    }
+
+    [Fact]
+    public void Column_rule_height_is_the_column_box_not_the_content_extent()
+    {
+        // PR #224 review [P1]: an explicit-height multicol whose tallest column doesn't FILL the
+        // column box still draws a rule the full column height (CSS Multi-column L1 §5.1 — "the
+        // rule is as tall as the columns"). Setup: a 200px-tall 2-column box; child0 (150px) fills
+        // column 0 to 150, child1 (100px) doesn't fit (150 + 100 > 200) so it lands in column 1.
+        // The tallest content reaches 150px, but the COLUMN BOX is 200px → the rule must be 200px.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(multicol.Style, PropertyId.Height, 200);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(4)); // solid
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        var s0 = MakeStyle();
+        SetLengthPx(s0, PropertyId.Height, 150);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s0, MakeElement()));
+        var s1 = MakeStyle();
+        SetLengthPx(s1, PropertyId.Height, 100);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s1, MakeElement()));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var rules = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.IsColumnRule) rules.Add(f);
+
+        Assert.Single(rules);                                   // one gap between 2 content columns
+        Assert.Equal(200, rules[0].BlockSize, precision: 3);    // the 200px column box, NOT the 150px content
     }
 
     [Fact]
@@ -768,11 +808,15 @@ public sealed class MulticolLayouterTests
 
         // multicol-balancing-pagination — `normal` now scales 1em with the container font-size
         // (was a hard-coded 16 px). At the initial 16 px it stays 16 (byte-identical); at 25 px
-        // it's 25; a non-positive em base falls back to the 16 px initial.
+        // it's 25.
         var normal = MakeStyle(); // unset → normal
         Assert.Equal(16.0, normal.ReadColumnGap(200, 16), precision: 3);
         Assert.Equal(25.0, normal.ReadColumnGap(200, 25), precision: 3);
-        Assert.Equal(16.0, normal.ReadColumnGap(200, 0), precision: 3);        // invalid em → 16 px initial
+        // PR #224 review [P1]: an explicit `font-size: 0` is PRESERVED (1em = 0), NOT defaulted to
+        // 16; only a non-finite / negative (invalid) em base falls back to the 16 px initial.
+        Assert.Equal(0.0, normal.ReadColumnGap(200, 0), precision: 3);
+        Assert.Equal(16.0, normal.ReadColumnGap(200, -1), precision: 3);             // negative → 16
+        Assert.Equal(16.0, normal.ReadColumnGap(200, double.NaN), precision: 3);     // non-finite → 16
     }
 
     [Fact]

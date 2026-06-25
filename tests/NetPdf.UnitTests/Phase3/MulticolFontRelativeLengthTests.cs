@@ -190,6 +190,48 @@ public sealed class MulticolFontRelativeLengthTests
     }
 
     // ====================================================================
+    //  Explicit font-size: 0 is preserved (PR #224 review [P1])
+    // ====================================================================
+
+    [Fact]
+    public void Explicit_zero_font_size_resolves_em_column_width_to_zero_not_a_16px_fallback()
+    {
+        // `font-size: 0` is valid CSS; `2em` against it is 0, NOT 2 × the 16 px fallback = 32.
+        var root = Box.CreateRoot(MakeStyle());
+
+        var mcStyle = MakeStyle();
+        mcStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(0));
+        mcStyle.SetDeferred(PropertyId.ColumnWidth, "2em");
+        var mc = Box.ForElement(BoxKind.BlockContainer, mcStyle, MakeElement());
+        root.AppendChild(mc);
+
+        DeferredLengthResolver.ResolveTreeInPlace(root, pageWidthPx: 600, pageHeightPx: 800);
+
+        Assert.Equal(0, mcStyle.ReadColumnWidth());
+    }
+
+    [Fact]
+    public void Explicit_zero_font_size_resolves_em_column_gap_to_zero_not_a_16px_fallback()
+    {
+        // `2em` column-gap against `font-size: 0` is 0; `normal` against it is also 0 (1em = 0).
+        var root = Box.CreateRoot(MakeStyle());
+
+        var mcStyle = MakeStyle();
+        mcStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(0));
+        mcStyle.SetDeferred(PropertyId.ColumnGap, "2em");
+        var mc = Box.ForElement(BoxKind.BlockContainer, mcStyle, MakeElement());
+        root.AppendChild(mc);
+
+        DeferredLengthResolver.ResolveTreeInPlace(root, pageWidthPx: 600, pageHeightPx: 800);
+
+        // `2em` resolved to a LengthPx of 0.
+        Assert.Equal(0, mcStyle.ReadColumnGap(containerInlineSize: 600, emPx: 0), precision: 3);
+        // And `normal` (a separate unset-gap box) at font-size 0 is 1em = 0.
+        var normalStyle = MakeStyle();
+        Assert.Equal(0, normalStyle.ReadColumnGap(containerInlineSize: 600, emPx: 0), precision: 3);
+    }
+
+    // ====================================================================
     //  Helpers (mirror MulticolLayouterTests)
     // ====================================================================
 

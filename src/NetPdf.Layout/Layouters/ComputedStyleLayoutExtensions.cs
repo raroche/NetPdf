@@ -651,8 +651,10 @@ internal static class ComputedStyleLayoutExtensions
         if (slot.Tag == ComputedSlotTag.Percentage
             && double.IsFinite(containerInlineSize) && containerInlineSize >= 0)
             return System.Math.Max(0, slot.AsPercentage() / 100.0 * containerInlineSize);
-        // `normal` (initial) / unset / non-length → 1em (CSS Multi-column L1 §6.1).
-        return emPx > 0 && double.IsFinite(emPx) ? emPx : 16.0;
+        // `normal` (initial) / unset / non-length → 1em (CSS Multi-column L1 §6.1). An explicit
+        // `font-size: 0` is preserved (1em = 0 — PR #224 review [P1]); only a non-finite / negative
+        // (invalid) em base falls back to the 16 px initial.
+        return double.IsFinite(emPx) && emPx >= 0 ? emPx : 16.0;
     }
 
     /// <summary>Per Phase 3 — flex/grid gutter for <see cref="PropertyId.ColumnGap"/>

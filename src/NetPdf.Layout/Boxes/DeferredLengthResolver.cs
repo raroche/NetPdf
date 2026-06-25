@@ -90,8 +90,7 @@ internal static class DeferredLengthResolver
         ComputedStyle style, double rootEmPx, double pageWidthPx, double pageHeightPx)
     {
         if (style is null) return;
-        var emPx = style.ReadLengthPxOrZero(PropertyId.FontSize);
-        if (emPx <= 0) emPx = 16.0;
+        var emPx = EmBasePx(style);
 
         foreach (var id in BodyLengthProperties)
         {
@@ -127,11 +126,24 @@ internal static class DeferredLengthResolver
 
     /// <summary>The <c>rem</c> base — the ROOT ELEMENT box's resolved font-size (the first
     /// element-backed box under the synthetic <see cref="BoxKind.Root"/>), falling back to the
-    /// UA-default 16px when the tree has no element box yet.</summary>
+    /// UA-default 16px when the tree has no element box yet (an explicit root <c>font-size: 0</c>
+    /// is preserved — see <see cref="EmBasePx"/>).</summary>
     private static double RootElementEmPx(Box root)
     {
         var rootElement = root.SourceElement is not null ? root : root.FirstChild;
-        var em = rootElement?.Style?.ReadLengthPxOrZero(PropertyId.FontSize) ?? 0;
-        return em > 0 ? em : 16.0;
+        return EmBasePx(rootElement?.Style);
+    }
+
+    /// <summary>A box's resolved <c>font-size</c> in px — the <c>em</c> base. An explicit
+    /// <c>font-size: 0</c> is PRESERVED (a deferred <c>2em</c> then resolves to 0, NOT silently to
+    /// 32 px against a 16 px fallback — PR #224 review [P1]); only an ABSENT (non-LengthPx slot —
+    /// the cascade resolves every PRESENT font-size to a length, so non-LengthPx ⇒ absent) /
+    /// non-finite / negative (invalid) value falls back to the 16 px initial.</summary>
+    private static double EmBasePx(ComputedStyle? style)
+    {
+        if (style is null) return 16.0;
+        var slot = style.Get(PropertyId.FontSize);
+        var px = slot.Tag == ComputedSlotTag.LengthPx ? slot.AsLengthPx() : double.NaN;
+        return double.IsFinite(px) && px >= 0 ? px : 16.0;
     }
 }

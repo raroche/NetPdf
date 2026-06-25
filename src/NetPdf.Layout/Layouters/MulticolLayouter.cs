@@ -675,12 +675,11 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // resume point.
         var contentExhausted = false;
         var sinkCursorAtStart = _sink.Cursor;
-        // multicol-balancing-pagination (column rules) — track the content laid out so the rules
-        // can be sized + placed after the fill pass: the high-water content bottom (for the rule
-        // HEIGHT, capped to the column box) and the index of the last column that emitted anything
-        // (rules go only in the gaps BETWEEN columns that both carry content — left-to-right fill
-        // ⇒ content columns are the prefix 0..lastColumnWithContent).
-        var maxContentBottom = _contentBlockOffset;
+        // multicol-balancing-pagination (column rules) — track the index of the last column that
+        // emitted anything, so after the fill pass the rules go only in the gaps BETWEEN columns
+        // that both carry content (left-to-right fill ⇒ content columns are the prefix
+        // 0..lastColumnWithContent). The rule HEIGHT is the used column box (effectiveColumnBlockSize),
+        // not the content extent, so no per-fragment height tracking is needed.
         var lastColumnWithContent = -1;
         for (var columnIdx = 0; columnIdx < columnCount; columnIdx++)
         {
@@ -775,12 +774,9 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 cancellationToken);
 
             // multicol-balancing-pagination (column rules) — record whether this column emitted
-            // content (its sink cursor advanced) + grow the high-water content bottom, BEFORE the
-            // outcome branches break / continue away.
+            // content (its sink cursor advanced), BEFORE the outcome branches break / continue away.
             if (_sink.Cursor > cursorBeforeColumn)
                 lastColumnWithContent = columnIdx;
-            if (translatingSink.MaxBlockExtent > maxContentBottom)
-                maxContentBottom = translatingSink.MaxBlockExtent;
 
             if (columnResult.Outcome == LayoutAttemptOutcome.AllDone)
             {
@@ -809,8 +805,7 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // outer sink in container coordinates, BEFORE every return so the rules appear on this
         // page whether the content fit (AllDone) or overflowed to the next page (PageComplete)).
         EmitColumnRules(
-            perColumnInlineSize, columnGap, effectiveColumnBlockSize,
-            maxContentBottom, lastColumnWithContent);
+            perColumnInlineSize, columnGap, effectiveColumnBlockSize, lastColumnWithContent);
 
         if (contentExhausted)
         {
@@ -875,15 +870,19 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
     /// <summary>multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — emit one
     /// synthetic <see cref="BoxFragment.IsColumnRule"/> fragment per inter-column gap between two
     /// columns that BOTH carry content (left-to-right fill ⇒ the content columns are the prefix
-    /// <c>0..lastColumnWithContent</c>). Each rule is centered in its gap, sized
-    /// (<c>column-rule-width</c> × the content height laid out on this page, capped to the column
-    /// box so a single overflowing column can't stretch the rule past the multicol box). A `none` /
-    /// `hidden` <c>column-rule-style</c> or a non-positive <c>column-rule-width</c> emits nothing
-    /// (byte-identical — no rule fragments). The painter resolves the rule COLOR
+    /// <c>0..lastColumnWithContent</c>). Each rule is centered in its gap and spans the full
+    /// <b>used column height</b> = <paramref name="effectiveColumnBlockSize"/> (the column box: the
+    /// explicit content-box block-size, the balanced height, or the per-page column block-size on
+    /// an overflow page — CSS Multi-column L1 §5.1, "the rule is as tall as the columns"), NOT the
+    /// content actually laid out: an explicit 200px-tall multicol whose tallest column only reaches
+    /// 150px still draws a 200px rule (PR #224 review [P1]). Whenever ≥ 2 columns carry content,
+    /// the column box that a rule sits beside IS <paramref name="effectiveColumnBlockSize"/> tall.
+    /// A `none` / `hidden` <c>column-rule-style</c> or a non-positive <c>column-rule-width</c> emits
+    /// nothing (byte-identical — no rule fragments). The painter resolves the rule COLOR
     /// (<c>column-rule-color</c>, currentcolor → the element <c>color</c>) and fills the rect.</summary>
     private void EmitColumnRules(
         double perColumnInlineSize, double columnGap, double effectiveColumnBlockSize,
-        double maxContentBottom, int lastColumnWithContent)
+        int lastColumnWithContent)
     {
         // Need at least two adjacent CONTENT columns (= a gap to rule between them).
         if (lastColumnWithContent < 1) return;
@@ -899,11 +898,8 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         var ruleWidthPx = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0.0;
         if (!(ruleWidthPx > 0) || !double.IsFinite(ruleWidthPx)) return;
 
-        // Rule height = the content actually laid out (high-water bottom − content top), capped to
-        // the column box.
-        var ruleHeightPx = Math.Min(
-            Math.Max(0.0, maxContentBottom - _contentBlockOffset),
-            effectiveColumnBlockSize);
+        // Rule height = the used COLUMN height (the column box), not the content laid out into it.
+        var ruleHeightPx = effectiveColumnBlockSize;
         if (!(ruleHeightPx > 0) || !double.IsFinite(ruleHeightPx)) return;
 
         // One rule per gap g (0..lastColumnWithContent-1): the gap after column g spans
@@ -1559,25 +1555,12 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
 
         public int Cursor => _outerSink.Cursor;
 
-        /// <summary>multicol-balancing-pagination (column rules) — the high-water block-axis
-        /// bottom (translated <c>BlockOffset + BlockSize</c>) emitted through this column sink, so
-        /// the layouter can size the column rules to the content actually laid out on this page
-        /// (capped to the column box). Mirrors <c>DiscardingMeasureSink.MaxBlockExtent</c>; a
-        /// rolled-back speculative fragment can only inflate it, and the rule height is capped, so
-        /// the rule never exceeds the column box.</summary>
-        public double MaxBlockExtent { get; private set; }
-
-        public void Emit(BoxFragment fragment)
-        {
-            var translated = fragment with
+        public void Emit(BoxFragment fragment) =>
+            _outerSink.Emit(fragment with
             {
                 InlineOffset = fragment.InlineOffset + _inlineOffsetTranslation,
                 BlockOffset = fragment.BlockOffset + _blockOffsetTranslation,
-            };
-            var bottom = translated.BlockOffset + translated.BlockSize;
-            if (bottom > MaxBlockExtent) MaxBlockExtent = bottom;
-            _outerSink.Emit(translated);
-        }
+            });
 
         public void RollbackTo(int cursor) => _outerSink.RollbackTo(cursor);
 

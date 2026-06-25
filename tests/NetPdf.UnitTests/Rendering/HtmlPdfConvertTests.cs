@@ -701,10 +701,9 @@ public sealed class HtmlPdfConvertTests
     public void A_tall_block_with_a_box_shadow_slices_and_paints_the_shadow_per_page()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with a
-        // box-shadow previously force-overflowed (its slice-aware painter wasn't built). It now SLICES: the
-        // shadow is computed over the WHOLE composite box + CLIPPED to each slice (the top shadow on the
-        // first slice, the bottom on the last, the side shadows on every slice). A sliced box-shadow is
-        // always SQUARE (a border-radius gates the split), so a sharp (blur-0) shadow is a filled rect.
+        // box-shadow previously force-overflowed. It now SLICES: the shadow is computed over the WHOLE
+        // composite box + CLIPPED to each slice. An OUTSET shadow is a knockout RING (the composite border
+        // box cut out, CSS B&B §6.1.1 — PR #223 review [P2]), so a sharp (blur-0) layer is `re re f*`.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         // 0 0 0 8px = no offset, no blur, 8px spread → a sharp green ring around the box. line-height:50px
         // widens the per-page fill gaps so the whole-box shadow is much taller than a single slice.
@@ -720,16 +719,90 @@ public sealed class HtmlPdfConvertTests
         Assert.True(result.PageCount >= 2, $"the box-shadow block must slice; got {result.PageCount}.");
         Assert.Equal(201, TdCount(pdf));   // no line lost
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
-        // The green sharp shadow rect (`0 1 0 rg ... re f`) is filled once per slice (clipped to each).
+        // The green sharp shadow RING (`0 1 0 rg ... f*`) is painted once per slice (clipped to each).
         Assert.Equal(result.PageCount, CountOccurrences(pdf, "0 1 0 rg"));
-        // Continuity, not just count: the shadow rect is the WHOLE composite box (each slice only CLIPS it),
-        // so its height is identical on every page and spans well past one slice — a per-slice shadow
-        // (the pre-fix would have force-overflowed; a naive restart would give a slice-sized rect).
+        // Continuity, not just count: the ring's OUTER rect is the WHOLE composite box (each slice only
+        // CLIPS it), so its height is identical on every page and spans well past one slice.
         var shadowHeights = BoxShadowFillHeights(pdf);
         Assert.Equal(result.PageCount, shadowHeights.Count);
         Assert.All(shadowHeights, h => Assert.Equal(shadowHeights[0], h, precision: 1));
         Assert.True(shadowHeights[0] >= (result.PageCount - 1) * 698.0,
             $"the shadow must span the filled composite box ({result.PageCount} pages); got {shadowHeights[0]}.");
+    }
+
+    [Fact]
+    public void An_outset_box_shadow_is_knocked_out_inside_the_border_box()
+    {
+        // PR #223 review [P2] — CSS B&B §6.1.1: an OUTSET box-shadow is not painted INSIDE the border box,
+        // so it does not show through a TRANSPARENT background (this block has no background-color). The
+        // shadow is a knockout RING (the border box cut out via an even-odd `re re f*` for the square box),
+        // NOT a solid rect, so the box interior stays transparent.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;box-shadow:0 0 0 10px #00ff00\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the shadow block must slice; got {result.PageCount}.");
+        Assert.Contains("0 1 0 rg", pdf);            // the green shadow is painted
+        Assert.Equal(0, CountGreenSquareFills(pdf));  // but NOT as a solid rect → the interior is knocked out
+        Assert.Contains(" re f*", pdf);               // an even-odd ring fill (outer rect, inner cut, f*)
+    }
+
+    [Fact]
+    public void A_tall_block_with_both_a_border_radius_and_a_box_shadow_slices_both()
+    {
+        // PR #223 review [P2-tests] — a sliced box with BOTH a border-radius and a box-shadow rounds + slices
+        // both: the rounded background band AND the shadow ring are built over the composite box, clipped per
+        // slice. Green rounded background (no squared middle slice); blue shadow ring spanning the box.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;border-radius:20px;background-color:#00ff00;"
+            + "box-shadow:0 0 0 6px #0000ff\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 3, $"need >= 3 pages; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal(0, CountGreenSquareFills(pdf));                            // the rounded bg is composite
+        var spans = GreenRoundedFillSpans(pdf);
+        Assert.All(spans, s => Assert.True(s >= (result.PageCount - 1) * 698.0, $"rounded bg spans the box; got {s}."));
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "0 0 1 rg"));       // the blue shadow ring per slice
+        Assert.Contains("f*", pdf);   // a knockout ring (rounded → Bézier even-odd `f*`, the box cut out)
+    }
+
+    [Fact]
+    public void A_blurred_box_shadow_on_a_sliced_block_falls_back_to_a_sharp_ring_once_diagnosed()
+    {
+        // PR #223 review [P1] — a BLURRED box-shadow on a block split across pages is painted SHARP (a ring):
+        // rasterizing the whole composite shadow per slice would blow the raster cap + amplify CPU / memory
+        // for untrusted HTML. The approximation is diagnosed ONCE per conversion.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;box-shadow:0 0 20px #0000ff\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 3, $"the shadow block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // Painted SHARP (a ring per slice), and the blur→sharp approximation is surfaced. (The painter
+        // diagnostics are emitted per-page, the pre-existing pattern — a once-per-conversion dedup across
+        // pages is a documented follow-up; here we assert the approximation IS reported.)
+        Assert.True(CountOccurrences(pdf, "0 0 1 rg") >= result.PageCount, "the sharp shadow ring per slice");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
     }
 
     [Fact]
@@ -2259,14 +2332,15 @@ public sealed class HtmlPdfConvertTests
         return spans;
     }
 
-    /// <summary>The fill-rect height (pt) of each green sharp box-shadow (<c>0 1 0 rg  x y w h re f</c>) in
-    /// the PDF. A sliced box-shadow paints the shadow over the WHOLE composite box (the slice only CLIPS it),
-    /// so the fill height is identical on every page.</summary>
+    /// <summary>The OUTER-rect height (pt) of each green sharp box-shadow RING (<c>0 1 0 rg  ox oy ow oh re
+    /// ix iy iw ih re f*</c>) in the PDF. An outset shadow is a knockout RING (the composite border box cut
+    /// out, PR #223 review [P2]); a sliced shadow's ring is the WHOLE composite box (the slice only clips
+    /// it), so the outer height is identical on every page.</summary>
     private static List<double> BoxShadowFillHeights(string pdf)
     {
         var list = new List<double>();
         foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
-            pdf, @"0 1 0 rg\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+f(?!\*)"))
+            pdf, @"0 1 0 rg\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+f\*"))
         {
             list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
         }

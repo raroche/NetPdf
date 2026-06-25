@@ -1401,14 +1401,32 @@ internal static class FragmentPainter
 
             if (s.BlurPx <= BoxShadowBlurEpsilonPx)
             {
-                ToPdfRect(shLeftPx, shTopPx, shWidthPx, shHeightPx, pageHeightPt,
-                    out var x, out var y, out var w, out var h);
-                FillShadowRect(page, x, y, w, h, shadowRadii, r, g, b, alpha);
+                // Sharp shadow → a knockout RING (the shadow shape minus the composite border box).
+                FillShadowRing(page, pageHeightPt, shLeftPx, shTopPx, shWidthPx, shHeightPx, shadowRadii,
+                    leftPx, boxTopPx, widthPx, boxHeightPx, borderRadii, r, g, b, alpha);
+            }
+            else if (isSlice)
+            {
+                // box-decoration-break: slice (PR #223 review [P1]) — a BLURRED shadow on a block split
+                // across pages is painted SHARP: rasterizing the whole composite shadow per slice would blow
+                // the raster cap + amplify CPU / memory for untrusted HTML. Still knocked out (a ring).
+                FillShadowRing(page, pageHeightPt, shLeftPx, shTopPx, shWidthPx, shHeightPx, shadowRadii,
+                    leftPx, boxTopPx, widthPx, boxHeightPx, borderRadii, r, g, b, alpha);
+                if (!capReported)
+                {
+                    diagnostics?.Emit(new Diagnostic(
+                        DiagnosticCodes.CssBoxShadowUnsupported001,
+                        "A blurred box-shadow on a block split across pages (box-decoration-break: slice) was "
+                        + "painted as a SHARP shadow — the whole-box blur raster would exceed the cap.",
+                        DiagnosticSeverity.Warning));
+                    capReported = true;
+                }
             }
             else
             {
                 PaintBlurredBoxShadow(page, document, shLeftPx, shTopPx, shWidthPx, shHeightPx,
-                    shadowRadii, s.BlurPx, pageHeightPt, r, g, b, alpha, diagnostics,
+                    shadowRadii, s.BlurPx, pageHeightPt, r, g, b, alpha,
+                    leftPx, boxTopPx, widthPx, boxHeightPx, borderRadii, diagnostics,
                     ref rasterReported, ref capReported);
             }
 
@@ -1416,14 +1434,18 @@ internal static class FragmentPainter
         }
     }
 
-    private static void FillShadowRect(
-        PdfPage page, double x, double y, double w, double h, CornerRadii radiiPx,
+    /// <summary>CSS B&amp;B §6.1.1 — paint an OUTSET shadow as a RING: the (spread-expanded, offset) shadow
+    /// shape with the composite BORDER box knocked out (an even-odd fill), so it does not show through a
+    /// transparent / translucent background (PR #223 review [P2]).</summary>
+    private static void FillShadowRing(
+        PdfPage page, double pageHeightPt,
+        double shLeftPx, double shTopPx, double shWidthPx, double shHeightPx, CornerRadii shadowRadii,
+        double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx, CornerRadii boxRadii,
         double r, double g, double b, double alpha)
     {
-        if (radiiPx.AnyPositive)
-            page.FillRoundedRectangle(x, y, w, h, ToPt(radiiPx), r, g, b, alpha);
-        else
-            page.FillRectangle(x, y, w, h, r, g, b, alpha);
+        ToPdfRect(shLeftPx, shTopPx, shWidthPx, shHeightPx, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
+        ToPdfRect(boxLeftPx, boxTopPx, boxWidthPx, boxHeightPx, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
+        page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(shadowRadii), ix, iy, iw, ih, ToPt(boxRadii), r, g, b, alpha);
     }
 
     /// <summary>Rasterize a blurred OUTSET shadow through the Skia bridge and place it. The bitmap
@@ -1436,6 +1458,8 @@ internal static class FragmentPainter
         double shLeftPx, double shTopPx, double shWidthPx, double shHeightPx,
         CornerRadii shadowRadii, double blurPx, double pageHeightPt,
         double r, double g, double b, double alpha,
+        // The composite BORDER box knocked out of the outset shadow (CSS B&B §6.1.1, PR #223 review [P2]).
+        double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx, CornerRadii boxRadii,
         IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
     {
         var sigmaPx = blurPx / 2.0;
@@ -1460,11 +1484,10 @@ internal static class FragmentPainter
 
         if (result is null)
         {
-            // Over-cap / degenerate → a sharp native shadow is better than nothing, but SURFACE the
+            // Over-cap / degenerate → a sharp native shadow RING is better than nothing, but SURFACE the
             // approximation (PR #210 review [P2] — never silently degrade).
-            ToPdfRect(shLeftPx, shTopPx, shWidthPx, shHeightPx, pageHeightPt,
-                out var fx, out var fy, out var fw, out var fh);
-            FillShadowRect(page, fx, fy, fw, fh, shadowRadii, r, g, b, alpha);
+            FillShadowRing(page, pageHeightPt, shLeftPx, shTopPx, shWidthPx, shHeightPx, shadowRadii,
+                boxLeftPx, boxTopPx, boxWidthPx, boxHeightPx, boxRadii, r, g, b, alpha);
             if (!capReported)
             {
                 diagnostics?.Emit(new Diagnostic(
@@ -1481,7 +1504,12 @@ internal static class FragmentPainter
         var imageRef = document.RegisterImage(result);
         ToPdfRect(bmpLeftPx, bmpTopPx, bmpWidthPx, bmpHeightPx, pageHeightPt,
             out var x, out var y, out var w, out var h);
+        // CSS B&B §6.1.1 — knock the composite border box out of the blurred shadow (an outset shadow does
+        // not show inside the element), so a transparent background doesn't reveal the inner blur.
+        ToPdfRect(boxLeftPx, boxTopPx, boxWidthPx, boxHeightPx, pageHeightPt, out var kx, out var ky, out var kw, out var kh);
+        page.BeginRoundedRectangleHoleClip(x, y, w, h, kx, ky, kw, kh, ToPt(boxRadii));
         page.PlaceImage(imageRef, x, y, w, h);
+        page.RestoreGraphicsState();
 
         if (!rasterReported)
         {

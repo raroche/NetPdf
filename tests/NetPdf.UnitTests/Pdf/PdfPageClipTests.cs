@@ -59,4 +59,22 @@ public sealed class PdfPageClipTests
         Assert.Throws<ArgumentException>(() => page.BeginRectangleClip(double.NaN, 0, 10, 10));
         Assert.Throws<ArgumentException>(() => page.BeginRectangleClip(0, 0, double.PositiveInfinity, 10));
     }
+
+    [Fact]
+    public void BeginRoundedRectangleHoleClip_clips_inside_the_outer_and_outside_the_inner_via_even_odd()
+    {
+        // PR #223 review [P2] — knock the border box out of an outset box-shadow: an EVEN-ODD clip (`W*`) to
+        // the region inside the outer rect but OUTSIDE the inner box. Square inner radii → two `re` paths.
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.BeginRoundedRectangleHoleClip(0, 0, 100, 80, 10, 10, 80, 60, default);
+        page.RestoreGraphicsState();
+
+        var content = ContentOf(page);
+        Assert.Contains("0 0 100 80 re", content);    // outer rect
+        Assert.Contains("10 10 80 60 re", content);    // inner box (the hole)
+        Assert.Contains("W* n", content);              // even-odd clip
+        Assert.Contains("Q", content);
+    }
 }

@@ -499,6 +499,32 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Push an EVEN-ODD clip to the region inside the outer rect but OUTSIDE the inner rounded box
+    /// (<c>q &lt;outer path&gt; &lt;inner path&gt; W* n</c>) — the analogue of <see cref="FillRoundedRectangleRing"/>
+    /// for clipping. Used to knock the border box out of an OUTSET box-shadow (CSS B&amp;B §6.1.1 — an
+    /// outset shadow is not painted inside the element). A degenerate inner box (≤ 0) clips to the outer
+    /// rect alone. Callers MUST balance with <see cref="RestoreGraphicsState"/>.</summary>
+    public void BeginRoundedRectangleHoleClip(
+        double outerX, double outerY, double outerWidth, double outerHeight,
+        double innerX, double innerY, double innerWidth, double innerHeight, CornerRadii innerRadii)
+    {
+        ThrowIfFinalized();
+        ValidateRoundedArgs(outerX, outerY, outerWidth, outerHeight, 1.0);
+        ValidateRoundedArgs(innerX, innerY, innerWidth, innerHeight, 1.0);
+        if (outerWidth <= 0 || outerHeight <= 0) return;
+        var sb = new StringBuilder(420);
+        sb.Append("q ");
+        AppendRectPath(sb, outerX, outerY, outerWidth, outerHeight);
+        if (innerWidth > 0 && innerHeight > 0)
+        {
+            var inr = innerRadii.NormalizedFor(innerWidth, innerHeight);
+            if (inr.AnyPositive) AppendRoundedRectPath(sb, innerX, innerY, innerWidth, innerHeight, inr);
+            else AppendRectPath(sb, innerX, innerY, innerWidth, innerHeight);
+        }
+        sb.Append("W* n\n");   // even-odd: keep the area inside the outer rect and outside the inner box
+        AppendContent(sb.ToString());
+    }
+
     private static void ValidateRoundedArgs(double x, double y, double width, double height, double alpha)
     {
         if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))

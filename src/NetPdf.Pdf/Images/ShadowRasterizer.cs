@@ -21,6 +21,11 @@ internal static class ShadowRasterizer
     /// <summary>Per the phase-4 plan: cap the raster at 4096 px on the longest side.</summary>
     internal const int MaxDeviceDimension = 4096;
 
+    /// <summary>Total-pixel cap (PR #223 review [P1]) — reject a raster whose AREA would be large even when
+    /// each side is under <see cref="MaxDeviceDimension"/> (e.g. 4000 × 4000 ≈ 16 M px × 4 bytes = 64 MB),
+    /// so untrusted HTML can't drive a huge allocation under the per-dimension cap. 4096 × 1024 = 4 Mpx.</summary>
+    internal const long MaxDevicePixels = 4096L * 1024L;
+
     /// <summary>Rasterize a blurred rounded-rect shadow into an Image XObject. All geometry is in
     /// DEVICE pixels (the caller multiplies CSS px by its raster scale): the bitmap is
     /// <paramref name="deviceWidth"/> × <paramref name="deviceHeight"/>; the shadow shape sits at
@@ -36,6 +41,7 @@ internal static class ShadowRasterizer
     {
         if (deviceWidth <= 0 || deviceHeight <= 0) return null;
         if (deviceWidth > MaxDeviceDimension || deviceHeight > MaxDeviceDimension) return null;
+        if ((long)deviceWidth * deviceHeight > MaxDevicePixels) return null;   // total-pixel cap (PR #223 [P1])
 
         var imageInfo = new SKImageInfo(deviceWidth, deviceHeight, SKColorType.Rgba8888, SKAlphaType.Unpremul);
         using var surface = SKSurface.Create(imageInfo);

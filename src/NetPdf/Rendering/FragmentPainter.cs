@@ -1581,9 +1581,6 @@ internal static class FragmentPainter
         // limit the paint to this fragment (PR #223 review [P1]). Null → the box itself (byte-identical).
         double? axisTopPx = null, double? axisHeightPx = null)
     {
-        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb);
-        if (stops.Count < 2) return;
-
         // CLIP rect = AXIS rect = the whole (composite) decoration box. The inline axis is shared (slices
         // differ only in the block axis); the radii resolve against the COMPOSITE height.
         var clipHeightPx = axisHeightPx ?? heightPx;
@@ -1592,6 +1589,13 @@ internal static class FragmentPainter
         // A `to <corner>` direction's angle depends on the box aspect ratio (PR #209 review [P2]) —
         // compute it from the whole (axis) box; an explicit angle / side uses the parsed value as-is.
         var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, aw, ah) : gradient.AngleDeg;
+        // The gradient-line length in CSS px (CSS Images §3.1) — a length-positioned stop resolves
+        // its fraction against this (PR 1 refinements).
+        var theta = angleDeg * Math.PI / 180.0;
+        var lineLengthCssPx = Math.Abs(widthPx * Math.Sin(theta)) + Math.Abs(clipHeightPx * Math.Cos(theta));
+        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb, lineLengthCssPx);
+        if (stops.Count < 2) return;
+
         var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
@@ -1606,7 +1610,7 @@ internal static class FragmentPainter
     /// missing last → 1, missing interior spread evenly between the nearest positioned stops,
     /// and the running max enforces non-decreasing offsets.</summary>
     private static List<PdfGradientStop> ResolveGradientStops(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb)
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx)
     {
         var n = gradientStops.Count;
         var rgb = new (double R, double G, double B)[n];
@@ -1623,7 +1627,10 @@ internal static class FragmentPainter
                 rgb[i] = (r, g, b);
                 ok[i] = true;
             }
-            pos[i] = s.Position;
+            // A length-positioned stop (PR 1 refinements) resolves to a fraction of the gradient-line
+            // length; a %-positioned stop is already a fraction; null = unpositioned.
+            pos[i] = s.Position
+                ?? (s.PositionPx is { } px && lineLengthCssPx > 0 ? px / lineLengthCssPx : (double?)null);
         }
 
         // §3.4 position defaults + even spread + non-decreasing clamp (over ALL stops first,
@@ -1709,9 +1716,6 @@ internal static class FragmentPainter
         // (PR #223 review [P1]). Null → the box itself (byte-identical).
         double? axisTopPx = null, double? axisHeightPx = null)
     {
-        var stops = ResolveGradientStops(radial.Stops, currentColorArgb);
-        if (stops.Count < 2) return;
-
         // CLIP rect = AXIS rect = the whole (composite) decoration box — the center + radius + radii are
         // measured against it for slice continuity; the radii resolve against the COMPOSITE height.
         var clipHeightPx = axisHeightPx ?? heightPx;
@@ -1733,6 +1737,11 @@ internal static class FragmentPainter
             _ => Math.Sqrt(maxX * maxX + maxY * maxY), // FarthestCorner (default)
         };
         if (!(radius > 0)) return;
+
+        // A length-positioned stop (PR 1 refinements) resolves against the ending radius in CSS px;
+        // the extent formula is homogeneous degree 1, so radiusCssPx = radiusPt / PointsPerPixel.
+        var stops = ResolveGradientStops(radial.Stops, currentColorArgb, radius / PdfUnits.PointsPerPixel);
+        if (stops.Count < 2) return;
 
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);

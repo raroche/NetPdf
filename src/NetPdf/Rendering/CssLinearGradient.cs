@@ -25,9 +25,12 @@ internal enum LinearGradientCorner { TopLeft, TopRight, BottomRight, BottomLeft 
 internal sealed record CssLinearGradient(
     double AngleDeg, LinearGradientCorner? Corner, IReadOnlyList<CssGradientStop> Stops);
 
-/// <summary>Phase 4 gradients — one parsed color stop: the raw color token + an optional
-/// position fraction in [0, 1] (null = unpositioned).</summary>
-internal readonly record struct CssGradientStop(string ColorRaw, double? Position);
+/// <summary>Phase 4 gradients — one parsed color stop: the raw color token + an optional position.
+/// The position is EITHER a <see cref="Position"/> fraction in [0, 1] (from a <c>%</c>) OR a
+/// <see cref="PositionPx"/> length in CSS px (from <c>px</c> + the absolute units — PR 1 refinements);
+/// the painter resolves a length to a fraction against the gradient-line length. Both null =
+/// unpositioned (spread evenly per CSS Images §3.4). At most one is set.</summary>
+internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null);
 
 /// <summary>Phase 4 gradients — a minimal, allocation-light parser for the
 /// <c>linear-gradient()</c> background-image form. Supports the common authored shapes:
@@ -138,32 +141,44 @@ internal static class CssLinearGradient_Parser
         return false;
     }
 
-    /// <summary>Parse a color stop: <c>&lt;color&gt; &lt;percentage&gt;?</c>. The color is the
-    /// raw text (the painter resolves it); a trailing <c>%</c> token is the position. A trailing
-    /// length position (e.g. <c>20px</c>) is unsupported (→ false). A bare color (no position)
-    /// yields a null position (spread evenly later). Shared with the radial parser.</summary>
+    /// <summary>Parse a color stop: <c>&lt;color&gt; [ &lt;percentage&gt; | &lt;length&gt; ]?</c>.
+    /// The color is the raw text (the painter resolves it); a trailing <c>%</c> token is a fraction
+    /// position, and a trailing <c>px</c> / absolute-unit length (PR 1 refinements) is a
+    /// <see cref="CssGradientStop.PositionPx"/> the painter resolves against the gradient-line length.
+    /// A trailing font-relative / viewport unit (<c>em</c>/<c>rem</c>/<c>vw</c>/…) has no length
+    /// context here → unsupported (false). A bare color yields a null position (spread evenly later).
+    /// Shared with the radial parser.</summary>
     internal static bool TryParseStop(string arg, out CssGradientStop stop)
     {
         stop = default;
         var t = arg.Trim();
         if (t.Length == 0) return false;
 
-        // The position, if present, is the LAST whitespace-separated token AND ends with '%'.
-        // A function color (rgb()/hsl()/etc.) contains spaces but no top-level position split is
-        // needed: we only peel a trailing token when it's a bare percentage.
+        // The position, if present, is the LAST whitespace-separated token. A function color
+        // (rgb()/hsl()/etc.) contains spaces but no top-level position split is needed: we only
+        // peel a trailing token when it's a bare percentage or length (not part of a function tail).
         var lastSpace = t.LastIndexOf(' ');
         if (lastSpace > 0)
         {
             var tail = t.Substring(lastSpace + 1);
-            if (tail.EndsWith("%", StringComparison.Ordinal)
-                && !tail.Contains(')')   // not part of a function tail
-                && double.TryParse(tail.AsSpan(0, tail.Length - 1), NumberStyles.Float,
-                    CultureInfo.InvariantCulture, out var pct))
+            if (!tail.Contains(')')) // not part of a function tail like rgb(…)
             {
-                stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), Math.Clamp(pct / 100.0, 0.0, 1.0));
-                return true;
+                if (tail.EndsWith("%", StringComparison.Ordinal)
+                    && double.TryParse(tail.AsSpan(0, tail.Length - 1), NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out var pct))
+                {
+                    stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), Math.Clamp(pct / 100.0, 0.0, 1.0));
+                    return true;
+                }
+                // A trailing length in px + the absolute units (PR 1 refinements) — stored raw; the
+                // painter divides by the gradient-line length to get the fraction.
+                if (CssLengthParsing.TryLengthPx(tail, out var lenPx))
+                {
+                    stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), null, lenPx);
+                    return true;
+                }
             }
-            // A trailing length position (px/em/…) is unsupported in this first cut.
+            // A trailing token in a unit we can't resolve here (em/rem/vw/vh/ex/ch) → unsupported.
             if (EndsWithLengthUnit(tail)) return false;
         }
         stop = new CssGradientStop(t, null);

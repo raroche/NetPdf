@@ -180,30 +180,65 @@ internal static class FragmentPainter
                     // border/padding + a content-box origin/clip can drive the inset sum past the box
                     // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1,
                     // the same guard as the margin-box site; the empty-clip skip below backstops it).
+                    // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is
+                    // one block-axis slice (DecorationBlockExtentPx > 0), the POSITIONING AREA spans the
+                    // WHOLE box (virtual top = this slice's top − its offset within the box, height = the
+                    // full box extent) so the tile grid / phase is shared across slices (the image is
+                    // CONTINUOUS), while the CLIP stays the slice's own box. The inline axis is shared.
+                    var bgOriginTopPx = topPx + oT;
+                    var bgOriginHeightPx = Math.Max(0, heightPx - oT - oB);
+                    if (fragment.DecorationBlockExtentPx > 0)
+                    {
+                        bgOriginTopPx = (topPx - fragment.DecorationBlockOffsetPx) + oT;
+                        bgOriginHeightPx = Math.Max(0, fragment.DecorationBlockExtentPx - oT - oB);
+                    }
+                    // box-decoration-break: slice (PR #222 review [P2] / Copilot [4]) — on a CUT-edge slice
+                    // the block-start / block-end border + padding is SUPPRESSED (the content starts at the
+                    // border-box top / the bottom border is skipped), so the background-CLIP must NOT inset
+                    // that edge — else `background-clip: padding-box | content-box` leaves a blank strip at the
+                    // top of a non-first slice / the bottom of a non-last slice. Zero the clip's block-start
+                    // inset when the start chrome is cut, the block-end inset when the end chrome is cut. The
+                    // POSITIONING area above keeps the WHOLE-box insets (the box's real top / bottom
+                    // border + padding IS present on slice 0 / the last slice), so tile continuity is
+                    // unaffected. The default border-box clip (cT = cB = 0) is already correct → byte-identical.
+                    var clipTopInsetPx = fragment.SuppressBlockStartChrome ? 0.0 : cT;
+                    var clipBottomInsetPx = fragment.SuppressBlockEndChrome ? 0.0 : cB;
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt,
-                        leftPx + oL, topPx + oT, Math.Max(0, widthPx - oL - oR), Math.Max(0, heightPx - oT - oB),
+                        leftPx + oL, bgOriginTopPx, Math.Max(0, widthPx - oL - oR), bgOriginHeightPx,
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
-                        clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,
-                        clipWidthPx: Math.Max(0, widthPx - cL - cR), clipHeightPx: Math.Max(0, heightPx - cT - cB),
+                        clipLeftPx: leftPx + cL, clipTopPx: topPx + clipTopInsetPx,
+                        clipWidthPx: Math.Max(0, widthPx - cL - cR),
+                        clipHeightPx: Math.Max(0, heightPx - clipTopInsetPx - clipBottomInsetPx),
                         clipRadiiPx: clipRadiiPx);
                 }
 
                 // Phase 4 gradients — a linear-gradient(...) background-image layer paints
                 // over the background-color, under the borders (same z-order as an image
                 // layer), as a PDF native axial shading clipped to the (rounded) border box.
+                // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is one
+                // block-axis slice of a larger box (DecorationBlockExtentPx > 0), paint the gradient's AXIS
+                // over the WHOLE box (virtual top = this slice's top − its offset within the box, height =
+                // the full box extent) so it's CONTINUOUS across slices, while the shading is CLIPPED to the
+                // slice's own box. Null → the slice's own box (every non-sliced fragment byte-identical).
+                double? axisTopPx = null, axisHeightPx = null;
+                if (fragment.DecorationBlockExtentPx > 0)
+                {
+                    axisTopPx = topPx - fragment.DecorationBlockOffsetPx;
+                    axisHeightPx = fragment.DecorationBlockExtentPx;
+                }
                 if (imageCache is not null && document is not null
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
                 {
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
             }
 
@@ -217,9 +252,16 @@ internal static class FragmentPainter
 
             // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
             // and it does NOT affect layout. Always painted (it's not a background). It shares the
-            // borders' style-approximation flag (one diagnostic per conversion).
+            // borders' style-approximation flag (one diagnostic per conversion). box-decoration-break:
+            // slice — when this fragment is one block-axis slice (DecorationBlockExtentPx > 0), the outline
+            // ring is computed over the WHOLE box (sides continuous across slices) + CLIPPED to this slice's
+            // outline portion: the top outline only on the first slice (!SuppressBlockStartChrome), the
+            // bottom only on the last (!SuppressBlockEndChrome).
             PaintOutline(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref styleApproximationReported);
+                currentColorArgb, diagnostics, ref styleApproximationReported,
+                fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx,
+                isFirstSlice: !fragment.SuppressBlockStartChrome,
+                isLastSlice: !fragment.SuppressBlockEndChrome);
 
             if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
         }
@@ -968,7 +1010,12 @@ internal static class FragmentPainter
     private static void PaintOutline(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported,
+        // box-decoration-break: slice — when > 0, the outline ring is computed over the WHOLE box (this many
+        // px tall, virtual top = topPx − decorationBlockOffsetPx) + CLIPPED to this slice; isFirstSlice /
+        // isLastSlice gate the top / bottom outline edge. Default 0 / true / true → the box's own outline.
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0,
+        bool isFirstSlice = true, bool isLastSlice = true)
     {
         if (!(widthPx > 0 && heightPx > 0)
             || !double.IsFinite(leftPx) || !double.IsFinite(topPx)
@@ -1014,12 +1061,18 @@ internal static class FragmentPainter
         // negative offset (past half the box) collapses the outline to a zero-size box CENTERED on the
         // box rather than letting the origin drift past one side. A positive (outward) offset isn't
         // clamped. The two axes clamp independently (the offset is a single value, the limits differ).
+        // box-decoration-break: slice — the ring is computed over the WHOLE box (so the side outlines are
+        // CONTINUOUS across slices); the per-slice CLIP below limits it to this slice's outline portion. A
+        // sliced outline is always SQUARE (a border-radius gates the split), so no rounded-ring concern.
+        var isSlice = decorationBlockExtentPx > 0;
+        var ringTop = isSlice ? topPx - decorationBlockOffsetPx : topPx;
+        var ringHeight = isSlice ? decorationBlockExtentPx : heightPx;
         var effOffX = Math.Max(offsetPx, -widthPx / 2.0);
-        var effOffY = Math.Max(offsetPx, -heightPx / 2.0);
+        var effOffY = Math.Max(offsetPx, -ringHeight / 2.0);
         var innerLeft = leftPx - effOffX;
-        var innerTop = topPx - effOffY;
+        var innerTop = ringTop - effOffY;
         var innerW = widthPx + 2 * effOffX;     // ≥ 0 by the per-axis clamp
-        var innerH = heightPx + 2 * effOffY;
+        var innerH = ringHeight + 2 * effOffY;
         var outerLeft = innerLeft - outlineWidthPx;
         var outerTop = innerTop - outlineWidthPx;
         var outerW = innerW + 2 * outlineWidthPx;
@@ -1034,11 +1087,27 @@ internal static class FragmentPainter
         var outerRadii = rounded ? GrowRadii(boxRadii, offsetPx + outlineWidthPx) : default;
         var innerRadii = rounded ? GrowRadii(boxRadii, offsetPx) : default;
 
+        // box-decoration-break: slice — clip the whole-box ring to THIS slice's outline portion: the full
+        // outer width inline, and block-wise from the OUTER-top (first slice) / the slice's border-box top
+        // (otherwise) to the OUTER-bottom (last slice) / the slice's border-box bottom. So the first slice
+        // shows the top outline + sides, a middle slice just the sides, the last slice the bottom + sides.
+        // Non-sliced → no clip (byte-identical).
+        var sliceClipped = false;
+        if (isSlice)
+        {
+            var clipTop = isFirstSlice ? outerTop : topPx;
+            var clipBottom = isLastSlice ? outerTop + outerH : topPx + heightPx;
+            ToPdfRect(outerLeft, clipTop, outerW, Math.Max(0, clipBottom - clipTop), pageHeightPt,
+                out var ccx, out var ccy, out var ccw, out var cch);
+            page.BeginRectangleClip(ccx, ccy, ccw, cch);
+            sliceClipped = true;
+        }
         ToPdfRect(outerLeft, outerTop, outerW, outerH, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
         ToPdfRect(innerLeft, innerTop, innerW, innerH, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
         ColorChannels(argb, out var r, out var g, out var b);
         page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadii), ix, iy, iw, ih, ToPt(innerRadii),
             r, g, b, Alpha(argb) / 255.0);
+        if (sliceClipped) page.RestoreGraphicsState();
     }
 
     /// <summary>Whether all four border edges form a UNIFORM border that a single rounded RING can
@@ -1318,16 +1387,24 @@ internal static class FragmentPainter
     private static void PaintLinearGradient(
         PdfPage page, PdfDocument document, CssLinearGradient gradient, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb)
+        uint currentColorArgb,
+        // box-decoration-break: slice — when set, the gradient AXIS spans this (larger, whole-box) block
+        // extent instead of the painted box, so a sliced block's gradient is CONTINUOUS across slices; the
+        // shading is still CLIPPED to (leftPx, topPx, widthPx, heightPx). Null → axis = the painted box.
+        double? axisTopPx = null, double? axisHeightPx = null)
     {
         var stops = ResolveGradientStops(gradient.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
+        // CLIP rect = the painted (possibly-sliced) box; AXIS rect = the whole decoration box (= the clip
+        // box when not sliced). The inline axis is shared (slices differ only in the block axis).
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, axisHeightPx ?? heightPx, pageHeightPt,
+            out var ax, out var ay, out var aw, out var ah);
         // A `to <corner>` direction's angle depends on the box aspect ratio (PR #209 review [P2]) —
-        // compute it from the painted box; an explicit angle / side uses the parsed value as-is.
-        var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, w, h) : gradient.AngleDeg;
-        var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, x, y, w, h);
+        // compute it from the whole (axis) box; an explicit angle / side uses the parsed value as-is.
+        var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, aw, ah) : gradient.AngleDeg;
+        var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
         page.PaintShadingInRect(shadingRef, x, y, w, h,
@@ -1437,20 +1514,28 @@ internal static class FragmentPainter
     private static void PaintRadialGradient(
         PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb)
+        uint currentColorArgb,
+        // box-decoration-break: slice — when set, the gradient's center + radius are computed over this
+        // (larger, whole-box) block extent instead of the painted box, so a sliced block's radial gradient
+        // is CONTINUOUS across slices; the shading is still CLIPPED to (leftPx, topPx, widthPx, heightPx).
+        double? axisTopPx = null, double? axisHeightPx = null)
     {
         var stops = ResolveGradientStops(radial.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
+        // CLIP rect = the painted (possibly-sliced) box; AXIS rect = the whole decoration box (= the clip
+        // box when not sliced) — the center + radius are measured against it for slice continuity.
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, axisHeightPx ?? heightPx, pageHeightPt,
+            out var ax, out var ay, out var aw, out var ah);
         // Center in PDF user space (cy is a fraction from the CSS TOP → flip for PDF y-up).
-        var pcx = x + radial.CenterXFraction * w;
-        var pcy = y + (1.0 - radial.CenterYFraction) * h;
+        var pcx = ax + radial.CenterXFraction * aw;
+        var pcy = ay + (1.0 - radial.CenterYFraction) * ah;
         // Per-axis extents from the center to the near/far sides.
-        var minX = Math.Min(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * w;
-        var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * w;
-        var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * h;
-        var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * h;
+        var minX = Math.Min(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * aw;
+        var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * aw;
+        var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
+        var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
         var radius = radial.Extent switch
         {
             RadialExtent.ClosestSide => Math.Min(minX, minY),

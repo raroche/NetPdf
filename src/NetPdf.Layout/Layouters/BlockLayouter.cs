@@ -1221,11 +1221,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // InlineOnlyLineSplitContinuation (one-shot, like the multicol/flex contracts)
                 // names the line to resume this block's tail at on this fresh page.
                 var inlineResumeLine = 0;
+                // box-decoration-break: slice (PR #222 review [P1]) — the resumed slice's cumulative physical
+                // decoration offset + the composite box's total physical extent, carried in the continuation.
+                var inlineResumeDecorationOffset = 0.0;
+                var inlineResumeDecorationTotal = 0.0;
                 if (incomingBlock?.LayouterState is InlineOnlyLineSplitContinuation inlineLineCont
                     && childIdx == incomingBlock.ResumeAtChild
                     && !_consumedIncomingInlineLineSplit)
                 {
                     inlineResumeLine = inlineLineCont.ResumeLineIndex;
+                    inlineResumeDecorationOffset = inlineLineCont.DecorationBlockOffsetPx;
+                    inlineResumeDecorationTotal = inlineLineCont.DecorationTotalExtentPx;
                     _consumedIncomingInlineLineSplit = true;
                 }
                 var inlineDispatchResult = DispatchInlineOnlyBlock(
@@ -1242,7 +1248,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     emittedThisAttempt,
                     out var inlineFragmentEmitted,
                     cancellationToken,
-                    resumeAtLine: inlineResumeLine);
+                    resumeAtLine: inlineResumeLine,
+                    resumeDecorationOffsetPx: inlineResumeDecorationOffset,
+                    resumeDecorationTotalPx: inlineResumeDecorationTotal);
                 if (inlineDispatchResult.HasValue)
                 {
                     return inlineDispatchResult.Value;
@@ -4820,11 +4828,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // (one-shot consume of the chained continuation, mirroring grid/multicol). On
                 // resume the block re-enters at the top of a fresh page with no margin-top.
                 var recInlineResumeLine = 0;
+                // box-decoration-break: slice (PR #222 review [P1]) — the resumed slice's cumulative physical
+                // decoration offset + the composite box's total physical extent, carried in the continuation.
+                var recInlineDecorationOffset = 0.0;
+                var recInlineDecorationTotal = 0.0;
                 if (incomingBlockChain is not null
                     && childIdx == incomingBlockChain.ResumeAtChild
                     && incomingBlockChain.LayouterState is InlineOnlyLineSplitContinuation recLineCont)
                 {
                     recInlineResumeLine = recLineCont.ResumeLineIndex;
+                    recInlineDecorationOffset = recLineCont.DecorationBlockOffsetPx;
+                    recInlineDecorationTotal = recLineCont.DecorationTotalExtentPx;
                     incomingBlockChain = null;
                 }
 
@@ -4896,7 +4910,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     startLine: recInlineResumeLine,
                     fragmentainer: propagatingFragmentainer,
                     out var emittedExtent,
-                    cancellationToken);
+                    cancellationToken,
+                    resumeDecorationOffsetPx: recInlineDecorationOffset,
+                    resumeDecorationTotalPx: recInlineDecorationTotal);
                 // Inline-only block resets the margin-collapse chain
                 // per CSS 2.1 §8.3.1 (the line box breaks adjacency).
                 hasPrior = false;
@@ -8064,7 +8080,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // `inline-only-block-line-splitting` — when > 0 the block is RESUMING a prior line
         // split: emit its lines from this 0-based index (skipping the lines already emitted on
         // earlier pages), splitting again if the remainder still overflows.
-        int resumeAtLine = 0)
+        int resumeAtLine = 0,
+        // box-decoration-break: slice (PR #222 review [P1]) — the resumed slice's cumulative physical
+        // decoration offset + the composite box's total physical extent, carried in the continuation.
+        double resumeDecorationOffsetPx = 0.0, double resumeDecorationTotalPx = 0.0)
     {
         // Per PR #48 review Copilot — the caller must NOT bump
         // `lastEmittedIdx` + `emittedThisAttempt` on skip paths
@@ -8171,7 +8190,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 startLine: resumeAtLine,   // validated against the line count inside (fail-fast, no clamp)
                 blockBorderBoxTop: fragmentainer.UsedBlockSize,
                 priorPagesConsumed: priorPagesConsumed,
-                out emitted);
+                out emitted,
+                resumeDecorationOffsetPx: resumeDecorationOffsetPx,
+                resumeDecorationTotalPx: resumeDecorationTotalPx);
         }
 
         // Finding 3 — pagination integration. Mirror the in-flow
@@ -8355,6 +8376,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// starts the content at the border-box top + skips the top border edge. Default false.</param>
     /// <param name="suppressBlockEndChrome">box-decoration-break: slice — true when this is a NON-last
     /// slice, so its block-end border is CUT (the painter skips the bottom border edge). Default false.</param>
+    /// <param name="decorationBlockExtentPx">box-decoration-break: slice — when &gt; 0, the unsliced box's
+    /// block-axis border-box size, so a continuous decoration (gradient / background-image / outline) on this
+    /// slice is painted over the whole box + clipped to the slice. Default 0 → the decoration uses this box.</param>
+    /// <param name="decorationBlockOffsetPx">box-decoration-break: slice — this slice's block-axis offset
+    /// within the unsliced box (paired with <paramref name="decorationBlockExtentPx"/>). Default 0.</param>
     private void EmitInlineOnlyBlockFragment(
         Box inlineOnlyBlock,
         InlineOnlyBlockMetrics metrics,
@@ -8368,7 +8394,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the content at the border-box top + skips the top border); a NON-last slice's block-end border
         // is cut (the painter skips the bottom border).
         bool suppressBlockStartChrome = false,
-        bool suppressBlockEndChrome = false)
+        bool suppressBlockEndChrome = false,
+        // box-decoration-break: slice — when > 0, a CONTINUOUS decoration (gradient / background-image /
+        // outline) on this slice is painted over the WHOLE box (height = decorationBlockExtentPx, virtual
+        // top = this slice's top − decorationBlockOffsetPx) + clipped to the slice. Default 0 → uses the slice box.
+        double decorationBlockExtentPx = 0.0,
+        double decorationBlockOffsetPx = 0.0)
     {
         // Border-box inline-start offset = caller-supplied offset +
         // marginInlineStart. The caller's offset is already in the
@@ -8408,7 +8439,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // box-decoration-break: slice — a non-first slice's block-start chrome / a non-last slice's
             // block-end border is cut.
             SuppressBlockStartChrome: suppressBlockStartChrome,
-            SuppressBlockEndChrome: suppressBlockEndChrome));
+            SuppressBlockEndChrome: suppressBlockEndChrome,
+            // box-decoration-break: slice — slice-aware continuous-decoration geometry (0 → uses this box).
+            DecorationBlockExtentPx: decorationBlockExtentPx,
+            DecorationBlockOffsetPx: decorationBlockOffsetPx));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the
@@ -8580,15 +8614,73 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return (fit, endLine);
     }
 
+    /// <summary>box-decoration-break: slice (PR #222 review [P1]) — the composite box's TOTAL physical
+    /// block-axis extent across all page slices, reconstructed from the ACTUAL fragment areas. Each non-final
+    /// slice FILLS its fragmentainer to the edge (a broken box occupies the rest of the fragmentainer), so
+    /// the physical extent exceeds the natural line-height sum by the per-page fill gaps; a continuous
+    /// decoration (gradient / background-image / outline) must span THIS total + offset each slice by its
+    /// cumulative physical extent, else it restarts before the previous physical slice ended (overlap /
+    /// discontinuity), worst at a mid-page start or when widows / orphans strand unused space. Walks the same
+    /// fit / end-chrome / fill rules the streaming emit (<see cref="EmitInlineOnlyBlockSlice"/>) uses: the
+    /// first slice starts at <paramref name="firstBlockBorderBoxTop"/> and fills the page remainder; each
+    /// later slice resumes at a fresh fragmentainer top (offset 0) and fills it; the final slice takes its
+    /// natural content + block-end-chrome height. Resume pages are assumed to share
+    /// <paramref name="fragmentainerBlockSize"/> (the uniform-page common case; a varying <c>@page</c>
+    /// block-size is a documented residual). The result is precomputed ONCE at the first slice and threaded
+    /// forward through the <see cref="InlineOnlyLineSplitContinuation"/>.</summary>
+    private static double ComputeInlineOnlySlicedDecorationTotalExtent(
+        InlineOnlyBlockComputation comp, InlineOnlyBlockMetrics metrics,
+        double firstBlockBorderBoxTop, double fragmentainerBlockSize, int orphans, int widows)
+    {
+        var total = comp.InlineResult.Lines.Length;
+        var topChromeFull = metrics.BorderBlockStart + metrics.PaddingBlockStart;
+        var endChrome = metrics.BorderBlockEnd + metrics.PaddingBlockEnd;
+        var cumulative = 0.0;
+        var startLine = 0;
+        var blockTop = firstBlockBorderBoxTop;
+        // ComputeInlineOnlyFitLines always advances >= 1 line, so the loop runs at most `total` times; the
+        // guard is a belt-and-braces backstop against a future non-progressing change.
+        for (var guard = 0; startLine < total && guard <= total; guard++)
+        {
+            var topChrome = startLine == 0 ? topChromeFull : 0.0;
+            var remaining = fragmentainerBlockSize - blockTop;
+            var available = remaining - topChrome;
+            var fit = ComputeInlineOnlyFitLines(comp, startLine, available, orphans, widows);
+            var endLine = System.Math.Min(startLine + fit, total);
+            (fit, endLine) = ReserveFinalSliceEndChrome(
+                comp, startLine, endLine, total, fit, available, endChrome, orphans, widows);
+            var content = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
+            var sliceBottomChrome = endLine == total ? endChrome : 0.0;
+            var naturalBorderBox = topChrome + content + sliceBottomChrome;
+            // Mirror EmitInlineOnlyBlockSlice's `borderBoxBlockSize`: a non-final slice fills the remaining
+            // fragmentainer extent when it exceeds the natural box; the final slice is its natural height.
+            var physical = endLine < total && remaining > naturalBorderBox ? remaining : naturalBorderBox;
+            cumulative += physical;
+            startLine = endLine;
+            blockTop = 0.0;   // resume slices start at the content-area top of a fresh page
+        }
+        return cumulative;
+    }
+
     /// <summary>Emits lines <c>[startLine, endLine)</c> of an inline-only block as ONE
     /// <see cref="BoxFragment"/> at the page-relative border-box top, reusing
     /// <see cref="EmitInlineOnlyBlockFragment"/> via a sliced computation (a sub-array of <c>Lines</c> +
     /// matching per-line heights + the slice's content extent). The block-axis chrome (border + padding)
     /// is distributed across the slices per box-decoration-break: slice — block-start on the first, block-end
-    /// on the last — and a NON-final slice fills to <paramref name="fillToBlockExtent"/> (the page edge).</summary>
-    private void EmitInlineOnlyBlockSlice(
+    /// on the last — and a NON-final slice fills to <paramref name="fillToBlockExtent"/> (the page edge).
+    /// Returns the slice's PHYSICAL border-box block extent (the filled size for a non-final slice), so the
+    /// caller can accumulate the next slice's cumulative decoration offset.</summary>
+    private double EmitInlineOnlyBlockSlice(
         Box block, InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp,
         int startLine, int endLine, double inlineOffsetFromContentOrigin, double blockBorderBoxTop,
+        // box-decoration-break: slice (PR #222 review [P1]) — this slice's cumulative PHYSICAL block-axis
+        // offset within the composite box (the summed border-box sizes of every PRIOR slice, including the
+        // page-fill gaps) + the composite box's full physical block extent. A continuous decoration (gradient
+        // / background-image / outline) is painted over the WHOLE composite box (height = the total, virtual
+        // top = this slice's top − the offset) + clipped to this slice, so it stays continuous across the
+        // page-fill gaps instead of restarting at every break. 0/0 → the slice's own box (no actual split).
+        double decorationBlockOffsetPx = 0.0,
+        double decorationBlockTotalExtentPx = 0.0,
         // PR #221 review [P1] — the remaining fragmentainer extent from this slice's border-box top to the
         // page bottom. A NON-final slice (more lines remain) FILLS it (a broken box occupies the rest of the
         // fragmentainer in the block axis), so its inline-axis borders + solid background span the page
@@ -8602,7 +8694,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // array copy, byte-identical to the pre-split whole-block emit).
             EmitInlineOnlyBlockFragment(
                 block, metrics, comp, inlineOffsetFromContentOrigin, blockBorderBoxTop);
-            return;
+            return comp.BorderBoxBlockSize;
         }
         var slicedLines = comp.InlineResult.Lines[startLine..endLine];
         var slicedInline = new InlineLayoutResult(
@@ -8680,6 +8772,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             AtomicPlacements = slicedPlacements,
             InlineBlockContents = slicedContents,
         };
+        // box-decoration-break: slice — slice-aware CONTINUOUS-decoration (gradient / background-image /
+        // outline) geometry, reconstructed from the ACTUAL fragment areas (PR #222 review [P1]). The whole
+        // composite box's PHYSICAL block extent (`decorationBlockTotalExtentPx`, summed over every slice's
+        // FILLED border-box size — not the natural line-height sum, which ignores the page-fill gaps) + this
+        // slice's cumulative physical offset within it (`decorationBlockOffsetPx`, both threaded by the
+        // caller from the precomputed break plan). The painter uses these to paint a gradient /
+        // background-image / outline over the whole box + clip to this slice, so it stays continuous across
+        // the fill gaps; set on every slice but consulted only by those painters, so other slices are
+        // byte-identical. 0/0 → the slice's own box.
         EmitInlineOnlyBlockFragment(
             block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop,
             // A non-final slice (more lines remain) continues on a later page, so its last line is an
@@ -8688,7 +8789,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // box-decoration-break: slice — a non-first slice's block-start chrome is cut, a non-last
             // slice's block-end border is cut.
             suppressBlockStartChrome: startLine > 0,
-            suppressBlockEndChrome: endLine < total);
+            suppressBlockEndChrome: endLine < total,
+            decorationBlockExtentPx: decorationBlockTotalExtentPx,
+            decorationBlockOffsetPx: decorationBlockOffsetPx);
+        return borderBoxBlockSize;
     }
 
     /// <summary>box-decoration-break: slice — when the slice the progress rule forced is taller than the
@@ -8736,7 +8840,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private LayoutAttemptResult? EmitInlineOnlyBlockSplitting(
         Box block, int childIdx, InlineOnlyBlockMetrics metrics, InlineOnlyBlockComputation comp,
         FragmentainerContext fragmentainer, int startLine, double blockBorderBoxTop,
-        double priorPagesConsumed, out bool emitted)
+        double priorPagesConsumed, out bool emitted,
+        // box-decoration-break: slice (PR #222 review [P1]) — a RESUME slice's cumulative physical decoration
+        // offset + the composite box's total physical extent, carried from the prior slice's continuation. At
+        // the FIRST slice (startLine == 0) these are unused — the total is precomputed here.
+        double resumeDecorationOffsetPx = 0.0, double resumeDecorationTotalPx = 0.0)
     {
         emitted = true;
         var total = comp.InlineResult.Lines.Length;
@@ -8757,9 +8865,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
         var isFinalSlice = endLine >= total;
-        EmitInlineOnlyBlockSlice(
+        // box-decoration-break: slice (PR #222 review [P1]) — the continuous-decoration geometry uses the
+        // PHYSICAL composite box. The first slice precomputes the total extent (reconstructed from the actual
+        // page-filled fragment areas); a resume slice reuses the carried total + its cumulative offset.
+        var (decorationOffset, decorationTotal) = startLine == 0
+            ? (0.0, ComputeInlineOnlySlicedDecorationTotalExtent(
+                comp, metrics, blockBorderBoxTop, fragmentainer.BlockSize, orphans, widows))
+            : (resumeDecorationOffsetPx, resumeDecorationTotalPx);
+        var slicePhysicalExtent = EmitInlineOnlyBlockSlice(
             block, metrics, comp, startLine, endLine,
             inlineOffsetFromContentOrigin: 0, blockBorderBoxTop: blockBorderBoxTop,
+            decorationBlockOffsetPx: decorationOffset,
+            decorationBlockTotalExtentPx: decorationTotal,
             fillToBlockExtent: remaining);
         // PR #221 review [P2] — a slice taller than the remaining page (a huge block-start border, or a
         // final single line + block-end chrome that can't fit a whole page) overflows; surface it loudly
@@ -8778,14 +8895,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return null;
         }
 
-        // Lines remain → the page is full; resume the block's tail at `endLine` next page.
+        // Lines remain → the page is full; resume the block's tail at `endLine` next page. Carry the next
+        // slice's cumulative physical decoration offset (this slice's offset + its FILLED extent) + the total.
         fragmentainer.UsedBlockSize = fragmentainer.BlockSize;
         return LayoutAttemptResult.PageComplete(
             new BlockContinuation(
                 ResumeAtChild: childIdx,
                 ConsumedBlockSize: priorPagesConsumed
                     + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
-                LayouterState: new InlineOnlyLineSplitContinuation(endLine)),
+                LayouterState: new InlineOnlyLineSplitContinuation(
+                    endLine, decorationOffset + slicePhysicalExtent, decorationTotal)),
             cost: 0);
     }
 
@@ -8809,7 +8928,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         int startLine,
         FragmentainerContext? fragmentainer,
         out double marginBoxExtentAdvance,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        // box-decoration-break: slice (PR #222 review [P1]) — a RESUME slice's cumulative physical decoration
+        // offset + the composite box's total physical extent, carried from the prior slice's continuation.
+        double resumeDecorationOffsetPx = 0.0, double resumeDecorationTotalPx = 0.0)
     {
         marginBoxExtentAdvance = 0;
         var metrics = ReadInlineOnlyBlockMetrics(
@@ -8878,9 +9000,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             comp, startLine, endLine, total, fit, available, endChrome, orphans, widows);
         var sliceExtent = SumInlineOnlyLineHeights(comp, startLine, endLine, total);
         var isFinalSlice = endLine >= total;
-        EmitInlineOnlyBlockSlice(
+        // box-decoration-break: slice (PR #222 review [P1]) — the first slice precomputes the composite box's
+        // PHYSICAL total extent; a resume slice reuses the carried total + its cumulative offset.
+        var (decorationOffset, decorationTotal) = startLine == 0
+            ? (0.0, ComputeInlineOnlySlicedDecorationTotalExtent(
+                comp, metrics, blockBorderBoxTop, fragmentainer.BlockSize, orphans, widows))
+            : (resumeDecorationOffsetPx, resumeDecorationTotalPx);
+        var slicePhysicalExtent = EmitInlineOnlyBlockSlice(
             inlineOnlyBlock, metrics, comp, startLine, endLine,
             inlineOffsetFromContentOrigin, blockBorderBoxTop,
+            decorationBlockOffsetPx: decorationOffset,
+            decorationBlockTotalExtentPx: decorationTotal,
             fillToBlockExtent: remaining);
         // PR #221 review [P2] — the recursion path also surfaces a slice taller than the remaining page.
         ReportSliceForcedOverflowIfNeeded(
@@ -8895,10 +9025,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 marginStartAdvance + topChrome + sliceExtent + endChrome + metrics.MarginBlockEnd;
             return null;
         }
-        // Lines remain → resume the tail at `endLine` on the next page.
+        // Lines remain → resume the tail at `endLine` on the next page; carry the next slice's cumulative
+        // physical decoration offset (this slice's offset + its FILLED extent) + the total.
         return new BlockContinuation(
             ResumeAtChild: childIdx, ConsumedBlockSize: 0,
-            LayouterState: new InlineOnlyLineSplitContinuation(endLine));
+            LayouterState: new InlineOnlyLineSplitContinuation(
+                endLine, decorationOffset + slicePhysicalExtent, decorationTotal));
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — measure

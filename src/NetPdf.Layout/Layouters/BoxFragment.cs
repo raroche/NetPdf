@@ -181,6 +181,11 @@ namespace NetPdf.Layout.Layouters;
 /// when true this is a NON-last slice of a split block, so its block-END border is CUT: the painter does
 /// not draw the block-end (bottom) border edge. The inline-axis borders still paint on every slice.
 /// Default false (last slice / whole block), byte-identical.</param>
+/// <param name="DecorationBlockExtentPx">box-decoration-break: slice — when &gt; 0, the unsliced box's
+/// block-axis border-box size, so a continuous decoration (gradient / background-image / outline) on this
+/// slice is painted over the whole box + clipped to the slice. Default 0 → the decoration uses this box.</param>
+/// <param name="DecorationBlockOffsetPx">box-decoration-break: slice — this slice's block-axis offset
+/// within the unsliced box (paired with <paramref name="DecorationBlockExtentPx"/>). Default 0.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -246,7 +251,18 @@ internal readonly record struct BoxFragment(
     // (bottom) border edge (the block-end padding simply isn't part of a non-last slice's border box).
     // The inline-axis (left/right) borders still paint on every slice. DEFAULT false = block-end border
     // present (last slice / whole block), byte-identical.
-    bool SuppressBlockEndChrome = false);
+    bool SuppressBlockEndChrome = false,
+    // inline-only-block-line-splitting (box-decoration-break: slice) — slice-aware CONTINUOUS-decoration
+    // geometry. When > 0, this fragment is one block-axis slice of a larger box, and a continuous
+    // decoration (a linear / radial GRADIENT) is painted as if over the WHOLE box and then CLIPPED to this
+    // slice: <see cref="DecorationBlockExtentPx"/> is the unsliced box's block-axis border-box size and
+    // <see cref="DecorationBlockOffsetPx"/> is this slice's block-axis offset within it (so the decoration's
+    // virtual box top = <see cref="BlockOffset"/> − DecorationBlockOffsetPx, height = DecorationBlockExtentPx,
+    // and the shading is clipped to this slice's own (InlineOffset, BlockOffset, InlineSize, BlockSize)
+    // rect). DEFAULT 0 = not a continuous-decoration slice → the decoration uses the fragment's own box,
+    // byte-identical for every non-sliced fragment.
+    double DecorationBlockExtentPx = 0.0,
+    double DecorationBlockOffsetPx = 0.0);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

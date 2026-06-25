@@ -38,7 +38,27 @@ internal static class DeferredLengthResolver
 {
     /// <summary>The body box-model lengths the layouters consume via
     /// <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/> — the slots this pass
-    /// rewrites. Border widths are absent by design (their resolver never defers).</summary>
+    /// rewrites. Border widths are absent by design (their resolver never defers).
+    ///
+    /// <para><b>multicol-balancing-pagination</b> — <c>column-width</c> joins the set so a
+    /// font-relative <c>column-width: 12em</c> / <c>20rem</c> resolves to a used px BEFORE the
+    /// multicol dispatch decision (<c>BlockLayouter.IsMulticolContainer</c> routes on
+    /// <see cref="ComputedStyleLayoutExtensions.ReadColumnWidth"/>, which only sees a
+    /// <see cref="ComputedSlotTag.LengthPx"/> slot). Pre-fix the cascade DEFERRED a font-relative
+    /// <c>column-width</c> (the slot stayed <see cref="ComputedSlotTag.Unset"/>), so the container
+    /// fell through to ordinary block flow — CSS Multi-column L1 §3.1's own introductory example
+    /// (<c>column-width: 12em</c>) never columnized. It is a multicol intrinsic length read via
+    /// <c>ReadColumnWidth</c>, not a box-model length.</para>
+    ///
+    /// <para><b>multicol-balancing-pagination + the gap gutters</b> — <c>column-gap</c> /
+    /// <c>row-gap</c> join the set so their font-/viewport-relative DEFERRED raws (<c>2em</c> /
+    /// <c>1rem</c> / <c>5vw</c>) resolve here against the correct bases (own font-size for em, the
+    /// ROOT for rem, the page box for vw/vh) — for BOTH the multicol gutter
+    /// (<see cref="ComputedStyleLayoutExtensions.ReadColumnGap"/>) and the flex/grid gutter
+    /// (<c>ReadFlexGridGapOrZero</c>), which previously read 0 for any non-LengthPx slot. Only the
+    /// <c>normal</c> KEYWORD initial is NOT a deferred raw, so this pass leaves it untouched for the
+    /// readers to interpret: multicol resolves it to 1em (in <c>ReadColumnGap</c>), the flex/grid
+    /// gutter to 0 — values this whole-tree pass could not branch on per-container anyway.</para></summary>
     private static readonly PropertyId[] BodyLengthProperties =
     [
         PropertyId.Width, PropertyId.Height,
@@ -46,6 +66,7 @@ internal static class DeferredLengthResolver
         PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft,
         PropertyId.Top, PropertyId.Right, PropertyId.Bottom, PropertyId.Left,
         PropertyId.LineHeight,
+        PropertyId.ColumnWidth, PropertyId.ColumnGap, PropertyId.RowGap,
     ];
 
     /// <summary>Resolve every deferred font-/viewport-relative length in <paramref name="root"/>'s
@@ -69,8 +90,7 @@ internal static class DeferredLengthResolver
         ComputedStyle style, double rootEmPx, double pageWidthPx, double pageHeightPx)
     {
         if (style is null) return;
-        var emPx = style.ReadLengthPxOrZero(PropertyId.FontSize);
-        if (emPx <= 0) emPx = 16.0;
+        var emPx = EmBasePx(style);
 
         foreach (var id in BodyLengthProperties)
         {
@@ -106,11 +126,24 @@ internal static class DeferredLengthResolver
 
     /// <summary>The <c>rem</c> base — the ROOT ELEMENT box's resolved font-size (the first
     /// element-backed box under the synthetic <see cref="BoxKind.Root"/>), falling back to the
-    /// UA-default 16px when the tree has no element box yet.</summary>
+    /// UA-default 16px when the tree has no element box yet (an explicit root <c>font-size: 0</c>
+    /// is preserved — see <see cref="EmBasePx"/>).</summary>
     private static double RootElementEmPx(Box root)
     {
         var rootElement = root.SourceElement is not null ? root : root.FirstChild;
-        var em = rootElement?.Style?.ReadLengthPxOrZero(PropertyId.FontSize) ?? 0;
-        return em > 0 ? em : 16.0;
+        return EmBasePx(rootElement?.Style);
+    }
+
+    /// <summary>A box's resolved <c>font-size</c> in px — the <c>em</c> base. An explicit
+    /// <c>font-size: 0</c> is PRESERVED (a deferred <c>2em</c> then resolves to 0, NOT silently to
+    /// 32 px against a 16 px fallback — PR #224 review [P1]); only an ABSENT (non-LengthPx slot —
+    /// the cascade resolves every PRESENT font-size to a length, so non-LengthPx ⇒ absent) /
+    /// non-finite / negative (invalid) value falls back to the 16 px initial.</summary>
+    private static double EmBasePx(ComputedStyle? style)
+    {
+        if (style is null) return 16.0;
+        var slot = style.Get(PropertyId.FontSize);
+        var px = slot.Tag == ComputedSlotTag.LengthPx ? slot.AsLengthPx() : double.NaN;
+        return double.IsFinite(px) && px >= 0 ? px : 16.0;
     }
 }

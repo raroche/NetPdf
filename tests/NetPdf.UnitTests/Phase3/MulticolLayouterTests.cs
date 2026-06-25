@@ -227,6 +227,165 @@ public sealed class MulticolLayouterTests
         Assert.Equal(124, f1!.Value.InlineOffset);
     }
 
+    // ====================================================================
+    //  multicol-balancing-pagination — column rules (CSS Multi-column L1 §5)
+    // ====================================================================
+
+    [Fact]
+    public void Column_rules_emit_one_rule_fragment_per_inter_column_gap()
+    {
+        // 3 columns each carrying a 60px child (serial fill — explicit height): a `column-rule`
+        // emits a fragment in EACH of the 2 inter-column gaps, centered, sized
+        // (column-rule-width × the content height).
+        //
+        // Geometry (332px content, 3 cols, default 16px gap): perCol = (332 − 2×16)/3 = 100.
+        //   col0 [0,100], gap0 [100,116], col1 [116,216], gap1 [216,232], col2 [232,332].
+        //   gap0 center = 100 + 8 = 108 ⇒ a 4px rule at 108 − 2 = 106.
+        //   gap1 center = 216 + 8 = 224 ⇒ a 4px rule at 222.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        SetLengthPx(multicol.Style, PropertyId.Height, 60);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(4)); // solid
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        for (var i = 0; i < 3; i++)
+        {
+            var cs = MakeStyle();
+            SetLengthPx(cs, PropertyId.Height, 60);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var rules = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.IsColumnRule) rules.Add(f);
+        rules.Sort((x, y) => x.InlineOffset.CompareTo(y.InlineOffset));
+
+        Assert.Equal(2, rules.Count);
+        Assert.Equal(106, rules[0].InlineOffset, precision: 3);
+        Assert.Equal(222, rules[1].InlineOffset, precision: 3);
+        foreach (var r in rules)
+        {
+            Assert.Equal(4, r.InlineSize, precision: 3);    // column-rule-width
+            Assert.Equal(60, r.BlockSize, precision: 3);    // the used COLUMN box height (= the 60px container)
+            Assert.Equal(0, r.BlockOffset, precision: 3);   // content-box top
+            Assert.True(r.IsColumnRule);
+            Assert.Same(multicol, r.Box);                   // container style for the painter
+        }
+    }
+
+    [Fact]
+    public void Column_rule_height_is_the_column_box_not_the_content_extent()
+    {
+        // PR #224 review [P1]: an explicit-height multicol whose tallest column doesn't FILL the
+        // column box still draws a rule the full column height (CSS Multi-column L1 §5.1 — "the
+        // rule is as tall as the columns"). Setup: a 200px-tall 2-column box; child0 (150px) fills
+        // column 0 to 150, child1 (100px) doesn't fit (150 + 100 > 200) so it lands in column 1.
+        // The tallest content reaches 150px, but the COLUMN BOX is 200px → the rule must be 200px.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(multicol.Style, PropertyId.Height, 200);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(4)); // solid
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        var s0 = MakeStyle();
+        SetLengthPx(s0, PropertyId.Height, 150);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s0, MakeElement()));
+        var s1 = MakeStyle();
+        SetLengthPx(s1, PropertyId.Height, 100);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s1, MakeElement()));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var rules = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.IsColumnRule) rules.Add(f);
+
+        Assert.Single(rules);                                   // one gap between 2 content columns
+        Assert.Equal(200, rules[0].BlockSize, precision: 3);    // the 200px column box, NOT the 150px content
+    }
+
+    [Fact]
+    public void No_column_rule_fragment_when_style_is_none()
+    {
+        // The initial `column-rule-style: none` (and `hidden`) paints no rule, so the layouter
+        // emits no rule fragment at all (byte-identical with the pre-feature behavior).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        SetLengthPx(multicol.Style, PropertyId.Height, 60);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(0)); // none
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        for (var i = 0; i < 3; i++)
+        {
+            var cs = MakeStyle();
+            SetLengthPx(cs, PropertyId.Height, 60);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.DoesNotContain(sink.Fragments, f => f.IsColumnRule);
+    }
+
+    [Fact]
+    public void No_column_rule_fragment_when_content_occupies_a_single_column()
+    {
+        // A rule is drawn only BETWEEN two columns that both carry content. One small child fits
+        // entirely in column 0, so there is no inter-column gap to rule — no rule fragment even
+        // with a visible column-rule-style.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        SetLengthPx(multicol.Style, PropertyId.Height, 200);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(4)); // solid
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        var cs = MakeStyle();
+        SetLengthPx(cs, PropertyId.Height, 30); // 30 ≤ 200 ⇒ stays in column 0
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.DoesNotContain(sink.Fragments, f => f.IsColumnRule);
+    }
+
     [Fact]
     public void Cycle2_multicol_content_overflowing_all_columns_emits_page_complete_no_diagnostic()
     {
@@ -637,19 +796,27 @@ public sealed class MulticolLayouterTests
     {
         // PR #206 review (Copilot) — unit-level: a `%` column-gap resolves against the
         // passed inline size; with no definite base it falls back to the `normal` 1em
-        // (16px) multicol default (NOT 0 — multicol `normal` is 1em, unlike flex/grid).
+        // multicol default (NOT 0 — multicol `normal` is 1em, unlike flex/grid).
         var pct = MakeStyle();
         pct.Set(PropertyId.ColumnGap, ComputedSlot.FromPercentage(10));
-        Assert.Equal(20.0, pct.ReadColumnGap(200), precision: 3);   // 10% of 200
-        Assert.Equal(16.0, pct.ReadColumnGap(), precision: 3);       // no base → normal 1em
-        Assert.Equal(16.0, pct.ReadColumnGap(double.NaN), precision: 3);
+        Assert.Equal(20.0, pct.ReadColumnGap(200, 16), precision: 3);          // 10% of 200
+        Assert.Equal(16.0, pct.ReadColumnGap(double.NaN, 16), precision: 3);   // no base → normal 1em
 
         var len = MakeStyle();
         len.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(25));
-        Assert.Equal(25.0, len.ReadColumnGap(200), precision: 3);    // length wins, ignores base
+        Assert.Equal(25.0, len.ReadColumnGap(200, 16), precision: 3);          // length wins, ignores bases
 
+        // multicol-balancing-pagination — `normal` now scales 1em with the container font-size
+        // (was a hard-coded 16 px). At the initial 16 px it stays 16 (byte-identical); at 25 px
+        // it's 25.
         var normal = MakeStyle(); // unset → normal
-        Assert.Equal(16.0, normal.ReadColumnGap(200), precision: 3);
+        Assert.Equal(16.0, normal.ReadColumnGap(200, 16), precision: 3);
+        Assert.Equal(25.0, normal.ReadColumnGap(200, 25), precision: 3);
+        // PR #224 review [P1]: an explicit `font-size: 0` is PRESERVED (1em = 0), NOT defaulted to
+        // 16; only a non-finite / negative (invalid) em base falls back to the 16 px initial.
+        Assert.Equal(0.0, normal.ReadColumnGap(200, 0), precision: 3);
+        Assert.Equal(16.0, normal.ReadColumnGap(200, -1), precision: 3);             // negative → 16
+        Assert.Equal(16.0, normal.ReadColumnGap(200, double.NaN), precision: 3);     // non-finite → 16
     }
 
     [Fact]

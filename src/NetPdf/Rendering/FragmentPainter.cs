@@ -152,6 +152,21 @@ internal static class FragmentPainter
                 && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
             if (transformed) page.BeginTransform(effCm.A, effCm.B, effCm.C, effCm.D, effCm.E, effCm.F);
 
+            // multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — a synthetic
+            // column-rule fragment FILLS its rect with the container's column-rule-color
+            // (currentcolor → the element color) and paints nothing else (no background / border /
+            // outline / text). Foreground, like a border, so painted regardless of PrintBackgrounds.
+            // Placed INSIDE the transform scope (PR #224 review [P2]) — the rule fragment's box IS
+            // the multicol container, so a translated / rotated multicol moves its rules with its
+            // content. Balance the BeginTransform's `q` before continuing.
+            if (fragment.IsColumnRule)
+            {
+                PaintColumnRule(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                    currentColorArgb, diagnostics, ref styleApproximationReported);
+                if (transformed) page.RestoreGraphicsState();
+                continue;
+            }
+
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)
             {
@@ -1825,6 +1840,45 @@ internal static class FragmentPainter
         ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
             out var x, out var y, out var w, out var h);
         // A partial border-color alpha is composited via the page's ExtGState constant-alpha (/ca).
+        page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+    }
+
+    /// <summary>multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — fill a
+    /// synthetic <see cref="BoxFragment.IsColumnRule"/> fragment's rect with the multicol
+    /// container's <c>column-rule-color</c> (<c>currentcolor</c> — the initial — resolves to the
+    /// element <c>color</c>). The rect (position, the rule WIDTH, and the rule HEIGHT) is computed
+    /// by <c>MulticolLayouter</c>; the style keyword is read here only to skip a defensive
+    /// `none`/`hidden` and to flag a non-solid style as approximated-to-solid (sharing the
+    /// once-per-conversion border/outline diagnostic). Mirrors <see cref="PaintBorderEdge"/>.</summary>
+    private static void PaintColumnRule(
+        PdfPage page, ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics,
+        ref bool styleApproximationReported)
+    {
+        var styleSlot = style.Get(PropertyId.ColumnRuleStyle);
+        var styleKeyword = styleSlot.Tag == ComputedSlotTag.Keyword ? styleSlot.AsKeyword() : BorderStyleNone;
+        if (styleKeyword is BorderStyleNone or BorderStyleHidden) return; // defensive (layouter gated).
+
+        if (!TryResolveColor(style.Get(PropertyId.ColumnRuleColor), currentColorArgb, out var argb))
+            argb = currentColorArgb; // column-rule-color initial is currentcolor.
+        var alpha = Alpha(argb);
+        if (alpha == 0) return;
+
+        if (styleKeyword != BorderStyleSolid && !styleApproximationReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.PaintBorderStyleApproximated001,
+                "A non-solid column-rule-style (dotted / dashed / double / groove / ridge / inset / outset) " +
+                "was painted as a solid line. Styled rule rendering is a tracked follow-up " +
+                "(deferrals.md#multicol-balancing-pagination).",
+                DiagnosticSeverity.Info));
+            styleApproximationReported = true;
+        }
+
+        ColorChannels(argb, out var r, out var g, out var b);
+        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        // A partial column-rule-color alpha is composited via the page's ExtGState constant-alpha (/ca).
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
     }
 

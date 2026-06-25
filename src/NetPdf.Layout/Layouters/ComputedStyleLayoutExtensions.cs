@@ -620,24 +620,30 @@ internal static class ComputedStyleLayoutExtensions
         return defaultValue;
     }
 
-    /// <summary>Per Phase 3 Task 14 cycle 1 — decode
-    /// <see cref="PropertyId.ColumnGap"/> into a CSS px length, or
-    /// the cycle-1 default (16 px) when the slot is <c>normal</c> /
-    /// unset / non-length. Per CSS Multi-column L1 §6.1 the
-    /// <c>normal</c> initial value resolves to 1em (≈ 16 px at the
-    /// initial font size). Cycle 1 hard-codes 16 px regardless of
-    /// font-size; sub-cycle 2+ will resolve against the cascaded
-    /// <c>font-size</c>.
+    /// <summary>Decode <see cref="PropertyId.ColumnGap"/> (the MULTICOL gutter) into a CSS px
+    /// length. An absolute <see cref="ComputedSlotTag.LengthPx"/> slot is the gutter; a
+    /// <see cref="ComputedSlotTag.Percentage"/> resolves against
+    /// <paramref name="containerInlineSize"/> (the content-box inline size — CSS Box Alignment
+    /// L3 §8.3, matching the flex/grid gutter path <see cref="ReadFlexGridGapOrZero"/>); and the
+    /// <c>normal</c> initial / unset / any other non-length slot resolves to <b>1em</b> per CSS
+    /// Multi-column L1 §6.1, scaled by <paramref name="emPx"/> (the container's cascaded
+    /// font-size).
     ///
-    /// <para>PR #206 review (Copilot) — a PERCENTAGE <c>column-gap</c> on a multicol
-    /// container resolves against <paramref name="containerInlineSize"/> (the content-box
-    /// inline size) per CSS Box Alignment L3 §8.3, matching the flex/grid gutter path
-    /// (<see cref="ReadFlexGridGapOrZero"/>). Without a definite inline size (the default
-    /// <see cref="double.NaN"/>) a <c>%</c> falls back to the <c>normal</c> 1em default —
-    /// so callers that don't pass one stay byte-identical, and a <c>%</c> can't silently
-    /// be ZERO either (multicol's <c>normal</c> is 1em, not 0).</para></summary>
+    /// <para><b>multicol-balancing-pagination (font-relative gutter).</b> Pre-fix this hard-coded
+    /// 16 px for <c>normal</c> regardless of font-size; it now scales 1em with
+    /// <paramref name="emPx"/> (at the initial 16 px font-size the result is still 16 px — byte-
+    /// identical). A font-relative <c>column-gap: 2em</c> / <c>1rem</c> is no longer seen here as
+    /// a deferred slot: <c>DeferredLengthResolver</c> resolves it to a <see cref="ComputedSlotTag.LengthPx"/>
+    /// against the proper em/rem/viewport bases BEFORE layout, so it flows through the LengthPx
+    /// branch. (A direct-construction test that skips that pass sees an unresolved deferred slot as
+    /// <c>normal</c> ⇒ 1em, the documented fallback.)</para></summary>
+    /// <param name="style">The multicol container's computed style.</param>
+    /// <param name="containerInlineSize">The multicol content-box inline size (the % base). An
+    /// indefinite value (<see cref="double.NaN"/>) makes a <c>%</c> gutter fall back to 1em.</param>
+    /// <param name="emPx">The container's resolved <c>font-size</c> in px (the <c>normal</c> = 1em
+    /// base). A non-positive / non-finite value falls back to the 16 px initial font-size.</param>
     public static double ReadColumnGap(
-        this ComputedStyle style, double containerInlineSize = double.NaN)
+        this ComputedStyle style, double containerInlineSize, double emPx)
     {
         var slot = style.Get(PropertyId.ColumnGap);
         if (slot.Tag == ComputedSlotTag.LengthPx)
@@ -645,7 +651,10 @@ internal static class ComputedStyleLayoutExtensions
         if (slot.Tag == ComputedSlotTag.Percentage
             && double.IsFinite(containerInlineSize) && containerInlineSize >= 0)
             return System.Math.Max(0, slot.AsPercentage() / 100.0 * containerInlineSize);
-        return 16.0;
+        // `normal` (initial) / unset / non-length → 1em (CSS Multi-column L1 §6.1). An explicit
+        // `font-size: 0` is preserved (1em = 0 — PR #224 review [P1]); only a non-finite / negative
+        // (invalid) em base falls back to the 16 px initial.
+        return double.IsFinite(emPx) && emPx >= 0 ? emPx : 16.0;
     }
 
     /// <summary>Per Phase 3 — flex/grid gutter for <see cref="PropertyId.ColumnGap"/>

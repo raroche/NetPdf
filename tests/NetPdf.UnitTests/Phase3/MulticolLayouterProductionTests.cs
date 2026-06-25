@@ -711,29 +711,31 @@ public sealed class MulticolLayouterProductionTests
     }
 
     [Fact]
-    public async Task Cycle4_production_html_column_width_em_does_not_trigger_multicol_yet()
+    public async Task Em_column_width_columnizes_after_deferred_length_resolution()
     {
-        // Per post-PR-#60 review hardening (F#2) — pinning test for
-        // the scope-narrowing deferral of font-relative `column-width`
-        // values. CSS Multi-column L1 §3.1's introductory example uses
-        // `column-width: 12em`; the cycle-1 LengthResolver returns
-        // `ResolutionState.Deferred` for em/rem (the slot stays Unset,
-        // raw text rides along on the side). Cycle 4's ReadColumnWidth
-        // returns null for any non-LengthPx slot, so an em-only
-        // multicol intent falls through to ordinary block flow.
+        // multicol-balancing-pagination (font-relative `column-width`) — the FLIP of the former
+        // `..._em_does_not_trigger_multicol_yet` pin. CSS Multi-column L1 §3.1's introductory
+        // example is `column-width: 12em`; the cascade DEFERS em/rem (the slot stays Unset, the
+        // raw rides along), so pre-fix `ReadColumnWidth` returned null + the container fell
+        // through to ordinary block flow. `DeferredLengthResolver` now resolves a font-relative
+        // `column-width` against the cascaded font-size BEFORE the multicol dispatch, so the
+        // container columnizes exactly like an absolute `column-width: <px>`.
         //
-        // Sub-cycle 5+ will resolve em values against the cascaded
-        // font-size + percentage values against the containing block.
-        // Documented in docs/deferrals.md#multicol-balancing-pagination.
-        //
-        // Setup: `column-width: 12em` in a 600px container with no
-        // `column-count`. The body children should land at the
-        // wrapper's full inline-size (= ordinary block flow), NOT
-        // split into multiple columns.
+        // Setup: `font-size: 25px; column-width: 8em` ⇒ 25 × 8 = 200 px (NOT the 12em / default-
+        // 16 px the literal might suggest — the test proves em scales with the CASCADED size).
+        // An explicit `column-gap: 16px` isolates this from the (font-relative) gutter so the
+        // test pins column-WIDTH only. In a 600 px container:
+        //   derivedN = floor((600 + 16) / (200 + 16)) = floor(616 / 216) = 2,
+        //   perColumnInline = (600 − (2 − 1) × 16) / 2 = 584 / 2 = 292.
+        // Four 30 px items (120 px) overflow the 100 px column-0 budget, so serial fill spills
+        // the 4th into column 1 — proving an actual per-column inline TRANSLATION, not just a
+        // narrower wrapper.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .multicol {
-                    column-width: 12em;
+                    font-size: 25px;
+                    column-width: 8em;
+                    column-gap: 16px;
                     height: 100px;
                 }
                 .item { height: 30px; }
@@ -742,11 +744,12 @@ public sealed class MulticolLayouterProductionTests
               <div class="item"></div>
               <div class="item"></div>
               <div class="item"></div>
+              <div class="item"></div>
             </div>
             </body></html>
             """;
 
-        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
 
         // Find the multicol wrapper + item fragments.
         BoxFragment? multicolFragment = null;
@@ -761,36 +764,128 @@ public sealed class MulticolLayouterProductionTests
             else if (cls == "item") itemFragments.Add(f);
         }
         Assert.NotNull(multicolFragment);
-        Assert.Equal(3, itemFragments.Count);
+        Assert.Equal(4, itemFragments.Count);
 
-        // ReadColumnWidth returns NULL even though the slot is set
-        // — the em value was Deferred by the resolver.
+        // `column-width: 8em` resolved to 200 px against the 25 px font-size (was: null/deferred).
         var columnWidth = multicolFragment!.Value.Box.Style.ReadColumnWidth();
-        Assert.Null(columnWidth);
+        Assert.Equal(200, columnWidth);
 
-        // Each item lands at the wrapper's full content inline-size,
-        // NOT a per-column slice. The exact match value depends on
-        // the wrapper's inline size; the key assertion is "no per-
-        // column inline-offset translation happened" — every item
-        // lands at the same inline offset (column 0 in multicol terms,
-        // or simply the wrapper's content-box origin in ordinary
-        // block-flow terms).
-        var firstItemOffset = itemFragments[0].InlineOffset;
-        var firstItemSize = itemFragments[0].InlineSize;
+        // derivedN = 2 (auto column-count) ⇒ each item is the per-column inline size (292 px),
+        // strictly NARROWER than the wrapper (600 px) — the unambiguous proof that columnization
+        // fired rather than ordinary block flow (which would give the full wrapper width).
+        var wrapperInline = multicolFragment.Value.InlineSize;
+        var expectedN = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: wrapperInline,
+            specifiedColumnCount: null,
+            columnWidth: 200,
+            columnGap: 16);
+        Assert.Equal(2, expectedN);
+        var expectedPerCol = (wrapperInline - (expectedN - 1) * 16.0) / expectedN;
         foreach (var f in itemFragments)
         {
-            Assert.Equal(firstItemOffset, f.InlineOffset, precision: 3);
-            Assert.Equal(firstItemSize, f.InlineSize, precision: 3);
+            Assert.Equal(expectedPerCol, f.InlineSize, precision: 3);
+            Assert.True(f.InlineSize < wrapperInline - 1.0,
+                $"item inline-size {f.InlineSize} should be a per-column slice (< wrapper {wrapperInline}).");
         }
-        // The item inline-size equals the wrapper inline-size (= no
-        // column-axis split happened). Pre-cycle-4 multicol with N>=2
-        // would have made items narrower; cycle-4 with derived N=1
-        // would have done the single-column fallthrough which also
-        // gives full inline-size; ordinary block flow gives full
-        // inline-size too. We assert the full-width outcome which is
-        // consistent with the deferred-units behavior + pins that no
-        // column-axis split happened.
-        Assert.Equal(multicolFragment.Value.InlineSize, firstItemSize, precision: 3);
+
+        // The items occupy at least two DISTINCT columns (serial fill — explicit height uses the
+        // conservative serial path — packs three items in column 0 then spills the 4th into
+        // column 1: column 0 at offset 0, column 1 at offset 292 + 16 = 308).
+        var distinctColumnOffsets = new HashSet<int>();
+        foreach (var f in itemFragments)
+            distinctColumnOffsets.Add((int)System.Math.Round(f.InlineOffset));
+        Assert.True(distinctColumnOffsets.Count >= 2,
+            "Expected the items to spread across >= 2 columns; offsets: "
+            + string.Join(", ", distinctColumnOffsets));
+
+        // Clean fit — no forced-overflow diagnostic.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001);
+    }
+
+    [Fact]
+    public async Task Em_column_gap_widens_the_gutter_after_deferred_resolution()
+    {
+        // multicol-balancing-pagination (font-relative gutter) — `column-gap: 2em` at
+        // `font-size: 20px` resolves to 40 px (DeferredLengthResolver, against the cascaded font
+        // size), NOT the former 0/normal-fallback. In a 600 px 2-column container:
+        //   perColumnInline = (600 − 40) / 2 = 280,  column 1 origin = 280 + 40 = 320.
+        // The default 16 px gap would give perCol 292 + a 308 origin, so the 320 origin + 280
+        // width are the unambiguous proof the em gutter resolved.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    font-size: 20px;
+                    column-gap: 2em;
+                    height: 50px;
+                }
+                .item { height: 40px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var itemFragments = CollectItemFragments(sink);
+        Assert.Equal(2, itemFragments.Count);
+        // Both items are 280 px wide (perColumnInline with the 40 px gutter).
+        foreach (var f in itemFragments)
+            Assert.Equal(280, f.InlineSize, precision: 3);
+        // Column 0 at offset 0, column 1 at offset 320 (= 280 + the 40 px em gutter).
+        var offsets = itemFragments.Select(f => f.InlineOffset).OrderBy(x => x).ToList();
+        Assert.Equal(0, offsets[0], precision: 3);
+        Assert.Equal(320, offsets[1], precision: 3);
+    }
+
+    [Fact]
+    public async Task Normal_column_gap_resolves_to_one_em_not_a_hard_coded_16px()
+    {
+        // multicol-balancing-pagination — the `normal` initial gutter is 1em (CSS Multi-column L1
+        // §6.1), now scaled by the cascaded font-size instead of the former hard-coded 16 px. At
+        // `font-size: 25px` the gutter is 25 px:
+        //   perColumnInline = (600 − 25) / 2 = 287.5,  column 1 origin = 287.5 + 25 = 312.5
+        // (a hard-coded 16 px would give 292 + a 308 origin).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    font-size: 25px;
+                    height: 50px;
+                }
+                .item { height: 40px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var itemFragments = CollectItemFragments(sink);
+        Assert.Equal(2, itemFragments.Count);
+        foreach (var f in itemFragments)
+            Assert.Equal(287.5, f.InlineSize, precision: 3);
+        var offsets = itemFragments.Select(f => f.InlineOffset).OrderBy(x => x).ToList();
+        Assert.Equal(0, offsets[0], precision: 3);
+        Assert.Equal(312.5, offsets[1], precision: 3);
+    }
+
+    private static List<BoxFragment> CollectItemFragments(RecordingFragmentSink sink)
+    {
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.BlockContainer) continue;
+            if (f.Box.SourceElement?.GetAttribute("class") == "item") items.Add(f);
+        }
+        return items;
     }
 
     private static AngleSharp.Dom.IElement MakeElement()
@@ -824,6 +919,12 @@ public sealed class MulticolLayouterProductionTests
         var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
         var resolved = VarResolver.Resolve(cascade, document);
         var box = BoxBuilder.Build(document, resolved);
+
+        // Mirror PdfRenderPipeline: resolve deferred font-/viewport-relative lengths in place
+        // (em / rem / vw) before layout, so a font-relative `column-width: 12em` columnizes
+        // exactly as it does in the real render path (multicol-balancing-pagination). The page
+        // box matches the unit harness's fragmentainer (600 × 800); em/rem don't depend on it.
+        DeferredLengthResolver.ResolveTreeInPlace(box, pageWidthPx: 600, pageHeightPx: 800);
 
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();

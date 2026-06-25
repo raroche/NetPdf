@@ -8172,7 +8172,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         var comp = computation.Value;
-        var canSplitLines = CanSplitInlineOnlyLines(inlineOnlyBlock, comp);
+        var canSplitLines = CanSplitInlineOnlyLines(comp);
 
         // `inline-only-block-line-splitting` — RESUME a previously line-split block. It re-enters
         // at the top of a fresh page (a fragmentation break suppresses the block's own margin +
@@ -8522,17 +8522,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <summary>Whether the block's wrapped lines CAN be sliced across pages. Text, inline atomics
-    /// (inline-block / <c>&lt;img&gt;</c>), block-axis PADDING, and a square block-axis BORDER all slice
-    /// (box-decoration-break: slice — <c>EmitInlineOnlyBlockSlice</c> re-bases atomic placements per slice,
-    /// puts the block-start border + padding on the first slice + the block-end on the last, and
-    /// <c>FragmentPainter</c> skips the cut-edge border). Requires more than one line (a single line can't
-    /// split). A box carrying a decoration that wouldn't slice as ONE unfragmented box — a background image
-    /// / gradient, box-shadow, border-RADIUS, or outline (<see cref="Box.HasUnsliceableDecoration"/>) —
-    /// falls back to whole-block force-overflow so it isn't repainted independently per slice (those
-    /// decorations are the documented residual of `inline-only-block-line-splitting`).</summary>
-    private static bool CanSplitInlineOnlyLines(Box block, InlineOnlyBlockComputation comp)
-        => comp.InlineResult.Lines.Length > 1
-            && !block.HasUnsliceableDecoration;
+    /// (inline-block / <c>&lt;img&gt;</c>), block-axis PADDING + BORDER, and every box decoration —
+    /// a background gradient / image, an outline, a box-shadow, and a border-radius — all slice now
+    /// (box-decoration-break: slice — each decoration is painted over the WHOLE composite box, with the
+    /// block-axis chrome / radius distributed per cut, then clipped to the slice). The ONLY requirement is
+    /// more than one line (a single line can't split).</summary>
+    private static bool CanSplitInlineOnlyLines(InlineOnlyBlockComputation comp)
+        => comp.InlineResult.Lines.Length > 1;
 
     /// <summary>Number of lines from <paramref name="startLine"/> that fit in
     /// <paramref name="availableBlockPx"/>, honoring widows; always &gt;= 1 so pagination
@@ -8748,8 +8744,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // block-end border+padding on the LAST. A non-first slice's block-start chrome is CUT
         // (suppressBlockStartChrome — the painter starts the content at the border-box top + skips the top
         // border); a non-last slice's block-end border is cut (suppressBlockEndChrome). The slice's border
-        // box grows by whichever chrome it carries (so the fragment's background spans it). A
-        // border-RADIUS / decoration gates the split entirely (Box.HasUnsliceableDecoration).
+        // box grows by whichever chrome it carries (so the fragment's background spans it). A border-RADIUS
+        // rounds only this slice's real corners — the FragmentPainter decomposes it per cut.
         var sliceTopChrome = startLine == 0 ? metrics.BorderBlockStart + metrics.PaddingBlockStart : 0.0;
         var sliceBottomChrome = endLine == total ? metrics.BorderBlockEnd + metrics.PaddingBlockEnd : 0.0;
         // PR #221 review [P1] — a NON-final slice is a BROKEN box: per CSS Fragmentation it occupies the
@@ -8972,7 +8968,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // fragmentainer → emit the whole block at the border-box top (the pre-existing
         // force-overflow path; `startLine` is 0 here because a split only ever resumes a
         // sliceable block).
-        if (!CanSplitInlineOnlyLines(inlineOnlyBlock, comp)
+        if (!CanSplitInlineOnlyLines(comp)
             || fragmentainer is not { SuppressBlockPagination: false })
         {
             EmitInlineOnlyBlockFragment(

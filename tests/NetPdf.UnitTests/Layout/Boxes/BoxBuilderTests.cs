@@ -72,45 +72,6 @@ public sealed class BoxBuilderTests
     }
 
     // ============================================================
-    // box-decoration-break: slice — HasUnsliceableDecoration (PR #221 review [P2])
-    // ============================================================
-
-    [Fact]
-    public async Task Pseudo_box_with_a_rounded_decoration_is_flagged_unsliceable()
-    {
-        // A ::before with a non-uniform decoration (border-radius) must carry HasUnsliceableDecoration —
-        // it was set only for ordinary element boxes, so tall generated content could slice + repaint the
-        // decoration per fragment. The flag is computed from the pseudo's OWN cascade (ruleSet).
-        var rounded = await BuildAsync(
-            "<div class=\"host\">x</div>", ".host::before { content: 'g'; border-radius: 10px; }");
-        var pseudo = FindFirstPseudo(rounded, BoxPseudo.Before);
-        Assert.NotNull(pseudo);
-        Assert.True(pseudo!.HasUnsliceableDecoration);
-
-        // A ::after with no decoration stays sliceable (flag false).
-        var plain = await BuildAsync(
-            "<div class=\"host\">x</div>", ".host::after { content: 'g'; }");
-        var plainPseudo = FindFirstPseudo(plain, BoxPseudo.After);
-        Assert.NotNull(plainPseudo);
-        Assert.False(plainPseudo!.HasUnsliceableDecoration);
-    }
-
-    [Fact]
-    public async Task Blockified_flex_item_preserves_the_unsliceable_decoration_flag()
-    {
-        // Flex blockification builds a FRESH box, which must copy HasUnsliceableDecoration (it was lost).
-        // An inline-block flex item with a border-radius is blockified to a BlockContainer flex item that
-        // keeps the flag.
-        var root = await BuildAsync(
-            "<div class=\"flex\"><span class=\"item\">x</span></div>",
-            ".flex { display: flex; } .item { display: inline-block; border-radius: 8px; }");
-        var item = FindFirst(root, "span");
-        Assert.NotNull(item);
-        Assert.Equal(BoxKind.BlockContainer, item!.Kind);   // blockified from inline-block
-        Assert.True(item.HasUnsliceableDecoration);          // flag preserved across blockification
-    }
-
-    // ============================================================
     // Basic DOM walk + display dispatch
     // ============================================================
 

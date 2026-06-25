@@ -18,8 +18,8 @@ namespace NetPdf.UnitTests.Performance;
 /// the engine's LAYOUT → paginate → paint → PDF-write THROUGHPUT through a SYNTHETIC font resolver
 /// (deterministic glyphs, no system-font I/O — platform font loading adds ~140 ms of fixed,
 /// environment-dependent overhead) over TABLE fixtures (block-flow PROSE now paginates too — see the
-/// <c>Prose_*</c> tests in HtmlPdfConvertTests + the <c>Prose_*</c> gate below; only single-paragraph
-/// line-splitting remains, deferrals.md <c>inline-only-block-line-splitting</c>). They carry ~4× headroom
+/// <c>Prose_*</c> tests in HtmlPdfConvertTests + the <c>Prose_*</c> gate below; single-paragraph
+/// line-splitting + its box decorations have since landed). They carry ~4× headroom
 /// over the measured p50 on dev hardware.
 ///
 /// <para><b>Scope — these are guard rails, not the authoritative perf numbers.</b> The repo's standard for

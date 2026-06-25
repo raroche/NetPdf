@@ -138,10 +138,11 @@ grepping the ID).
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
   production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
-  `orphans` / `widows` flow to the resolver but have no visible effect until line-level
-  paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
-  the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
-  default), so per-paragraph overrides aren't honored yet.
+  `orphans` / `widows` flow to the resolver (read once off the document BODY box — PR #207
+  review [P2], NOT the synthetic root, which holds the initial default). Line-level paragraph
+  splitting has since landed, and it honors per-paragraph `orphans` / `widows` at the cut (read
+  off the paragraph's OWN computed value); the resolver-level body value still drives only the
+  cost model (inert under the production greedy resolver, as above).
 - **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
   bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
   (left/right/recto/verso PARITY blank-page insertion — INCLUDING RTL, where the PHYSICAL `left`/
@@ -162,93 +163,6 @@ grepping the ID).
   blank-page side parity (Phase-3 residual long-tail).
 - **Removal condition** — the optimizing resolver drives production (so `*:avoid` bites), and
   per-paragraph orphans/widows resolve at line-break time. (RTL page-side parity SHIPPED.)
-
----
-
-## inline-only-block-line-splitting
-
-- **ID** — `inline-only-block-line-splitting`
-- **Status** — `approximated` (intra-paragraph LINE splitting + orphans/widows + inline-atomic content +
-  block-axis PADDING + a square block-axis BORDER + a background GRADIENT / IMAGE + an OUTLINE
-  (box-decoration-break: slice) + intermediate-slice justification all SHIP; only `box-shadow` +
-  `border-radius` still force-overflow).
-- **Behavior** — A SINGLE inline-only (text-bearing) block taller than a whole fragmentainer now SLICES its
-  own wrapped lines across pages instead of force-overflowing: the lines that fit are emitted on the current
-  page, the remainder resumes on the next via an `InlineOnlyLineSplitContinuation` (carried in
-  `BlockContinuation.LayouterState` at the block's child index, mirroring the grid/multicol/table resume
-  pattern). The painter walks a fragment's `InlineLayout.Lines` by array index, so a page-fragment is the
-  original `Lines[]` sliced to the fitting lines + a fresh `BlockOffset` — no shaped-run buffers cross the
-  page boundary (the resume page re-runs the deterministic inline pass + re-slices). CSS Fragmentation L3 §4
-  orphans / widows are honored at the cut, read off the block's OWN computed value (so per-paragraph
-  `widows` / `orphans` work). Block-granularity prose pagination (multi-paragraph, the common case) still
-  moves whole one-line paragraphs to the next page. Inline ATOMICS (inline-block / `<img>`) slice too —
-  `EmitInlineOnlyBlockSlice` filters each atomic placement to its slice's lines + re-bases its block
-  offset (an atomic never crosses a line, so it never straddles a cut). Block-axis PADDING and a square
-  block-axis BORDER slice per box-decoration-break: slice (the block-start border + padding on the FIRST
-  slice, the block-end on the LAST, the inline-axis borders on EVERY slice; a non-first slice's block-start
-  chrome is cut via `BoxFragment.SuppressBlockStartChrome` — the painter starts the content at the
-  border-box top + skips the top border — and a non-last slice's block-end border via
-  `BoxFragment.SuppressBlockEndChrome`, which `FragmentPainter.PaintBorders` honors with its
-  `suppressTopEdge` / `suppressBottomEdge` params). A NON-final slice FILLS the remaining fragmentainer
-  extent in the block axis (CSS Fragmentation — a broken box occupies the rest of the fragmentainer), so
-  its inline-axis borders + solid background span the page rather than stopping after the last fitting line;
-  the text-line extent stays separate (PR #221 review). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
-  it is an interior line, not the paragraph end). A box whose decoration would NOT slice as one
-  unfragmented box — a `box-shadow` or a `border-radius`
-  (`Box.HasUnsliceableDecoration`, computed at build time since `box-shadow` isn't a
-  computed-style slot) — is gated OUT of splitting (it would repaint per slice) and force-overflows; a
-  background GRADIENT / IMAGE / OUTLINE and a solid background-color slice fine (a gradient / image /
-  outline paints over the WHOLE composite box — reconstructed from the ACTUAL page-filled fragment areas,
-  not the natural line-height sum — and clips per slice, so it stays continuous across the page-fill gaps;
-  PR #220 review [P1] + PR #222 review [P1]). The page-invariant computation (shaped lines +
-  atomic content) is cached per conversion (`InlineOnlyMeasurementCache`, threaded through `LayoutContext`
-  like the table/grid measure caches) so a paragraph that splits across N pages is shaped ONCE, not
-  re-shaped on every resume page (the ~O(pageCount × content) churn — PR #220 review [P2]).
-- **Missing** — only a `box-shadow` or a `border-radius` still gates the split
-  (`Box.HasUnsliceableDecoration`): such a block falls back to the whole-block force-overflow. A background
-  GRADIENT / IMAGE and an OUTLINE now SLICE — the painter spans the gradient axis / tile grid / outline
-  ring over the WHOLE composite box (via the fragment's `DecorationBlockExtentPx` + `DecorationBlockOffsetPx`
-  slice metadata) and clips per slice, so each is continuous across pages. The composite box is reconstructed
-  from the ACTUAL fragment areas — each non-final slice FILLS its fragmentainer, so the extent + each slice's
-  offset are the summed PHYSICAL border-box sizes (the page-fill gaps included), precomputed once at the
-  first slice (`ComputeInlineOnlySlicedDecorationTotalExtent`) and threaded forward in the continuation, NOT
-  the natural line-height sum which would restart the decoration before the previous physical slice ended
-  (PR #222 review [P1]). `background-clip: padding-box | content-box` is slice-aware too — the clip's
-  block-start inset is zeroed on a non-first slice + block-end on a non-last (the suppressed cut-edge chrome),
-  so a content-box / padding-box clip doesn't over-clip a strip at a cut edge (PR #222 review [P2]). The
-  remaining two gated decorations need a slice-aware `FragmentPainter` of their own: **box-shadow** — the
-  outset shadow rect's top on the FIRST slice, bottom on the LAST, sides on all, plus the blur raster
-  spanning the box; **border-radius** — the rounded-border RING + the rounded background / clip decomposed
-  per cut (the first slice rounds the top corners, the last the bottom, middles square). The cost-model also
-  doesn't yet weigh the split (`orphans` is read but the geometric fill already satisfies it; widows is
-  enforced directly).
-- **Trigger** — a SINGLE `<p>`/`<div>` with a `box-shadow` or `border-radius` whose text is taller than one
-  whole page (rare) — it overflows the bottom of its starting page rather than splitting.
-- **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
-  + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndChrome` /
-  `EmitInlineOnlyBlockSlice` (+ `fillToBlockExtent`, returns the slice's physical extent) +
-  `ComputeInlineOnlySlicedDecorationTotalExtent` (the precomputed composite-box physical extent, PR #222 [P1])
-  + `ReportSliceForcedOverflowIfNeeded` + `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
-  `src/NetPdf.Layout/Layouters/InlineOnlyMeasurementCache.cs`; `src/NetPdf.Layout/Boxes/Box.cs` +
-  `BoxBuilder.cs` (`HasUnsliceableDecoration` / `HasNonGradientBackgroundImage`-removed gate);
-  `src/NetPdf/Rendering/FragmentPainter.cs` (`PaintBorders` `suppressTopEdge`/`suppressBottomEdge`;
-  `PaintLinearGradient` / `PaintRadialGradient` `axisTopPx`/`axisHeightPx`; the bg-image tiler's whole-box
-  positioning area + slice-aware `background-clip` insets (`clipTopInsetPx`/`clipBottomInsetPx`, PR #222 [P2]);
-  `PaintOutline`'s whole-box ring + `BeginRectangleClip`); `BoxFragment`
-  (`DecorationBlockExtentPx` / `DecorationBlockOffsetPx`); `src/NetPdf.Paginate/LayoutContinuation.cs`
-  (`InlineOnlyLineSplitContinuation` (+ `DecorationBlockOffsetPx` / `DecorationTotalExtentPx`)).
-- **Added** — 2026-06-20 as the line-level residual of block-granularity prose pagination; NARROWED
-  2026-06-22 when text-only line splitting + orphans/widows shipped. (The recursion guards a real content
-  extent via `InlineOnlyBreakMinExtentPx` so a ZERO-extent anonymous block — flex/grid content the recursion
-  walks, placed past the page edge — does NOT spuriously break: the earlier flex/grid regression where both
-  triggering blocks had `chunk == 0` at `start > pageBlockSize`.)
-- **Removal condition** — a single inline-only block with a **box-shadow or border-radius**, taller than a
-  page, splits its lines across pages too — a slice-aware `FragmentPainter` paints the shadow / rounded ring
-  + rounded background/clip as one box that is then cut. (Atomics, block-axis padding, a square border, a
-  background GRADIENT / IMAGE, an OUTLINE, intermediate-slice justification, the gate for unsliceable
-  decorations, the widows-aware final-slice end-chrome reservation, and the cross-page measurement cache all
-  shipped — block-axis border + the fill-to-edge / radii-gate / widows hardening 2026-06-24 [PR #221]; the
-  gradient / background-image / outline slicing in the post-#221 batch.)
 
 ---
 
@@ -621,9 +535,9 @@ grepping the ID).
     row starts fresh after the tail); enabled only when the table has
     no footers + no bottom captions + the row carries no rowspan
     origin. A single ATOMIC block taller than the page (explicit
-    `height`, no inner break opportunity) still force-overflows —
-    shares the `inline-only-block-line-splitting` line-granularity
-    deferral.
+    `height`, no inner break opportunity) still force-overflows — it
+    has no internal boundary to slice at (a text block splits its
+    LINES, but an explicit-height atomic block has none).
     Remaining: spec-strict §11 rowspan distribution-proportional
     algorithm; §6.3 border-collapse model + `border-spacing`;
     intra-cell splitting for rows WITH footers / bottom captions /

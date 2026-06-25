@@ -505,12 +505,12 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void A_tall_block_with_an_unsliceable_decoration_force_overflows_instead_of_slicing()
+    public void A_tall_block_with_a_border_radius_and_a_solid_bg_both_slice()
     {
-        // PR #220 review [P1 #3] — box-decoration-break: slice would repaint a NON-sliceable decoration per
-        // page fragment, which is wrong for a border-radius or box-shadow (they would restart / repeat per
-        // slice). Such a block is gated OUT of line splitting and force-overflows. A background image /
-        // gradient / outline and a solid background-color DO slice (continuously) — PR #222.
+        // inline-only-block-line-splitting CLOSED — a border-radius was the LAST decoration gating line
+        // splitting; it now SLICES (the corners decompose per cut — see the dedicated rounding test). A
+        // rounded block and a solid-bg block both slice cleanly across pages with no truncation, no line
+        // lost. (Pre-PR #222-batch the rounded block force-overflowed.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         string Doc(string style)
         {
@@ -522,25 +522,21 @@ public sealed class HtmlPdfConvertTests
         var rounded = HtmlPdf.ConvertDetailed(Doc("border-radius:10px;background-color:#eee"), opts);
         var solid = HtmlPdf.ConvertDetailed(Doc("background-color:#eee"), opts);
 
-        // The rounded block can't slice → force-overflows (content beyond the page) → truncation; the
-        // solid block slices cleanly across pages with no truncation.
-        Assert.Contains(rounded.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
-        Assert.DoesNotContain(solid.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
-        Assert.True(solid.PageCount >= 2, $"the solid-bg block should slice; got {solid.PageCount}.");
-        Assert.Equal(201, TdCount(Latin1(solid.Pdf)));   // solid: no line lost
+        foreach (var (label, r) in new[] { ("rounded", rounded), ("solid", solid) })
+        {
+            Assert.DoesNotContain(r.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+            Assert.True(r.PageCount >= 2, $"the {label} block should slice; got {r.PageCount}.");
+            Assert.Equal(201, TdCount(Latin1(r.Pdf)));   // no line lost
+        }
     }
 
     [Fact]
-    public void A_tall_block_with_a_percentage_border_radius_force_overflows_instead_of_slicing()
+    public void A_tall_block_with_a_percentage_border_radius_slices()
     {
-        // PR #221 review [P1] — the unsliceable-decoration gate previously checked only the four ABSOLUTE
-        // horizontal border-radius longhands, so a PERCENTAGE radius (border-radius:50%) or a single-corner
-        // percentage slipped through: the block would slice + repaint a rounded ring per page fragment AND
-        // hit the uniform-rounded-border early-return that skips the cut-edge suppression. The painter's
-        // ReadCornerRadii reads all eight radius slots (horizontal + internal vertical) and resolves
-        // percentages, so the gate must too. A rounded box force-overflows like an absolute-length radius
-        // does (the documented inline-only-block-line-splitting decoration residual); the no-radius control
-        // still slices.
+        // inline-only-block-line-splitting CLOSED — a PERCENTAGE radius (`border-radius:50%`) and a
+        // single-corner percentage resolve through the painter's `ReadCornerRadii` (all eight radius slots),
+        // then `SliceCornerRadii` decomposes them per cut, so a percentage-rounded block SLICES like an
+        // absolute-length one. (Pre-PR #222-batch these force-overflowed; the gate is gone.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         string Doc(string style)
         {
@@ -551,31 +547,13 @@ public sealed class HtmlPdfConvertTests
 
         var pctAll = HtmlPdf.ConvertDetailed(Doc("border-radius:50%;background-color:#eee"), opts);
         var pctOne = HtmlPdf.ConvertDetailed(Doc("border-top-left-radius:40%;background-color:#eee"), opts);
-        var square = HtmlPdf.ConvertDetailed(Doc("background-color:#eee"), opts);
 
-        // The percentage-rounded blocks can't slice → force-overflow → truncation; the square control slices.
-        Assert.Contains(pctAll.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
-        Assert.Contains(pctOne.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
-        Assert.DoesNotContain(square.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
-        Assert.Equal(201, TdCount(Latin1(square.Pdf)));   // the no-radius control: no line lost
-    }
-
-    [Fact]
-    public void A_tall_block_with_a_sub_epsilon_border_radius_force_overflows_instead_of_slicing()
-    {
-        // PR #221 review [P2] — the slice gate must use the painter's EXACT `> 0` radius predicate
-        // (CornerRadii.AnyPositive), not a 0.01 epsilon: a 0.005px border-radius rounds the box in the
-        // painter, so it must gate line splitting too (else it slices + enters the rounded-ring path that
-        // skips cut-edge suppression). The pre-fix `> 0.01` let it through.
-        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        var sb = new StringBuilder(
-            "<!DOCTYPE html><html><body><div style=\"margin:0;border-radius:0.005px;background-color:#eee\">");
-        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
-        sb.Append("L200</div></body></html>");
-
-        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
-
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        foreach (var (label, r) in new[] { ("border-radius:50%", pctAll), ("one-corner 40%", pctOne) })
+        {
+            Assert.DoesNotContain(r.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+            Assert.True(r.PageCount >= 2, $"the {label} block should slice; got {r.PageCount}.");
+            Assert.Equal(201, TdCount(Latin1(r.Pdf)));   // no line lost
+        }
     }
 
     [Fact]
@@ -753,6 +731,36 @@ public sealed class HtmlPdfConvertTests
         Assert.All(shadowHeights, h => Assert.Equal(shadowHeights[0], h, precision: 1));
         Assert.True(shadowHeights[0] >= (result.PageCount - 1) * 698.0,
             $"the shadow must span the filled composite box ({result.PageCount} pages); got {shadowHeights[0]}.");
+    }
+
+    [Fact]
+    public void A_tall_block_with_a_border_radius_slices_and_rounds_only_the_real_corners_per_cut()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with a
+        // border-radius previously force-overflowed (it was the LAST decoration gating the split). It now
+        // SLICES: the box rounds only its REAL corners per cut — the FIRST slice rounds the TOP corners, the
+        // LAST rounds the BOTTOM, and every MIDDLE slice is fully SQUARE. (This closes the deferral.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        // border-radius:20px + a green background-color so each slice's fill rounds (a Bézier path) or is
+        // square (`re f`); line-height:50px gives several pages (so there is at least one middle slice).
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;border-radius:20px;background-color:#00ff00\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 3, $"need >= 3 pages for a middle slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // One green background fill per slice.
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "0 1 0 rg"));
+        // A SQUARE fill is `0 1 0 rg x y w h re f`; a ROUNDED fill is a Bézier path (no `re`). Only the
+        // FIRST (top-rounded) and LAST (bottom-rounded) slices round, so exactly PageCount − 2 slices are
+        // square. (Pre-fix the block force-overflowed; a naive per-slice round would round EVERY slice.)
+        Assert.Equal(result.PageCount - 2, CountGreenSquareFills(pdf));
     }
 
     [Fact]
@@ -2198,6 +2206,13 @@ public sealed class HtmlPdfConvertTests
         }
         return list;
     }
+
+    /// <summary>The count of SQUARE green background fills (<c>0 1 0 rg  x y w h re f</c>) — a slice whose
+    /// corners are all square (a middle slice of a sliced border-radius box). A rounded slice (first / last)
+    /// emits a Bézier path instead of <c>re f</c>, so it is NOT counted.</summary>
+    private static int CountGreenSquareFills(string pdf) =>
+        System.Text.RegularExpressions.Regex.Matches(
+            pdf, @"0 1 0 rg\s+-?[\d.]+\s+-?[\d.]+\s+-?[\d.]+\s+-?[\d.]+\s+re\s+f(?!\*)").Count;
 
     /// <summary>The fill-rect height (pt) of each green sharp box-shadow (<c>0 1 0 rg  x y w h re f</c>) in
     /// the PDF. A sliced box-shadow paints the shadow over the WHOLE composite box (the slice only CLIPS it),

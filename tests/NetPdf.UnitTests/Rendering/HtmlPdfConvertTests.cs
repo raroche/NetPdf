@@ -585,7 +585,7 @@ public sealed class HtmlPdfConvertTests
         // linear-gradient BACKGROUND now SLICES instead of force-overflowing: each slice paints the
         // gradient CONTINUOUSLY (the painter spans the gradient axis over the WHOLE box + clips to the
         // slice's own rect). So the gradient is painted once per slice (one `sh` per page), no line is lost,
-        // no overflow is truncated. (A url() background-image / box-shadow / border-radius / outline still
+        // no overflow is truncated. (box-shadow / border-radius still
         // force-overflow — those slice-aware painters are the remaining residual.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var sb = new StringBuilder(

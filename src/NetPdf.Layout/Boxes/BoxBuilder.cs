@@ -1842,10 +1842,11 @@ internal static class BoxBuilder
 
     /// <summary>box-decoration-break: slice (the initial value) requires a box's decoration to behave as
     /// ONE unfragmented box that is then sliced. NetPdf paints each line-split page fragment
-    /// independently, so a non-uniform decoration would repaint per slice (a restarted gradient /
-    /// background image, a per-slice rounded corner / shadow / outline). Flag those so inline-only line
-    /// splitting force-overflows the whole block instead (PR #220 review [P1]); a solid background-color
-    /// is uniform and slices fine. <c>background-image</c> / <c>box-shadow</c> are read from the CASCADE
+    /// independently, so a `box-shadow` (a per-slice shadow) or a `border-radius` (the rounded ring / clip decomposed per
+    /// cut) would repaint WRONG per slice, so those two are flagged to force-overflow the whole block
+    /// instead (PR #220 review [P1]); a gradient / background-image / outline now slice (painted over the
+    /// whole box + clipped per slice), and a solid background-color
+    /// is uniform and slices fine. <c>box-shadow</c> is read from the CASCADE
     /// (they are not computed-style slots the layouter can read); border-radius / outline from the
     /// computed <paramref name="style"/>.</summary>
     private static bool HasUnsliceableSliceDecoration(ComputedStyle style, ResolvedRuleSet? rules)

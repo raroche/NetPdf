@@ -182,8 +182,8 @@ namespace NetPdf.Layout.Layouters;
 /// not draw the block-end (bottom) border edge. The inline-axis borders still paint on every slice.
 /// Default false (last slice / whole block), byte-identical.</param>
 /// <param name="DecorationBlockExtentPx">box-decoration-break: slice — when &gt; 0, the unsliced box's
-/// block-axis border-box size, so a continuous decoration (gradient) on this slice is painted over the
-/// whole box + clipped to the slice. Default 0 → the gradient uses this fragment's own box.</param>
+/// block-axis border-box size, so a continuous decoration (gradient / background-image / outline) on this
+/// slice is painted over the whole box + clipped to the slice. Default 0 → the decoration uses this box.</param>
 /// <param name="DecorationBlockOffsetPx">box-decoration-break: slice — this slice's block-axis offset
 /// within the unsliced box (paired with <paramref name="DecorationBlockExtentPx"/>). Default 0.</param>
 internal readonly record struct BoxFragment(
@@ -259,8 +259,8 @@ internal readonly record struct BoxFragment(
     // <see cref="DecorationBlockOffsetPx"/> is this slice's block-axis offset within it (so the decoration's
     // virtual box top = <see cref="BlockOffset"/> − DecorationBlockOffsetPx, height = DecorationBlockExtentPx,
     // and the shading is clipped to this slice's own (InlineOffset, BlockOffset, InlineSize, BlockSize)
-    // rect). DEFAULT 0 = not a continuous-decoration slice → the gradient uses the fragment's own box,
-    // byte-identical for every non-sliced / non-gradient fragment.
+    // rect). DEFAULT 0 = not a continuous-decoration slice → the decoration uses the fragment's own box,
+    // byte-identical for every non-sliced fragment.
     double DecorationBlockExtentPx = 0.0,
     double DecorationBlockOffsetPx = 0.0);
 

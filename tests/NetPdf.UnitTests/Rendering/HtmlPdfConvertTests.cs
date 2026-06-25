@@ -579,6 +579,32 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_a_linear_gradient_slices_and_paints_the_gradient_per_page()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with a
+        // linear-gradient BACKGROUND now SLICES instead of force-overflowing: each slice paints the
+        // gradient CONTINUOUSLY (the painter spans the gradient axis over the WHOLE box + clips to the
+        // slice's own rect). So the gradient is painted once per slice (one `sh` per page), no line is lost,
+        // no overflow is truncated. (A url() background-image / box-shadow / border-radius / outline still
+        // force-overflow — those slice-aware painters are the remaining residual.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;background:linear-gradient(#f00,#00f)\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the gradient block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // The gradient shading (`W n /Shn sh Q`) is painted once per slice → continuous across pages.
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, " sh Q"));
+    }
+
+    [Fact]
     public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block

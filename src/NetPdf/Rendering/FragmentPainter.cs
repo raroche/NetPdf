@@ -193,17 +193,28 @@ internal static class FragmentPainter
                 // Phase 4 gradients — a linear-gradient(...) background-image layer paints
                 // over the background-color, under the borders (same z-order as an image
                 // layer), as a PDF native axial shading clipped to the (rounded) border box.
+                // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is one
+                // block-axis slice of a larger box (DecorationBlockExtentPx > 0), paint the gradient's AXIS
+                // over the WHOLE box (virtual top = this slice's top − its offset within the box, height =
+                // the full box extent) so it's CONTINUOUS across slices, while the shading is CLIPPED to the
+                // slice's own box. Null → the slice's own box (every non-sliced fragment byte-identical).
+                double? axisTopPx = null, axisHeightPx = null;
+                if (fragment.DecorationBlockExtentPx > 0)
+                {
+                    axisTopPx = topPx - fragment.DecorationBlockOffsetPx;
+                    axisHeightPx = fragment.DecorationBlockExtentPx;
+                }
                 if (imageCache is not null && document is not null
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
                 {
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
             }
 
@@ -1318,16 +1329,24 @@ internal static class FragmentPainter
     private static void PaintLinearGradient(
         PdfPage page, PdfDocument document, CssLinearGradient gradient, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb)
+        uint currentColorArgb,
+        // box-decoration-break: slice — when set, the gradient AXIS spans this (larger, whole-box) block
+        // extent instead of the painted box, so a sliced block's gradient is CONTINUOUS across slices; the
+        // shading is still CLIPPED to (leftPx, topPx, widthPx, heightPx). Null → axis = the painted box.
+        double? axisTopPx = null, double? axisHeightPx = null)
     {
         var stops = ResolveGradientStops(gradient.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
+        // CLIP rect = the painted (possibly-sliced) box; AXIS rect = the whole decoration box (= the clip
+        // box when not sliced). The inline axis is shared (slices differ only in the block axis).
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, axisHeightPx ?? heightPx, pageHeightPt,
+            out var ax, out var ay, out var aw, out var ah);
         // A `to <corner>` direction's angle depends on the box aspect ratio (PR #209 review [P2]) —
-        // compute it from the painted box; an explicit angle / side uses the parsed value as-is.
-        var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, w, h) : gradient.AngleDeg;
-        var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, x, y, w, h);
+        // compute it from the whole (axis) box; an explicit angle / side uses the parsed value as-is.
+        var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, aw, ah) : gradient.AngleDeg;
+        var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
         page.PaintShadingInRect(shadingRef, x, y, w, h,
@@ -1437,20 +1456,28 @@ internal static class FragmentPainter
     private static void PaintRadialGradient(
         PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb)
+        uint currentColorArgb,
+        // box-decoration-break: slice — when set, the gradient's center + radius are computed over this
+        // (larger, whole-box) block extent instead of the painted box, so a sliced block's radial gradient
+        // is CONTINUOUS across slices; the shading is still CLIPPED to (leftPx, topPx, widthPx, heightPx).
+        double? axisTopPx = null, double? axisHeightPx = null)
     {
         var stops = ResolveGradientStops(radial.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
+        // CLIP rect = the painted (possibly-sliced) box; AXIS rect = the whole decoration box (= the clip
+        // box when not sliced) — the center + radius are measured against it for slice continuity.
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, axisHeightPx ?? heightPx, pageHeightPt,
+            out var ax, out var ay, out var aw, out var ah);
         // Center in PDF user space (cy is a fraction from the CSS TOP → flip for PDF y-up).
-        var pcx = x + radial.CenterXFraction * w;
-        var pcy = y + (1.0 - radial.CenterYFraction) * h;
+        var pcx = ax + radial.CenterXFraction * aw;
+        var pcy = ay + (1.0 - radial.CenterYFraction) * ah;
         // Per-axis extents from the center to the near/far sides.
-        var minX = Math.Min(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * w;
-        var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * w;
-        var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * h;
-        var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * h;
+        var minX = Math.Min(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * aw;
+        var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * aw;
+        var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
+        var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
         var radius = radial.Extent switch
         {
             RadialExtent.ClosestSide => Math.Min(minX, minY),

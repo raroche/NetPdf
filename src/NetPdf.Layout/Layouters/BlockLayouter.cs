@@ -8355,6 +8355,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// starts the content at the border-box top + skips the top border edge. Default false.</param>
     /// <param name="suppressBlockEndChrome">box-decoration-break: slice — true when this is a NON-last
     /// slice, so its block-end border is CUT (the painter skips the bottom border edge). Default false.</param>
+    /// <param name="decorationBlockExtentPx">box-decoration-break: slice — when &gt; 0, the unsliced box's
+    /// block-axis border-box size, so a continuous gradient on this slice is painted over the whole box +
+    /// clipped to the slice. Default 0 → the gradient uses this fragment's own box.</param>
+    /// <param name="decorationBlockOffsetPx">box-decoration-break: slice — this slice's block-axis offset
+    /// within the unsliced box (paired with <paramref name="decorationBlockExtentPx"/>). Default 0.</param>
     private void EmitInlineOnlyBlockFragment(
         Box inlineOnlyBlock,
         InlineOnlyBlockMetrics metrics,
@@ -8368,7 +8373,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the content at the border-box top + skips the top border); a NON-last slice's block-end border
         // is cut (the painter skips the bottom border).
         bool suppressBlockStartChrome = false,
-        bool suppressBlockEndChrome = false)
+        bool suppressBlockEndChrome = false,
+        // box-decoration-break: slice — when > 0, a CONTINUOUS decoration (gradient) on this slice is
+        // painted over the WHOLE box (height = decorationBlockExtentPx, virtual top = this slice's top −
+        // decorationBlockOffsetPx) + clipped to the slice. Default 0 → the gradient uses the slice's own box.
+        double decorationBlockExtentPx = 0.0,
+        double decorationBlockOffsetPx = 0.0)
     {
         // Border-box inline-start offset = caller-supplied offset +
         // marginInlineStart. The caller's offset is already in the
@@ -8408,7 +8418,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // box-decoration-break: slice — a non-first slice's block-start chrome / a non-last slice's
             // block-end border is cut.
             SuppressBlockStartChrome: suppressBlockStartChrome,
-            SuppressBlockEndChrome: suppressBlockEndChrome));
+            SuppressBlockEndChrome: suppressBlockEndChrome,
+            // box-decoration-break: slice — slice-aware continuous-gradient geometry (0 → uses this box).
+            DecorationBlockExtentPx: decorationBlockExtentPx,
+            DecorationBlockOffsetPx: decorationBlockOffsetPx));
 
         // Inline-atomic-boxes cycle — emit each inline atomic's own positioned fragment. The
         // placement is content-box-relative; add the block fragment's border-box origin + the
@@ -8680,6 +8693,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             AtomicPlacements = slicedPlacements,
             InlineBlockContents = slicedContents,
         };
+        // box-decoration-break: slice — slice-aware CONTINUOUS-decoration (gradient) geometry. The
+        // unsliced box's border-box block size (`comp` here is the ORIGINAL full computation) + this
+        // slice's block-axis offset within it: a resume slice (startLine > 0) starts below the block-start
+        // chrome + the lines before it; the first slice's border-box top IS the full box top (offset 0).
+        // The painter uses these to paint a gradient over the whole box + clip to this slice; set on every
+        // slice but consulted only when the box has a gradient, so non-gradient slices stay byte-identical.
+        var decorationBlockExtentPx = comp.BorderBoxBlockSize;
+        var decorationBlockOffsetPx = startLine == 0
+            ? 0.0
+            : metrics.BorderBlockStart + metrics.PaddingBlockStart
+                + SumInlineOnlyLineHeights(comp, 0, startLine, total);
         EmitInlineOnlyBlockFragment(
             block, metrics, slicedComp, inlineOffsetFromContentOrigin, blockBorderBoxTop,
             // A non-final slice (more lines remain) continues on a later page, so its last line is an
@@ -8688,7 +8712,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // box-decoration-break: slice — a non-first slice's block-start chrome is cut, a non-last
             // slice's block-end border is cut.
             suppressBlockStartChrome: startLine > 0,
-            suppressBlockEndChrome: endLine < total);
+            suppressBlockEndChrome: endLine < total,
+            decorationBlockExtentPx: decorationBlockExtentPx,
+            decorationBlockOffsetPx: decorationBlockOffsetPx);
     }
 
     /// <summary>box-decoration-break: slice — when the slice the progress rule forced is taller than the

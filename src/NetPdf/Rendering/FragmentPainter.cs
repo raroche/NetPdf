@@ -240,9 +240,16 @@ internal static class FragmentPainter
 
             // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
             // and it does NOT affect layout. Always painted (it's not a background). It shares the
-            // borders' style-approximation flag (one diagnostic per conversion).
+            // borders' style-approximation flag (one diagnostic per conversion). box-decoration-break:
+            // slice — when this fragment is one block-axis slice (DecorationBlockExtentPx > 0), the outline
+            // ring is computed over the WHOLE box (sides continuous across slices) + CLIPPED to this slice's
+            // outline portion: the top outline only on the first slice (!SuppressBlockStartChrome), the
+            // bottom only on the last (!SuppressBlockEndChrome).
             PaintOutline(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref styleApproximationReported);
+                currentColorArgb, diagnostics, ref styleApproximationReported,
+                fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx,
+                isFirstSlice: !fragment.SuppressBlockStartChrome,
+                isLastSlice: !fragment.SuppressBlockEndChrome);
 
             if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
         }
@@ -991,7 +998,12 @@ internal static class FragmentPainter
     private static void PaintOutline(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported,
+        // box-decoration-break: slice — when > 0, the outline ring is computed over the WHOLE box (this many
+        // px tall, virtual top = topPx − decorationBlockOffsetPx) + CLIPPED to this slice; isFirstSlice /
+        // isLastSlice gate the top / bottom outline edge. Default 0 / true / true → the box's own outline.
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0,
+        bool isFirstSlice = true, bool isLastSlice = true)
     {
         if (!(widthPx > 0 && heightPx > 0)
             || !double.IsFinite(leftPx) || !double.IsFinite(topPx)
@@ -1037,12 +1049,18 @@ internal static class FragmentPainter
         // negative offset (past half the box) collapses the outline to a zero-size box CENTERED on the
         // box rather than letting the origin drift past one side. A positive (outward) offset isn't
         // clamped. The two axes clamp independently (the offset is a single value, the limits differ).
+        // box-decoration-break: slice — the ring is computed over the WHOLE box (so the side outlines are
+        // CONTINUOUS across slices); the per-slice CLIP below limits it to this slice's outline portion. A
+        // sliced outline is always SQUARE (a border-radius gates the split), so no rounded-ring concern.
+        var isSlice = decorationBlockExtentPx > 0;
+        var ringTop = isSlice ? topPx - decorationBlockOffsetPx : topPx;
+        var ringHeight = isSlice ? decorationBlockExtentPx : heightPx;
         var effOffX = Math.Max(offsetPx, -widthPx / 2.0);
-        var effOffY = Math.Max(offsetPx, -heightPx / 2.0);
+        var effOffY = Math.Max(offsetPx, -ringHeight / 2.0);
         var innerLeft = leftPx - effOffX;
-        var innerTop = topPx - effOffY;
+        var innerTop = ringTop - effOffY;
         var innerW = widthPx + 2 * effOffX;     // ≥ 0 by the per-axis clamp
-        var innerH = heightPx + 2 * effOffY;
+        var innerH = ringHeight + 2 * effOffY;
         var outerLeft = innerLeft - outlineWidthPx;
         var outerTop = innerTop - outlineWidthPx;
         var outerW = innerW + 2 * outlineWidthPx;
@@ -1057,11 +1075,27 @@ internal static class FragmentPainter
         var outerRadii = rounded ? GrowRadii(boxRadii, offsetPx + outlineWidthPx) : default;
         var innerRadii = rounded ? GrowRadii(boxRadii, offsetPx) : default;
 
+        // box-decoration-break: slice — clip the whole-box ring to THIS slice's outline portion: the full
+        // outer width inline, and block-wise from the OUTER-top (first slice) / the slice's border-box top
+        // (otherwise) to the OUTER-bottom (last slice) / the slice's border-box bottom. So the first slice
+        // shows the top outline + sides, a middle slice just the sides, the last slice the bottom + sides.
+        // Non-sliced → no clip (byte-identical).
+        var sliceClipped = false;
+        if (isSlice)
+        {
+            var clipTop = isFirstSlice ? outerTop : topPx;
+            var clipBottom = isLastSlice ? outerTop + outerH : topPx + heightPx;
+            ToPdfRect(outerLeft, clipTop, outerW, Math.Max(0, clipBottom - clipTop), pageHeightPt,
+                out var ccx, out var ccy, out var ccw, out var cch);
+            page.BeginRectangleClip(ccx, ccy, ccw, cch);
+            sliceClipped = true;
+        }
         ToPdfRect(outerLeft, outerTop, outerW, outerH, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
         ToPdfRect(innerLeft, innerTop, innerW, innerH, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
         ColorChannels(argb, out var r, out var g, out var b);
         page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadii), ix, iy, iw, ih, ToPt(innerRadii),
             r, g, b, Alpha(argb) / 255.0);
+        if (sliceClipped) page.RestoreGraphicsState();
     }
 
     /// <summary>Whether all four border edges form a UNIFORM border that a single rounded RING can

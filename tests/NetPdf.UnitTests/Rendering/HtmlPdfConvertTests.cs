@@ -629,6 +629,31 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_an_outline_slices_and_paints_the_outline_per_page()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with an
+        // OUTLINE now SLICES instead of force-overflowing: PaintOutline computes the outline ring over the
+        // WHOLE box (sides CONTINUOUS across slices) + CLIPS it to each slice — the top outline on the first
+        // slice, the bottom on the last, the sides on every slice. So the ring is painted once per slice, no
+        // line is lost, no overflow truncated. (box-shadow / border-radius still force-overflow.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;outline:5px solid #ff00ff\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the outlined block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // The magenta outline ring (`1 0 1 rg`) is painted once per slice (clipped to each).
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "1 0 1 rg"));
+    }
+
+    [Fact]
     public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block

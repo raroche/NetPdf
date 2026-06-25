@@ -1850,20 +1850,15 @@ internal static class BoxBuilder
     /// computed <paramref name="style"/>.</summary>
     private static bool HasUnsliceableSliceDecoration(ComputedStyle style, ResolvedRuleSet? rules)
     {
-        // box-shadow still gates (its slice-aware painter isn't built yet). A background GRADIENT *or*
-        // IMAGE now SLICES — the painter spans the gradient axis / tiles the image over the WHOLE box +
-        // clips per slice (using the fragment's DecorationBlockExtentPx / DecorationBlockOffsetPx), so both
-        // paint continuously across pages and no longer gate. (background-image / box-shadow are read from
-        // the CASCADE, not computed-style slots; border-radius / outline from the computed style.)
+        // What still gates: box-shadow (its slice-aware painter isn't built yet) + a border-RADIUS (the
+        // rounded-border / rounded-clip ring decomposed per cut isn't built). What now SLICES (and so does
+        // NOT gate): a background GRADIENT or IMAGE (painter spans the axis / tile grid over the WHOLE box +
+        // clips per slice) and an OUTLINE (PaintOutline computes the ring over the whole box + clips per
+        // slice — top outline on the first slice, bottom on the last, sides on all). background-image /
+        // box-shadow are read from the CASCADE (not computed-style slots); border-radius from the style.
         if (IsAuthoredNonNone(rules, "box-shadow"))
             return true;
-        if (HasAnyBorderRadius(style))
-            return true;
-        // An outline draws around the WHOLE box (outline-style not `none` (index 0) + a positive width).
-        // Match the painter's exact predicate (PaintOutline paints when width > 0), not a 0.01 epsilon, so
-        // a sub-0.01px outline can't slip the gate and then paint per slice (PR #221 review [P2]).
-        return style.ReadKeywordOrDefault(PropertyId.OutlineStyle, defaultIndex: 0) != 0
-            && style.ReadLengthPxOrZero(PropertyId.OutlineWidth) > 0;
+        return HasAnyBorderRadius(style);
     }
 
     /// <summary>The eight <c>border-radius</c> computed slots in the order the painter's

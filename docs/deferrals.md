@@ -1214,16 +1214,22 @@ grepping the ID).
     deferred**: all VERTICAL writing modes (`writing-mode` is not yet a
     registered property; `row` in vertical-rl swaps the main + cross axes onto
     the rotated block + inline directions).
-  - Outer-main-size + auto-margins in `justify-content` free-space
-    calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
-    declared `width`, ignoring item margins / padding / borders /
-    auto margins. Per spec the free-space calculation uses each
-    item's resolved margin-box main-axis size, and auto margins
-    consume free space BEFORE `justify-content` distributes the
-    remainder. Sub-cycle 3+ will add the outer-size pre-pass.
-    Until then, items with non-zero margins will produce slightly-
-    off `justify-content` placements (e.g., space-between will
-    leave less between-item space than the spec dictates).
+  - **Outer-main-size + auto-margins on the MAIN axis** (CSS Flexbox L1 §9.2 step 4 / §9.5 / §8.1):
+    the main-axis placement currently IGNORES each item's main-axis margins entirely — the free-space
+    pre-pass sums only resolved (border-box) main sizes (`LineMainSize`), the cursor advances by
+    `itemMainSize` with NO margin, and the emitted offset is the bare cursor. So a flex item with a
+    main-axis margin is MIS-PLACED (its margin collapses to 0 on the main axis) AND the
+    `justify-content` free space is over-counted. Per spec: free space uses each item's resolved
+    MARGIN-box main size; a main-axis `auto` margin consumes positive free space BEFORE
+    `justify-content` (and is 0 when free space ≤ 0); reversed flows (`row-reverse` / `column-reverse`)
+    swap the leading/trailing margin. **Assessed 2026-06-24 (PR #221 Task 3) as a DEDICATED effort, not
+    a byte-identical narrowing:** fixing FIXED margins changes output for the COMMON case (any flex
+    container with margined items), so it would RE-PIN the byte-identity baselines (LayoutSnapshots /
+    PaginationGolden / RealDocuments / RenderingCorpus) — a reference-output change that needs maintainer
+    sign-off, NOT a unilateral byte-identical change. The auto-margins sub-part + the reversed-flow
+    leading/trailing swap are the intricate pieces. (A prior session reached the same assessment and
+    deferred it; the code paths are `FlexLayouter` L1170-1172 `LineMainSize`, L1341 free space, L1351 /
+    L1713 the main cursor, and L1531 the reversed-axis emission.)
   - Writing-mode-aware `left` / `right` mapping for
     `justify-content` (L2 maps both to `flex-start` / `flex-end`
     under the L1 default LTR + `flex-direction: row`; L3+ will

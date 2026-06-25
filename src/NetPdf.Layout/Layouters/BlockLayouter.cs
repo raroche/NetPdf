@@ -8744,8 +8744,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // block-end border+padding on the LAST. A non-first slice's block-start chrome is CUT
         // (suppressBlockStartChrome — the painter starts the content at the border-box top + skips the top
         // border); a non-last slice's block-end border is cut (suppressBlockEndChrome). The slice's border
-        // box grows by whichever chrome it carries (so the fragment's background spans it). A
-        // border-RADIUS / decoration gates the split entirely (Box.HasUnsliceableDecoration).
+        // box grows by whichever chrome it carries (so the fragment's background spans it). A border-RADIUS
+        // rounds only this slice's real corners — the FragmentPainter decomposes it per cut.
         var sliceTopChrome = startLine == 0 ? metrics.BorderBlockStart + metrics.PaddingBlockStart : 0.0;
         var sliceBottomChrome = endLine == total ? metrics.BorderBlockEnd + metrics.PaddingBlockEnd : 0.0;
         // PR #221 review [P1] — a NON-final slice is a BROKEN box: per CSS Fragmentation it occupies the

@@ -236,9 +236,6 @@ internal static class BoxBuilder
         // box's name to select `@page <name>` (multi-page driver / PR #179 review P1).
         var box = Box.ForElement(
             kind, style, element, NetPdf.Css.PagedMedia.AtPageRules.ResolveUsedPageName(element, cascade));
-        // box-decoration-break: slice — flag a box whose decoration can't slice per page fragment, so
-        // inline-only line splitting force-overflows the whole block for it (PR #220 review [P1]).
-        box.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(style);
 
         // Per Task 14: collect ::first-line / ::first-letter cascade styles
         // for Phase 3 line-layout to apply during fragment rendering. Box
@@ -817,11 +814,6 @@ internal static class BoxBuilder
             : BoxPseudo.After;
 
         var pseudoBox = Box.ForPseudo(kind, pseudoStyle, host, pseudo);
-        // box-decoration-break: slice — a ::before / ::after with a border-RADIUS must gate line splitting
-        // too, so tall generated content doesn't slice + repaint the rounded ring per fragment (PR #221
-        // review [P2] — element boxes set this at the ForElement site, pseudo boxes were missed; gradient /
-        // image / outline / box-shadow now slice and no longer gate).
-        pseudoBox.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(pseudoStyle);
         if (generatedText.Length > 0)
         {
             pseudoBox.AppendChild(Box.TextRun(generatedText, pseudoStyle, host));
@@ -1126,12 +1118,6 @@ internal static class BoxBuilder
             // here (no source, no pseudo).
             blockified = Box.Anonymous(blockKind, inlineChild.Style);
         }
-
-        // box-decoration-break: slice — blockification builds a FRESH box, so carry the unsliceable-
-        // decoration flag across (PR #221 review [P2] — it was lost, so a blockified inline-block with a
-        // radius / image / shadow / outline could slice + repaint per fragment). Anonymous boxes never
-        // carry a decoration, so the copy is false → correct there too.
-        blockified.HasUnsliceableDecoration = inlineChild.HasUnsliceableDecoration;
 
         // Transfer children. Box.AppendChild requires the child be
         // parent-less, so detach from the old box first.
@@ -1838,58 +1824,6 @@ internal static class BoxBuilder
         else if (trimmed.Equals("ltr", StringComparison.OrdinalIgnoreCase))
             style.Set(PropertyId.Direction, ComputedSlot.FromKeyword(0));
         // `auto` / unknown → keep the inherited direction (the bidi first-strong heuristic is a residual).
-    }
-
-    /// <summary>box-decoration-break: slice (the initial value) requires a box's decoration to behave as
-    /// ONE unfragmented box that is then sliced. NetPdf paints each line-split page fragment
-    /// independently, so a `border-radius` (the rounded ring / background / clip decomposed per cut) would
-    /// repaint WRONG per slice, so it is flagged to force-overflow the whole block instead (PR #220 review
-    /// [P1]). A gradient / background-image / outline / box-shadow now slice (painted over the WHOLE
-    /// composite box + clipped per slice), and a solid background-color is uniform and slices fine.
-    /// border-radius is read from the computed <paramref name="style"/>.</summary>
-    private static bool HasUnsliceableSliceDecoration(ComputedStyle style)
-    {
-        // What still gates: a border-RADIUS (the rounded-border / rounded-background / rounded-clip ring
-        // decomposed per cut isn't built yet). What now SLICES (and so does NOT gate): a background GRADIENT
-        // or IMAGE (painter spans the axis / tile grid over the WHOLE box + clips per slice), an OUTLINE
-        // (PaintOutline computes the ring over the whole box + clips per slice), and a box-shadow
-        // (PaintBoxShadows computes the shadow over the whole box + clips per slice — the top shadow on the
-        // first slice, the bottom on the last, the side shadows on every slice). A sliced box-shadow is
-        // always SQUARE because a border-radius (which would round the shadow) still gates here.
-        return HasAnyBorderRadius(style);
-    }
-
-    /// <summary>The eight <c>border-radius</c> computed slots in the order the painter's
-    /// <c>ReadCornerRadii</c> reads them — the four corner HORIZONTAL radii plus the four INTERNAL
-    /// VERTICAL (elliptical <c>Rx / Ry</c> slash-form) radii. Any positive one rounds the box.</summary>
-    private static readonly PropertyId[] BorderRadiusSlots =
-    [
-        PropertyId.BorderTopLeftRadius, PropertyId.BorderTopRightRadius,
-        PropertyId.BorderBottomRightRadius, PropertyId.BorderBottomLeftRadius,
-        PropertyId.BorderTopLeftRadiusY, PropertyId.BorderTopRightRadiusY,
-        PropertyId.BorderBottomRightRadiusY, PropertyId.BorderBottomLeftRadiusY,
-    ];
-
-    /// <summary>Whether ANY border-radius corner is positive — an absolute LENGTH or a PERCENTAGE, on
-    /// the horizontal OR the internal vertical (slash-form) longhand. The slice gate
-    /// (<see cref="HasUnsliceableSliceDecoration"/>) must match what the painter's <c>ReadCornerRadii</c>
-    /// actually rounds: it reads all eight slots and resolves percentages, so a <c>border-radius:50%</c> or
-    /// a slash-form <c>40px / 8px</c> DOES round the box and must gate the split — otherwise the rounded
-    /// ring repaints per slice AND the uniform-rounded-border path returns before the cut-edge suppression
-    /// runs (PR #221 review [P1]). The old gate checked only the four absolute horizontal longhands, so
-    /// percentage radii and the vertical slash-form longhands slipped through. The predicate is the
-    /// painter's EXACT <c>&gt; 0</c> (matching <c>CornerRadii.AnyPositive</c> / <c>ReadCornerRadii</c>'s
-    /// <c>Math.Max(0, …)</c>), NOT a 0.01 epsilon — a 0.005px radius rounds the box in the painter, so it
-    /// must gate too (PR #221 review [P2]).</summary>
-    private static bool HasAnyBorderRadius(ComputedStyle style)
-    {
-        foreach (var id in BorderRadiusSlots)
-        {
-            var slot = style.Get(id);
-            if (slot.Tag == ComputedSlotTag.LengthPx && slot.AsLengthPx() > 0) return true;
-            if (slot.Tag == ComputedSlotTag.Percentage && slot.AsPercentage() > 0) return true;
-        }
-        return false;
     }
 
     /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.

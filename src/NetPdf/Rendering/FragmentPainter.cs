@@ -1121,9 +1121,10 @@ internal static class FragmentPainter
         // negative offset (past half the box) collapses the outline to a zero-size box CENTERED on the
         // box rather than letting the origin drift past one side. A positive (outward) offset isn't
         // clamped. The two axes clamp independently (the offset is a single value, the limits differ).
-        // box-decoration-break: slice — the ring is computed over the WHOLE box (so the side outlines are
-        // CONTINUOUS across slices); the per-slice CLIP below limits it to this slice's outline portion. A
-        // sliced outline is always SQUARE (a border-radius gates the split), so no rounded-ring concern.
+        // box-decoration-break: slice — the ring is computed over the WHOLE composite box (so the side
+        // outlines are CONTINUOUS across slices); the per-slice CLIP below limits it to this slice's outline
+        // portion. A border-radius rounds the ring over the composite box (its radii resolved against the
+        // composite height), and the clip cuts the corners that belong to another fragment.
         var isSlice = decorationBlockExtentPx > 0;
         var ringTop = isSlice ? topPx - decorationBlockOffsetPx : topPx;
         var ringHeight = isSlice ? decorationBlockExtentPx : heightPx;

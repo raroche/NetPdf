@@ -138,10 +138,11 @@ grepping the ID).
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
   production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
-  `orphans` / `widows` flow to the resolver but have no visible effect until line-level
-  paragraph splitting lands (`inline-only-block-line-splitting`); the value is read once off
-  the document BODY box (PR #207 review [P2] — NOT the synthetic root, which holds the initial
-  default), so per-paragraph overrides aren't honored yet.
+  `orphans` / `widows` flow to the resolver (read once off the document BODY box — PR #207
+  review [P2], NOT the synthetic root, which holds the initial default). Line-level paragraph
+  splitting has since landed, and it honors per-paragraph `orphans` / `widows` at the cut (read
+  off the paragraph's OWN computed value); the resolver-level body value still drives only the
+  cost model (inert under the production greedy resolver, as above).
 - **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
   bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
   (left/right/recto/verso PARITY blank-page insertion — INCLUDING RTL, where the PHYSICAL `left`/
@@ -534,9 +535,9 @@ grepping the ID).
     row starts fresh after the tail); enabled only when the table has
     no footers + no bottom captions + the row carries no rowspan
     origin. A single ATOMIC block taller than the page (explicit
-    `height`, no inner break opportunity) still force-overflows —
-    shares the `inline-only-block-line-splitting` line-granularity
-    deferral.
+    `height`, no inner break opportunity) still force-overflows — it
+    has no internal boundary to slice at (a text block splits its
+    LINES, but an explicit-height atomic block has none).
     Remaining: spec-strict §11 rowspan distribution-proportional
     algorithm; §6.3 border-collapse model + `border-spacing`;
     intra-cell splitting for rows WITH footers / bottom captions /

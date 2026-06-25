@@ -173,7 +173,7 @@ internal static class FragmentPainter
                 }
 
                 PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb,
-                    isFirstSlice: isFirstSlice, isLastSlice: isLastSlice);
+                    fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx);
                 // background-image tiles paint OVER this fragment's color and UNDER its borders
                 // (CSS B&B §14.2 layer order), gated by PrintBackgrounds like the color.
                 if (imageCache is not null && document is not null
@@ -186,51 +186,43 @@ internal static class FragmentPainter
                     // / bg-clip cycles).
                     var (oT, oR, oB, oL) = BackgroundAreaInset(style, bgSpec.OriginRaw, defaultArea: 'p');
                     var (cT, cR, cB, cL) = BackgroundAreaInset(style, bgSpec.ClipRaw, defaultArea: 'b');
-                    // A border-radius rounds the background-image CLIP too (border-radius-completion
-                    // cycle, Task 3): the border-box corner radii, inset per side to the background-clip
-                    // box (border-box clip → no reduction; padding/content-box → reduced by the clip
-                    // inset). Zero radii → a rectangular clip (the tiler's fast path, byte-identical).
-                    // box-decoration-break: slice — round only this slice's REAL corners (a fragmentation
-                    // cut is square); the identity for a non-slice fragment.
-                    var clipRadiiPx = SliceCornerRadii(
-                        InsetRadii(ReadCornerRadii(style, widthPx, heightPx), cT, cR, cB, cL),
-                        isFirstSlice, isLastSlice);
-                    // Clamp the positioning-area + clip width/height to ≥ 0 — a thin box with large
-                    // border/padding + a content-box origin/clip can drive the inset sum past the box
-                    // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1,
-                    // the same guard as the margin-box site; the empty-clip skip below backstops it).
-                    // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is
-                    // one block-axis slice (DecorationBlockExtentPx > 0), the POSITIONING AREA spans the
-                    // WHOLE box (virtual top = this slice's top − its offset within the box, height = the
-                    // full box extent) so the tile grid / phase is shared across slices (the image is
-                    // CONTINUOUS), while the CLIP stays the slice's own box. The inline axis is shared.
-                    var bgOriginTopPx = topPx + oT;
-                    var bgOriginHeightPx = Math.Max(0, heightPx - oT - oB);
+                    // box-decoration-break: slice (PR #223 review [P1]) — both the POSITIONING area and the
+                    // CLIP are built over the WHOLE composite box (virtual top = this slice's top − its
+                    // offset, height = the full extent) so the tile grid / phase AND the rounded clip are
+                    // CONTINUOUS, then an outer slice-rect clip (below) limits the paint to this fragment.
+                    // The clip box's border-box corner radii resolve against the COMPOSITE height and inset
+                    // per side to the background-clip box (border-box → no reduction; padding / content-box →
+                    // reduced by the inset). The clip's top / bottom inset is the box's REAL border + padding
+                    // (present at the composite top / bottom), so a content-box clip no longer over-clips a
+                    // strip at a CUT edge — the slice rect clip cuts there instead (subsumes PR #222 [P2]).
+                    // For a non-slice fragment the composite box IS the box → byte-identical.
+                    var (compTopPx, compHeightPx, compRadiiPx) = CompositeRoundedBox(
+                        style, topPx, widthPx, heightPx, fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx);
+                    var clipRadiiPx = InsetRadii(compRadiiPx, cT, cR, cB, cL);
+                    var bgOriginTopPx = compTopPx + oT;
+                    var bgOriginHeightPx = Math.Max(0, compHeightPx - oT - oB);
+                    // Limit the paint to THIS slice (box-decoration-break: slice) — an outer rect clip around
+                    // the whole-box positioning / rounded clip; no-op for a non-slice fragment.
+                    var imageSliceClipped = false;
                     if (fragment.DecorationBlockExtentPx > 0)
                     {
-                        bgOriginTopPx = (topPx - fragment.DecorationBlockOffsetPx) + oT;
-                        bgOriginHeightPx = Math.Max(0, fragment.DecorationBlockExtentPx - oT - oB);
+                        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var scx, out var scy, out var scw, out var sch);
+                        page.BeginRectangleClip(scx, scy, scw, sch);
+                        imageSliceClipped = true;
                     }
-                    // box-decoration-break: slice (PR #222 review [P2] / Copilot [4]) — on a CUT-edge slice
-                    // the block-start / block-end border + padding is SUPPRESSED (the content starts at the
-                    // border-box top / the bottom border is skipped), so the background-CLIP must NOT inset
-                    // that edge — else `background-clip: padding-box | content-box` leaves a blank strip at the
-                    // top of a non-first slice / the bottom of a non-last slice. Zero the clip's block-start
-                    // inset when the start chrome is cut, the block-end inset when the end chrome is cut. The
-                    // POSITIONING area above keeps the WHOLE-box insets (the box's real top / bottom
-                    // border + padding IS present on slice 0 / the last slice), so tile continuity is
-                    // unaffected. The default border-box clip (cT = cB = 0) is already correct → byte-identical.
-                    var clipTopInsetPx = fragment.SuppressBlockStartChrome ? 0.0 : cT;
-                    var clipBottomInsetPx = fragment.SuppressBlockEndChrome ? 0.0 : cB;
+                    // Clamp the positioning-area + clip width/height to ≥ 0 — a thin box with large
+                    // border/padding + a content-box origin/clip can drive the inset sum past the box
+                    // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1).
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt,
                         leftPx + oL, bgOriginTopPx, Math.Max(0, widthPx - oL - oR), bgOriginHeightPx,
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
-                        clipLeftPx: leftPx + cL, clipTopPx: topPx + clipTopInsetPx,
+                        clipLeftPx: leftPx + cL, clipTopPx: compTopPx + cT,
                         clipWidthPx: Math.Max(0, widthPx - cL - cR),
-                        clipHeightPx: Math.Max(0, heightPx - clipTopInsetPx - clipBottomInsetPx),
+                        clipHeightPx: Math.Max(0, compHeightPx - cT - cB),
                         clipRadiiPx: clipRadiiPx);
+                    if (imageSliceClipped) page.RestoreGraphicsState();
                 }
 
                 // Phase 4 gradients — a linear-gradient(...) background-image layer paints
@@ -242,25 +234,37 @@ internal static class FragmentPainter
                 // the full box extent) so it's CONTINUOUS across slices, while the shading is CLIPPED to the
                 // slice's own box. Null → the slice's own box (every non-sliced fragment byte-identical).
                 double? axisTopPx = null, axisHeightPx = null;
-                if (fragment.DecorationBlockExtentPx > 0)
+                var gradientSliced = fragment.DecorationBlockExtentPx > 0;
+                if (gradientSliced)
                 {
                     axisTopPx = topPx - fragment.DecorationBlockOffsetPx;
                     axisHeightPx = fragment.DecorationBlockExtentPx;
+                }
+                // box-decoration-break: slice — the shading + its rounded clip span the WHOLE composite box;
+                // an outer per-slice rect clip limits the paint to this fragment (no-op for a non-slice).
+                var gradientSliceClipped = false;
+                if (gradientSliced
+                    && imageCache is not null && document is not null
+                    && (imageCache.BackgroundGradientBoxes.ContainsKey(fragment.Box)
+                        || imageCache.BackgroundRadialGradientBoxes.ContainsKey(fragment.Box)))
+                {
+                    ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var gcx, out var gcy, out var gcw, out var gch);
+                    page.BeginRectangleClip(gcx, gcy, gcw, gch);
+                    gradientSliceClipped = true;
                 }
                 if (imageCache is not null && document is not null
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
                 {
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx,
-                        isFirstSlice, isLastSlice);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx,
-                        isFirstSlice, isLastSlice);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
+                if (gradientSliceClipped) page.RestoreGraphicsState();
             }
 
             // Borders (foreground — always painted regardless of PrintBackgrounds). A sliced inline-only
@@ -269,7 +273,9 @@ internal static class FragmentPainter
             PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                 currentColorArgb, diagnostics, ref styleApproximationReported,
                 suppressTopEdge: fragment.SuppressBlockStartChrome,
-                suppressBottomEdge: fragment.SuppressBlockEndChrome);
+                suppressBottomEdge: fragment.SuppressBlockEndChrome,
+                decorationBlockExtentPx: fragment.DecorationBlockExtentPx,
+                decorationBlockOffsetPx: fragment.DecorationBlockOffsetPx);
 
             // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
             // and it does NOT affect layout. Always painted (it's not a background). It shares the
@@ -923,10 +929,11 @@ internal static class FragmentPainter
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
         uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported,
-        bool suppressTopEdge = false, bool suppressBottomEdge = false) =>
+        bool suppressTopEdge = false, bool suppressBottomEdge = false,
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0) =>
         PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
             BorderEdgeCurrentColors.Uniform(currentColorArgb), diagnostics, ref styleApproximationReported,
-            suppressTopEdge, suppressBottomEdge);
+            suppressTopEdge, suppressBottomEdge, decorationBlockExtentPx, decorationBlockOffsetPx);
 
     /// <summary>Per-edge-currentcolor overload (per-edge currentcolor cycle): each edge's
     /// <c>border-*-color: currentcolor</c> (or its initial) falls back to that edge's OWNER colour
@@ -937,11 +944,14 @@ internal static class FragmentPainter
         double leftPx, double topPx, double widthPx, double heightPx,
         in BorderEdgeCurrentColors currentColors, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported,
         // box-decoration-break: slice (inline-only line splitting) — skip the block-start (top) / block-end
-        // (bottom) border edge on a fragmentation CUT, so a sliced bordered block draws each block-axis
-        // border once (top on the first slice, bottom on the last) instead of boxing every slice. Only the
-        // square per-edge path honors this; a sliceable block never has a border-radius (it's gated out of
-        // splitting), so the rounded ring / clip paths above are never reached for a cut fragment.
-        bool suppressTopEdge = false, bool suppressBottomEdge = false)
+        // (bottom) border edge on a fragmentation CUT (the SQUARE per-edge path), so a sliced bordered block
+        // draws each block-axis border once (top on the first slice, bottom on the last) instead of boxing
+        // every slice.
+        bool suppressTopEdge = false, bool suppressBottomEdge = false,
+        // box-decoration-break: slice (PR #223 review [P1]) — when > 0 this is one block-axis slice; a ROUNDED
+        // border is rendered as the WHOLE composite box's ring / clipped edges (this extent, virtual top =
+        // topPx − the offset) clipped to this slice, so a percentage / oversized radius rounds across cuts.
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0)
     {
         // A zero-area or non-finite border box has no edges to stroke. The body path guards this
         // upstream (PaintFragments skips width/height <= 0), but the page-margin-box painter forwards
@@ -953,6 +963,14 @@ internal static class FragmentPainter
             || !double.IsFinite(widthPx) || !double.IsFinite(heightPx))
             return;
 
+        // box-decoration-break: slice — a ROUNDED border is the WHOLE composite box's ring (the unbroken
+        // geometry) clipped to this slice; the slice clip cuts off the edges / corners that belong to other
+        // fragments, so no per-edge suppression is needed in the rounded paths. The radii resolve against
+        // the COMPOSITE height. A non-slice fragment is the box itself (byte-identical).
+        var (compTopPx, compHeightPx, radiiPx) = CompositeRoundedBox(
+            style, topPx, widthPx, heightPx, decorationBlockExtentPx, decorationBlockOffsetPx);
+        var sliced = decorationBlockExtentPx > 0;
+
         // Rounded UNIFORM border (border-radius-completion cycle, Task 2): a box with a border-radius
         // AND a uniform border (same paintable style, width, and resolved colour on all four edges) paints
         // ONE filled RING — the annulus between the border box (outer, the border-box radii) and the
@@ -961,11 +979,7 @@ internal static class FragmentPainter
         // border width (a small radius under a thick border keeps its rounding; post-PR-#172 review P1+P2)
         // and it composites the border colour's alpha correctly (a fill, /ca). A non-uniform border falls
         // through to the per-edge rects below (CLIPPED to the rounded outline when there's a radius).
-        var radiiPx = ReadCornerRadii(style, widthPx, heightPx);
-        // box-decoration-break: slice — a CUT-edge slice (a split rounded border) can't use the CLOSED
-        // uniform ring (it would paint the cut edge + round the cut corners); it falls through to the
-        // per-edge path below, which honors the suppressed edges + the sliced (cut-square) clip radii.
-        if (radiiPx.AnyPositive && !suppressTopEdge && !suppressBottomEdge
+        if (radiiPx.AnyPositive
             && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid))
         {
             if (nonSolid && !styleApproximationReported)
@@ -978,52 +992,70 @@ internal static class FragmentPainter
                     DiagnosticSeverity.Info));
                 styleApproximationReported = true;
             }
-            // Outer = border box with the border-box radii; inner = padding box (inset by the border
-            // width on every side) with radii reduced by the full border width. An inner box that
-            // collapses (border ≥ half the box) makes the ring fill the whole outer rounded rect.
-            var outerRadiiPx = radiiPx.NormalizedFor(widthPx, heightPx);
+            // Outer = the COMPOSITE border box with its radii; inner = the padding box (inset by the border
+            // width on every side) with radii reduced by the full border width. Clip to this slice (the
+            // closed ring's top / bottom edge for another fragment is cut by the slice rect).
+            var outerRadiiPx = radiiPx.NormalizedFor(widthPx, compHeightPx);
             var innerRadiiPx = ReduceRadii(outerRadiiPx, borderWidthPx);
-            ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
-            ToPdfRect(leftPx + borderWidthPx, topPx + borderWidthPx,
-                widthPx - 2 * borderWidthPx, heightPx - 2 * borderWidthPx,
+            var uniformClipped = BeginSliceClip(page, sliced, pageHeightPt, leftPx, topPx, widthPx, heightPx);
+            ToPdfRect(leftPx, compTopPx, widthPx, compHeightPx, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
+            ToPdfRect(leftPx + borderWidthPx, compTopPx + borderWidthPx,
+                widthPx - 2 * borderWidthPx, compHeightPx - 2 * borderWidthPx,
                 pageHeightPt, out var ix, out var iy, out var iw, out var ih);
             ColorChannels(borderArgb, out var cr, out var cg, out var cb);
             page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadiiPx),
                 ix, iy, iw, ih, ToPt(innerRadiiPx), cr, cg, cb, Alpha(borderArgb) / 255.0);
+            if (uniformClipped) page.RestoreGraphicsState();
             return;
         }
 
         // Rounded NON-uniform border (rounded-nonuniform-borders cycle): a border-radius with
         // per-edge-differing widths / styles / colours can't use the single uniform RING, so the four
-        // square edge rects are CLIPPED to the rounded BORDER-box outline (`q <rounded path> W n` …
-        // `Q`) — the box's OUTER corners follow the radius (matching the rounded background band +
-        // image clip, which already round regardless of border uniformity) instead of poking out
-        // square. The per-edge widths / colours, the (still-square) INNER corners, and the hard colour
-        // transition where two differently-coloured edges meet at a corner stay an approximation (true
-        // per-corner arc segments transitioning between edges are the follow-up). Zero radii → no clip
-        // (byte-identical to the prior square edges). The clip applies to a body block AND a margin box
-        // (its corner-radius longhands ARE cascaded — margin-box-border-radius cycle).
-        // box-decoration-break: slice — the rounded-outline clip rounds only this slice's REAL corners
-        // (top on the first slice, bottom on the last); a middle slice's sliced radii are all-zero → no clip
-        // (a plain square border, byte-identical). For a non-slice fragment SliceCornerRadii is the identity.
-        var slicedRadiiPx = SliceCornerRadii(radiiPx, !suppressTopEdge, !suppressBottomEdge);
-        var rounded = slicedRadiiPx.AnyPositive;
+        // square edge rects are CLIPPED to the rounded BORDER-box outline — the box's OUTER corners follow
+        // the radius (matching the rounded background band + image clip) instead of poking out square. The
+        // per-edge widths / colours, the (still-square) INNER corners, and the hard colour transition where
+        // two differently-coloured edges meet at a corner stay an approximation. Zero radii → no clip
+        // (byte-identical to the prior square edges).
+        // box-decoration-break: slice — for a rounded border the per-edge rects + the rounded-outline clip
+        // are the WHOLE composite box, wrapped in a per-slice rect clip; the slice clip removes the edges /
+        // corners of other fragments, so no edge suppression is needed (that is the SQUARE path's job).
+        var rounded = radiiPx.AnyPositive;
+        var edgeTopPx = rounded ? compTopPx : topPx;
+        var edgeHeightPx = rounded ? compHeightPx : heightPx;
+        var sliceClipped = rounded && BeginSliceClip(page, sliced, pageHeightPt, leftPx, topPx, widthPx, heightPx);
         if (rounded)
         {
-            ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var bx, out var by, out var bw, out var bh);
-            page.BeginRoundedRectangleClip(bx, by, bw, bh, ToPt(slicedRadiiPx));
+            ToPdfRect(leftPx, compTopPx, widthPx, compHeightPx, pageHeightPt, out var bx, out var by, out var bw, out var bh);
+            page.BeginRoundedRectangleClip(bx, by, bw, bh, ToPt(radiiPx));
         }
-        if (!suppressTopEdge)
-            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
+        // The SQUARE path keeps the per-slice rects + cut-edge suppression (byte-identical, #221); the
+        // ROUNDED path draws all four composite edges (the slice clip cuts the ones off-fragment).
+        if (rounded || !suppressTopEdge)
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, edgeTopPx, widthPx, edgeHeightPx,
                 currentColors.Top, diagnostics, ref styleApproximationReported);
-        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
+        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, edgeTopPx, widthPx, edgeHeightPx,
             currentColors.Right, diagnostics, ref styleApproximationReported);
-        if (!suppressBottomEdge)
-            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
+        if (rounded || !suppressBottomEdge)
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, edgeTopPx, widthPx, edgeHeightPx,
                 currentColors.Bottom, diagnostics, ref styleApproximationReported);
-        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
+        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, edgeTopPx, widthPx, edgeHeightPx,
             currentColors.Left, diagnostics, ref styleApproximationReported);
-        if (rounded) page.RestoreGraphicsState();
+        if (rounded) page.RestoreGraphicsState();         // rounded-outline clip
+        if (sliceClipped) page.RestoreGraphicsState();    // per-slice rect clip
+    }
+
+    /// <summary>box-decoration-break: slice — push a per-slice rectangular clip (the fragment's own border
+    /// box) when <paramref name="sliced"/>, so a decoration rendered over the WHOLE composite box is limited
+    /// to this fragment. Returns whether a clip was pushed (the caller balances it). No-op for a non-slice
+    /// fragment → byte-identical.</summary>
+    private static bool BeginSliceClip(
+        PdfPage page, bool sliced, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx)
+    {
+        if (!sliced) return false;
+        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+        page.BeginRectangleClip(cx, cy, cw, ch);
+        return true;
     }
 
     /// <summary>Paint the CSS <c>outline</c> (CSS UI 4 §5 — outline cycle): a uniform line just OUTSIDE
@@ -1110,10 +1142,12 @@ internal static class FragmentPainter
         // the outline edge (offset + width for the outer, offset for the inner); a SHARP box corner stays
         // sharp, and GrowRadii clamps a component a large negative offset would drive below 0. No
         // border-radius → a square outline (zero radii → the ring's `re` fast path).
-        // box-decoration-break: slice — a sliced outline rounds only this slice's REAL corners (top on the
-        // first slice, bottom on the last; a middle slice is square); the per-slice CLIP below then hides
-        // the corners on the other end. SliceCornerRadii is the identity for a non-slice fragment.
-        var boxRadii = SliceCornerRadii(ReadCornerRadii(style, widthPx, heightPx), isFirstSlice, isLastSlice);
+        // box-decoration-break: slice (PR #223 review [P1]) — the outline ring is the WHOLE composite box's
+        // ring (radii resolved against the composite ring height, the same height the ring spans); the
+        // per-slice CLIP below limits it to this fragment, so an oversized / percentage radius rounds
+        // correctly across cuts. ReadCornerRadii against `ringHeight` is the box's own height for a
+        // non-slice fragment → byte-identical.
+        var boxRadii = ReadCornerRadii(style, widthPx, ringHeight);
         var rounded = boxRadii.AnyPositive;
         var outerRadii = rounded ? GrowRadii(boxRadii, offsetPx + outlineWidthPx) : default;
         var innerRadii = rounded ? GrowRadii(boxRadii, offsetPx) : default;
@@ -1218,28 +1252,31 @@ internal static class FragmentPainter
         Math.Max(0, r.BottomRightX - right), Math.Max(0, r.BottomRightY - bottom),
         Math.Max(0, r.BottomLeftX - left), Math.Max(0, r.BottomLeftY - bottom));
 
-    /// <summary>box-decoration-break: slice (inline-only line splitting) — the corner radii for ONE
-    /// block-axis slice of a sliced box: the TOP corners round only on the FIRST slice (else the
-    /// fragmentation cut is square), the BOTTOM corners only on the LAST slice; a middle slice is fully
-    /// square. The inline-axis pairing is unchanged. A non-slice fragment passes
-    /// <c>isFirstSlice = isLastSlice = true</c> → the radii are returned unchanged (byte-identical).</summary>
-    internal static CornerRadii SliceCornerRadii(CornerRadii r, bool isFirstSlice, bool isLastSlice)
-    {
-        if (isFirstSlice && isLastSlice) return r;   // whole / unsplit box — unchanged
-        return new CornerRadii(
-            isFirstSlice ? r.TopLeftX : 0, isFirstSlice ? r.TopLeftY : 0,
-            isFirstSlice ? r.TopRightX : 0, isFirstSlice ? r.TopRightY : 0,
-            isLastSlice ? r.BottomRightX : 0, isLastSlice ? r.BottomRightY : 0,
-            isLastSlice ? r.BottomLeftX : 0, isLastSlice ? r.BottomLeftY : 0);
-    }
+    /// <summary>box-decoration-break: slice (inline-only line splitting) — the COMPOSITE box a sliced
+    /// decoration is rendered over BEFORE being clipped to this fragment (PR #223 review [P1]): the whole
+    /// unbroken box (top = <paramref name="topPx"/> − the slice's offset within the box, height = the full
+    /// decoration extent), with the corner radii resolved against the COMPOSITE height. Resolving against the
+    /// composite (not the slice) height is what CSS requires for a percentage radius, and lets a radius
+    /// TALLER than one slice / the §4.2 overlap-clamp span the cut correctly — the rounded path is built once
+    /// over the whole box, then each fragment clips it. A non-slice fragment
+    /// (<paramref name="decorationBlockExtentPx"/> == 0) returns the box itself → byte-identical.</summary>
+    private static (double Top, double Height, CornerRadii Radii) CompositeRoundedBox(
+        ComputedStyle style, double topPx, double widthPx, double heightPx,
+        double decorationBlockExtentPx, double decorationBlockOffsetPx)
+        => decorationBlockExtentPx > 0
+            ? (topPx - decorationBlockOffsetPx, decorationBlockExtentPx,
+               ReadCornerRadii(style, widthPx, decorationBlockExtentPx))
+            : (topPx, heightPx, ReadCornerRadii(style, widthPx, heightPx));
 
     private static void PaintBackground(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
         uint currentColorArgb,
-        // box-decoration-break: slice — on a CUT-edge slice the corners at the cut are SQUARE (the box
-        // rounds only at its real top / bottom). Default true / true → the box's own radii (byte-identical).
-        bool isFirstSlice = true, bool isLastSlice = true)
+        // box-decoration-break: slice — when > 0 this fragment is one block-axis slice of a larger box; the
+        // rounded color band is built over the WHOLE composite box (this extent, virtual top = topPx − the
+        // offset) + clipped to this slice, so a percentage / oversized radius rounds correctly across cuts.
+        // Default 0 → the box itself (byte-identical).
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0)
     {
         if (!TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColorArgb, out var argb))
             return;
@@ -1247,20 +1284,27 @@ internal static class FragmentPainter
         if (alpha == 0) return; // transparent (the initial value) paints nothing.
 
         ColorChannels(argb, out var r, out var g, out var b);
-        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
         // border-radius (body-radius / border-radius-completion cycles): per-corner ABSOLUTE + %
         // radii round the COLOR band. The UNIFORM-circular case keeps the byte-stable single-radius
         // path (PdfPage.FillRoundedRectangle, clamped to half the shorter side); the general case
         // (per-corner / elliptical-via-%) uses the per-corner fill (§4.2 overlap-clamped in PdfPage).
-        // Border strokes (PaintBorders) + the background-image clip honor the SAME radii (the
-        // completion cycle's other two tasks). The explicit `Rx / Ry` slash form is an AngleSharp drop
-        // (deferred). A partial alpha composites via the page's ExtGState constant-alpha (/ca).
-        // box-decoration-break: slice — a sliced block rounds only its real top (first slice) / bottom
-        // (last slice) corners; the fragmentation cut is square (SliceCornerRadii is the identity for a
-        // non-slice fragment, so the fill is byte-identical there).
-        var radiiPx = SliceCornerRadii(ReadCornerRadii(style, widthPx, heightPx), isFirstSlice, isLastSlice);
+        // Border strokes (PaintBorders) + the background-image clip honor the SAME radii. The explicit
+        // `Rx / Ry` slash form is an AngleSharp drop (deferred). A partial alpha composites via /ca.
+        // box-decoration-break: slice (PR #223 review [P1]) — the rounded fill is the COMPOSITE box (radii
+        // resolved against the whole-box height) clipped to this slice; the cut is square because the slice
+        // rect clips off the rounding that belongs to another fragment. CompositeRoundedBox is the box
+        // itself for a non-slice → byte-identical.
+        var (compTopPx, compHeightPx, radiiPx) = CompositeRoundedBox(
+            style, topPx, widthPx, heightPx, decorationBlockExtentPx, decorationBlockOffsetPx);
         if (radiiPx.AnyPositive)
         {
+            var sliced = decorationBlockExtentPx > 0;
+            if (sliced)
+            {
+                ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+                page.BeginRectangleClip(cx, cy, cw, ch);
+            }
+            ToPdfRect(leftPx, compTopPx, widthPx, compHeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
             if (radiiPx.IsUniformCircular(out var rPx))
             {
                 var radiusPt = Math.Min(PdfUnits.PxToPt(rPx), Math.Min(w, h) / 2.0);
@@ -1270,9 +1314,12 @@ internal static class FragmentPainter
             {
                 page.FillRoundedRectangle(x, y, w, h, ToPt(radiiPx), r, g, b, alpha / 255.0);
             }
+            if (sliced) page.RestoreGraphicsState();
             return;
         }
-        page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+        // A square background fills the SLICE's own rect (a non-final slice fills the page).
+        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var sx, out var sy, out var sw, out var sh);
+        page.FillRectangle(sx, sy, sw, sh, r, g, b, alpha / 255.0);
     }
 
     // ───── Phase 4 shadows — box-shadow ─────────────────────────────────────
@@ -1298,14 +1345,13 @@ internal static class FragmentPainter
         bool isFirstSlice = true, bool isLastSlice = true)
     {
         // box-decoration-break: slice — the shadow is for the unfragmented (composite) box, then sliced at
-        // the fragmentation CUTS (not the page edges). It rounds only this slice's REAL corners (top on the
-        // first slice, bottom on the last; a middle slice is square), so the spread-expanded shadow follows
-        // the same rounding the border / background do. SliceCornerRadii is the identity for a non-slice.
-        var borderRadii = SliceCornerRadii(ReadCornerRadii(style, widthPx, heightPx), isFirstSlice, isLastSlice);
-        // The box top / height the shadow grows from is the whole composite box.
+        // the fragmentation CUTS (not the page edges). The box top / height the shadow grows from is the
+        // whole composite box, and its radii resolve against the COMPOSITE height (PR #223 review [P1]), so
+        // the spread-expanded shadow follows the same rounding the border / background do — across cuts.
         var isSlice = decorationBlockExtentPx > 0;
         var boxTopPx = isSlice ? topPx - decorationBlockOffsetPx : topPx;
         var boxHeightPx = isSlice ? decorationBlockExtentPx : heightPx;
+        var borderRadii = ReadCornerRadii(style, widthPx, boxHeightPx);
         for (var i = shadows.Count - 1; i >= 0; i--)
         {
             var s = shadows[i];
@@ -1475,29 +1521,27 @@ internal static class FragmentPainter
         PdfPage page, PdfDocument document, CssLinearGradient gradient, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
         uint currentColorArgb,
-        // box-decoration-break: slice — when set, the gradient AXIS spans this (larger, whole-box) block
-        // extent instead of the painted box, so a sliced block's gradient is CONTINUOUS across slices; the
-        // shading is still CLIPPED to (leftPx, topPx, widthPx, heightPx). Null → axis = the painted box.
-        double? axisTopPx = null, double? axisHeightPx = null,
-        // box-decoration-break: slice — the rounded shading clip rounds only this slice's REAL corners
-        // (top on the first slice, bottom on the last); the identity for a non-slice fragment.
-        bool isFirstSlice = true, bool isLastSlice = true)
+        // box-decoration-break: slice — when set, the gradient AXIS + the rounded CLIP span this (larger,
+        // whole-box / composite) block extent instead of the painted slice, so a sliced block's gradient is
+        // CONTINUOUS across slices and rounds correctly; the CALLER adds an outer per-slice rect clip to
+        // limit the paint to this fragment (PR #223 review [P1]). Null → the box itself (byte-identical).
+        double? axisTopPx = null, double? axisHeightPx = null)
     {
         var stops = ResolveGradientStops(gradient.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
-        // CLIP rect = the painted (possibly-sliced) box; AXIS rect = the whole decoration box (= the clip
-        // box when not sliced). The inline axis is shared (slices differ only in the block axis).
-        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, axisHeightPx ?? heightPx, pageHeightPt,
+        // CLIP rect = AXIS rect = the whole (composite) decoration box. The inline axis is shared (slices
+        // differ only in the block axis); the radii resolve against the COMPOSITE height.
+        var clipHeightPx = axisHeightPx ?? heightPx;
+        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, pageHeightPt,
             out var ax, out var ay, out var aw, out var ah);
         // A `to <corner>` direction's angle depends on the box aspect ratio (PR #209 review [P2]) —
         // compute it from the whole (axis) box; an explicit angle / side uses the parsed value as-is.
         var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, aw, ah) : gradient.AngleDeg;
         var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
-        var radiiPx = SliceCornerRadii(ReadCornerRadii(style, widthPx, heightPx), isFirstSlice, isLastSlice);
-        page.PaintShadingInRect(shadingRef, x, y, w, h,
+        var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
+        page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
     }
 
@@ -1605,20 +1649,19 @@ internal static class FragmentPainter
         PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
         uint currentColorArgb,
-        // box-decoration-break: slice — when set, the gradient's center + radius are computed over this
-        // (larger, whole-box) block extent instead of the painted box, so a sliced block's radial gradient
-        // is CONTINUOUS across slices; the shading is still CLIPPED to (leftPx, topPx, widthPx, heightPx).
-        double? axisTopPx = null, double? axisHeightPx = null,
-        // box-decoration-break: slice — the rounded shading clip rounds only this slice's REAL corners.
-        bool isFirstSlice = true, bool isLastSlice = true)
+        // box-decoration-break: slice — when set, the gradient's center + radius + the rounded CLIP are
+        // computed over this (larger, whole-box / composite) extent instead of the painted slice, so a
+        // sliced radial gradient is CONTINUOUS + rounds correctly; the CALLER adds the per-slice rect clip
+        // (PR #223 review [P1]). Null → the box itself (byte-identical).
+        double? axisTopPx = null, double? axisHeightPx = null)
     {
         var stops = ResolveGradientStops(radial.Stops, currentColorArgb);
         if (stops.Count < 2) return;
 
-        // CLIP rect = the painted (possibly-sliced) box; AXIS rect = the whole decoration box (= the clip
-        // box when not sliced) — the center + radius are measured against it for slice continuity.
-        ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, axisHeightPx ?? heightPx, pageHeightPt,
+        // CLIP rect = AXIS rect = the whole (composite) decoration box — the center + radius + radii are
+        // measured against it for slice continuity; the radii resolve against the COMPOSITE height.
+        var clipHeightPx = axisHeightPx ?? heightPx;
+        ToPdfRect(leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, pageHeightPt,
             out var ax, out var ay, out var aw, out var ah);
         // Center in PDF user space (cy is a fraction from the CSS TOP → flip for PDF y-up).
         var pcx = ax + radial.CenterXFraction * aw;
@@ -1638,8 +1681,8 @@ internal static class FragmentPainter
         if (!(radius > 0)) return;
 
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);
-        var radiiPx = SliceCornerRadii(ReadCornerRadii(style, widthPx, heightPx), isFirstSlice, isLastSlice);
-        page.PaintShadingInRect(shadingRef, x, y, w, h,
+        var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
+        page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
     }
 

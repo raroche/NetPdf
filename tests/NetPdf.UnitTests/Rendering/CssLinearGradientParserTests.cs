@@ -108,10 +108,23 @@ public sealed class CssLinearGradientParserTests
     [InlineData("linear-gradient(red)")]                 // < 2 stops
     [InlineData("linear-gradient(red 2em, blue)")]       // font-relative stop (no context here)
     [InlineData("linear-gradient(red 50vw, blue)")]      // viewport-relative stop (no context here)
-    [InlineData("repeating-linear-gradient(red, blue)")] // repeating (handled by the repeating cut, not here)
     public void Unsupported_forms_return_null(string value)
     {
         Assert.Null(CssLinearGradient_Parser.TryParse(value));
+    }
+
+    [Fact]
+    public void Repeating_linear_gradient_sets_the_repeating_flag()
+    {
+        var plain = CssLinearGradient_Parser.TryParse("linear-gradient(to right, red, blue 20px)");
+        Assert.NotNull(plain);
+        Assert.False(plain!.Repeating);
+
+        var rep = CssLinearGradient_Parser.TryParse("repeating-linear-gradient(to right, red, blue 20px)");
+        Assert.NotNull(rep);
+        Assert.True(rep!.Repeating);
+        Assert.Equal(2, rep.Stops.Count);
+        Assert.Equal(20.0, rep.Stops[1].PositionPx!.Value, precision: 4);
     }
 
     [Theory]

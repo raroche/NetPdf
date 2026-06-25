@@ -1593,7 +1593,7 @@ internal static class FragmentPainter
         // its fraction against this (PR 1 refinements).
         var theta = angleDeg * Math.PI / 180.0;
         var lineLengthCssPx = Math.Abs(widthPx * Math.Sin(theta)) + Math.Abs(clipHeightPx * Math.Cos(theta));
-        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb, lineLengthCssPx);
+        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb, lineLengthCssPx, gradient.Repeating);
         if (stops.Count < 2) return;
 
         var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
@@ -1610,7 +1610,8 @@ internal static class FragmentPainter
     /// missing last → 1, missing interior spread evenly between the nearest positioned stops,
     /// and the running max enforces non-decreasing offsets.</summary>
     private static List<PdfGradientStop> ResolveGradientStops(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx)
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx,
+        bool repeating = false)
     {
         var n = gradientStops.Count;
         var rgb = new (double R, double G, double B)[n];
@@ -1650,15 +1651,35 @@ internal static class FragmentPainter
             i = j - 1;
         }
         var running = 0.0;
-        var result = new List<PdfGradientStop>(n);
+        var basePeriod = new List<PdfGradientStop>(n);
         for (var i = 0; i < n; i++)
         {
             var p = Math.Clamp(pos[i]!.Value, 0.0, 1.0);
             if (p < running) p = running; else running = p;
-            if (ok[i]) result.Add(new PdfGradientStop(p, rgb[i].R, rgb[i].G, rgb[i].B));
+            if (ok[i]) basePeriod.Add(new PdfGradientStop(p, rgb[i].R, rgb[i].G, rgb[i].B));
+        }
+
+        // repeating-linear / repeating-radial (PR 1 refinements) — the resolved range [0, lastOffset]
+        // is one PERIOD tiled across the full gradient line, so the native PDF shading repeats (no
+        // raster). A period of ≥ 1 turn (e.g. unpositioned stops → last at 1.0) doesn't repeat ≡ the
+        // plain gradient. Bounded by GradientMaxReplicatedStops so a tiny period can't explode the list.
+        var period = basePeriod.Count > 0 ? basePeriod[^1].Offset : 0.0;
+        if (!repeating || period <= 0.0 || period >= 1.0) return basePeriod;
+        var result = new List<PdfGradientStop>();
+        for (var rep = 0; rep * period < 1.0 && result.Count < GradientMaxReplicatedStops; rep++)
+        {
+            var shift = rep * period;
+            foreach (var s in basePeriod)
+            {
+                var p = Math.Min(1.0, s.Offset + shift);
+                result.Add(s with { Offset = p });
+                if (s.Offset + shift >= 1.0 || result.Count >= GradientMaxReplicatedStops) break;
+            }
         }
         return result;
     }
+
+    private const int GradientMaxReplicatedStops = 512; // safety cap on repeating-gradient expansion
 
     /// <summary>Phase 4 gradients — the gradient-line endpoints (offset 0 → 1) in PDF user
     /// space for a CSS <c>linear-gradient</c> <paramref name="angleDeg"/> (0° = "to top",
@@ -1740,7 +1761,8 @@ internal static class FragmentPainter
 
         // A length-positioned stop (PR 1 refinements) resolves against the ending radius in CSS px;
         // the extent formula is homogeneous degree 1, so radiusCssPx = radiusPt / PointsPerPixel.
-        var stops = ResolveGradientStops(radial.Stops, currentColorArgb, radius / PdfUnits.PointsPerPixel);
+        var stops = ResolveGradientStops(
+            radial.Stops, currentColorArgb, radius / PdfUnits.PointsPerPixel, radial.Repeating);
         if (stops.Count < 2) return;
 
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);

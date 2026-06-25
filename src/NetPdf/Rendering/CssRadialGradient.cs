@@ -20,26 +20,33 @@ internal sealed record CssRadialGradient(
     RadialExtent Extent,
     double CenterXFraction,
     double CenterYFraction,
-    IReadOnlyList<CssGradientStop> Stops);
+    IReadOnlyList<CssGradientStop> Stops,
+    bool Repeating = false);
 
 /// <summary>Phase 4 gradients — a minimal parser for the <c>radial-gradient()</c> form
 /// (CSS Images L3 §3.2). Supports an optional leading
 /// <c>[ &lt;shape&gt; || &lt;extent-keyword&gt; ] [ at &lt;position&gt; ]?</c> prelude
 /// (shape <c>circle</c>/<c>ellipse</c>; the four extent keywords; a position of <c>center</c>,
-/// side keywords, or percentages) followed by 2+ color stops. Explicit radius lengths,
-/// <c>repeating-radial-gradient</c>, and length-positioned stops are deferred (→ null, the
-/// caller falls back to the background-color).</summary>
+/// side keywords, or percentages) followed by 2+ color stops (length positions supported via the
+/// shared stop parser). The <c>repeating-radial-gradient</c> form sets
+/// <see cref="CssRadialGradient.Repeating"/> (the painter tiles the stop period). Explicit radius
+/// lengths are still deferred (→ null, the caller falls back to the background-color).</summary>
 internal static class CssRadialGradient_Parser
 {
     public static CssRadialGradient? TryParse(string? rawBackgroundImage)
     {
         if (string.IsNullOrWhiteSpace(rawBackgroundImage)) return null;
         var value = rawBackgroundImage.Trim();
-        // A SINGLE radial-gradient() layer only — the same paren-balance guard as the linear
-        // parser, so a multi-layer value (`radial-gradient(...), url(...)`) is rejected instead
-        // of mis-terminating on a later layer's `)` (PR #209 Copilot).
-        const string prefix = "radial-gradient(";
-        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        // A SINGLE radial-gradient() / repeating-radial-gradient() layer — the same paren-balance
+        // guard as the linear parser, so a multi-layer value (`radial-gradient(...), url(...)`) is
+        // rejected instead of mis-terminating on a later layer's `)` (PR #209 Copilot).
+        const string plainPrefix = "radial-gradient(";
+        const string repeatPrefix = "repeating-radial-gradient(";
+        var repeating = false;
+        string prefix;
+        if (value.StartsWith(repeatPrefix, StringComparison.OrdinalIgnoreCase)) { prefix = repeatPrefix; repeating = true; }
+        else if (value.StartsWith(plainPrefix, StringComparison.OrdinalIgnoreCase)) prefix = plainPrefix;
+        else return null;
         if (!CssLinearGradient_Parser.TryExtractSingleFunctionBody(value, prefix, out var inner)) return null;
         if (inner.Length == 0) return null;
 
@@ -71,7 +78,7 @@ internal static class CssRadialGradient_Parser
             if (!CssLinearGradient_Parser.TryParseStop(args[i], out var stop)) return null;
             stops.Add(stop);
         }
-        return new CssRadialGradient(isCircle, extent, cx, cy, stops);
+        return new CssRadialGradient(isCircle, extent, cx, cy, stops, repeating);
     }
 
     /// <summary>The outcome of reading the first gradient arg as a prelude (PR #209 review [P2]):

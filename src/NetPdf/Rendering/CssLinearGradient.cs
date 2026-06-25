@@ -23,7 +23,8 @@ internal enum LinearGradientCorner { TopLeft, TopRight, BottomRight, BottomLeft 
 /// painter derives the true angle from the box geometry; <see cref="AngleDeg"/> then holds the
 /// square-box approximation as a fallback.</para></summary>
 internal sealed record CssLinearGradient(
-    double AngleDeg, LinearGradientCorner? Corner, IReadOnlyList<CssGradientStop> Stops);
+    double AngleDeg, LinearGradientCorner? Corner, IReadOnlyList<CssGradientStop> Stops,
+    bool Repeating = false);
 
 /// <summary>Phase 4 gradients — one parsed color stop: the raw color token + an optional position.
 /// The position is EITHER a <see cref="Position"/> fraction in [0, 1] (from a <c>%</c>) OR a
@@ -36,10 +37,11 @@ internal readonly record struct CssGradientStop(string ColorRaw, double? Positio
 /// <c>linear-gradient()</c> background-image form. Supports the common authored shapes:
 /// an optional leading direction (<c>&lt;angle&gt;</c> in deg/grad/rad/turn, or
 /// <c>to &lt;side&gt;</c> / <c>to &lt;corner&gt;</c>) followed by 2+ comma-separated color
-/// stops (each <c>&lt;color&gt; &lt;percentage&gt;?</c>). <c>repeating-linear-gradient</c>,
-/// length-positioned stops, and color-interpolation hints are out of this first cut and make
-/// the whole value unsupported (the caller falls back to the background-color). Returns
-/// <see langword="null"/> for any value that isn't a single supported <c>linear-gradient()</c>.</summary>
+/// stops (each <c>&lt;color&gt; [ &lt;percentage&gt; | &lt;length&gt; ]?</c>). The
+/// <c>repeating-linear-gradient</c> form sets <see cref="CssLinearGradient.Repeating"/> (the painter
+/// tiles the stop period). Color-interpolation hints are still out of this cut and make the whole
+/// value unsupported (the caller falls back to the background-color). Returns
+/// <see langword="null"/> for any value that isn't a single supported (repeating-)<c>linear-gradient()</c>.</summary>
 internal static class CssLinearGradient_Parser
 {
     public static CssLinearGradient? TryParse(string? rawBackgroundImage)
@@ -47,12 +49,17 @@ internal static class CssLinearGradient_Parser
         if (string.IsNullOrWhiteSpace(rawBackgroundImage)) return null;
         var value = rawBackgroundImage.Trim();
 
-        // Only a SINGLE, non-repeating linear-gradient() layer: the function's opening paren must
-        // be matched by a closing paren at the very end of the value (PR #209 Copilot) — a
-        // multi-layer list like `linear-gradient(...), url(...)` must NOT mis-terminate on a later
+        // A SINGLE linear-gradient() / repeating-linear-gradient() layer: the function's opening
+        // paren must be matched by a closing paren at the very end of the value (PR #209 Copilot) —
+        // a multi-layer list like `linear-gradient(...), url(...)` must NOT mis-terminate on a later
         // layer's `)` and parse as one gradient (which would suppress the unsupported diagnostic).
-        const string prefix = "linear-gradient(";
-        if (!value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return null;
+        const string plainPrefix = "linear-gradient(";
+        const string repeatPrefix = "repeating-linear-gradient(";
+        var repeating = false;
+        string prefix;
+        if (value.StartsWith(repeatPrefix, StringComparison.OrdinalIgnoreCase)) { prefix = repeatPrefix; repeating = true; }
+        else if (value.StartsWith(plainPrefix, StringComparison.OrdinalIgnoreCase)) prefix = plainPrefix;
+        else return null;
         if (!TryExtractSingleFunctionBody(value, prefix, out var inner)) return null;
         if (inner.Length == 0) return null;
 
@@ -72,7 +79,7 @@ internal static class CssLinearGradient_Parser
             if (!TryParseStop(args[i], out var stop)) return null; // any unparseable stop → unsupported
             stops.Add(stop);
         }
-        return new CssLinearGradient(angleDeg, corner, stops);
+        return new CssLinearGradient(angleDeg, corner, stops, repeating);
     }
 
     /// <summary>Parse a leading direction token: <c>&lt;angle&gt;</c> (deg/grad/rad/turn) or

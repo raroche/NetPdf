@@ -210,7 +210,12 @@ grepping the ID).
   on the LAST, sides on all, plus the blur raster spanning the box; **border-radius** — the rounded-border
   RING + the rounded background / clip decomposed per cut (the first slice rounds the top corners, the last
   the bottom, middles square). The cost-model also doesn't yet weigh the split (`orphans` is read but the
-  geometric fill already satisfies it; widows is enforced directly).
+  geometric fill already satisfies it; widows is enforced directly). A NARROW background-image edge remains
+  (PR #222 Copilot [P? — open thread]): `background-clip: padding-box | content-box` on a sliced block
+  over-clips a strip at a CUT edge, because the tiler's clip / origin block insets (`cT`/`cB`, `oT`/`oB`)
+  come from the FULL border + padding and don't account for the block-start/end chrome that's SUPPRESSED on
+  non-first / non-last slices — the fix is to zero the block-start inset when `SuppressBlockStartChrome` +
+  the block-end inset when `SuppressBlockEndChrome` (the default `border-box`, with zero insets, is fine).
 - **Trigger** — a SINGLE `<p>`/`<div>` with a `box-shadow` or `border-radius` whose text is taller than one
   whole page (rare) — it overflows the bottom of its starting page rather than splitting.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`

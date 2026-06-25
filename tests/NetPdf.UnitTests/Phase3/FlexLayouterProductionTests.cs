@@ -5148,6 +5148,67 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(FlexWrapValue.NoWrap, flex.Style.ReadFlexWrap());
     }
 
+    [Fact]
+    public async Task Production_html_align_content_baseline_falls_back_to_safe_start_not_stretch()
+    {
+        // CSS Box Alignment L3 §5.3 + §9 — `align-content: baseline` (and `first baseline`) on a FLEX
+        // container is NOT line-baseline alignment: flex lines aren't a baseline-sharing group (only flex
+        // ITEMS / table cells / grid items are), so it uses the SPEC FALLBACK = safe START. It was wrongly
+        // approximated as `stretch`, which GROWS the lines. Three 80px items in a 100px-wide, 400px-tall
+        // wrapping ROW flex wrap to three 50px-tall lines (150px content, 250px free cross space). With
+        // safe-start the lines pack at the block-START at their natural 50px pitch (item-c at +100); the
+        // old `stretch` would distribute the 250px and put item-c at ~+267.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap; align-content:baseline; align-items:flex-start;
+                        width:100px; height:400px; }
+                .item-a,.item-b,.item-c { width:80px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div><div class="item-c"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        var b = FindFragByClass(sink, "item-b");
+        var c = FindFragByClass(sink, "item-c");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        var top = flex!.Value.BlockOffset;
+        Assert.Equal(top + 0.0, a!.Value.BlockOffset, precision: 3);    // line 0 at the cross-start
+        Assert.Equal(top + 50.0, b!.Value.BlockOffset, precision: 3);   // line 1 at natural 50px pitch
+        Assert.Equal(top + 100.0, c!.Value.BlockOffset, precision: 3);  // line 2 — NOT stretched to ~+267
+    }
+
+    [Fact]
+    public async Task Production_html_align_content_last_baseline_falls_back_to_safe_end()
+    {
+        // CSS Box Alignment L3 §5.3 — `align-content: last baseline` uses the spec fallback = safe END
+        // (the mirror of the `baseline` → safe start case above). The three 50px lines (150px content)
+        // pack at the block-END of the 400px container: free cross 250px → line 0 at +250, line 2 at +350.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display:flex; flex-wrap:wrap; align-content:last baseline; align-items:flex-start;
+                        width:100px; height:400px; }
+                .item-a,.item-b,.item-c { width:80px; height:50px; }
+            </style></head><body>
+            <div class="flex"><div class="item-a"></div><div class="item-b"></div><div class="item-c"></div></div>
+            </body></html>
+            """;
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var flex = FindFragByClass(sink, "flex", BoxKind.FlexContainer);
+        var a = FindFragByClass(sink, "item-a");
+        var c = FindFragByClass(sink, "item-c");
+        Assert.NotNull(flex);
+        Assert.NotNull(a);
+        Assert.NotNull(c);
+        var top = flex!.Value.BlockOffset;
+        Assert.Equal(top + 250.0, a!.Value.BlockOffset, precision: 3);   // lines packed at the cross-END
+        Assert.Equal(top + 350.0, c!.Value.BlockOffset, precision: 3);
+    }
+
     /// <summary>Per Phase 3 Task 15 L15 — depth-first walk to locate
     /// the first <see cref="BoxKind.FlexContainer"/> in the box tree.
     /// Shared between the L15 production tests; returns

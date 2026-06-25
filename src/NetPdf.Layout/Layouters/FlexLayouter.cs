@@ -170,11 +170,12 @@ namespace NetPdf.Layout.Layouters;
 ///   <c>height</c> when set, else the max of the items' natural block-
 ///   sizes (= the spec's max-content cross-size simplification for the
 ///   L1 default single-line case; sub-cycle L4+ will refine). The
-///   following families fall through to <c>stretch</c> (the safe
-///   default): <c>baseline</c> / <c>first baseline</c> /
-///   <c>last baseline</c> (text-shaping integration needed) and
-///   <c>anchor-center</c> (CSS Anchor Positioning, out of Flexbox L1
-///   scope). The per-item <c>align-self</c> override SHIPPED in
+///   <c>align-content</c> baseline family resolves to its SPEC FALLBACK
+///   (CSS Box Alignment L3 §5.3 — flex lines are not a baseline-sharing
+///   group, so baseline content-alignment doesn't apply): <c>baseline</c> /
+///   <c>first baseline</c> → safe start, <c>last baseline</c> → safe end.
+///   <c>anchor-center</c> still falls through to <c>stretch</c> (CSS Anchor
+///   Positioning, out of Flexbox L1 scope). The per-item <c>align-self</c> override SHIPPED in
 ///   Phase 3 Task 15 L9 (per CSS Box Alignment §4.3); see
 ///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
 ///   <item><b>Item main-size resolution</b> (per Phase 3 Task 15

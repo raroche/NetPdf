@@ -983,7 +983,8 @@ grepping the ID).
   sizing-residuals PR): all four `flex-direction` values, `flex-wrap` (incl.
   `wrap-reverse`), `justify-content` / `align-items` / `align-self` / `align-content`
   (positional + safe/unsafe overflow + **`align-items`/`align-self: baseline`** on the
-  row cross axis), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto +
+  row cross axis + **`align-content` baseline → its spec fallback**, safe start / safe end
+  per §5.3 — flex lines are not a baseline-sharing group), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto +
   **`content` / `max-content` / `min-content` intrinsic keywords on the nowrap row main
   axis**) with the §9.7 step-4 min/max clamping iteration, the **`flex` shorthand** (§7.4
   grammar, via `FlexShorthandExpander`), `order`, `gap` / `column-gap` / `row-gap`
@@ -991,7 +992,7 @@ grepping the ID).
   `width` + `margin: 0 auto` centering, RTL `row` main-axis flip, anonymous-item
   wrapping, and multi-page container splitting. The residual approximations are enumerated
   under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
-  `align-content: baseline`, margin-box in the alignment / justify-content free-space
+  margin-box in the alignment / justify-content free-space
   math, VERTICAL writing modes — the RTL column cross axis (per-item anchor AND
   line-stacking) and the `start`/`end`/`self-start`/`self-end` vs `flex-start`/`flex-end`
   `wrap-reverse` distinction now ship). Percentage gaps + percentage
@@ -1130,10 +1131,11 @@ grepping the ID).
   to overflow equally on both sides for `center`). **Post-PR-#67 F#6
   baseline keyword family:** the three `<baseline-position>` keywords
   (`baseline` / `first baseline` / `last baseline`) admitted by CSS
-  Box Alignment L3 §6.3 are added to BuildAlignContentTable (29-entry
-  table) but currently approximate to `stretch` — proper baseline
-  alignment is text-shaping-integration scope (L9+; see the bullet
-  below).
+  Box Alignment L3 §6.3 are in BuildAlignContentTable (29-entry table)
+  and now resolve to their **spec FALLBACK** — `baseline` / `first
+  baseline` → safe start, `last baseline` → safe end (§5.3) — NOT
+  `stretch` (which was the prior, wrong approximation). See the bullet
+  below for why flex lines have no line-baseline alignment.
   **Per Phase 3 Task 15 L8** — `flex-grow` / `flex-shrink` /
   `flex-basis` ship the §7 + §9.7 flexibility algorithm. Per line:
   compute each item's hypothetical main-size from its `flex-basis`
@@ -1169,17 +1171,16 @@ grepping the ID).
     diagnostic no longer fires (the approximation is gone). The
     diagnostic code remains registered in `PaginateDiagnosticCodes`
     for backward-compat / cross-reference.
-  - **`align-content` proper `<baseline-position>` alignment** (CSS
-    Box Alignment L3 §6.3): post-PR-#67 F#6 admits the three baseline
-    keywords (`baseline` / `first baseline` / `last baseline`) into
-    BuildAlignContentTable but the reader maps all three to `stretch`
-    as a safe approximation. Proper baseline alignment requires
-    text-shaping integration to align the LINES (not the items) by their
-    baselines on the cross axis; the companion **`align-items: baseline`
-    SHIPPED** (Flex L1 completion — see below) but `align-content: baseline`
-    still maps to `stretch`. The cascade slot is lossless so pre-authored
-    `align-content: baseline` declarations activate the new behavior
-    without a re-author.
+  - **`align-content` `<baseline-position>` — SHIPPED** (CSS Box Alignment L3 §5.3 + §9, PR #221
+    review Task 2): the earlier note here had the premise WRONG — there is NO "align the LINES by their
+    baselines" behavior to implement. Baseline CONTENT-alignment does not apply to a flex container's
+    lines (flex lines are not a baseline-sharing group — only flex ITEMS / table cells / grid items are),
+    so per §5.3 it uses the FALLBACK alignment, which is what `ReadAlignContent` now returns: `baseline` /
+    `first baseline` → **safe start**, `last baseline` → **safe end** (was wrongly approximated as
+    `stretch`, which grows the lines). The companion **`align-items: baseline`** (Flex L1 completion — see
+    below) is the genuinely different feature: it baseline-aligns the ITEMS within a line, where the items
+    ARE the baseline-sharing group. Verified spec-side via the W3C css-align-3 fallback rule before
+    implementing (the deferral comment's "text-shaping integration" was the inaccurate premise).
   - Writing-mode + column-cross-axis `direction` integration for
     `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped** (task 6):
     `flex-direction: row` / `row-reverse` under `direction: rtl` flip the

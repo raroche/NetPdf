@@ -1297,14 +1297,17 @@ internal static class ComputedStyleLayoutExtensions
             2 => new ResolvedAlignContent(AlignContentValue.SpaceAround, OverflowAlignmentMode.Default),
             3 => new ResolvedAlignContent(AlignContentValue.SpaceEvenly, OverflowAlignmentMode.Default),
             4 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),
-            // 5-7 = <baseline-position> (Phase 3 Task 15 L7 post-PR-#67
-            // F#6). L7 approximates as Stretch (the safe default);
-            // proper baseline alignment is text-shaping integration
-            // scope (L8+). Mirrors how align-items handles the same
-            // baseline triple (see ReadAlignItems above).
-            5 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // baseline → stretch (L8+ scope)
-            6 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // first baseline → stretch (L8+ scope)
-            7 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // last baseline → stretch (L8+ scope)
+            // 5-7 = <baseline-position>. Per CSS Box Alignment L3 §5.3 + §9, baseline CONTENT-alignment
+            // does NOT apply to a flex container's lines — flex lines are not a baseline-sharing group
+            // (only flex ITEMS / table cells / grid items participate), so align-content baseline always
+            // uses the FALLBACK alignment: `first baseline` (and the `baseline` shorthand) → safe start,
+            // `last baseline` → safe end. The earlier code approximated all three as `stretch`, which is
+            // wrong (stretch GROWS the lines instead of packing them at the cross-start/-end). NOTE this is
+            // distinct from align-ITEMS baseline, which DOES baseline-align items within a line (see
+            // ReadAlignItems above) — there the items are the baseline-sharing group.
+            5 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),        // baseline → safe start
+            6 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),        // first baseline → safe start
+            7 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),          // last baseline → safe end
             // 8-14 = <content-position>: center, start, end, flex-start,
             // flex-end, left, right (LTR + horizontal-tb mapping).
             8 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Default),

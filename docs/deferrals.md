@@ -194,41 +194,49 @@ grepping the ID).
   its inline-axis borders + solid background span the page rather than stopping after the last fitting line;
   the text-line extent stays separate (PR #221 review). An intermediate slice's last line justifies (`BoxFragment.LastLineContinues` —
   it is an interior line, not the paragraph end). A box whose decoration would NOT slice as one
-  unfragmented box — a background image / gradient, box-shadow, border-radius, or outline
-  (`Box.HasUnsliceableDecoration`, computed at build time since background-image / box-shadow aren't
-  computed-style slots) — is gated OUT of splitting (it would repaint per slice) and force-overflows; a
-  solid background-color slices fine (PR #220 review [P1]). The page-invariant computation (shaped lines +
+  unfragmented box — a `box-shadow` or a `border-radius`
+  (`Box.HasUnsliceableDecoration`, computed at build time since `box-shadow` isn't a
+  computed-style slot) — is gated OUT of splitting (it would repaint per slice) and force-overflows; a
+  background GRADIENT / IMAGE / OUTLINE and a solid background-color slice fine (a gradient / image /
+  outline paints over the WHOLE composite box — reconstructed from the ACTUAL page-filled fragment areas,
+  not the natural line-height sum — and clips per slice, so it stays continuous across the page-fill gaps;
+  PR #220 review [P1] + PR #222 review [P1]). The page-invariant computation (shaped lines +
   atomic content) is cached per conversion (`InlineOnlyMeasurementCache`, threaded through `LayoutContext`
   like the table/grid measure caches) so a paragraph that splits across N pages is shaped ONCE, not
   re-shaped on every resume page (the ~O(pageCount × content) churn — PR #220 review [P2]).
 - **Missing** — only a `box-shadow` or a `border-radius` still gates the split
   (`Box.HasUnsliceableDecoration`): such a block falls back to the whole-block force-overflow. A background
   GRADIENT / IMAGE and an OUTLINE now SLICE — the painter spans the gradient axis / tile grid / outline
-  ring over the WHOLE box (via the fragment's `DecorationBlockExtentPx` + `DecorationBlockOffsetPx` slice
-  metadata) and clips per slice, so each is continuous across pages. The remaining two need a slice-aware
-  `FragmentPainter` of their own: **box-shadow** — the outset shadow rect's top on the FIRST slice, bottom
-  on the LAST, sides on all, plus the blur raster spanning the box; **border-radius** — the rounded-border
-  RING + the rounded background / clip decomposed per cut (the first slice rounds the top corners, the last
-  the bottom, middles square). The cost-model also doesn't yet weigh the split (`orphans` is read but the
-  geometric fill already satisfies it; widows is enforced directly). A NARROW background-image edge remains
-  (PR #222 Copilot [P? — open thread]): `background-clip: padding-box | content-box` on a sliced block
-  over-clips a strip at a CUT edge, because the tiler's clip / origin block insets (`cT`/`cB`, `oT`/`oB`)
-  come from the FULL border + padding and don't account for the block-start/end chrome that's SUPPRESSED on
-  non-first / non-last slices — the fix is to zero the block-start inset when `SuppressBlockStartChrome` +
-  the block-end inset when `SuppressBlockEndChrome` (the default `border-box`, with zero insets, is fine).
+  ring over the WHOLE composite box (via the fragment's `DecorationBlockExtentPx` + `DecorationBlockOffsetPx`
+  slice metadata) and clips per slice, so each is continuous across pages. The composite box is reconstructed
+  from the ACTUAL fragment areas — each non-final slice FILLS its fragmentainer, so the extent + each slice's
+  offset are the summed PHYSICAL border-box sizes (the page-fill gaps included), precomputed once at the
+  first slice (`ComputeInlineOnlySlicedDecorationTotalExtent`) and threaded forward in the continuation, NOT
+  the natural line-height sum which would restart the decoration before the previous physical slice ended
+  (PR #222 review [P1]). `background-clip: padding-box | content-box` is slice-aware too — the clip's
+  block-start inset is zeroed on a non-first slice + block-end on a non-last (the suppressed cut-edge chrome),
+  so a content-box / padding-box clip doesn't over-clip a strip at a cut edge (PR #222 review [P2]). The
+  remaining two gated decorations need a slice-aware `FragmentPainter` of their own: **box-shadow** — the
+  outset shadow rect's top on the FIRST slice, bottom on the LAST, sides on all, plus the blur raster
+  spanning the box; **border-radius** — the rounded-border RING + the rounded background / clip decomposed
+  per cut (the first slice rounds the top corners, the last the bottom, middles square). The cost-model also
+  doesn't yet weigh the split (`orphans` is read but the geometric fill already satisfies it; widows is
+  enforced directly).
 - **Trigger** — a SINGLE `<p>`/`<div>` with a `box-shadow` or `border-radius` whose text is taller than one
   whole page (rare) — it overflows the bottom of its starting page rather than splitting.
 - **Owner files** — `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`EmitInlineOnlyBlockInRecursionSplitting`
   + `DispatchInlineOnlyBlock`'s split path + `ComputeInlineOnlyFitLines` / `ReserveFinalSliceEndChrome` /
-  `EmitInlineOnlyBlockSlice` (+ `fillToBlockExtent`) + `ReportSliceForcedOverflowIfNeeded` +
-  `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
+  `EmitInlineOnlyBlockSlice` (+ `fillToBlockExtent`, returns the slice's physical extent) +
+  `ComputeInlineOnlySlicedDecorationTotalExtent` (the precomputed composite-box physical extent, PR #222 [P1])
+  + `ReportSliceForcedOverflowIfNeeded` + `CanSplitInlineOnlyLines` + `ComputeInlineOnlyBlockLayoutCached`);
   `src/NetPdf.Layout/Layouters/InlineOnlyMeasurementCache.cs`; `src/NetPdf.Layout/Boxes/Box.cs` +
   `BoxBuilder.cs` (`HasUnsliceableDecoration` / `HasNonGradientBackgroundImage`-removed gate);
   `src/NetPdf/Rendering/FragmentPainter.cs` (`PaintBorders` `suppressTopEdge`/`suppressBottomEdge`;
   `PaintLinearGradient` / `PaintRadialGradient` `axisTopPx`/`axisHeightPx`; the bg-image tiler's whole-box
-  positioning area; `PaintOutline`'s whole-box ring + `BeginRectangleClip`); `BoxFragment`
+  positioning area + slice-aware `background-clip` insets (`clipTopInsetPx`/`clipBottomInsetPx`, PR #222 [P2]);
+  `PaintOutline`'s whole-box ring + `BeginRectangleClip`); `BoxFragment`
   (`DecorationBlockExtentPx` / `DecorationBlockOffsetPx`); `src/NetPdf.Paginate/LayoutContinuation.cs`
-  (`InlineOnlyLineSplitContinuation`).
+  (`InlineOnlyLineSplitContinuation` (+ `DecorationBlockOffsetPx` / `DecorationTotalExtentPx`)).
 - **Added** — 2026-06-20 as the line-level residual of block-granularity prose pagination; NARROWED
   2026-06-22 when text-only line splitting + orphans/widows shipped. (The recursion guards a real content
   extent via `InlineOnlyBreakMinExtentPx` so a ZERO-extent anonymous block — flex/grid content the recursion

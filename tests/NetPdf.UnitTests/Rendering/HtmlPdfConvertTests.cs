@@ -721,6 +721,41 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_a_box_shadow_slices_and_paints_the_shadow_per_page()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with a
+        // box-shadow previously force-overflowed (its slice-aware painter wasn't built). It now SLICES: the
+        // shadow is computed over the WHOLE composite box + CLIPPED to each slice (the top shadow on the
+        // first slice, the bottom on the last, the side shadows on every slice). A sliced box-shadow is
+        // always SQUARE (a border-radius gates the split), so a sharp (blur-0) shadow is a filled rect.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        // 0 0 0 8px = no offset, no blur, 8px spread → a sharp green ring around the box. line-height:50px
+        // widens the per-page fill gaps so the whole-box shadow is much taller than a single slice.
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;box-shadow:0 0 0 8px #00ff00\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the box-shadow block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // The green sharp shadow rect (`0 1 0 rg ... re f`) is filled once per slice (clipped to each).
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "0 1 0 rg"));
+        // Continuity, not just count: the shadow rect is the WHOLE composite box (each slice only CLIPS it),
+        // so its height is identical on every page and spans well past one slice — a per-slice shadow
+        // (the pre-fix would have force-overflowed; a naive restart would give a slice-sized rect).
+        var shadowHeights = BoxShadowFillHeights(pdf);
+        Assert.Equal(result.PageCount, shadowHeights.Count);
+        Assert.All(shadowHeights, h => Assert.Equal(shadowHeights[0], h, precision: 1));
+        Assert.True(shadowHeights[0] >= (result.PageCount - 1) * 698.0,
+            $"the shadow must span the filled composite box ({result.PageCount} pages); got {shadowHeights[0]}.");
+    }
+
+    [Fact]
     public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block
@@ -2158,6 +2193,20 @@ public sealed class HtmlPdfConvertTests
         var list = new List<double>();
         foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
             pdf, @"(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+W\s+n(?!\s*/Sh)"))
+        {
+            list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
+        }
+        return list;
+    }
+
+    /// <summary>The fill-rect height (pt) of each green sharp box-shadow (<c>0 1 0 rg  x y w h re f</c>) in
+    /// the PDF. A sliced box-shadow paints the shadow over the WHOLE composite box (the slice only CLIPS it),
+    /// so the fill height is identical on every page.</summary>
+    private static List<double> BoxShadowFillHeights(string pdf)
+    {
+        var list = new List<double>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, @"0 1 0 rg\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+f(?!\*)"))
         {
             list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
         }

@@ -238,7 +238,7 @@ internal static class BoxBuilder
             kind, style, element, NetPdf.Css.PagedMedia.AtPageRules.ResolveUsedPageName(element, cascade));
         // box-decoration-break: slice — flag a box whose decoration can't slice per page fragment, so
         // inline-only line splitting force-overflows the whole block for it (PR #220 review [P1]).
-        box.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(style, elementRules);
+        box.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(style);
 
         // Per Task 14: collect ::first-line / ::first-letter cascade styles
         // for Phase 3 line-layout to apply during fragment rendering. Box
@@ -817,11 +817,11 @@ internal static class BoxBuilder
             : BoxPseudo.After;
 
         var pseudoBox = Box.ForPseudo(kind, pseudoStyle, host, pseudo);
-        // box-decoration-break: slice — a ::before / ::after with a non-uniform decoration (radius / image
-        // / shadow / outline) must gate line splitting too, so tall generated content doesn't slice +
-        // repaint the decoration per fragment (PR #221 review [P2] — element boxes set this at the
-        // ForElement site, pseudo boxes were missed). `ruleSet` is the pseudo's own cascade.
-        pseudoBox.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(pseudoStyle, ruleSet);
+        // box-decoration-break: slice — a ::before / ::after with a border-RADIUS must gate line splitting
+        // too, so tall generated content doesn't slice + repaint the rounded ring per fragment (PR #221
+        // review [P2] — element boxes set this at the ForElement site, pseudo boxes were missed; gradient /
+        // image / outline / box-shadow now slice and no longer gate).
+        pseudoBox.HasUnsliceableDecoration = HasUnsliceableSliceDecoration(pseudoStyle);
         if (generatedText.Length > 0)
         {
             pseudoBox.AppendChild(Box.TextRun(generatedText, pseudoStyle, host));
@@ -1842,23 +1842,20 @@ internal static class BoxBuilder
 
     /// <summary>box-decoration-break: slice (the initial value) requires a box's decoration to behave as
     /// ONE unfragmented box that is then sliced. NetPdf paints each line-split page fragment
-    /// independently, so a `box-shadow` (a per-slice shadow) or a `border-radius` (the rounded ring / clip decomposed per
-    /// cut) would repaint WRONG per slice, so those two are flagged to force-overflow the whole block
-    /// instead (PR #220 review [P1]); a gradient / background-image / outline now slice (painted over the
-    /// whole box + clipped per slice), and a solid background-color
-    /// is uniform and slices fine. <c>box-shadow</c> is read from the CASCADE
-    /// (they are not computed-style slots the layouter can read); border-radius / outline from the
-    /// computed <paramref name="style"/>.</summary>
-    private static bool HasUnsliceableSliceDecoration(ComputedStyle style, ResolvedRuleSet? rules)
+    /// independently, so a `border-radius` (the rounded ring / background / clip decomposed per cut) would
+    /// repaint WRONG per slice, so it is flagged to force-overflow the whole block instead (PR #220 review
+    /// [P1]). A gradient / background-image / outline / box-shadow now slice (painted over the WHOLE
+    /// composite box + clipped per slice), and a solid background-color is uniform and slices fine.
+    /// border-radius is read from the computed <paramref name="style"/>.</summary>
+    private static bool HasUnsliceableSliceDecoration(ComputedStyle style)
     {
-        // What still gates: box-shadow (its slice-aware painter isn't built yet) + a border-RADIUS (the
-        // rounded-border / rounded-clip ring decomposed per cut isn't built). What now SLICES (and so does
-        // NOT gate): a background GRADIENT or IMAGE (painter spans the axis / tile grid over the WHOLE box +
-        // clips per slice) and an OUTLINE (PaintOutline computes the ring over the whole box + clips per
-        // slice — top outline on the first slice, bottom on the last, sides on all). background-image /
-        // box-shadow are read from the CASCADE (not computed-style slots); border-radius from the style.
-        if (IsAuthoredNonNone(rules, "box-shadow"))
-            return true;
+        // What still gates: a border-RADIUS (the rounded-border / rounded-background / rounded-clip ring
+        // decomposed per cut isn't built yet). What now SLICES (and so does NOT gate): a background GRADIENT
+        // or IMAGE (painter spans the axis / tile grid over the WHOLE box + clips per slice), an OUTLINE
+        // (PaintOutline computes the ring over the whole box + clips per slice), and a box-shadow
+        // (PaintBoxShadows computes the shadow over the whole box + clips per slice — the top shadow on the
+        // first slice, the bottom on the last, the side shadows on every slice). A sliced box-shadow is
+        // always SQUARE because a border-radius (which would round the shadow) still gates here.
         return HasAnyBorderRadius(style);
     }
 
@@ -1893,15 +1890,6 @@ internal static class BoxBuilder
             if (slot.Tag == ComputedSlotTag.Percentage && slot.AsPercentage() > 0) return true;
         }
         return false;
-    }
-
-    /// <summary>Whether a cascade winner for <paramref name="property"/> is authored to a non-<c>none</c>
-    /// value (so e.g. a real <c>background-image</c> / <c>box-shadow</c>, not the initial / unset).</summary>
-    private static bool IsAuthoredNonNone(ResolvedRuleSet? rules, string property)
-    {
-        var v = rules?.GetWinner(property)?.ResolvedValue;
-        return !string.IsNullOrWhiteSpace(v)
-            && !v.Equals("none", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>CSS Text 3 §7.1 — resolve <c>text-align: match-parent</c> to a physical keyword.

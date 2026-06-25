@@ -155,7 +155,15 @@ internal static class FragmentPainter
                 {
                     PaintBoxShadows(page, document, shadows, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
-                        ref boxShadowRasterReported, ref boxShadowCapReported);
+                        ref boxShadowRasterReported, ref boxShadowCapReported,
+                        // box-decoration-break: slice — when this fragment is one block-axis slice
+                        // (DecorationBlockExtentPx > 0), the shadow shape is computed over the WHOLE box +
+                        // CLIPPED to this slice's shadow portion (top shadow on the first slice, bottom on the
+                        // last, the side shadows on every slice). A sliced box-shadow box is always SQUARE (a
+                        // border-radius gates the split), so there is no rounded-shadow concern.
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx,
+                        isFirstSlice: !fragment.SuppressBlockStartChrome,
+                        isLastSlice: !fragment.SuppressBlockEndChrome);
                 }
 
                 PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb);
@@ -1237,9 +1245,21 @@ internal static class FragmentPainter
     private static void PaintBoxShadows(
         PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported,
+        // box-decoration-break: slice — when > 0, the shadow is computed over the WHOLE composite box (this
+        // many px tall, virtual top = topPx − decorationBlockOffsetPx) + CLIPPED to this slice; isFirstSlice /
+        // isLastSlice gate the top / bottom shadow edge (the side shadows show on every slice). Default 0 /
+        // true / true → the box's own shadow (no slicing, byte-identical).
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0,
+        bool isFirstSlice = true, bool isLastSlice = true)
     {
         var borderRadii = ReadCornerRadii(style, widthPx, heightPx);
+        // box-decoration-break: slice — the shadow is for the unfragmented (composite) box, then sliced at
+        // the fragmentation CUTS (not the page edges). The box top / height the shadow grows from is the
+        // whole composite box (a sliced box-shadow box is always SQUARE — a border-radius gates the split).
+        var isSlice = decorationBlockExtentPx > 0;
+        var boxTopPx = isSlice ? topPx - decorationBlockOffsetPx : topPx;
+        var boxHeightPx = isSlice ? decorationBlockExtentPx : heightPx;
         for (var i = shadows.Count - 1; i >= 0; i--)
         {
             var s = shadows[i];
@@ -1260,13 +1280,32 @@ internal static class FragmentPainter
             if (alpha <= 0) continue;
             ColorChannels(argb, out var r, out var g, out var b);
 
-            // The shadow shape = the border box offset by (x, y) and grown by the spread radius.
+            // The shadow shape = the (whole composite) border box offset by (x, y) and grown by the spread.
             var shLeftPx = leftPx + s.OffsetXPx - s.SpreadPx;
-            var shTopPx = topPx + s.OffsetYPx - s.SpreadPx;
+            var shTopPx = boxTopPx + s.OffsetYPx - s.SpreadPx;
             var shWidthPx = widthPx + 2 * s.SpreadPx;
-            var shHeightPx = heightPx + 2 * s.SpreadPx;
+            var shHeightPx = boxHeightPx + 2 * s.SpreadPx;
             if (shWidthPx <= 0 || shHeightPx <= 0) continue;
             var shadowRadii = ExpandRadiiForSpread(borderRadii, s.SpreadPx);
+
+            // box-decoration-break: slice — clip the whole-box shadow to THIS slice's shadow portion: the top
+            // shadow (above the box top) only on the FIRST slice, the bottom only on the LAST, the side
+            // shadows on EVERY slice. The clip is full-width (the side shadows + blur span it horizontally)
+            // and block-wise from the shadow's top / the slice's border-box top (cut) to the shadow's bottom /
+            // the slice's border-box bottom (cut). The blur margin (~3σ, the raster's pad) extends each edge.
+            var sliceClipped = false;
+            if (isSlice)
+            {
+                var blurMarginPx = s.BlurPx > BoxShadowBlurEpsilonPx ? Math.Ceiling(3.0 * (s.BlurPx / 2.0)) : 0.0;
+                var clipTop = isFirstSlice ? shTopPx - blurMarginPx : topPx;
+                var clipBottom = isLastSlice ? shTopPx + shHeightPx + blurMarginPx : topPx + heightPx;
+                var clipLeft = shLeftPx - blurMarginPx;
+                var clipWidth = shWidthPx + 2 * blurMarginPx;
+                ToPdfRect(clipLeft, clipTop, clipWidth, Math.Max(0, clipBottom - clipTop), pageHeightPt,
+                    out var ccx, out var ccy, out var ccw, out var cch);
+                page.BeginRectangleClip(ccx, ccy, ccw, cch);
+                sliceClipped = true;
+            }
 
             if (s.BlurPx <= BoxShadowBlurEpsilonPx)
             {
@@ -1280,6 +1319,8 @@ internal static class FragmentPainter
                     shadowRadii, s.BlurPx, pageHeightPt, r, g, b, alpha, diagnostics,
                     ref rasterReported, ref capReported);
             }
+
+            if (sliceClipped) page.RestoreGraphicsState();
         }
     }
 

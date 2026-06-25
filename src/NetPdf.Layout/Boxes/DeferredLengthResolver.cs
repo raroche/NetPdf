@@ -38,7 +38,20 @@ internal static class DeferredLengthResolver
 {
     /// <summary>The body box-model lengths the layouters consume via
     /// <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/> — the slots this pass
-    /// rewrites. Border widths are absent by design (their resolver never defers).</summary>
+    /// rewrites. Border widths are absent by design (their resolver never defers).
+    ///
+    /// <para><b>multicol-balancing-pagination</b> — <c>column-width</c> joins the set so a
+    /// font-relative <c>column-width: 12em</c> / <c>20rem</c> resolves to a used px BEFORE the
+    /// multicol dispatch decision (<c>BlockLayouter.IsMulticolContainer</c> routes on
+    /// <see cref="ComputedStyleLayoutExtensions.ReadColumnWidth"/>, which only sees a
+    /// <see cref="ComputedSlotTag.LengthPx"/> slot). Pre-fix the cascade DEFERRED a font-relative
+    /// <c>column-width</c> (the slot stayed <see cref="ComputedSlotTag.Unset"/>), so the container
+    /// fell through to ordinary block flow — CSS Multi-column L1 §3.1's own introductory example
+    /// (<c>column-width: 12em</c>) never columnized. It is a multicol intrinsic length read via
+    /// <c>ReadColumnWidth</c>, not a box-model length; the sibling <c>column-gap</c> is resolved
+    /// in <c>ReadColumnGap</c> instead, because its <c>normal</c> initial is itself font-relative
+    /// (1em — a keyword, not a deferred raw) AND the property is shared with the flex/grid gutter
+    /// where <c>normal</c> computes to 0 (so a global rewrite here would be wrong for it).</para></summary>
     private static readonly PropertyId[] BodyLengthProperties =
     [
         PropertyId.Width, PropertyId.Height,
@@ -46,6 +59,7 @@ internal static class DeferredLengthResolver
         PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft,
         PropertyId.Top, PropertyId.Right, PropertyId.Bottom, PropertyId.Left,
         PropertyId.LineHeight,
+        PropertyId.ColumnWidth,
     ];
 
     /// <summary>Resolve every deferred font-/viewport-relative length in <paramref name="root"/>'s

@@ -739,18 +739,14 @@ grepping the ID).
     The post-PR-#59 deferred F#6 perf-cache would memoize the fit-
     search result per Box; sub-cycle 2+ scope.
 - **Missing** —
-  - **Font-relative `column-width`** (CSS Multi-column L1 §3.1):
-    cycle 4 reads only resolved `LengthPx` slots; font-relative
-    values (`em`, `rem`) AND percentages are returned as
-    `ResolverResult.Deferred` by the cycle-1 `LengthResolver` (the
-    raw text rides along on the side; the slot itself stays
-    `ComputedSlotTag.Unset`), and cycle 4's `ReadColumnWidth`
-    returns null for those, so they don't trigger multicol dispatch
-    via the column-width path. Authors who write
-    `column-width: 12em` (the CSS Multi-column L1 §3.1 introductory
-    example) currently fall through to ordinary block flow.
-    Sub-cycle 5+ will resolve them against the cascaded font-size
-    (em/rem) + containing block (percentages).
+  - **Font-relative `column-width`** (CSS Multi-column L1 §3.1) — ✅ **SHIPPED** (Phase-3
+    residual long-tail). The cascade `LengthResolver` still DEFERS `em` / `rem` (the raw
+    rides along; the slot stays `ComputedSlotTag.Unset`), but `DeferredLengthResolver` now
+    resolves them in place against the box's cascaded font-size BEFORE layout (alongside
+    `width` / `height`), so `ReadColumnWidth` sees a `LengthPx` slot + the multicol dispatch
+    fires. `column-width: 12em` (the CSS Multi-column L1 §3.1 introductory example) now
+    columnizes. `column-width`'s grammar is `auto | <length>` — there is no percentage form,
+    so nothing else remains for this property.
   - **Balance-result perf cache (F#6 — deferred from post-PR-#59
     review)**: the fit-search runs `O(log range) × columnCount`
     nested `BlockLayouter` dry-runs per multicol per page. When a

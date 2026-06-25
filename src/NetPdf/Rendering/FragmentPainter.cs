@@ -180,9 +180,21 @@ internal static class FragmentPainter
                     // border/padding + a content-box origin/clip can drive the inset sum past the box
                     // dimension; a negative dimension must never reach the tiler (post-PR-#171 review P1,
                     // the same guard as the margin-box site; the empty-clip skip below backstops it).
+                    // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is
+                    // one block-axis slice (DecorationBlockExtentPx > 0), the POSITIONING AREA spans the
+                    // WHOLE box (virtual top = this slice's top − its offset within the box, height = the
+                    // full box extent) so the tile grid / phase is shared across slices (the image is
+                    // CONTINUOUS), while the CLIP stays the slice's own box. The inline axis is shared.
+                    var bgOriginTopPx = topPx + oT;
+                    var bgOriginHeightPx = Math.Max(0, heightPx - oT - oB);
+                    if (fragment.DecorationBlockExtentPx > 0)
+                    {
+                        bgOriginTopPx = (topPx - fragment.DecorationBlockOffsetPx) + oT;
+                        bgOriginHeightPx = Math.Max(0, fragment.DecorationBlockExtentPx - oT - oB);
+                    }
                     PaintBackgroundImageTiles(
                         page, document, bgEntry, pageHeightPt,
-                        leftPx + oL, topPx + oT, Math.Max(0, widthPx - oL - oR), Math.Max(0, heightPx - oT - oB),
+                        leftPx + oL, bgOriginTopPx, Math.Max(0, widthPx - oL - oR), bgOriginHeightPx,
                         diagnostics, ref variantUnsupportedReported,
                         bgSpec.RepeatRaw, bgSpec.SizeRaw, bgSpec.PositionRaw,
                         clipLeftPx: leftPx + cL, clipTopPx: topPx + cT,

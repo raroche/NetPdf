@@ -1850,13 +1850,12 @@ internal static class BoxBuilder
     /// computed <paramref name="style"/>.</summary>
     private static bool HasUnsliceableSliceDecoration(ComputedStyle style, ResolvedRuleSet? rules)
     {
+        // box-shadow still gates (its slice-aware painter isn't built yet). A background GRADIENT *or*
+        // IMAGE now SLICES — the painter spans the gradient axis / tiles the image over the WHOLE box +
+        // clips per slice (using the fragment's DecorationBlockExtentPx / DecorationBlockOffsetPx), so both
+        // paint continuously across pages and no longer gate. (background-image / box-shadow are read from
+        // the CASCADE, not computed-style slots; border-radius / outline from the computed style.)
         if (IsAuthoredNonNone(rules, "box-shadow"))
-            return true;
-        // A background GRADIENT now SLICES — the painter spans its axis over the WHOLE box + clips per
-        // slice, so it paints continuously across pages and does NOT gate. A background IMAGE (url), or any
-        // non-gradient background-image value, or a layer list containing a url, still gates (the image
-        // tiling isn't slice-aware yet).
-        if (HasNonGradientBackgroundImage(rules))
             return true;
         if (HasAnyBorderRadius(style))
             return true;
@@ -1865,22 +1864,6 @@ internal static class BoxBuilder
         // a sub-0.01px outline can't slip the gate and then paint per slice (PR #221 review [P2]).
         return style.ReadKeywordOrDefault(PropertyId.OutlineStyle, defaultIndex: 0) != 0
             && style.ReadLengthPxOrZero(PropertyId.OutlineWidth) > 0;
-    }
-
-    /// <summary>Whether the authored <c>background-image</c> is a non-<c>none</c> value that is NOT a pure
-    /// gradient — a <c>url()</c> image (or a layer list containing one, or any other non-gradient image
-    /// value), which the slicer can't yet paint continuously across page slices. A pure
-    /// <c>linear-gradient(...)</c> / <c>radial-gradient(...)</c> value returns <see langword="false"/>: it
-    /// slices (the painter spans the gradient axis over the whole box + clips per slice).</summary>
-    private static bool HasNonGradientBackgroundImage(ResolvedRuleSet? rules)
-    {
-        var v = rules?.GetWinner("background-image")?.ResolvedValue;
-        if (string.IsNullOrWhiteSpace(v) || v.Equals("none", StringComparison.OrdinalIgnoreCase))
-            return false;
-        // Pure gradient (a gradient function + no url image layer) → sliceable. Anything else gates.
-        var isPureGradient = v.Contains("gradient(", StringComparison.OrdinalIgnoreCase)
-            && !v.Contains("url(", StringComparison.OrdinalIgnoreCase);
-        return !isPureGradient;
     }
 
     /// <summary>The eight <c>border-radius</c> computed slots in the order the painter's

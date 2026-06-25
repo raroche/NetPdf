@@ -605,6 +605,30 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_a_background_image_slices_and_tiles_continuously_per_page()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with a
+        // url() background-IMAGE now SLICES instead of force-overflowing: the tiler positions the grid over
+        // the WHOLE box (so the tiles align / are CONTINUOUS across slices) + clips to each slice. The
+        // repeating image fills via a tiling pattern once per slice, no line is lost, no overflow truncated.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + $"<div style=\"margin:0;background-image:url({PngDataUri(16, 16)})\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the background-image block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+        // The repeating image fills via a tiling pattern (`/Pattern cs /Pn scn`) once per slice.
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, " scn "));
+    }
+
+    [Fact]
     public void A_tall_square_bordered_block_slices_and_cuts_its_top_and_bottom_border()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice for a SQUARE border) — a tall block

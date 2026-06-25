@@ -782,6 +782,14 @@ internal static class CssPreprocessor
                   // kept (or reduced) a copy, the recovered raw lands later in the rule and wins the
                   // last-wins cascade with an equivalent value — benign.
                   || ContainsMathFunction(rawValue)
+                  // Phase 4 gradients (PR 1) — AngleSharp.Css 1.0.0-beta.144 accepts
+                  // linear-/radial-/conic-gradient but DROPS the `repeating-*-gradient` value forms
+                  // (its grammar predates them), so a `background-image: repeating-conic-gradient(…)`
+                  // never reaches the cascade even though the painter handles it. Recover the
+                  // `background-image` longhand verbatim when it carries a repeating gradient (value-
+                  // gated like the intrinsic `flex-basis` / recto-verso `break-*` precedents; if
+                  // AngleSharp also kept a copy the duplicate is benign under last-decl-wins).
+                  || (lowerName == "background-image" && ContainsDroppedGradientFunction(rawValue))
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
@@ -1202,6 +1210,41 @@ internal static class CssPreprocessor
                 {
                     if (ModernValueFunctions.Contains(ident.ToString())) return true;
                     // Skip the function args; ReadParenthesizedBlock handles balance.
+                    tok.ReadParenthesizedBlock();
+                }
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>Phase 4 gradients (PR 1) — the <c>repeating-*-gradient</c> value-function names
+    /// AngleSharp.Css 1.0.0-beta.144 drops from a <c>background-image</c> declaration (the painter
+    /// handles them; <c>conic-gradient</c> + non-repeating linear/radial are KEPT by AngleSharp).</summary>
+    private static readonly FrozenSet<string> DroppedGradientFunctions = new[]
+    {
+        "repeating-linear-gradient", "repeating-radial-gradient", "repeating-conic-gradient",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Phase 4 gradients (PR 1) — <see langword="true"/> when <paramref name="value"/>
+    /// contains a <see cref="DroppedGradientFunctions"/> call. Tokenized like
+    /// <see cref="ContainsModernValueFunction"/> so a name inside a quoted string isn't matched.</summary>
+    private static bool ContainsDroppedGradientFunction(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(')
+                {
+                    if (DroppedGradientFunctions.Contains(ident.ToString())) return true;
                     tok.ReadParenthesizedBlock();
                 }
                 continue;

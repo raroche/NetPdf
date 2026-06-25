@@ -114,6 +114,8 @@ internal static class FragmentPainter
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
         var boxShadowRasterReported = false;      // Phase 4 shadows — once-per-render raster Info.
         var boxShadowCapReported = false;         // Phase 4 shadows — once-per-render over-cap Warning.
+        var conicGradientRasterReported = false;  // Phase 4 gradients — once-per-render conic raster Info.
+        var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -261,7 +263,8 @@ internal static class FragmentPainter
                 if (gradientSliced
                     && imageCache is not null && document is not null
                     && (imageCache.BackgroundGradientBoxes.ContainsKey(fragment.Box)
-                        || imageCache.BackgroundRadialGradientBoxes.ContainsKey(fragment.Box)))
+                        || imageCache.BackgroundRadialGradientBoxes.ContainsKey(fragment.Box)
+                        || imageCache.BackgroundConicGradientBoxes.ContainsKey(fragment.Box)))
                 {
                     ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var gcx, out var gcy, out var gcw, out var gch);
                     page.BeginRectangleClip(gcx, gcy, gcw, gch);
@@ -278,6 +281,13 @@ internal static class FragmentPainter
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
+                }
+                else if (imageCache is not null && document is not null
+                    && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))
+                {
+                    PaintConicGradient(page, document, conic, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
+                        ref conicGradientRasterReported, ref conicGradientCapReported, axisTopPx, axisHeightPx);
                 }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
             }
@@ -1728,6 +1738,149 @@ internal static class FragmentPainter
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
         page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
+    }
+
+    private const double ConicGradientRasterScale = 2.0; // device px per CSS px for the conic raster
+
+    /// <summary>Phase 4 gradients (PR 1 refinements) — paint a parsed <c>conic-gradient(...)</c> /
+    /// <c>repeating-conic-gradient(...)</c> background layer. PDF has no native conic shading, so the
+    /// sweep is rasterized via Skia at <see cref="ConicGradientRasterScale"/>× the box size and placed
+    /// as an image XObject (RGB + alpha <c>/SMask</c>) clipped to the (rounded) border box —
+    /// preserving per-stop alpha. A gradient with &lt; 2 resolvable stops is skipped; an over-cap
+    /// bitmap is skipped with <c>CSS-CONIC-GRADIENT-RASTER-001</c> (the background-color shows).</summary>
+    private static void PaintConicGradient(
+        PdfPage page, PdfDocument document, CssConicGradient conic, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported,
+        // box-decoration-break: slice — the sweep is rasterized over the WHOLE (composite) box for
+        // continuity; the CALLER adds the per-slice rect clip. Null → the box itself (byte-identical).
+        double? axisTopPx = null, double? axisHeightPx = null)
+    {
+        var stops = ResolveConicStops(conic, currentColorArgb, conic.Repeating);
+        if (stops.Count < 2) return;
+
+        var boxTopPx = axisTopPx ?? topPx;
+        var boxHeightPx = axisHeightPx ?? heightPx;
+        if (widthPx <= 0 || boxHeightPx <= 0) return;
+
+        var deviceW = (int)Math.Ceiling(widthPx * ConicGradientRasterScale);
+        var deviceH = (int)Math.Ceiling(boxHeightPx * ConicGradientRasterScale);
+        var result = NetPdf.Pdf.Images.ConicGradientRasterizer.TryRasterize(
+            deviceW, deviceH,
+            centerX: (float)(conic.CenterXFraction * deviceW),
+            centerY: (float)(conic.CenterYFraction * deviceH),
+            conic.FromAngleDeg, stops);
+
+        if (result is null)
+        {
+            // Over-cap / degenerate raster → skip (the background-color shows) but SURFACE it.
+            if (!capReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.CssConicGradientRaster001,
+                    "A conic-gradient was too large to rasterize (the sweep bitmap would exceed the "
+                    + $"{NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); the "
+                    + "background-color shows instead.",
+                    DiagnosticSeverity.Warning));
+                capReported = true;
+            }
+            return;
+        }
+
+        var imageRef = document.RegisterImage(result);
+        ToPdfRect(leftPx, boxTopPx, widthPx, boxHeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        var radiiPx = ReadCornerRadii(style, widthPx, boxHeightPx);
+        var rounded = radiiPx.AnyPositive;
+        if (rounded) page.BeginRoundedRectangleClip(x, y, w, h, ToPt(radiiPx));
+        page.PlaceImage(imageRef, x, y, w, h);
+        if (rounded) page.RestoreGraphicsState();
+
+        if (!rasterReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.CssConicGradientRaster001,
+                "A conic-gradient was painted via the Skia raster fallback (PDF has no native conic "
+                + $"shading); the sweep was rasterized at {ConicGradientRasterScale:0}× and placed as "
+                + "an image XObject with an alpha /SMask.",
+                DiagnosticSeverity.Info));
+            rasterReported = true;
+        }
+    }
+
+    private const int ConicMaxReplicatedStops = 512; // safety cap on repeating-conic expansion
+
+    /// <summary>Phase 4 gradients — resolve a conic gradient's stops to the rasterizer's
+    /// (turn-fraction, RGBA) form, KEEPING per-stop alpha (the raster carries an /SMask). Mirrors
+    /// <see cref="ResolveGradientStops"/>'s §3.4 position defaults (missing first → 0, last → 1,
+    /// interior spread evenly, non-decreasing), then drops unresolved stops. For a
+    /// <c>repeating-conic-gradient</c> the resolved range [0, lastPos] is one PERIOD that is tiled
+    /// across the full turn (bounded by <see cref="ConicMaxReplicatedStops"/>), so the sweep repeats
+    /// per CSS Images L4 §3.4.</summary>
+    private static List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop> ResolveConicStops(
+        CssConicGradient conic, uint currentColorArgb, bool repeating)
+    {
+        var gradientStops = conic.Stops;
+        var n = gradientStops.Count;
+        var rgba = new (double R, double G, double B, double A)[n];
+        var pos = new double?[n];
+        var ok = new bool[n];
+        for (var i = 0; i < n; i++)
+        {
+            var s = gradientStops[i];
+            var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+            if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
+            {
+                ColorChannels(argb, out var r, out var g, out var b);
+                rgba[i] = (r, g, b, Alpha(argb) / 255.0);
+                ok[i] = true;
+            }
+            pos[i] = s.Position;
+        }
+
+        if (pos[0] is null) pos[0] = 0.0;
+        if (pos[n - 1] is null) pos[n - 1] = 1.0;
+        for (var i = 1; i < n - 1; i++)
+        {
+            if (pos[i] is not null) continue;
+            var j = i + 1;
+            while (j < n && pos[j] is null) j++;
+            var prev = pos[i - 1]!.Value;
+            var next = pos[j]!.Value;
+            var span = j - (i - 1);
+            for (var k = i; k < j; k++)
+                pos[k] = prev + (next - prev) * (k - (i - 1)) / span;
+            i = j - 1;
+        }
+        var running = 0.0;
+        var basePeriod = new List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop>(n);
+        for (var i = 0; i < n; i++)
+        {
+            var p = Math.Clamp(pos[i]!.Value, 0.0, 1.0);
+            if (p < running) p = running; else running = p;
+            if (ok[i]) basePeriod.Add(new NetPdf.Pdf.Images.ConicGradientRasterizer.Stop(
+                p, rgba[i].R, rgba[i].G, rgba[i].B, rgba[i].A));
+        }
+
+        // Non-repeating, or a period that already spans (≥) the full turn → use the stops as-is.
+        var period = basePeriod.Count > 0 ? basePeriod[^1].Position : 0.0;
+        if (!repeating || period <= 0.0 || period >= 1.0) return basePeriod;
+
+        // Tile the [0, period] pattern across [0, 1] (CSS repeating gradient), bounded so a tiny
+        // period can't explode the stop list.
+        var result = new List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop>();
+        for (var rep = 0; rep * period < 1.0 && result.Count < ConicMaxReplicatedStops; rep++)
+        {
+            var shift = rep * period;
+            foreach (var s in basePeriod)
+            {
+                var p = s.Position + shift;
+                if (p > 1.0) p = 1.0;
+                result.Add(s with { Position = p });
+                if (s.Position + shift >= 1.0 || result.Count >= ConicMaxReplicatedStops) break;
+            }
+        }
+        return result;
     }
 
     /// <summary>The four <c>border-radius</c> corners in CSS px (border-radius-completion cycle): each

@@ -117,6 +117,15 @@ internal static class DiagnosticCodes
     public const string CssBoxShadowBlurRaster001 = "CSS-BOXSHADOW-BLUR-RASTER-001";
 
     /// <summary>
+    /// Phase 4 — a CSS <c>conic-gradient</c> / <c>repeating-conic-gradient</c> background was
+    /// painted via the Skia raster fallback (a sweep gradient rasterized at <c>2×</c> the box size
+    /// and placed as a PNG XObject) because PDF has no native conic/sweep shading. Linear + radial
+    /// gradients stay PDF-native shadings. Per-stop alpha is preserved (the raster carries an alpha
+    /// <c>/SMask</c>). Surfaced once per render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssConicGradientRaster001 = "CSS-CONIC-GRADIENT-RASTER-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: an <c>inset</c> shadow (the first cut paints OUTSET shadows only); a value
     /// whose offsets / blur / spread use a unit the parser can't resolve (e.g. <c>em</c>/<c>rem</c>

@@ -1180,7 +1180,14 @@ grepping the ID).
     `stretch`, which grows the lines). The companion **`align-items: baseline`** (Flex L1 completion — see
     below) is the genuinely different feature: it baseline-aligns the ITEMS within a line, where the items
     ARE the baseline-sharing group. Verified spec-side via the W3C css-align-3 fallback rule before
-    implementing (the deferral comment's "text-shaping integration" was the inaccurate premise).
+    implementing (the deferral comment's "text-shaping integration" was the inaccurate premise). PR #221
+    SECOND review hardened it: the keywords are PRESERVED as `AlignContentValue.FirstBaseline` /
+    `LastBaseline` (not collapsed to flex-start/end at decode), so the fallback is applied at LAYOUT time and
+    is LOGICAL — `ComputeAlignContentOffsets` pre-inverts the start/end by `isWrapReverse` so it does NOT
+    follow the flex-flow reversal (the column-RTL flip stays in `CrossAxisFlow.PhysicalLineOffset`). RESIDUAL
+    (§5.4): when the flex container is ITSELF a baseline-aligned flex item it could participate in its
+    parent's baseline-sharing group instead of falling back — NetPdf doesn't track baseline-sharing-group
+    participation yet, so it always falls back today; the preserved value lets a future cycle honor §5.4.
   - Writing-mode + column-cross-axis `direction` integration for
     `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped** (task 6):
     `flex-direction: row` / `row-reverse` under `direction: rtl` flip the

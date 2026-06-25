@@ -614,13 +614,16 @@ grepping the ID).
 - **ID** — `multicol-balancing-pagination`
 - **Status** — `approximated` (cycles 1-4 + post-PR-#59 + post-PR-#60
   review hardening ship fixed-column-count + column-width-derived
-  auto count (absolute resolved lengths only — font-relative values
-  deferred to sub-cycle 5+) + equal-split + multi-page splitting
+  auto count + equal-split + multi-page splitting
   through any recursion depth + `column-fill: balance` /
   `balance-all` with correct last-fragment semantics + a real fit-
-  search instead of the average-height heuristic; column rules +
-  `column-span: all` + the balance-result perf cache + font-relative
-  `column-width` resolution remain sub-cycle 2+ scope). Phase 3
+  search instead of the average-height heuristic. The Phase-3 residual
+  long-tail then shipped **column rules** (`column-rule-*` paint) and
+  **font-relative `column-width` / `column-gap`** (em / rem / ex / ch /
+  vw / vh resolve via `DeferredLengthResolver`; `normal` column-gap is
+  a true 1em — see Missing for the `lh` / `rlh` / `cap` / `ic` gap). What
+  remains is `column-span: all` + the balance-result perf cache).
+  Phase 3
   Task 14 cycle 2 hardening Finding #1 lifted the depth==1-only
   continuation propagation limit — nested multicols at any in-flow
   recursion depth now split cleanly across pages. Cycle 3 +
@@ -739,14 +742,20 @@ grepping the ID).
     The post-PR-#59 deferred F#6 perf-cache would memoize the fit-
     search result per Box; sub-cycle 2+ scope.
 - **Missing** —
-  - **Font-relative `column-width`** (CSS Multi-column L1 §3.1) — ✅ **SHIPPED** (Phase-3
-    residual long-tail). The cascade `LengthResolver` still DEFERS `em` / `rem` (the raw
-    rides along; the slot stays `ComputedSlotTag.Unset`), but `DeferredLengthResolver` now
-    resolves them in place against the box's cascaded font-size BEFORE layout (alongside
-    `width` / `height`), so `ReadColumnWidth` sees a `LengthPx` slot + the multicol dispatch
-    fires. `column-width: 12em` (the CSS Multi-column L1 §3.1 introductory example) now
-    columnizes. `column-width`'s grammar is `auto | <length>` — there is no percentage form,
-    so nothing else remains for this property.
+  - **Font-relative `column-width` + `column-gap`** (CSS Multi-column L1 §3.1 / §6.1) — ✅
+    **SHIPPED** (Phase-3 residual long-tail). The cascade `LengthResolver` still DEFERS font-/
+    viewport-relative lengths (the raw rides along; the slot stays `ComputedSlotTag.Unset`), but
+    `DeferredLengthResolver` now resolves them in place against the box's cascaded font-size (em),
+    the root (rem), and the page box (vw/vh) BEFORE layout (alongside `width` / `height`), so
+    `ReadColumnWidth` / the `column-gap` gutter see a `LengthPx` slot. `column-width: 12em` (the
+    §3.1 introductory example) columnizes, and `column-gap: 2em` / `1rem` (and the `normal` →
+    true-1em default) resolve. `column-width`'s grammar is `auto | <length>` (no percentage).
+    **Residual** — the units `DeferredLengthResolver` resolves are the ones `RelativeLengthResolver`
+    supports (`em` / `rem` / `ex` / `ch` / `vw` / `vh` / `vmin` / `vmax`); the typographic units
+    `lh` / `rlh` / `cap` / `ic` are still DEFERRED (`RelativeLengthResolver` doesn't implement them
+    — a general body-length gap, NOT multicol-specific: `width: 2lh` etc. are unresolved too), so
+    `column-width: 12lh` / `column-gap: 1cap` fall through. So the property family is "resolves the
+    common font-relative units," not "every unit."
   - **Balance-result perf cache (F#6 — deferred from post-PR-#59
     review)**: the fit-search runs `O(log range) × columnCount`
     nested `BlockLayouter` dry-runs per multicol per page. When a

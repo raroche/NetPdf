@@ -186,6 +186,12 @@ namespace NetPdf.Layout.Layouters;
 /// slice is painted over the whole box + clipped to the slice. Default 0 → the decoration uses this box.</param>
 /// <param name="DecorationBlockOffsetPx">box-decoration-break: slice — this slice's block-axis offset
 /// within the unsliced box (paired with <paramref name="DecorationBlockExtentPx"/>). Default 0.</param>
+/// <param name="IsColumnRule">multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — when
+/// true this is a synthetic COLUMN-RULE fragment (one per inter-column gap): the painter fills its
+/// (InlineOffset, BlockOffset, InlineSize, BlockSize) rect with the container's resolved
+/// <c>column-rule-color</c> (currentcolor → the element <c>color</c>) and paints NOTHING else (no
+/// background / border / outline / text). <see cref="Box"/> is the multicol container (for the style +
+/// currentcolor lookup). DEFAULT false leaves every real fragment byte-identical.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -262,7 +268,11 @@ internal readonly record struct BoxFragment(
     // rect). DEFAULT 0 = not a continuous-decoration slice → the decoration uses the fragment's own box,
     // byte-identical for every non-sliced fragment.
     double DecorationBlockExtentPx = 0.0,
-    double DecorationBlockOffsetPx = 0.0);
+    double DecorationBlockOffsetPx = 0.0,
+    // multicol-balancing-pagination (column rules) — a synthetic column-rule fragment; the painter
+    // fills its rect with the container's column-rule-color + paints nothing else. DEFAULT false =
+    // a real fragment, byte-identical. See the <param> tag above for the full contract.
+    bool IsColumnRule = false);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

@@ -227,6 +227,125 @@ public sealed class MulticolLayouterTests
         Assert.Equal(124, f1!.Value.InlineOffset);
     }
 
+    // ====================================================================
+    //  multicol-balancing-pagination — column rules (CSS Multi-column L1 §5)
+    // ====================================================================
+
+    [Fact]
+    public void Column_rules_emit_one_rule_fragment_per_inter_column_gap()
+    {
+        // 3 columns each carrying a 60px child (serial fill — explicit height): a `column-rule`
+        // emits a fragment in EACH of the 2 inter-column gaps, centered, sized
+        // (column-rule-width × the content height).
+        //
+        // Geometry (332px content, 3 cols, default 16px gap): perCol = (332 − 2×16)/3 = 100.
+        //   col0 [0,100], gap0 [100,116], col1 [116,216], gap1 [216,232], col2 [232,332].
+        //   gap0 center = 100 + 8 = 108 ⇒ a 4px rule at 108 − 2 = 106.
+        //   gap1 center = 216 + 8 = 224 ⇒ a 4px rule at 222.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        SetLengthPx(multicol.Style, PropertyId.Height, 60);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(4)); // solid
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        for (var i = 0; i < 3; i++)
+        {
+            var cs = MakeStyle();
+            SetLengthPx(cs, PropertyId.Height, 60);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var rules = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+            if (f.IsColumnRule) rules.Add(f);
+        rules.Sort((x, y) => x.InlineOffset.CompareTo(y.InlineOffset));
+
+        Assert.Equal(2, rules.Count);
+        Assert.Equal(106, rules[0].InlineOffset, precision: 3);
+        Assert.Equal(222, rules[1].InlineOffset, precision: 3);
+        foreach (var r in rules)
+        {
+            Assert.Equal(4, r.InlineSize, precision: 3);    // column-rule-width
+            Assert.Equal(60, r.BlockSize, precision: 3);    // content height
+            Assert.Equal(0, r.BlockOffset, precision: 3);   // content-box top
+            Assert.True(r.IsColumnRule);
+            Assert.Same(multicol, r.Box);                   // container style for the painter
+        }
+    }
+
+    [Fact]
+    public void No_column_rule_fragment_when_style_is_none()
+    {
+        // The initial `column-rule-style: none` (and `hidden`) paints no rule, so the layouter
+        // emits no rule fragment at all (byte-identical with the pre-feature behavior).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        SetLengthPx(multicol.Style, PropertyId.Height, 60);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(0)); // none
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        for (var i = 0; i < 3; i++)
+        {
+            var cs = MakeStyle();
+            SetLengthPx(cs, PropertyId.Height, 60);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.DoesNotContain(sink.Fragments, f => f.IsColumnRule);
+    }
+
+    [Fact]
+    public void No_column_rule_fragment_when_content_occupies_a_single_column()
+    {
+        // A rule is drawn only BETWEEN two columns that both carry content. One small child fits
+        // entirely in column 0, so there is no inter-column gap to rule — no rule fragment even
+        // with a visible column-rule-style.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        SetLengthPx(multicol.Style, PropertyId.Height, 200);
+        multicol.Style.Set(PropertyId.ColumnRuleStyle, ComputedSlot.FromKeyword(4)); // solid
+        multicol.Style.Set(PropertyId.ColumnRuleWidth, ComputedSlot.FromLengthPx(4));
+        var cs = MakeStyle();
+        SetLengthPx(cs, PropertyId.Height, 30); // 30 ≤ 200 ⇒ stays in column 0
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, cs, MakeElement()));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 332, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.DoesNotContain(sink.Fragments, f => f.IsColumnRule);
+    }
+
     [Fact]
     public void Cycle2_multicol_content_overflowing_all_columns_emits_page_complete_no_diagnostic()
     {

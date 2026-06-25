@@ -193,6 +193,45 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains("re f", text);
     }
 
+    // multicol-balancing-pagination — a two-column box whose 60 px of content (two 30 px items)
+    // overflows the 40 px column-0 budget into column 1; the `column-rule` paints a blue line in
+    // the inter-column gap (the only blue fill in the document — the items are empty).
+    private const string ColumnRuleHtml =
+        "<!DOCTYPE html><html><head><style>" +
+        ".mc{column-count:2;column-rule:4px solid rgb(0,0,255);height:40px}" +
+        ".it{height:30px}" +
+        "</style></head><body>" +
+        "<div class=\"mc\"><div class=\"it\"></div><div class=\"it\"></div></div>" +
+        "</body></html>";
+
+    [Fact]
+    public void Convert_paints_a_column_rule_between_columns()
+    {
+        var text = Latin1(HtmlPdf.Convert(ColumnRuleHtml));
+
+        // rgb(0,0,255) → `0 0 1 rg` + a filled rectangle for the rule (the `column-rule` shorthand
+        // expanded to column-rule-width / -style / -color).
+        Assert.Contains("0 0 1 rg", text);
+        Assert.Contains("re f", text);
+    }
+
+    [Fact]
+    public void Non_solid_column_rule_style_emits_the_approximation_diagnostic()
+    {
+        const string html =
+            "<!DOCTYPE html><html><head><style>" +
+            ".mc{column-count:2;column-rule:4px dashed rgb(0,0,255);height:40px}" +
+            ".it{height:30px}" +
+            "</style></head><body>" +
+            "<div class=\"mc\"><div class=\"it\"></div><div class=\"it\"></div></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+
+        // A dashed column rule is painted as a solid line (shares the border/outline diagnostic).
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
+    }
+
     [Fact]
     public void Convert_paints_border_from_the_per_side_shorthand()
     {

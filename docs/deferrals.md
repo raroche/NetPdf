@@ -769,10 +769,16 @@ grepping the ID).
   - **`column-span: all`** (CSS Multi-column L1 §4): a child with
     `column-span: all` spans across all columns; cycle 1 has no
     column-span machinery.
-  - **Column rules** (`column-rule-*` — CSS Multi-column L1 §5):
-    the painter would draw a rule line between adjacent columns at
-    the column gap's midpoint. Cycle 1 emits no rule fragments;
-    the properties parse + cascade but have no painted effect.
+  - **Column rules** (`column-rule-*` — CSS Multi-column L1 §5) — ✅ **SHIPPED** (Phase-3
+    residual long-tail). `MulticolLayouter` emits a synthetic `BoxFragment.IsColumnRule` per
+    inter-column gap (between two columns that both carry content), centered in the gap, sized
+    `column-rule-width` × the content height laid out on this page (capped to the column box);
+    `FragmentPainter.PaintColumnRule` fills it with the resolved `column-rule-color`
+    (`currentcolor` → the element `color`). A `none` / `hidden` style or a non-positive width
+    emits nothing; a non-solid style is painted solid + shares the once-per-conversion
+    `PAINT-BORDER-STYLE-APPROXIMATED-001`. Residual: a rule on a TRANSFORMED multicol isn't
+    composed with the transform (painted in page space); per-column-emptiness is approximated as
+    a left-to-right content prefix; dotted/dashed/double aren't drawn faithfully.
   - **`column-gap` font-relative resolution** — ✅ **SHIPPED** (Phase-3 residual long-tail).
     The `normal` initial value resolves to a TRUE 1em against the container's cascaded
     `font-size` (`ReadColumnGap` now takes the em base; was a hard-coded 16 px), and a
@@ -832,11 +838,10 @@ grepping the ID).
   sub-cycle 2+. Cycle 4 ships `column-width`-derived used column
   count per CSS Multi-column L1 §3.3 + single-column degenerate
   fallthrough for derivedN == 1.
-- **Removal condition** — column rules paint; `column-span: all`
-  works. (Multi-level recursive multicol propagation shipped in
-  Phase 3 Task 14 cycle 2 hardening Finding #1; column balancing
-  shipped in cycle 3; `column-width` derived used count shipped in
-  cycle 4.)
+- **Removal condition** — `column-span: all` works. (Multi-level recursive multicol
+  propagation shipped in Phase 3 Task 14 cycle 2 hardening Finding #1; column balancing
+  shipped in cycle 3; `column-width` derived used count shipped in cycle 4; column rules
+  paint, and font-relative `column-width` / `column-gap` resolve — Phase-3 residual long-tail.)
 
 ---
 

@@ -125,6 +125,12 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
     // to zero for narrow containers).
     private const int MaxColumnCount = 1000;
 
+    // column-rule-style keyword codes (shared <line-style> encoding with border-style —
+    // KeywordResolver: none=0, hidden=1, …, solid=4). A `none` / `hidden` rule paints nothing, so
+    // no rule fragment is emitted for it (matches FragmentPainter's border-edge gate).
+    private const int ColumnRuleStyleNone = 0;
+    private const int ColumnRuleStyleHidden = 1;
+
     private readonly Box _rootBox;
     private readonly IBlockFragmentSink _sink;
     // Per Phase 3 Task 14 cycle 2 — multi-page multicol resume state.
@@ -669,6 +675,13 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // resume point.
         var contentExhausted = false;
         var sinkCursorAtStart = _sink.Cursor;
+        // multicol-balancing-pagination (column rules) — track the content laid out so the rules
+        // can be sized + placed after the fill pass: the high-water content bottom (for the rule
+        // HEIGHT, capped to the column box) and the index of the last column that emitted anything
+        // (rules go only in the gaps BETWEEN columns that both carry content — left-to-right fill
+        // ⇒ content columns are the prefix 0..lastColumnWithContent).
+        var maxContentBottom = _contentBlockOffset;
+        var lastColumnWithContent = -1;
         for (var columnIdx = 0; columnIdx < columnCount; columnIdx++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -748,6 +761,7 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 Diagnostics = layout.Diagnostics ?? _diagnostics,
             };
 
+            var cursorBeforeColumn = _sink.Cursor;
             var columnResult = innerLayouter.AttemptLayout(
                 columnFragmentainer,
                 ref columnLayoutCtx,
@@ -759,6 +773,14 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 // we have no further retry budget here).
                 LayoutAttemptStrategy.LastResort,
                 cancellationToken);
+
+            // multicol-balancing-pagination (column rules) — record whether this column emitted
+            // content (its sink cursor advanced) + grow the high-water content bottom, BEFORE the
+            // outcome branches break / continue away.
+            if (_sink.Cursor > cursorBeforeColumn)
+                lastColumnWithContent = columnIdx;
+            if (translatingSink.MaxBlockExtent > maxContentBottom)
+                maxContentBottom = translatingSink.MaxBlockExtent;
 
             if (columnResult.Outcome == LayoutAttemptOutcome.AllDone)
             {
@@ -781,6 +803,14 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
             // overflow.
             carriedContinuation = columnResult.Continuation;
         }
+
+        // multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — the fill pass is
+        // done, so place a rule between each pair of adjacent CONTENT columns (emitted into the
+        // outer sink in container coordinates, BEFORE every return so the rules appear on this
+        // page whether the content fit (AllDone) or overflowed to the next page (PageComplete)).
+        EmitColumnRules(
+            perColumnInlineSize, columnGap, effectiveColumnBlockSize,
+            maxContentBottom, lastColumnWithContent);
 
         if (contentExhausted)
         {
@@ -840,6 +870,60 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
             EmitUnexpectedContinuationDiagnostic(carriedContinuation, layout);
         }
         return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — emit one
+    /// synthetic <see cref="BoxFragment.IsColumnRule"/> fragment per inter-column gap between two
+    /// columns that BOTH carry content (left-to-right fill ⇒ the content columns are the prefix
+    /// <c>0..lastColumnWithContent</c>). Each rule is centered in its gap, sized
+    /// (<c>column-rule-width</c> × the content height laid out on this page, capped to the column
+    /// box so a single overflowing column can't stretch the rule past the multicol box). A `none` /
+    /// `hidden` <c>column-rule-style</c> or a non-positive <c>column-rule-width</c> emits nothing
+    /// (byte-identical — no rule fragments). The painter resolves the rule COLOR
+    /// (<c>column-rule-color</c>, currentcolor → the element <c>color</c>) and fills the rect.</summary>
+    private void EmitColumnRules(
+        double perColumnInlineSize, double columnGap, double effectiveColumnBlockSize,
+        double maxContentBottom, int lastColumnWithContent)
+    {
+        // Need at least two adjacent CONTENT columns (= a gap to rule between them).
+        if (lastColumnWithContent < 1) return;
+
+        // Appearance gate (mirrors FragmentPainter's border-edge gate): a `none` / `hidden` style
+        // or a non-positive width paints nothing, so don't emit a fragment for it.
+        var styleSlot = _rootBox.Style.Get(PropertyId.ColumnRuleStyle);
+        if (styleSlot.Tag != ComputedSlotTag.Keyword) return;   // unset → initial `none`.
+        var styleKw = styleSlot.AsKeyword();
+        if (styleKw is ColumnRuleStyleNone or ColumnRuleStyleHidden) return;
+
+        var widthSlot = _rootBox.Style.Get(PropertyId.ColumnRuleWidth);
+        var ruleWidthPx = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0.0;
+        if (!(ruleWidthPx > 0) || !double.IsFinite(ruleWidthPx)) return;
+
+        // Rule height = the content actually laid out (high-water bottom − content top), capped to
+        // the column box.
+        var ruleHeightPx = Math.Min(
+            Math.Max(0.0, maxContentBottom - _contentBlockOffset),
+            effectiveColumnBlockSize);
+        if (!(ruleHeightPx > 0) || !double.IsFinite(ruleHeightPx)) return;
+
+        // One rule per gap g (0..lastColumnWithContent-1): the gap after column g spans
+        // [colEnd, colEnd + columnGap]; the rule is centered on colEnd + columnGap/2.
+        for (var gap = 0; gap < lastColumnWithContent; gap++)
+        {
+            var colEndInline =
+                _contentInlineOffset
+                + gap * (perColumnInlineSize + columnGap)
+                + perColumnInlineSize;
+            var ruleInlineOffset = colEndInline + columnGap / 2.0 - ruleWidthPx / 2.0;
+            if (!double.IsFinite(ruleInlineOffset)) continue;
+            _sink.Emit(new BoxFragment(
+                _rootBox,
+                ruleInlineOffset,
+                _contentBlockOffset,
+                ruleWidthPx,
+                ruleHeightPx,
+                IsColumnRule: true));
+        }
     }
 
     // ====================================================================
@@ -1475,12 +1559,25 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
 
         public int Cursor => _outerSink.Cursor;
 
-        public void Emit(BoxFragment fragment) =>
-            _outerSink.Emit(fragment with
+        /// <summary>multicol-balancing-pagination (column rules) — the high-water block-axis
+        /// bottom (translated <c>BlockOffset + BlockSize</c>) emitted through this column sink, so
+        /// the layouter can size the column rules to the content actually laid out on this page
+        /// (capped to the column box). Mirrors <c>DiscardingMeasureSink.MaxBlockExtent</c>; a
+        /// rolled-back speculative fragment can only inflate it, and the rule height is capped, so
+        /// the rule never exceeds the column box.</summary>
+        public double MaxBlockExtent { get; private set; }
+
+        public void Emit(BoxFragment fragment)
+        {
+            var translated = fragment with
             {
                 InlineOffset = fragment.InlineOffset + _inlineOffsetTranslation,
                 BlockOffset = fragment.BlockOffset + _blockOffsetTranslation,
-            });
+            };
+            var bottom = translated.BlockOffset + translated.BlockSize;
+            if (bottom > MaxBlockExtent) MaxBlockExtent = bottom;
+            _outerSink.Emit(translated);
+        }
 
         public void RollbackTo(int cursor) => _outerSink.RollbackTo(cursor);
 

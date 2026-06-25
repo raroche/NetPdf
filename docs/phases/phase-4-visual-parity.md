@@ -120,20 +120,26 @@ This is the testing infrastructure that makes visual fidelity measurable.
 | PDF shading patterns | ISO 32000-2 §8.7 |
 | PDF transparency | ISO 32000-2 §11 |
 
+## Current status (2026-06-25)
+
+Phase 4 is the **active phase** (~15-20% done). **Merged:** 2D transforms (#210), linear + radial gradients (#209), sharp + blurred box-/text-shadow (#210), backgrounds + `object-fit`/`-position` (Phase-3 interleaved), `border-radius` Bézier corners (Phase-3). The **Skia raster-fallback bridge** is established (`ShadowRasterizer` → image XObject + alpha `/SMask` + a once-per-conversion diagnostic) — conic gradients, filters, blurred effects, complex clip-path, and masks all reuse it.
+
+**Not started (greenfield):** `filter` / `clip-path` / `mask` / `opacity` / `mix-blend-mode` / `border-image` aren't registered in `properties.json`; `NetPdf.Svg` is a single `Placeholder.cs`; there are no Link annotations, document outlines, conic / repeating gradients, faithful non-solid border styles (currently approximated-as-solid + diagnosed), or visual-regression harness. The remaining work is grouped into 8 ordered 3-task PR groups in [PROGRESS.md](../../PROGRESS.md#phase-4--remaining-work-roadmap-active-phase-2026-06-25). Rows marked ✅ below are merged.
+
 ## Work breakdown (ordered)
 
 | # | Task | Mini-est. | Depends on |
 |---|---|---|---|
-| 1 | 2D transforms (CTM emission) | 2 d | — |
-| 2 | Linear gradient → PDF shading Type 2 | 2 d | — |
-| 3 | Radial gradient → PDF shading Type 3 | 2 d | 2 |
+| 1 | ✅ **2D transforms (CTM emission)** — MERGED #210 | 2 d | — |
+| 2 | ✅ **Linear gradient → PDF shading Type 2** — MERGED #209 | 2 d | — |
+| 3 | ✅ **Radial gradient → PDF shading Type 3** — MERGED #209 | 2 d | 2 |
 | 4 | Conic gradient → Skia raster | 2 d | 2 |
 | 5 | Border styles (incl. dashed/double/etc.) | 3 d | — |
-| 6 | `border-radius` Bezier corners | 1 d | 5 |
+| 6 | ✅ **`border-radius` Bezier corners** — MERGED (Phase-3) | 1 d | 5 |
 | 7 | `border-image` 9-slice | 2 d | 5 |
-| 8 | Background painting (color, image, multiple, position/size/repeat) | 3 d | — |
-| 9 | Sharp box-shadow / text-shadow | 1 d | — |
-| 10 | Blurred shadow Skia raster fallback | 2 d | 9 |
+| 8 | ✅ **Background painting (color, image, position/size/repeat)** — MERGED (Phase-3 interleaved); `border-image` / multi-layer refinements remain | 3 d | — |
+| 9 | ✅ **Sharp box-shadow / text-shadow** — MERGED #210 (inset deferred) | 1 d | — |
+| 10 | ✅ **Blurred shadow Skia raster fallback** — MERGED #210 (`ShadowRasterizer`) | 2 d | 9 |
 | 11 | CSS filters via Skia raster (all 9 filter functions) | 4 d | — |
 | 12 | `filter: opacity()` → native ExtGState path | 0.5 d | 11 |
 | 13 | `clip-path: rect/inset/polygon` native | 1 d | — |

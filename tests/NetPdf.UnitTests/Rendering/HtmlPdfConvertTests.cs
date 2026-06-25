@@ -232,6 +232,33 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
     }
 
+    [Theory]
+    [InlineData("translate(20px, 10px)")]
+    [InlineData("rotate(15deg)")]
+    public void Column_rule_is_painted_inside_the_multicol_transform_scope(string transform)
+    {
+        // PR #224 review [P2]: a column rule on a TRANSFORMED multicol must move with its content.
+        // The rule fragment's box IS the multicol container, so it's wrapped in the container's
+        // effective transform (`cm`) like the rest of its decoration — the rule fill therefore
+        // appears AFTER a transform `cm`, not before any transform in raw page space.
+        var html =
+            "<!DOCTYPE html><html><head><style>" +
+            ".mc{column-count:2;column-rule:4px solid rgb(0,0,255);height:40px;transform:" + transform + "}" +
+            ".it{height:30px}" +
+            "</style></head><body>" +
+            "<div class=\"mc\"><div class=\"it\"></div><div class=\"it\"></div></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+
+        // The rule still paints (the move from page space into the transform scope didn't drop it).
+        Assert.Contains("0 0 1 rg", text);
+        // A transform matrix was emitted, and the rule fill sits AFTER it (inside the q…Q scope).
+        Assert.Contains(" cm", text);
+        Assert.True(text.IndexOf("0 0 1 rg", StringComparison.Ordinal) > text.IndexOf(" cm", StringComparison.Ordinal),
+            "the column-rule fill should appear after a transform `cm` (inside the transform scope).");
+    }
+
     [Fact]
     public void Convert_paints_border_from_the_per_side_shorthand()
     {

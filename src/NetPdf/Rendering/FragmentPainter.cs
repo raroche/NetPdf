@@ -143,20 +143,6 @@ internal static class FragmentPainter
 
             var currentColorArgb = ResolveCurrentColor(style);
 
-            // multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — a synthetic
-            // column-rule fragment FILLS its rect with the container's column-rule-color
-            // (currentcolor → the element color) and paints nothing else (no background / border /
-            // outline / text). Foreground, like a border, so it's painted regardless of
-            // PrintBackgrounds. (A column-rule on a TRANSFORMED multicol is not composed with the
-            // transform in this first cut — the rule is painted in page space here, before the
-            // transform wrap below — a documented limitation.)
-            if (fragment.IsColumnRule)
-            {
-                PaintColumnRule(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                    currentColorArgb, diagnostics, ref styleApproximationReported);
-                continue;
-            }
-
             // transform (Phase 4, review [P1]) — wrap this fragment's decoration in the box's
             // EFFECTIVE cm (its own transform composed with every ancestor's), so a child of a
             // transformed element transforms too. The text + image passes use the SAME map.
@@ -165,6 +151,21 @@ internal static class FragmentPainter
             var transformed = effectiveTransforms is not null
                 && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
             if (transformed) page.BeginTransform(effCm.A, effCm.B, effCm.C, effCm.D, effCm.E, effCm.F);
+
+            // multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — a synthetic
+            // column-rule fragment FILLS its rect with the container's column-rule-color
+            // (currentcolor → the element color) and paints nothing else (no background / border /
+            // outline / text). Foreground, like a border, so painted regardless of PrintBackgrounds.
+            // Placed INSIDE the transform scope (PR #224 review [P2]) — the rule fragment's box IS
+            // the multicol container, so a translated / rotated multicol moves its rules with its
+            // content. Balance the BeginTransform's `q` before continuing.
+            if (fragment.IsColumnRule)
+            {
+                PaintColumnRule(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                    currentColorArgb, diagnostics, ref styleApproximationReported);
+                if (transformed) page.RestoreGraphicsState();
+                continue;
+            }
 
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)

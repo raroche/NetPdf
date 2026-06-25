@@ -112,6 +112,84 @@ public sealed class MulticolFontRelativeLengthTests
     }
 
     // ====================================================================
+    //  column-gap — em/rem resolved by DeferredLengthResolver, normal→1em
+    //  by ReadColumnGap (Task 2)
+    // ====================================================================
+
+    [Fact]
+    public void Deferred_em_column_gap_resolves_against_the_owning_box_font_size()
+    {
+        // Root (synthetic) → multicol box (font-size 20, `column-gap: 2em`). `2em` = 2 × 20 = 40
+        // px. DeferredLengthResolver rewrites the slot to a LengthPx, so ReadColumnGap returns 40
+        // through its LengthPx branch (the em/rem RAW is resolved upstream, not in the reader).
+        var root = Box.CreateRoot(MakeStyle());
+
+        var mcStyle = MakeStyle();
+        mcStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(20));
+        mcStyle.SetDeferred(PropertyId.ColumnGap, "2em");
+        var mc = Box.ForElement(BoxKind.BlockContainer, mcStyle, MakeElement());
+        root.AppendChild(mc);
+
+        Assert.True(mcStyle.IsDeferred(PropertyId.ColumnGap));
+
+        DeferredLengthResolver.ResolveTreeInPlace(root, pageWidthPx: 600, pageHeightPx: 800);
+
+        Assert.False(mcStyle.IsDeferred(PropertyId.ColumnGap));
+        // emPx argument is irrelevant once it's a LengthPx — pass a bogus 999 to prove that.
+        Assert.Equal(40, mcStyle.ReadColumnGap(containerInlineSize: 600, emPx: 999), precision: 3);
+    }
+
+    [Fact]
+    public void Deferred_rem_column_gap_resolves_against_the_root_font_size()
+    {
+        // Root (synthetic) → A (font-size 16 = root element) → multicol B (font-size 40,
+        // `column-gap: 1.5rem`). `1.5rem` = 1.5 × root 16 = 24 px (NOT 1.5 × B's 40 = 60).
+        var root = Box.CreateRoot(MakeStyle());
+
+        var aStyle = MakeStyle();
+        aStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(16));
+        var a = Box.ForElement(BoxKind.BlockContainer, aStyle, MakeElement());
+        root.AppendChild(a);
+
+        var bStyle = MakeStyle();
+        bStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(40));
+        bStyle.SetDeferred(PropertyId.ColumnGap, "1.5rem");
+        var b = Box.ForElement(BoxKind.BlockContainer, bStyle, MakeElement());
+        a.AppendChild(b);
+
+        DeferredLengthResolver.ResolveTreeInPlace(root, pageWidthPx: 600, pageHeightPx: 800);
+
+        Assert.Equal(24, bStyle.ReadColumnGap(containerInlineSize: 600, emPx: 40), precision: 3);
+    }
+
+    [Fact]
+    public void Normal_and_absolute_column_gap_are_untouched_by_the_resolver()
+    {
+        // Byte-identity guard: `normal` (the initial — a KEYWORD, not a deferred raw) and an
+        // absolute `column-gap: 12px` are NOT rewritten by the resolver. `normal` is interpreted
+        // by ReadColumnGap (→ 1em against the passed font-size); the LengthPx is returned as-is.
+        var root = Box.CreateRoot(MakeStyle());
+
+        var normalStyle = MakeStyle(); // unset column-gap → normal
+        normalStyle.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(30));
+        var normalBox = Box.ForElement(BoxKind.BlockContainer, normalStyle, MakeElement());
+        root.AppendChild(normalBox);
+
+        var pxStyle = MakeStyle();
+        pxStyle.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(12));
+        var pxBox = Box.ForElement(BoxKind.BlockContainer, pxStyle, MakeElement());
+        root.AppendChild(pxBox);
+
+        DeferredLengthResolver.ResolveTreeInPlace(root, pageWidthPx: 600, pageHeightPx: 800);
+
+        // `normal` stays a non-length slot → ReadColumnGap resolves it to 1em (= the 30 px font).
+        Assert.False(normalStyle.IsDeferred(PropertyId.ColumnGap));
+        Assert.Equal(30, normalStyle.ReadColumnGap(containerInlineSize: 600, emPx: 30), precision: 3);
+        // The absolute length is unchanged.
+        Assert.Equal(12, pxStyle.ReadColumnGap(containerInlineSize: 600, emPx: 30), precision: 3);
+    }
+
+    // ====================================================================
     //  Helpers (mirror MulticolLayouterTests)
     // ====================================================================
 

@@ -637,19 +637,23 @@ public sealed class MulticolLayouterTests
     {
         // PR #206 review (Copilot) — unit-level: a `%` column-gap resolves against the
         // passed inline size; with no definite base it falls back to the `normal` 1em
-        // (16px) multicol default (NOT 0 — multicol `normal` is 1em, unlike flex/grid).
+        // multicol default (NOT 0 — multicol `normal` is 1em, unlike flex/grid).
         var pct = MakeStyle();
         pct.Set(PropertyId.ColumnGap, ComputedSlot.FromPercentage(10));
-        Assert.Equal(20.0, pct.ReadColumnGap(200), precision: 3);   // 10% of 200
-        Assert.Equal(16.0, pct.ReadColumnGap(), precision: 3);       // no base → normal 1em
-        Assert.Equal(16.0, pct.ReadColumnGap(double.NaN), precision: 3);
+        Assert.Equal(20.0, pct.ReadColumnGap(200, 16), precision: 3);          // 10% of 200
+        Assert.Equal(16.0, pct.ReadColumnGap(double.NaN, 16), precision: 3);   // no base → normal 1em
 
         var len = MakeStyle();
         len.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(25));
-        Assert.Equal(25.0, len.ReadColumnGap(200), precision: 3);    // length wins, ignores base
+        Assert.Equal(25.0, len.ReadColumnGap(200, 16), precision: 3);          // length wins, ignores bases
 
+        // multicol-balancing-pagination — `normal` now scales 1em with the container font-size
+        // (was a hard-coded 16 px). At the initial 16 px it stays 16 (byte-identical); at 25 px
+        // it's 25; a non-positive em base falls back to the 16 px initial.
         var normal = MakeStyle(); // unset → normal
-        Assert.Equal(16.0, normal.ReadColumnGap(200), precision: 3);
+        Assert.Equal(16.0, normal.ReadColumnGap(200, 16), precision: 3);
+        Assert.Equal(25.0, normal.ReadColumnGap(200, 25), precision: 3);
+        Assert.Equal(16.0, normal.ReadColumnGap(200, 0), precision: 3);        // invalid em → 16 px initial
     }
 
     [Fact]

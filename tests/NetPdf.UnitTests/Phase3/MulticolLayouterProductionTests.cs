@@ -723,7 +723,8 @@ public sealed class MulticolLayouterProductionTests
         //
         // Setup: `font-size: 25px; column-width: 8em` ⇒ 25 × 8 = 200 px (NOT the 12em / default-
         // 16 px the literal might suggest — the test proves em scales with the CASCADED size).
-        // In a 600 px container with the default 16 px column-gap:
+        // An explicit `column-gap: 16px` isolates this from the (font-relative) gutter so the
+        // test pins column-WIDTH only. In a 600 px container:
         //   derivedN = floor((600 + 16) / (200 + 16)) = floor(616 / 216) = 2,
         //   perColumnInline = (600 − (2 − 1) × 16) / 2 = 584 / 2 = 292.
         // Four 30 px items (120 px) overflow the 100 px column-0 budget, so serial fill spills
@@ -734,6 +735,7 @@ public sealed class MulticolLayouterProductionTests
                 .multicol {
                     font-size: 25px;
                     column-width: 8em;
+                    column-gap: 16px;
                     height: 100px;
                 }
                 .item { height: 30px; }
@@ -799,6 +801,91 @@ public sealed class MulticolLayouterProductionTests
         // Clean fit — no forced-overflow diagnostic.
         Assert.DoesNotContain(diagnostics.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001);
+    }
+
+    [Fact]
+    public async Task Em_column_gap_widens_the_gutter_after_deferred_resolution()
+    {
+        // multicol-balancing-pagination (font-relative gutter) — `column-gap: 2em` at
+        // `font-size: 20px` resolves to 40 px (DeferredLengthResolver, against the cascaded font
+        // size), NOT the former 0/normal-fallback. In a 600 px 2-column container:
+        //   perColumnInline = (600 − 40) / 2 = 280,  column 1 origin = 280 + 40 = 320.
+        // The default 16 px gap would give perCol 292 + a 308 origin, so the 320 origin + 280
+        // width are the unambiguous proof the em gutter resolved.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    font-size: 20px;
+                    column-gap: 2em;
+                    height: 50px;
+                }
+                .item { height: 40px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var itemFragments = CollectItemFragments(sink);
+        Assert.Equal(2, itemFragments.Count);
+        // Both items are 280 px wide (perColumnInline with the 40 px gutter).
+        foreach (var f in itemFragments)
+            Assert.Equal(280, f.InlineSize, precision: 3);
+        // Column 0 at offset 0, column 1 at offset 320 (= 280 + the 40 px em gutter).
+        var offsets = itemFragments.Select(f => f.InlineOffset).OrderBy(x => x).ToList();
+        Assert.Equal(0, offsets[0], precision: 3);
+        Assert.Equal(320, offsets[1], precision: 3);
+    }
+
+    [Fact]
+    public async Task Normal_column_gap_resolves_to_one_em_not_a_hard_coded_16px()
+    {
+        // multicol-balancing-pagination — the `normal` initial gutter is 1em (CSS Multi-column L1
+        // §6.1), now scaled by the cascaded font-size instead of the former hard-coded 16 px. At
+        // `font-size: 25px` the gutter is 25 px:
+        //   perColumnInline = (600 − 25) / 2 = 287.5,  column 1 origin = 287.5 + 25 = 312.5
+        // (a hard-coded 16 px would give 292 + a 308 origin).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    font-size: 25px;
+                    height: 50px;
+                }
+                .item { height: 40px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var itemFragments = CollectItemFragments(sink);
+        Assert.Equal(2, itemFragments.Count);
+        foreach (var f in itemFragments)
+            Assert.Equal(287.5, f.InlineSize, precision: 3);
+        var offsets = itemFragments.Select(f => f.InlineOffset).OrderBy(x => x).ToList();
+        Assert.Equal(0, offsets[0], precision: 3);
+        Assert.Equal(312.5, offsets[1], precision: 3);
+    }
+
+    private static List<BoxFragment> CollectItemFragments(RecordingFragmentSink sink)
+    {
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.BlockContainer) continue;
+            if (f.Box.SourceElement?.GetAttribute("class") == "item") items.Add(f);
+        }
+        return items;
     }
 
     private static AngleSharp.Dom.IElement MakeElement()

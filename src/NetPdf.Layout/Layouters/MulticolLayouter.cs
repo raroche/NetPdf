@@ -414,8 +414,12 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // Re-read column-gap first; ComputeUsedColumnCount needs it to
         // derive N from column-width. PR #206 review (Copilot) — pass the content
         // inline size so a PERCENTAGE column-gap resolves against it (§8.3) instead of
-        // silently falling back to the `normal` 1em default.
-        var columnGap = _rootBox.Style.ReadColumnGap(_contentInlineSize);
+        // silently falling back to the `normal` 1em default. multicol-balancing-pagination —
+        // pass the container's cascaded font-size so `normal` resolves to a TRUE 1em (a font-
+        // relative `2em` / `1rem` gutter is already a LengthPx by here, resolved upstream by
+        // DeferredLengthResolver against the proper em/rem/viewport bases).
+        var columnFontSizePx = _rootBox.Style.ReadLengthPxOrDefault(PropertyId.FontSize, 16.0);
+        var columnGap = _rootBox.Style.ReadColumnGap(_contentInlineSize, columnFontSizePx);
         if (!double.IsFinite(columnGap) || columnGap < 0)
         {
             // Defensive — the resolver should already reject negative

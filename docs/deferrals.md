@@ -773,9 +773,12 @@ grepping the ID).
     the painter would draw a rule line between adjacent columns at
     the column gap's midpoint. Cycle 1 emits no rule fragments;
     the properties parse + cascade but have no painted effect.
-  - **`column-gap` font-relative resolution**: cycle 1 hard-codes
-    16 px for the `normal` initial value; sub-cycle 2 will resolve
-    against the cascaded `font-size`.
+  - **`column-gap` font-relative resolution** — ✅ **SHIPPED** (Phase-3 residual long-tail).
+    The `normal` initial value resolves to a TRUE 1em against the container's cascaded
+    `font-size` (`ReadColumnGap` now takes the em base; was a hard-coded 16 px), and a
+    font-relative `column-gap: 2em` / `1rem` / `5vw` resolves in `DeferredLengthResolver`
+    against the proper em / rem / viewport bases before layout (the flex/grid `column-gap` /
+    `row-gap` gutters get the same em/rem/vw resolution for free — they previously read 0).
   - **Fragmentation interaction** (`break-before` / `break-after` /
     `break-inside: avoid-column`): the cycle-1 `BlockLayouter`-as-
     column doesn't honor avoid-column constraints; only the regular

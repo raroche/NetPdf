@@ -74,9 +74,21 @@ internal sealed record InlineContinuation(
 /// inline pass and re-slices from <paramref name="ResumeLineIndex"/>, so the
 /// shaped-run buffers don't cross the page boundary. orphans / widows
 /// (CSS Fragmentation L3 §4) are honored at the cut by the layouter reading the
-/// block's own computed values.</summary>
+/// block's own computed values.
+/// <para>box-decoration-break: slice (PR #222 review [P1]) — a continuous decoration
+/// (gradient / background-image / outline) painted across the slices must span the
+/// composite box reconstructed from the ACTUAL fragment areas (each non-final slice
+/// FILLS its fragmentainer to the edge, so the physical extent exceeds the natural
+/// line-height sum). <paramref name="DecorationBlockOffsetPx"/> is this resume slice's
+/// cumulative PHYSICAL block-axis offset within that composite box (the summed
+/// border-box block sizes of every prior slice, INCLUDING the page-fill gaps);
+/// <paramref name="DecorationTotalExtentPx"/> is the composite box's full physical
+/// block extent (precomputed once at the first slice). Both default 0 — the first
+/// slice computes them and threads them forward, so a non-split block is unaffected.</para></summary>
 internal sealed record InlineOnlyLineSplitContinuation(
-    int ResumeLineIndex) : LayoutContinuation;
+    int ResumeLineIndex,
+    double DecorationBlockOffsetPx = 0.0,
+    double DecorationTotalExtentPx = 0.0) : LayoutContinuation;
 
 /// <summary>Table split between rows. <paramref name="RepeatHead"/> +
 /// <paramref name="RepeatFoot"/> control whether <c>&lt;thead&gt;</c> /

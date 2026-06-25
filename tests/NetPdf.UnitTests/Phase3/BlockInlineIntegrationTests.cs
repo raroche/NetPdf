@@ -1818,6 +1818,158 @@ public sealed class BlockInlineIntegrationTests
     //  Test doubles + helpers
     // ====================================================================
 
+    // ────────────────────────────────────────────────────────────────────────
+    //  inline-only-block-line-splitting (box-decoration-break: slice) — PR #222
+    //  review [P1]: a continuous decoration (gradient / background-image / outline)
+    //  sliced across pages must span the composite box reconstructed from the
+    //  ACTUAL fragment areas. Each non-final slice FILLS its fragmentainer to the
+    //  edge, so the cumulative decoration OFFSET of slice k is the SUMMED PHYSICAL
+    //  border-box size of slices 0..k-1 (the page-fill gaps included), and the
+    //  decoration EXTENT is the summed physical size of EVERY slice — NOT the
+    //  natural line-height sum (which ignores the gaps and would restart the
+    //  decoration before the previous physical slice ended). These layout-level
+    //  tests assert that geometry directly off the BoxFragment; the painter's
+    //  end-to-end continuity is asserted in HtmlPdfConvertTests.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Drives a tall inline-only block across pages (feeding each
+    /// PageComplete's continuation forward, like the production driver) and returns
+    /// each page's slice fragment — the one whose box is <paramref name="block"/>.</summary>
+    private static List<BoxFragment> DriveInlineOnlySlices(
+        Box root, Box block, double contentInlineSize, double blockSizePx, int maxPages)
+    {
+        var slices = new List<BoxFragment>();
+        LayoutContinuation? incoming = null;
+        for (var page = 0; page < maxPages; page++)
+        {
+            var sink = new RecordingFragmentSink();
+            using var resolver = new SyntheticShaperResolver();
+            using var layouter = new BlockLayouter(root, sink, incoming, null, resolver);
+            var ctx = new FragmentainerContext(contentInlineSize: contentInlineSize, blockSize: blockSizePx);
+            var layoutCtx = new LayoutContext(ctx);
+            using var br = new BreakResolver();
+            var res = layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.LastResort);
+            foreach (var f in sink.Fragments)
+            {
+                if (ReferenceEquals(f.Box, block)) { slices.Add(f); break; }
+            }
+            if (res.Outcome != LayoutAttemptOutcome.PageComplete || res.Continuation is null) break;
+            incoming = res.Continuation;
+        }
+        return slices;
+    }
+
+    /// <summary>Asserts the slice-decoration invariant: a constant whole-box extent that equals the
+    /// summed PHYSICAL border-box sizes, and a per-slice offset that is the cumulative physical extent
+    /// of the prior slices.</summary>
+    private static void AssertSlicedDecorationIsCumulativePhysical(List<BoxFragment> slices)
+    {
+        Assert.True(slices.Count >= 3, $"the block must slice across >= 3 pages; got {slices.Count}.");
+
+        // Every slice carries the SAME whole-composite-box decoration extent.
+        var total = slices[0].DecorationBlockExtentPx;
+        Assert.All(slices, s => Assert.Equal(total, s.DecorationBlockExtentPx, precision: 3));
+
+        // That extent equals the SUM of the slices' PHYSICAL border-box sizes (fill gaps included) …
+        var summed = 0.0;
+        foreach (var s in slices) summed += s.BlockSize;
+        Assert.Equal(summed, total, precision: 3);
+
+        // … and each slice's offset is the cumulative physical extent of the PRIOR slices (NOT the
+        // smaller natural line-height sum the page-fill-gap bug used).
+        var cumulative = 0.0;
+        foreach (var s in slices)
+        {
+            Assert.Equal(cumulative, s.DecorationBlockOffsetPx, precision: 3);
+            cumulative += s.BlockSize;
+        }
+    }
+
+    private static Box TallTextBlock(string blockCss, out Box root)
+    {
+        root = Box.CreateRoot(MakeStyle());
+        var blockStyle = MakeStyle();
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        var text = new System.Text.StringBuilder();
+        for (var i = 0; i < 16; i++) text.Append("A ");   // many soft-wrap opportunities → many one-glyph lines
+        block.AppendChild(Box.TextRun(text.ToString(), MakeStyle()));
+        root.AppendChild(block);
+        ApplyInlineCss(blockStyle, blockCss);
+        return block;
+    }
+
+    private static void ApplyInlineCss(ComputedStyle style, string css)
+    {
+        // Tiny helper for the few properties the slice tests need (margin-top / widows / orphans).
+        foreach (var decl in css.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+        {
+            var kv = decl.Split(':', 2);
+            if (kv.Length != 2) continue;
+            var name = kv[0].Trim();
+            var val = kv[1].Trim();
+            switch (name)
+            {
+                case "margin-top":
+                    style.Set(PropertyId.MarginTop, ComputedSlot.FromLengthPx(double.Parse(val)));
+                    break;
+                case "widows":
+                    style.Set(PropertyId.Widows, ComputedSlot.FromInteger(int.Parse(val)));
+                    break;
+                case "orphans":
+                    style.Set(PropertyId.Orphans, ComputedSlot.FromInteger(int.Parse(val)));
+                    break;
+            }
+        }
+    }
+
+    [Fact]
+    public void Sliced_decoration_geometry_uses_cumulative_physical_fragment_extents()
+    {
+        // PR #222 review [P1] — a non-final slice FILLS its fragmentainer (BlockSize == the page extent),
+        // so the cumulative decoration OFFSET of each later slice must be the summed PHYSICAL border-box
+        // size of the prior slices (including the page-fill gaps), and the decoration EXTENT (the whole
+        // composite box) the summed physical size of EVERY slice — not the smaller natural line-height sum.
+        var block = TallTextBlock("", out var root);
+
+        // contentInlineSize 30 wraps "A " onto one-glyph lines; blockSize 40 fits ~2 lines/page (line
+        // height = 12 × 1.2 = 14.4), so the block slices across several pages each with a real fill gap.
+        var slices = DriveInlineOnlySlices(root, block, contentInlineSize: 30, blockSizePx: 40, maxPages: 16);
+
+        AssertSlicedDecorationIsCumulativePhysical(slices);
+
+        // The fill gap is REAL: a non-final slice fills the whole page (40), well past its 1-2 lines of
+        // 14.4-px text — the OLD natural-offset code under-counted by this gap on every page.
+        Assert.Equal(40.0, slices[0].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Sliced_decoration_geometry_accounts_for_a_mid_page_start()
+    {
+        // PR #222 review [P1] — "especially visible when the block starts mid-page". A margin-top pushes
+        // the FIRST slice's border-box top down, so slice 0 fills only the page REMAINDER below the margin;
+        // the composite-box extent + the later slices' offsets must reckon from that smaller first slice.
+        var block = TallTextBlock("margin-top:12", out var root);
+
+        var slices = DriveInlineOnlySlices(root, block, contentInlineSize: 30, blockSizePx: 40, maxPages: 16);
+
+        AssertSlicedDecorationIsCumulativePhysical(slices);
+        // Slice 0 starts 12 px down, so it fills only 40 − 12 = 28 (NOT the full page).
+        Assert.Equal(28.0, slices[0].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Sliced_decoration_geometry_accounts_for_widows_pullback_gaps()
+    {
+        // PR #222 review [P1] — "widows/orphans leave unused space". A high `widows` pulls lines off the
+        // penultimate page onto the final page, so the penultimate slice keeps fewer lines yet still FILLS
+        // its fragmentainer — a larger fill gap. The cumulative-physical invariant must still hold exactly.
+        var block = TallTextBlock("widows:4;orphans:1", out var root);
+
+        var slices = DriveInlineOnlySlices(root, block, contentInlineSize: 30, blockSizePx: 40, maxPages: 16);
+
+        AssertSlicedDecorationIsCumulativePhysical(slices);
+    }
+
     /// <summary>Recording sink for emitted fragments (mirrors the one
     /// in <see cref="BlockLayouterTests"/>).</summary>
     private sealed class RecordingFragmentSink : IBlockFragmentSink

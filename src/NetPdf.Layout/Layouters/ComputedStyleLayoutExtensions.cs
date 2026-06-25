@@ -1299,15 +1299,16 @@ internal static class ComputedStyleLayoutExtensions
             4 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),
             // 5-7 = <baseline-position>. Per CSS Box Alignment L3 §5.3 + §9, baseline CONTENT-alignment
             // does NOT apply to a flex container's lines — flex lines are not a baseline-sharing group
-            // (only flex ITEMS / table cells / grid items participate), so align-content baseline always
-            // uses the FALLBACK alignment: `first baseline` (and the `baseline` shorthand) → safe start,
-            // `last baseline` → safe end. The earlier code approximated all three as `stretch`, which is
-            // wrong (stretch GROWS the lines instead of packing them at the cross-start/-end). NOTE this is
-            // distinct from align-ITEMS baseline, which DOES baseline-align items within a line (see
-            // ReadAlignItems above) — there the items are the baseline-sharing group.
-            5 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),        // baseline → safe start
-            6 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),        // first baseline → safe start
-            7 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),          // last baseline → safe end
+            // (only flex ITEMS / table cells / grid items participate). The author intent is PRESERVED as
+            // FirstBaseline / LastBaseline (NOT collapsed to FlexStart/FlexEnd here — PR #221 review [P1]):
+            // the LOGICAL fallback (safe start / safe end) is applied at LAYOUT time in
+            // ComputeAlignContentOffsets, where the wrap-reverse context is known so logical start/end does
+            // NOT follow the flex-flow reversal, and a future cycle can honor §5.4 (the container as a
+            // baseline-aligned flex item). The Safe overflow mode is the §5.3 "safe" fallback. (Distinct
+            // from align-ITEMS baseline — which DOES baseline-align items within a line; see ReadAlignItems.)
+            5 => new ResolvedAlignContent(AlignContentValue.FirstBaseline, OverflowAlignmentMode.Safe),    // baseline
+            6 => new ResolvedAlignContent(AlignContentValue.FirstBaseline, OverflowAlignmentMode.Safe),    // first baseline
+            7 => new ResolvedAlignContent(AlignContentValue.LastBaseline, OverflowAlignmentMode.Safe),     // last baseline
             // 8-14 = <content-position>: center, start, end, flex-start,
             // flex-end, left, right (LTR + horizontal-tb mapping).
             8 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Default),
@@ -2146,6 +2147,20 @@ internal enum AlignContentValue : byte
     SpaceAround = 4,
     SpaceEvenly = 5,
     Stretch = 6,
+
+    /// <summary>CSS Box Alignment L3 §5.3 <c>&lt;baseline-position&gt;</c> — <c>baseline</c> /
+    /// <c>first baseline</c>. A flex container's LINES are not a baseline-sharing group, so this has no
+    /// line-baseline behavior; it carries the author intent so the LOGICAL fallback (safe start) is chosen
+    /// at LAYOUT time, where the wrap-reverse context is known (logical start does NOT follow the flex-flow
+    /// reversal — PR #221 review [P1]) and a future cycle can honor §5.4 (the container as a baseline-aligned
+    /// flex item). Kept distinct from <see cref="FlexStart"/> instead of collapsed at decode — that
+    /// preservation IS the "logical reference information", the align-content analogue of
+    /// <see cref="CrossAlignReference.Container"/>.</summary>
+    FirstBaseline = 7,
+
+    /// <summary>CSS Box Alignment L3 §5.3 <c>last baseline</c> — the §5.4 fallback is LOGICAL safe end
+    /// (see <see cref="FirstBaseline"/>).</summary>
+    LastBaseline = 8,
 }
 
 /// <summary>Per Phase 3 Task 15 L7 — resolved <c>align-content</c> value

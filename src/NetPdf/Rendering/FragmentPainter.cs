@@ -125,7 +125,6 @@ internal static class FragmentPainter
         var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
         var clipPathRasterReported = false;       // Phase 4 clip-path — once-per-render path() Warning.
         var clipPathSubtreeReported = false;      // Phase 4 clip-path — once-per-render subtree Warning.
-        var borderImageReported = false;          // Phase 4 border-image — once-per-render approximation Info.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -342,7 +341,7 @@ internal static class FragmentPainter
                 && imageCache.TryGet(biEntry.UriKey, out var biImg))
             {
                 PaintBorderImage(page, document, biImg, biEntry.Spec, style, pageHeightPt,
-                    leftPx, topPx, widthPx, heightPx, diagnostics, ref borderImageReported);
+                    leftPx, topPx, widthPx, heightPx);
                 borderImagePainted = true;
             }
 
@@ -1250,8 +1249,7 @@ internal static class FragmentPainter
     private static void PaintBorderImage(
         PdfPage page, PdfDocument document, ImageResourceCache.Entry entry, CssBorderImage spec,
         ComputedStyle style, double pageHeightPt,
-        double leftPx, double topPx, double widthPx, double heightPx,
-        IDiagnosticsSink? diagnostics, ref bool borderImageReported)
+        double leftPx, double topPx, double widthPx, double heightPx)
     {
         var bt = UsedBorderEdgeWidthPx(style, PropertyId.BorderTopStyle, PropertyId.BorderTopWidth);
         var br = UsedBorderEdgeWidthPx(style, PropertyId.BorderRightStyle, PropertyId.BorderRightWidth);
@@ -1259,21 +1257,12 @@ internal static class FragmentPainter
         var bl = UsedBorderEdgeWidthPx(style, PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth);
         if (!(bt > 0 || br > 0 || bb > 0 || bl > 0)) return; // no border area to fill
 
-        // Slice offsets → image fractions (negative sentinel = an image-pixel offset, resolved here).
+        // Slice offsets → image fractions (negative sentinel = an image-pixel offset, resolved here). The
+        // non-stretch-repeat / width / outset approximations are diagnosed at collection (PR-229 review [P3]).
         var sl = SliceFrac(spec.SliceLeftFrac, entry.WidthPx);
         var sr = SliceFrac(spec.SliceRightFrac, entry.WidthPx);
         var st = SliceFrac(spec.SliceTopFrac, entry.HeightPx);
         var sb = SliceFrac(spec.SliceBottomFrac, entry.HeightPx);
-
-        if ((spec.RepeatX != BorderImageRepeat.Stretch || spec.RepeatY != BorderImageRepeat.Stretch)
-            && !borderImageReported)
-        {
-            diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssBorderImageUnsupported001,
-                "A non-stretch border-image-repeat (repeat / round / space) was painted STRETCHED — edge "
-                + "tiling is a tracked follow-up; the sliced image still fills the border.",
-                DiagnosticSeverity.Info));
-            borderImageReported = true;
-        }
 
         var imageRef = ImageResourceCache.GetOrRegister(document, entry);
         var innerW = widthPx - bl - br;

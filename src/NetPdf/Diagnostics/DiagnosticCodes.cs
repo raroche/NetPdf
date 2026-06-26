@@ -212,6 +212,16 @@ internal static class DiagnosticCodes
     public const string CssMaskElementUnsupported001 = "CSS-MASK-ELEMENT-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — an <c>&lt;a href&gt;</c> hyperlink was NOT emitted as a PDF <c>/Link</c> annotation because
+    /// its URI scheme is not on the safe allowlist (<c>http</c> / <c>https</c> / <c>mailto</c>). Blocked
+    /// schemes include <c>file:</c>, <c>data:</c>, <c>javascript:</c>, <c>ftp:</c>, custom schemes, and a
+    /// relative href that can't resolve against a safe <c>http(s)</c> base. The link text still renders;
+    /// only the clickable annotation is dropped. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LinkUriUnsupported001 = "LINK-URI-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

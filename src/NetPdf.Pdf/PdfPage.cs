@@ -987,6 +987,11 @@ internal sealed class PdfPage
         (_annotations ??= new List<PdfObject>()).Add(annot);
     }
 
+    /// <summary>Phase 4 links (PR 4) — the page's pending annotation dictionaries (direct objects), which
+    /// <see cref="PdfDocument.SaveTo"/> promotes to INDIRECT objects + references from <c>/Annots</c> (ISO
+    /// 32000 §12.5.2: a page's <c>/Annots</c> entries are indirect references). Null when no annotations.</summary>
+    internal IReadOnlyList<PdfObject>? PendingAnnotations => _annotations;
+
     private static char HexNibble(int value) => "0123456789ABCDEF"[value & 0xF];
 
     private static void AppendNumber(StringBuilder sb, double value)
@@ -1030,13 +1035,9 @@ internal sealed class PdfPage
             .Set(PdfNames.MediaBox, mediaBox)
             .Set(PdfNames.Contents, ContentsRef);
 
-        // Phase 4 links (PR 4) — the page's hyperlink annotations (direct dicts in /Annots).
-        if (_annotations is { Count: > 0 })
-        {
-            var annots = new PdfArray();
-            foreach (var a in _annotations) annots.Add(a);
-            pageDict.Set(PdfNames.Annots, annots);
-        }
+        // Phase 4 links (PR 4) — the page's /Annots array is built by PdfDocument.SaveTo, which promotes
+        // each annotation to an INDIRECT object (ISO 32000 §12.5.2) and references it here. See
+        // PendingAnnotations.
 
         return (pageDict, _contentBuffer.WrittenSpan.ToArray());
     }

@@ -58,6 +58,28 @@ public sealed class CssMaskPaintTests
     }
 
     [Fact]
+    public void Later_mask_image_none_overrides_earlier_mask_shorthand()
+    {
+        // PR-229 review [P2] cascade order: `mask: url(...)` then a LATER `mask-image: none` → unmasked.
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{DataPng()}\" style=\"width:32px;height:32px;mask:url({DataPng()});mask-image:none\">" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssMaskRasterFallback001);
+    }
+
+    [Fact]
+    public void Later_mask_shorthand_overrides_earlier_mask_image_none()
+    {
+        // The reverse: `mask-image: none` then a LATER `mask: url(...)` → masked.
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{DataPng()}\" style=\"width:32px;height:32px;mask-image:none;mask:url({DataPng()})\">" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssMaskRasterFallback001);
+    }
+
+    [Fact]
     public void No_mask_emits_no_mask_diagnostics()
     {
         var html = "<!DOCTYPE html><html><body>" +

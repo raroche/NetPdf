@@ -52,4 +52,63 @@ public sealed class BorderImagePaintTests
             "</body></html>"));
         Assert.Contains("0 0 0 rg", text);                    // the normal border paints
     }
+
+    // ---- PR-229 review fixes ----
+
+    [Fact]
+    public void Later_source_none_overrides_earlier_shorthand_by_source_order()
+    {
+        // [P2] cascade order: `border-image: url(...)` then a LATER `border-image-source: none` → no
+        // border-image (the normal solid border paints). Pre-fix the longhand always won regardless of order.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:120px;height:120px;border:30px solid #000;border-image:url({DataUri()}) 30 fill;border-image-source:none\"></div>" +
+            "</body></html>"));
+        Assert.Contains("0 0 0 rg", text);                    // border-image overridden → solid border paints
+    }
+
+    [Fact]
+    public void Later_shorthand_overrides_earlier_source_none_by_source_order()
+    {
+        // The reverse: `border-image-source: none` then a LATER `border-image: url(...)` → the image paints.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:120px;height:120px;border:30px solid #000;border-image-source:none;border-image:url({DataUri()}) 30 fill\"></div>" +
+            "</body></html>"));
+        Assert.Contains("Do", text);                          // border-image wins
+        Assert.DoesNotContain("0 0 0 rg", text);
+    }
+
+    [Fact]
+    public void Border_image_paints_even_with_print_backgrounds_false()
+    {
+        // [P2] border-image paints the BORDER area, which renders regardless of PrintBackgrounds (like a
+        // normal border) — not gated like background-image.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<div style=\"width:120px;height:120px;border:30px solid transparent;border-image:url({DataUri()}) 30 fill\"></div>" +
+            "</body></html>",
+            new HtmlPdfOptions { PrintBackgrounds = false }));
+        Assert.Contains("Do", text);
+    }
+
+    [Fact]
+    public void Width_or_outset_is_diagnosed()
+    {
+        // [P3] an ignored border-image-width / -outset is diagnosed (not just non-stretch repeat).
+        var result = HtmlPdf.ConvertDetailed(Html($"url({DataUri()}) 30 / 10px / 5px"));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBorderImageUnsupported001);
+    }
+
+    [Fact]
+    public void Gradient_source_is_diagnosed_and_not_painted()
+    {
+        // [P3] a non-url() (gradient) border-image-source is unsupported → diagnosed, normal border paints.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:120px;height:120px;border:30px solid #000;border-image:linear-gradient(red,blue) 30\"></div>" +
+            "</body></html>");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBorderImageUnsupported001);
+        Assert.Contains("0 0 0 rg", Latin1(result.Pdf));      // no border-image → solid border paints
+    }
 }

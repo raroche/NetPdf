@@ -463,6 +463,7 @@ internal static class PdfRenderPipeline
         // Phase 4 outlines (PR 4): <h1>–<h6> → the document outline. Collected in page order (= document
         // order) so the level-nesting builds the right tree; the seen-set dedups a split heading.
         var seenHeadings = new System.Collections.Generic.HashSet<AngleSharp.Dom.IElement>();
+        var linkSchemeReported = false; // PR-229 review [P1] — once-per-render blocked-scheme Warning.
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -514,8 +515,10 @@ internal static class PdfRenderPipeline
                 ppMargins.LeftPx, ppMargins.TopPx, diagnostics, effectiveTransforms);
 
             // Hyperlinks (Phase 4 PR 4): <a href> elements → PDF /Link annotations over their fragments.
+            // The href scheme is allowlisted (http/https/mailto) before emitting (PR-229 review [P1]).
             LinkAnnotationCollector.AddLinks(
-                page, bodyFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx);
+                page, bodyFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx,
+                options.BaseUri, diagnostics, ref linkSchemeReported);
 
             // Document outline (Phase 4 PR 4): <h1>–<h6> headings → /Outlines bookmarks.
             OutlineCollector.Collect(

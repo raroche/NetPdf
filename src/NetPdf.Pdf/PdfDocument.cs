@@ -768,6 +768,19 @@ internal sealed class PdfDocument
         foreach (var page in _pages)
         {
             var (pageDict, contentBytes) = page.Finalize();
+            // Phase 4 links (PR 4) — promote the page's annotations to INDIRECT objects and reference them
+            // from /Annots (ISO 32000 §12.5.2: page /Annots entries are indirect references).
+            if (page.PendingAnnotations is { Count: > 0 } annotations)
+            {
+                var annots = new PdfArray();
+                foreach (var annotation in annotations)
+                {
+                    var annotRef = _writer.Objects.Allocate();
+                    _writer.Objects.Assign(annotRef, annotation);
+                    annots.Add(annotRef);
+                }
+                pageDict.Set(PdfNames.Annots, annots);
+            }
             _writer.Objects.Assign(page.PageRef, pageDict);
             // Wrap the content bytes in a PdfStream so the existing writer can length-prefix
             // and emit them. Compression is opt-in (off for now — keeps debugging trivial).

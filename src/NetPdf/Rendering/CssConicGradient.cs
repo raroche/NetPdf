@@ -125,16 +125,19 @@ internal static class CssConicGradient_Parser
             var tail = t.Substring(lastSpace + 1);
             if (!tail.Contains(')')) // not part of a function color tail like rgb(…)
             {
+                // Out-of-range angular positions (e.g. -180deg, 540deg) are LEGAL and shape the
+                // interpolation / repeating period (PR 226 review [P1]) — keep them raw; the painter
+                // clips to [0, 1] only when building the visible sweep.
                 if (tail.EndsWith("%", StringComparison.Ordinal))
                 {
                     if (!double.TryParse(tail.AsSpan(0, tail.Length - 1), NumberStyles.Float,
                             CultureInfo.InvariantCulture, out var pct)) return false;
-                    stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), Math.Clamp(pct / 100.0, 0.0, 1.0));
+                    stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), pct / 100.0);
                     return true;
                 }
                 if (TryAngleDeg(tail, out var deg))
                 {
-                    stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), Math.Clamp(deg / 360.0, 0.0, 1.0));
+                    stop = new CssGradientStop(t.Substring(0, lastSpace).Trim(), deg / 360.0);
                     return true;
                 }
             }
@@ -143,8 +146,10 @@ internal static class CssConicGradient_Parser
         return true;
     }
 
-    /// <summary>Parse a CSS <c>&lt;angle&gt;</c> (deg/grad/rad/turn) to degrees in [0, 360). A bare
-    /// finite <c>0</c> is also accepted (angle keyword grammar).</summary>
+    /// <summary>Parse a CSS <c>&lt;angle&gt;</c> (deg/grad/rad/turn) to RAW degrees — NOT wrapped to
+    /// [0, 360): a conic stop at <c>540deg</c> is 1.5 turns (out of range, kept raw for the painter's
+    /// clip — PR 226 review [P1]); the <c>from</c> angle is a rotation, so its raw value is equivalent
+    /// mod 360 anyway. A bare finite <c>0</c> is also accepted (angle keyword grammar).</summary>
     private static bool TryAngleDeg(string token, out double deg)
     {
         deg = 0;
@@ -161,7 +166,7 @@ internal static class CssConicGradient_Parser
                 if (double.TryParse(t.AsSpan(0, t.Length - unit.Length), NumberStyles.Float,
                         CultureInfo.InvariantCulture, out var v))
                 {
-                    deg = ((v * factor) % 360 + 360) % 360;
+                    deg = v * factor;
                     return true;
                 }
                 return false;

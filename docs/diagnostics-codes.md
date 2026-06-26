@@ -51,6 +51,7 @@ Severity levels:
 | `CSS-CLIP-PATH-RASTER-FALLBACK-001` | Info | `clip-path: path()` triggered raster fallback. |
 | `CSS-MASK-RASTER-FALLBACK-001` | Info | `mask`/`mask-image` triggered raster fallback. |
 | `CSS-CONIC-GRADIENT-RASTER-001` | Info | A `conic-gradient` / `repeating-conic-gradient` was painted via the Skia sweep-gradient raster fallback (PDF has no native conic shading); placed as an image XObject with an alpha `/SMask`. Once per render. |
+| `CSS-CONIC-GRADIENT-UNSUPPORTED-001` | Warning | A `conic-gradient` / `repeating-conic-gradient` could not be rasterized (the sweep bitmap would exceed the 4096 px / 4 Mpx cap) and was SKIPPED — the background-color shows. Distinct from the Info raster-fallback code. Once per render. |
 | `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | A blurred box-shadow (outset or inset) was painted via the Skia raster fallback. Once per render. |
 | `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not painted exactly was ignored or approximated — an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not), or a blurred shadow (outset or inset) too large to rasterize (painted sharp, over the 4096 px cap). Outset AND inset shadows are otherwise painted. Other layers still paint. Once per render. |
 | `CSS-TEXTSHADOW-BLUR-RASTER-001` | Info | Blurred text-shadow triggered raster fallback. |

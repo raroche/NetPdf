@@ -57,6 +57,17 @@ public sealed class CssConicGradientParserTests
     }
 
     [Fact]
+    public void Out_of_range_angular_stops_keep_raw_positions()
+    {
+        // CSS allows stops before 0 and after 1 turn; they must NOT be clamped/wrapped at parse time
+        // (they shape interpolation + the repeating period — PR 226 review [P1]).
+        var g = CssConicGradient_Parser.TryParse("conic-gradient(white -180deg, black 540deg)");
+        Assert.NotNull(g);
+        Assert.Equal(-0.5, g!.Stops[0].Position!.Value, precision: 4); // -180deg = -0.5 turn
+        Assert.Equal(1.5, g.Stops[1].Position!.Value, precision: 4);   // 540deg = 1.5 turn
+    }
+
+    [Fact]
     public void Percentage_stop_positions_parse()
     {
         var g = CssConicGradient_Parser.TryParse("conic-gradient(red 0%, blue 50%)");

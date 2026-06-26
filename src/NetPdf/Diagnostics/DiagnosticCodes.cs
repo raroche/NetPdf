@@ -126,6 +126,15 @@ internal static class DiagnosticCodes
     public const string CssConicGradientRaster001 = "CSS-CONIC-GRADIENT-RASTER-001";
 
     /// <summary>
+    /// Phase 4 — a <c>conic-gradient</c> / <c>repeating-conic-gradient</c> could NOT be rasterized
+    /// because the sweep bitmap would exceed the 4096 px (or 4 Mpx total) cap, so the gradient was
+    /// SKIPPED (the background-color shows). Distinct from the Info <see cref="CssConicGradientRaster001"/>
+    /// (a successful raster fallback) so the over-cap loss reads as a Warning. Once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssConicGradientUnsupported001 = "CSS-CONIC-GRADIENT-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

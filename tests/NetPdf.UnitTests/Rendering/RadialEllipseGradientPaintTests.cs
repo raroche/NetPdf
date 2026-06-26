@@ -52,4 +52,17 @@ public sealed class RadialEllipseGradientPaintTests
         var text = Latin1(HtmlPdf.Convert(Html(120, 40, "radial-gradient(ellipse closest-side, red, blue)")));
         Assert.Contains("cm /Sh", text);
     }
+
+    [Fact]
+    public void Radial_length_stop_resolves_against_the_rightward_radius_rx()
+    {
+        // On a 40×200 box, ellipse closest-side → rx = 20px (half width), ry = 100px. A `blue 50px`
+        // stop is 50/rx = 2.5 (beyond the ending shape), so the visible edge (offset 1) is
+        // mix(red, blue, 1/2.5 = 0.4) = (0.6, 0, 0.4). Resolving against max(rx,ry)=100px would
+        // (wrongly) place blue at 0.5 (PR 226 review [P2]).
+        var text = Latin1(HtmlPdf.Convert(Html(40, 200, "radial-gradient(ellipse closest-side, red, blue 50px)")));
+        Assert.Contains("/ShadingType 3", text);
+        Assert.Contains("0.6 0 0.4", text);             // the edge mix from resolving against rx = 20px
+        Assert.DoesNotContain("/C1 [0 0 1]", text);      // pure blue would only appear if resolved against max(rx,ry)
+    }
 }

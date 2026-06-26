@@ -2,7 +2,11 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using NetPdf;
 using NetPdf.Diagnostics;
 using Xunit;
@@ -18,6 +22,23 @@ public sealed class RepeatingGradientPaintTests
     private static string Latin1(byte[] bytes) => Encoding.Latin1.GetString(bytes);
 
     private static int Count(string haystack, string needle) => haystack.Split(needle).Length - 1;
+
+    private static IEnumerable<double> AllBoundsFlat(string pdf) =>
+        Regex.Matches(pdf, @"/Bounds \[([^\]]*)\]")
+            .SelectMany(m => m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            .Select(s => double.Parse(s, CultureInfo.InvariantCulture));
+
+    [Fact]
+    public void Repeating_period_is_last_minus_first_specified_stop()
+    {
+        // repeating-linear-gradient(to right, red 10px, blue 50px) on a 100px box → period =
+        // (50-10)/100 = 0.4, so the cycle seams fall at 0.1, 0.5, 0.9 (NOT 0.5/0.6 of the buggy
+        // last-offset period). The function /Bounds therefore include 0.9 and NOT 0.6. (PR 226 [P1])
+        var bounds = AllBoundsFlat(
+            Latin1(HtmlPdf.Convert(Html("repeating-linear-gradient(to right, red 10px, blue 50px)")))).ToList();
+        Assert.Contains(bounds, v => Math.Abs(v - 0.9) < 1e-4);
+        Assert.DoesNotContain(bounds, v => Math.Abs(v - 0.6) < 1e-4);
+    }
 
     private static string Html(string gradient) =>
         "<!DOCTYPE html><html><body>" +

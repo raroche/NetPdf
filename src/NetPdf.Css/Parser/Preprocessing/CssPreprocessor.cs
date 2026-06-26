@@ -1219,12 +1219,16 @@ internal static class CssPreprocessor
         return false;
     }
 
-    /// <summary>Phase 4 gradients (PR 1) — the <c>repeating-*-gradient</c> value-function names
-    /// AngleSharp.Css 1.0.0-beta.144 drops from a <c>background-image</c> declaration (the painter
-    /// handles them; <c>conic-gradient</c> + non-repeating linear/radial are KEPT by AngleSharp).</summary>
+    /// <summary>Phase 4 gradients (PR 1) — gradient value-function names AngleSharp.Css 1.0.0-beta.144
+    /// drops (or drops in some forms) from a <c>background-image</c> declaration so the painter never
+    /// sees them: the <c>repeating-*</c> forms always, and <c>conic-gradient</c> when it carries an
+    /// out-of-range angular stop (e.g. <c>-180deg</c> / <c>540deg</c>, which its grammar rejects). The
+    /// recovery is value-gated to these; a duplicate vs an in-range <c>conic-gradient</c> AngleSharp
+    /// kept is benign under last-decl-wins (non-repeating linear/radial in range are kept + not listed).</summary>
     private static readonly FrozenSet<string> DroppedGradientFunctions = new[]
     {
         "repeating-linear-gradient", "repeating-radial-gradient", "repeating-conic-gradient",
+        "conic-gradient",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Phase 4 gradients (PR 1) — <see langword="true"/> when <paramref name="value"/>

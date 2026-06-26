@@ -50,6 +50,20 @@ public sealed class LinearGradientLengthStopPaintTests
     }
 
     [Fact]
+    public void Out_of_range_stops_tint_the_visible_endpoints()
+    {
+        // red -50px, blue 150px on a 100px `to right` box → red@-0.5, blue@1.5. The visible line [0,1]
+        // shows the INTERPOLATED slice: color at 0 = mix(red,blue, 0.5/2.0 = 0.25) = (0.75, 0, 0.25),
+        // at 1 = mix(red,blue, 1.5/2.0 = 0.75) = (0.25, 0, 0.75). Out-of-range stops are NOT clamped to
+        // the box ends (PR 226 review [P1]).
+        var text = Latin1(HtmlPdf.Convert(Html("linear-gradient(to right, red -50px, blue 150px)")));
+        Assert.Contains("/ShadingType 2", text);
+        Assert.Contains("0.75 0 0.25", text);          // the start-edge mix (C0)
+        Assert.Contains("0.25 0 0.75", text);          // the end-edge mix (C1)
+        Assert.DoesNotContain("/C0 [1 0 0]", text);     // pure red never reaches the visible line
+    }
+
+    [Fact]
     public void Absolute_unit_stop_renders_a_native_shading()
     {
         // 0.75in = 72px on a 96px box → fraction 0.75.

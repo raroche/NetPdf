@@ -1762,8 +1762,33 @@ internal static class FragmentPainter
         IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx,
         bool repeating = false)
     {
+        var normalized = ResolveAndNormalizeStops(gradientStops, currentColorArgb, lineLengthCssPx, repeating);
+        var result = new List<PdfGradientStop>(normalized.Count);
+        foreach (var s in normalized) result.Add(new PdfGradientStop(s.Offset, s.R, s.G, s.B)); // native shading drops alpha
+        return result;
+    }
+
+    private const int GradientMaxReplicatedStops = 1024; // safety cap on repeating-gradient expansion
+    private const double GradientPeriodEpsilon = 1e-9;    // a period ≤ this is degenerate (average-color)
+
+    /// <summary>Phase 4 gradients — one fully-resolved gradient stop: an offset (a fraction of the
+    /// gradient line) + a premultiply-free DeviceRGB color with per-stop alpha.</summary>
+    private readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
+
+    /// <summary>Phase 4 gradients (PR 1 review) — the SHARED stop pipeline for linear / radial / conic.
+    /// Resolves each stop's color + position (a length resolves against <paramref name="lineLengthCssPx"/>),
+    /// applies the CSS Images §3.4 defaults (missing first → 0, last → 1, interior spread evenly) and the
+    /// non-decreasing fixup WITHOUT clamping to [0, 1] (out-of-range stops are legal and shape the
+    /// interpolation — PR 226 review [P1]). For a REPEATING gradient the PERIOD is
+    /// <c>last − first</c> specified position (NOT just the last); prior + next cycles are tiled so the
+    /// whole [0, 1] line is covered, and a zero-width period collapses to the average color. Finally the
+    /// covering stops are CLIPPED to [0, 1] by inserting boundary stops whose colors are interpolated from
+    /// the surrounding raw stops — so the visible PDF function / sweep only ever sees offsets in [0, 1].</summary>
+    private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
+    {
         var n = gradientStops.Count;
-        var rgb = new (double R, double G, double B)[n];
+        var col = new (double R, double G, double B, double A)[n];
         var pos = new double?[n];
         var ok = new bool[n];
         for (var i = 0; i < n; i++)
@@ -1774,17 +1799,15 @@ internal static class FragmentPainter
             if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
             {
                 ColorChannels(argb, out var r, out var g, out var b);
-                rgb[i] = (r, g, b);
+                col[i] = (r, g, b, Alpha(argb) / 255.0);
                 ok[i] = true;
             }
-            // A length-positioned stop (PR 1 refinements) resolves to a fraction of the gradient-line
-            // length; a %-positioned stop is already a fraction; null = unpositioned.
             pos[i] = s.Position
                 ?? (s.PositionPx is { } px && lineLengthCssPx > 0 ? px / lineLengthCssPx : (double?)null);
         }
 
-        // §3.4 position defaults + even spread + non-decreasing clamp (over ALL stops first,
-        // so an unresolved stop still anchors positions correctly), then drop the unresolved.
+        // §3.4 defaults + even interior spread (over ALL stops so an unresolved stop still anchors
+        // positions), NOT clamped to [0, 1].
         if (pos[0] is null) pos[0] = 0.0;
         if (pos[n - 1] is null) pos[n - 1] = 1.0;
         for (var i = 1; i < n - 1; i++)
@@ -1799,36 +1822,93 @@ internal static class FragmentPainter
                 pos[k] = prev + (next - prev) * (k - (i - 1)) / span;
             i = j - 1;
         }
-        var running = 0.0;
-        var basePeriod = new List<PdfGradientStop>(n);
+        // Non-decreasing fixup (CSS Images §3.4.3) — a stop never precedes the prior one — keeping raw,
+        // possibly out-of-range positions (running starts at −∞ so a negative first stop survives).
+        var running = double.NegativeInfinity;
+        var raw = new List<ResolvedGradientStop>(n);
         for (var i = 0; i < n; i++)
         {
-            var p = Math.Clamp(pos[i]!.Value, 0.0, 1.0);
+            var p = pos[i]!.Value;
             if (p < running) p = running; else running = p;
-            if (ok[i]) basePeriod.Add(new PdfGradientStop(p, rgb[i].R, rgb[i].G, rgb[i].B));
+            if (ok[i]) raw.Add(new ResolvedGradientStop(p, col[i].R, col[i].G, col[i].B, col[i].A));
         }
+        if (raw.Count == 0) return raw;
+        if (raw.Count == 1)
+            return [raw[0] with { Offset = Math.Clamp(raw[0].Offset, 0.0, 1.0) }];
 
-        // repeating-linear / repeating-radial (PR 1 refinements) — the resolved range [0, lastOffset]
-        // is one PERIOD tiled across the full gradient line, so the native PDF shading repeats (no
-        // raster). A period of ≥ 1 turn (e.g. unpositioned stops → last at 1.0) doesn't repeat ≡ the
-        // plain gradient. Bounded by GradientMaxReplicatedStops so a tiny period can't explode the list.
-        var period = basePeriod.Count > 0 ? basePeriod[^1].Offset : 0.0;
-        if (!repeating || period <= 0.0 || period >= 1.0) return basePeriod;
-        var result = new List<PdfGradientStop>();
-        for (var rep = 0; rep * period < 1.0 && result.Count < GradientMaxReplicatedStops; rep++)
-        {
-            var shift = rep * period;
-            foreach (var s in basePeriod)
-            {
-                var p = Math.Min(1.0, s.Offset + shift);
-                result.Add(s with { Offset = p });
-                if (s.Offset + shift >= 1.0 || result.Count >= GradientMaxReplicatedStops) break;
-            }
-        }
-        return result;
+        var covering = repeating ? TileRepeatingStops(raw) : raw;
+        return ClipStopsToUnitInterval(covering);
     }
 
-    private const int GradientMaxReplicatedStops = 512; // safety cap on repeating-gradient expansion
+    /// <summary>Tile a repeating gradient: the PERIOD is the last − first specified offset; cycles are
+    /// generated shifted by every integer multiple of the period that overlaps [0, 1] (so the partial
+    /// cycles before the first stop and after the last are present). A zero-width period (all stops
+    /// coincident) collapses to the average color (CSS Images §3.4.3). Bounded by
+    /// <see cref="GradientMaxReplicatedStops"/>.</summary>
+    private static List<ResolvedGradientStop> TileRepeatingStops(List<ResolvedGradientStop> raw)
+    {
+        var first = raw[0].Offset;
+        var last = raw[^1].Offset;
+        var period = last - first;
+        if (period <= GradientPeriodEpsilon)
+        {
+            double r = 0, g = 0, b = 0, a = 0;
+            foreach (var s in raw) { r += s.R; g += s.G; b += s.B; a += s.A; }
+            var avg = new ResolvedGradientStop(0, r / raw.Count, g / raw.Count, b / raw.Count, a / raw.Count);
+            return [avg, avg with { Offset = 1.0 }]; // a solid fill (two coincident-color endpoints)
+        }
+        var kMin = (int)Math.Floor((0.0 - first) / period);
+        var kMax = (int)Math.Ceiling((1.0 - last) / period);
+        var covering = new List<ResolvedGradientStop>((kMax - kMin + 1) * raw.Count);
+        for (var k = kMin; k <= kMax && covering.Count < GradientMaxReplicatedStops; k++)
+        {
+            var shift = k * period;
+            foreach (var s in raw)
+            {
+                covering.Add(s with { Offset = s.Offset + shift });
+                if (covering.Count >= GradientMaxReplicatedStops) break;
+            }
+        }
+        return covering;
+    }
+
+    /// <summary>Clip non-decreasing <paramref name="stops"/> (offsets possibly outside [0, 1]) to the
+    /// [0, 1] gradient line: a boundary stop at 0 and 1 carries the color INTERPOLATED from the
+    /// surrounding raw stops (so a stop at −50px / 150px still tints the visible ends), and only the
+    /// strictly-interior raw stops are kept between them.</summary>
+    private static List<ResolvedGradientStop> ClipStopsToUnitInterval(List<ResolvedGradientStop> stops)
+    {
+        var (r0, g0, b0, a0) = ColorAt(stops, 0.0);
+        var (r1, g1, b1, a1) = ColorAt(stops, 1.0);
+        var res = new List<ResolvedGradientStop>(stops.Count + 2) { new(0.0, r0, g0, b0, a0) };
+        foreach (var s in stops)
+            if (s.Offset > 0.0 && s.Offset < 1.0) res.Add(s);
+        res.Add(new ResolvedGradientStop(1.0, r1, g1, b1, a1));
+        return res;
+    }
+
+    /// <summary>The interpolated color at offset <paramref name="t"/> along non-decreasing
+    /// <paramref name="stops"/>. Outside the stop range the nearest end color is held; a zero-width
+    /// (hard-stop) segment is skipped so the boundary lands on the segment just after it.</summary>
+    private static (double R, double G, double B, double A) ColorAt(List<ResolvedGradientStop> stops, double t)
+    {
+        if (t <= stops[0].Offset) return (stops[0].R, stops[0].G, stops[0].B, stops[0].A);
+        var lastStop = stops[^1];
+        if (t >= lastStop.Offset) return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);
+        for (var i = 0; i < stops.Count - 1; i++)
+        {
+            var a = stops[i];
+            var b = stops[i + 1];
+            if (a.Offset <= t && t <= b.Offset)
+            {
+                var span = b.Offset - a.Offset;
+                if (span <= 0) continue; // hard stop — fall through to the next positive-width segment
+                var f = (t - a.Offset) / span;
+                return (a.R + (b.R - a.R) * f, a.G + (b.G - a.G) * f, a.B + (b.B - a.B) * f, a.A + (b.A - a.A) * f);
+            }
+        }
+        return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);
+    }
 
     /// <summary>Phase 4 gradients — the gradient-line endpoints (offset 0 → 1) in PDF user
     /// space for a CSS <c>linear-gradient</c> <paramref name="angleDeg"/> (0° = "to top",
@@ -1935,10 +2015,12 @@ internal static class FragmentPainter
         var baseRadius = Math.Max(rx, ry);
         if (!(baseRadius > 0)) return;
 
-        // A length-positioned stop (PR 1 refinements) resolves against the ending radius in CSS px;
-        // the extent formula is homogeneous degree 1, so radiusCssPx = radiusPt / PointsPerPixel.
+        // A length-positioned stop resolves against the gradient RAY — the rightward radius rx, where
+        // it intersects the ending shape (CSS Images §3.2; PR 226 review [P2] — NOT max(rx, ry), which
+        // placed stops too early on tall/narrow ellipses). rx is in pt, homogeneous degree 1, so
+        // rxCssPx = rx / PointsPerPixel.
         var stops = ResolveGradientStops(
-            radial.Stops, currentColorArgb, baseRadius / PdfUnits.PointsPerPixel, radial.Repeating);
+            radial.Stops, currentColorArgb, rx / PdfUnits.PointsPerPixel, radial.Repeating);
         if (stops.Count < 2) return;
 
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
@@ -1987,11 +2069,12 @@ internal static class FragmentPainter
 
         if (result is null)
         {
-            // Over-cap / degenerate raster → skip (the background-color shows) but SURFACE it.
+            // Over-cap / degenerate raster → skip (the background-color shows) but SURFACE it as a
+            // Warning under a DISTINCT code (the raster-fallback code stays Info-only — PR 226 [P2]).
             if (!capReported)
             {
                 diagnostics?.Emit(new Diagnostic(
-                    DiagnosticCodes.CssConicGradientRaster001,
+                    DiagnosticCodes.CssConicGradientUnsupported001,
                     "A conic-gradient was too large to rasterize (the sweep bitmap would exceed the "
                     + $"{NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); the "
                     + "background-color shows instead.",
@@ -2021,79 +2104,19 @@ internal static class FragmentPainter
         }
     }
 
-    private const int ConicMaxReplicatedStops = 512; // safety cap on repeating-conic expansion
-
     /// <summary>Phase 4 gradients — resolve a conic gradient's stops to the rasterizer's
-    /// (turn-fraction, RGBA) form, KEEPING per-stop alpha (the raster carries an /SMask). Mirrors
-    /// <see cref="ResolveGradientStops"/>'s §3.4 position defaults (missing first → 0, last → 1,
-    /// interior spread evenly, non-decreasing), then drops unresolved stops. For a
-    /// <c>repeating-conic-gradient</c> the resolved range [0, lastPos] is one PERIOD that is tiled
-    /// across the full turn (bounded by <see cref="ConicMaxReplicatedStops"/>), so the sweep repeats
-    /// per CSS Images L4 §3.4.</summary>
+    /// (turn-fraction, RGBA) form via the shared <see cref="ResolveAndNormalizeStops"/> pipeline,
+    /// KEEPING per-stop alpha (the raster carries an /SMask). Conic positions are angular (turn
+    /// fractions), so there is no length resolution (lineLength = 0); the §3.4 defaults, the
+    /// <c>last − first</c> repeating period, the out-of-range handling, and the [0, 1] clip are all
+    /// shared with linear / radial (PR 226 review [P1]).</summary>
     private static List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop> ResolveConicStops(
         CssConicGradient conic, uint currentColorArgb, bool repeating)
     {
-        var gradientStops = conic.Stops;
-        var n = gradientStops.Count;
-        var rgba = new (double R, double G, double B, double A)[n];
-        var pos = new double?[n];
-        var ok = new bool[n];
-        for (var i = 0; i < n; i++)
-        {
-            var s = gradientStops[i];
-            var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
-                s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
-            if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
-            {
-                ColorChannels(argb, out var r, out var g, out var b);
-                rgba[i] = (r, g, b, Alpha(argb) / 255.0);
-                ok[i] = true;
-            }
-            pos[i] = s.Position;
-        }
-
-        if (pos[0] is null) pos[0] = 0.0;
-        if (pos[n - 1] is null) pos[n - 1] = 1.0;
-        for (var i = 1; i < n - 1; i++)
-        {
-            if (pos[i] is not null) continue;
-            var j = i + 1;
-            while (j < n && pos[j] is null) j++;
-            var prev = pos[i - 1]!.Value;
-            var next = pos[j]!.Value;
-            var span = j - (i - 1);
-            for (var k = i; k < j; k++)
-                pos[k] = prev + (next - prev) * (k - (i - 1)) / span;
-            i = j - 1;
-        }
-        var running = 0.0;
-        var basePeriod = new List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop>(n);
-        for (var i = 0; i < n; i++)
-        {
-            var p = Math.Clamp(pos[i]!.Value, 0.0, 1.0);
-            if (p < running) p = running; else running = p;
-            if (ok[i]) basePeriod.Add(new NetPdf.Pdf.Images.ConicGradientRasterizer.Stop(
-                p, rgba[i].R, rgba[i].G, rgba[i].B, rgba[i].A));
-        }
-
-        // Non-repeating, or a period that already spans (≥) the full turn → use the stops as-is.
-        var period = basePeriod.Count > 0 ? basePeriod[^1].Position : 0.0;
-        if (!repeating || period <= 0.0 || period >= 1.0) return basePeriod;
-
-        // Tile the [0, period] pattern across [0, 1] (CSS repeating gradient), bounded so a tiny
-        // period can't explode the stop list.
-        var result = new List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop>();
-        for (var rep = 0; rep * period < 1.0 && result.Count < ConicMaxReplicatedStops; rep++)
-        {
-            var shift = rep * period;
-            foreach (var s in basePeriod)
-            {
-                var p = s.Position + shift;
-                if (p > 1.0) p = 1.0;
-                result.Add(s with { Position = p });
-                if (s.Position + shift >= 1.0 || result.Count >= ConicMaxReplicatedStops) break;
-            }
-        }
+        var normalized = ResolveAndNormalizeStops(conic.Stops, currentColorArgb, lineLengthCssPx: 0.0, repeating);
+        var result = new List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop>(normalized.Count);
+        foreach (var s in normalized)
+            result.Add(new NetPdf.Pdf.Images.ConicGradientRasterizer.Stop(s.Offset, s.R, s.G, s.B, s.A));
         return result;
     }
 

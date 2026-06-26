@@ -410,9 +410,10 @@ internal sealed class ImageResourceCache
         if (reported) return;
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.CssBoxShadowUnsupported001,
-            "A box-shadow form not painted yet was ignored — an inset shadow (the first cut "
-            + "paints OUTSET shadows only) or an offset/blur/spread in a unit the parser can't "
-            + "resolve (px + absolute units supported; em/rem/% not). Other layers still paint.",
+            "A box-shadow value was ignored — an offset/blur/spread used a unit the parser can't "
+            + "resolve (px + absolute units supported; em/rem/% not), so the whole value was dropped. "
+            + "Both outset and inset shadows are otherwise painted (an oversize blur falls back to a "
+            + "sharp shadow with this same code).",
             DiagnosticSeverity.Warning));
         reported = true;
     }

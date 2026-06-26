@@ -130,14 +130,13 @@ public sealed class CssLinearGradientParserTests
     [Theory]
     [InlineData("linear-gradient(red 20px, blue)", 20.0)] // px
     [InlineData("linear-gradient(red 1in, blue)", 96.0)]  // absolute unit → CSS px
+    [InlineData("linear-gradient(red -50px, blue 150px)", -50.0)] // negative (out of range) — kept raw
     public void Length_positioned_stops_carry_a_px_position(string value, double expectedPx)
     {
         var g = CssLinearGradient_Parser.TryParse(value);
         Assert.NotNull(g);
         Assert.Null(g!.Stops[0].Position);                 // not a fraction
         Assert.Equal(expectedPx, g.Stops[0].PositionPx!.Value, precision: 4);
-        Assert.Null(g.Stops[1].Position);                  // trailing bare color → unpositioned
-        Assert.Null(g.Stops[1].PositionPx);
     }
 
     [Theory]

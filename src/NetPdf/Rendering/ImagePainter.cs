@@ -151,7 +151,7 @@ internal static class ImagePainter
         if (spec.Filter is { } filter
             && ImageFilterBridge.TryBuildSteps(filter, FragmentPainter.ResolveCurrentColor(style), out var steps))
         {
-            var key = ImageFilterBridge.FilterKey(filter);
+            var key = ImageFilterBridge.FilterKey(steps); // keyed on the RESOLVED steps (incl. shadow RGBA)
             var filtered = ImageResourceCache.GetOrRegisterFiltered(document, entry, steps, key);
             if (filtered is { } f)
             {

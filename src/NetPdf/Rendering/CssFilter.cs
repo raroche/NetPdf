@@ -70,13 +70,16 @@ internal static class CssFilter_Parser
                 if (!CssLengthParsing.TryLengthPx(args, out var blurPx) || blurPx < 0) return false;
                 op = new FilterOp(FilterKind.Blur, blurPx);
                 return true;
-            case "brightness": return Proportional(FilterKind.Brightness, args, defaultAmount: 1.0, out op);
-            case "contrast": return Proportional(FilterKind.Contrast, args, defaultAmount: 1.0, out op);
-            case "saturate": return Proportional(FilterKind.Saturate, args, defaultAmount: 1.0, out op);
-            case "grayscale": return Proportional(FilterKind.Grayscale, args, defaultAmount: 0.0, out op);
-            case "invert": return Proportional(FilterKind.Invert, args, defaultAmount: 0.0, out op);
-            case "sepia": return Proportional(FilterKind.Sepia, args, defaultAmount: 0.0, out op);
-            case "opacity": return Proportional(FilterKind.Opacity, args, defaultAmount: 1.0, out op);
+            // All proportional functions default to 1 when the argument is OMITTED (CSS Filter
+            // Effects §2 — `grayscale()` ≡ `grayscale(1)`). grayscale / invert / sepia / opacity clamp
+            // amounts above 1 to 1 (§2.x); brightness / contrast / saturate may exceed 1 (no upper clamp).
+            case "brightness": return Proportional(FilterKind.Brightness, args, clampToOne: false, out op);
+            case "contrast": return Proportional(FilterKind.Contrast, args, clampToOne: false, out op);
+            case "saturate": return Proportional(FilterKind.Saturate, args, clampToOne: false, out op);
+            case "grayscale": return Proportional(FilterKind.Grayscale, args, clampToOne: true, out op);
+            case "invert": return Proportional(FilterKind.Invert, args, clampToOne: true, out op);
+            case "sepia": return Proportional(FilterKind.Sepia, args, clampToOne: true, out op);
+            case "opacity": return Proportional(FilterKind.Opacity, args, clampToOne: true, out op);
             case "hue-rotate":
                 if (args.Length == 0) { op = new FilterOp(FilterKind.HueRotate, 0); return true; }
                 if (!TryAngleDeg(args, out var deg)) return false;
@@ -92,12 +95,14 @@ internal static class CssFilter_Parser
     }
 
     /// <summary>A proportional function argument: a <c>&lt;number&gt;</c> or <c>&lt;percentage&gt;</c>
-    /// (100% = 1.0), non-negative, defaulting to <paramref name="defaultAmount"/> when omitted.</summary>
-    private static bool Proportional(FilterKind kind, string args, double defaultAmount, out FilterOp op)
+    /// (100% = 1.0), non-negative, defaulting to 1 when omitted. <paramref name="clampToOne"/> clamps
+    /// the amount above 1 to 1 (grayscale / invert / sepia / opacity); the others keep amounts &gt; 1.</summary>
+    private static bool Proportional(FilterKind kind, string args, bool clampToOne, out FilterOp op)
     {
         op = default;
-        if (args.Length == 0) { op = new FilterOp(kind, defaultAmount); return true; }
+        if (args.Length == 0) { op = new FilterOp(kind, 1.0); return true; } // `grayscale()` ≡ `grayscale(1)`
         if (!TryNumberOrPercent(args, out var amount) || amount < 0) return false;
+        if (clampToOne && amount > 1.0) amount = 1.0;
         op = new FilterOp(kind, amount);
         return true;
     }

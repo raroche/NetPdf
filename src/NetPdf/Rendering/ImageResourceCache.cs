@@ -200,6 +200,7 @@ internal sealed class ImageResourceCache
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported);
 
+        var filterValueReported = false; // Phase 4 filters — once-per-render unparseable-value Warning.
         foreach (var (box, rawUrl, isBackground) in references)
         {
             var key = await ResolveAndFetchAsync(
@@ -230,10 +231,24 @@ internal sealed class ImageResourceCache
                 // filter (Phase 4 PR 2) — the box's OWN declared value (filter doesn't inherit),
                 // parsed into the function chain; the painter applies it to the decoded image.
                 var filterRaw = imgRules?.GetWinner("filter")?.ResolvedValue;
-                var filter = !string.IsNullOrWhiteSpace(filterRaw)
-                    && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
-                    ? CssFilter_Parser.TryParse(filterRaw)
-                    : null;
+                CssFilter? filter = null;
+                if (!string.IsNullOrWhiteSpace(filterRaw)
+                    && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    filter = CssFilter_Parser.TryParse(filterRaw);
+                    // A non-none value that won't parse (url(#id) SVG ref, unknown function, bad arg /
+                    // color) is DROPPED — surface it (PR 227 review [P2]) instead of silently ignoring.
+                    if (filter is null && !filterValueReported)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.CssFilterUnsupported001,
+                            "A CSS filter value on an <img> could not be parsed (a url(#id) SVG-filter "
+                            + "reference, an unknown function, or a bad argument / color); the filter was "
+                            + "dropped and the image painted unfiltered.",
+                            DiagnosticSeverity.Warning));
+                        filterValueReported = true;
+                    }
+                }
                 cache.ImageBoxes[box] = new ImgSpec(
                     key,
                     box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),

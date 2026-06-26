@@ -60,20 +60,20 @@ internal static class ImageFilterBridge
         return steps.Count > 0;
     }
 
-    /// <summary>A canonical dedup key for a filter (its ordered kinds + amounts), so two
-    /// <c>&lt;img&gt;</c>s with the same source + filter share one filtered XObject.</summary>
-    public static string FilterKey(CssFilter filter)
+    /// <summary>A canonical dedup key for the RESOLVED filter steps (PR 227 review [P1]) — including
+    /// the drop-shadow's RESOLVED RGBA, so two <c>&lt;img&gt;</c>s with the same source + filter TEXT
+    /// but a different resolved <c>currentColor</c> shadow do NOT share one filtered XObject.</summary>
+    public static string FilterKey(IReadOnlyList<ImageFilterStep> steps)
     {
-        var sb = new StringBuilder(filter.Ops.Count * 16);
-        foreach (var op in filter.Ops)
+        static string R(double v) => v.ToString("R", CultureInfo.InvariantCulture);
+        var sb = new StringBuilder(steps.Count * 24);
+        foreach (var s in steps)
         {
-            sb.Append((int)op.Kind).Append(':')
-              .Append(op.Amount.ToString("R", CultureInfo.InvariantCulture));
-            if (op.Shadow is { } s)
-                sb.Append('|').Append(s.OffsetXPx.ToString("R", CultureInfo.InvariantCulture))
-                  .Append(',').Append(s.OffsetYPx.ToString("R", CultureInfo.InvariantCulture))
-                  .Append(',').Append(s.BlurPx.ToString("R", CultureInfo.InvariantCulture))
-                  .Append(',').Append(s.ColorRaw);
+            sb.Append((int)s.Kind).Append(':').Append(R(s.Amount));
+            if (s.Kind == ImageFilterKind.DropShadow)
+                sb.Append('|').Append(R(s.ShadowDx)).Append(',').Append(R(s.ShadowDy))
+                  .Append(',').Append(R(s.ShadowBlur)).Append(',').Append(R(s.ShadowR))
+                  .Append(',').Append(R(s.ShadowG)).Append(',').Append(R(s.ShadowB)).Append(',').Append(R(s.ShadowA));
             sb.Append(';');
         }
         return sb.ToString();

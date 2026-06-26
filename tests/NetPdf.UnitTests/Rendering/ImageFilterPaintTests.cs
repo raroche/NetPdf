@@ -5,6 +5,7 @@ using System;
 using System.Text;
 using NetPdf;
 using NetPdf.Diagnostics;
+using NetPdf.Rendering;
 using NetPdf.UnitTests.Pdf.Images;
 using Xunit;
 
@@ -117,5 +118,28 @@ public sealed class ImageFilterPaintTests
     {
         var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%)"));
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterElementUnsupported001);
+    }
+
+    [Fact]
+    public void An_unparseable_img_filter_is_surfaced_and_paints_unfiltered()
+    {
+        // url(#id) SVG-filter refs (and other unparseable values) are dropped with a Warning, not
+        // silently ignored (PR 227 review [P2]).
+        var result = HtmlPdf.ConvertDetailed(Html("url(#myfilter)"));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterUnsupported001);
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf)); // the image still paints
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Drop_shadow_cache_key_distinguishes_resolved_currentColor()
+    {
+        // Two <img>s with the same source + `drop-shadow(2px 2px)` (no color → currentColor) but a
+        // different element color must NOT share one filtered XObject (PR 227 review [P1]). The dedup
+        // key is built from the RESOLVED steps, so the keys differ.
+        var filter = CssFilter_Parser.TryParse("drop-shadow(2px 2px)")!;
+        Assert.True(ImageFilterBridge.TryBuildSteps(filter, 0xFFFF0000u, out var redSteps));   // currentColor red
+        Assert.True(ImageFilterBridge.TryBuildSteps(filter, 0xFF0000FFu, out var blueSteps));  // currentColor blue
+        Assert.NotEqual(ImageFilterBridge.FilterKey(redSteps), ImageFilterBridge.FilterKey(blueSteps));
     }
 }

@@ -153,6 +153,15 @@ internal static class DiagnosticCodes
     public const string CssFilterElementUnsupported001 = "CSS-FILTER-ELEMENT-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a CSS <c>filter</c> VALUE on an <c>&lt;img&gt;</c> could not be parsed into the
+    /// supported function set (an <c>url(#id)</c> SVG-filter reference, an unknown function, an
+    /// out-of-range / bad argument, or an unresolvable color), so the filter was DROPPED and the image
+    /// painted UNFILTERED. Surfaced once per render so deferred <c>url()</c> filters + bad values are
+    /// visible. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssFilterUnsupported001 = "CSS-FILTER-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

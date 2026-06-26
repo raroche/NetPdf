@@ -130,6 +130,45 @@ public sealed class ImageFilterApplierTests
     }
 
     [Fact]
+    public void Drop_shadow_blur_uses_the_length_as_sigma_directly()
+    {
+        // CSS Filter Effects §2.5 — the drop-shadow blur length IS σ (not 2σ like box-shadow). A
+        // 4×4 image + drop-shadow(0 0 blur=4): pad = 3σ = 12 each side → 28×28 (would be 16×16 if σ
+        // were halved). PR 227 review [P1].
+        var step = new ImageFilterStep(ImageFilterKind.DropShadow, 0,
+            ShadowDx: 0, ShadowDy: 0, ShadowBlur: 4, ShadowR: 0, ShadowG: 0, ShadowB: 0, ShadowA: 1);
+        var raster = ImageFilterApplier.TryFilterToRaster(SolidPng(255, 255, 255), new List<ImageFilterStep> { step });
+        Assert.NotNull(raster);
+        Assert.Equal(28, raster!.Width);
+        Assert.Equal(28, raster.Height);
+    }
+
+    [Fact]
+    public void Oversized_source_is_rejected_at_the_header_before_a_full_decode()
+    {
+        // A 5000-px-wide image exceeds the 4096-px cap; the SKCodec preflight rejects it from the
+        // header (no full pixel decode) — PR 227 review [P1].
+        using var bitmap = new SKBitmap(new SKImageInfo(5000, 8, SKColorType.Rgba8888, SKAlphaType.Opaque));
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        Assert.Null(ImageFilterApplier.TryFilterToRaster(data.ToArray(),
+            new List<ImageFilterStep> { new(ImageFilterKind.Invert, 1.0) }));
+    }
+
+    [Fact]
+    public void Filtered_raster_is_at_the_source_resolution_documented_residual()
+    {
+        // PR 227 review [P2] — filter lengths are applied in the image's INTRINSIC pixel space: the
+        // raster is the source size regardless of display size (the painter scales it). This pins the
+        // documented residual (blur/drop-shadow are exact at ~intrinsic display size).
+        var raster = ImageFilterApplier.TryFilterToRaster(SolidPng(10, 20, 30),
+            new List<ImageFilterStep> { new(ImageFilterKind.Blur, 1.0) });
+        Assert.NotNull(raster);
+        Assert.Equal(4, raster!.Width);   // the 4×4 SOURCE size — not a display size
+        Assert.Equal(4, raster.Height);
+    }
+
+    [Fact]
     public void Undecodable_bytes_return_null()
     {
         Assert.Null(ImageFilterApplier.TryFilterToRaster([0, 1, 2, 3],

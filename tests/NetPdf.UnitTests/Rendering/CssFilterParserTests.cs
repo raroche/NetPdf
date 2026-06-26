@@ -44,10 +44,25 @@ public sealed class CssFilterParserTests
     }
 
     [Fact]
-    public void Bare_functions_use_their_defaults()
+    public void Bare_functions_default_to_one()
     {
-        Assert.Equal(1.0, CssFilter_Parser.TryParse("brightness()")!.Ops[0].Amount, precision: 4); // identity
-        Assert.Equal(0.0, CssFilter_Parser.TryParse("grayscale()")!.Ops[0].Amount, precision: 4);  // none
+        // CSS Filter Effects §2 — an OMITTED amount defaults to 1 for every proportional function
+        // (`grayscale()` ≡ `grayscale(1)` = full grayscale, NOT a no-op).
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("grayscale()")!.Ops[0].Amount, precision: 4);
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("invert()")!.Ops[0].Amount, precision: 4);
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("sepia()")!.Ops[0].Amount, precision: 4);
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("brightness()")!.Ops[0].Amount, precision: 4);
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("opacity()")!.Ops[0].Amount, precision: 4);
+    }
+
+    [Fact]
+    public void Grayscale_invert_sepia_opacity_clamp_above_one_others_do_not()
+    {
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("grayscale(150%)")!.Ops[0].Amount, precision: 4); // clamped
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("invert(2)")!.Ops[0].Amount, precision: 4);        // clamped
+        Assert.Equal(1.0, CssFilter_Parser.TryParse("opacity(300%)")!.Ops[0].Amount, precision: 4);    // clamped
+        Assert.Equal(2.5, CssFilter_Parser.TryParse("brightness(250%)")!.Ops[0].Amount, precision: 4); // NOT clamped
+        Assert.Equal(3.0, CssFilter_Parser.TryParse("saturate(3)")!.Ops[0].Amount, precision: 4);      // NOT clamped
     }
 
     [Fact]

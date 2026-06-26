@@ -69,16 +69,21 @@ internal static class ImageFilterApplier
         ArgumentNullException.ThrowIfNull(steps);
         if (steps.Count == 0) return null;
 
-        // SKBitmap.Decode throws (not returns null) on undecodable bytes — guard it so untrusted
-        // image data can't surface as an unhandled exception.
-        SKBitmap? decoded;
-        try { decoded = SKBitmap.Decode(imageBytes); }
+        // PREFLIGHT (PR 227 review [P1]) — read the image header via SKCodec (NO pixel decode) and
+        // enforce the raster caps on the source AND the padded output dimensions BEFORE the full
+        // decode, so an untrusted large image can't force a huge native decode/allocation just to be
+        // dropped. SKCodec.Create returns null / throws on undecodable bytes.
+        using var data = SKData.CreateCopy(imageBytes);
+        SKCodec? codec;
+        try { codec = SKCodec.Create(data); }
         catch (Exception) { return null; }
-        if (decoded is null) return null;
-        using var src = decoded;
-        if (src.Width <= 0 || src.Height <= 0) return null;
-        var srcW = src.Width;
-        var srcH = src.Height;
+        if (codec is null) return null;
+        using var keepCodec = codec;
+        var srcW = codec.Info.Width;
+        var srcH = codec.Info.Height;
+        if (srcW <= 0 || srcH <= 0) return null;
+        if (srcW > ShadowRasterizer.MaxDeviceDimension || srcH > ShadowRasterizer.MaxDeviceDimension) return null;
+        if ((long)srcW * srcH > ShadowRasterizer.MaxDevicePixels) return null;
 
         // A drop-shadow extends OUTSIDE the image box (offset + blur), so the output frame is padded
         // by the shadow extent and the source is drawn at (padL, padT). Colour matrices + blur add no
@@ -88,6 +93,14 @@ internal static class ImageFilterApplier
         var h = srcH + padT + padB;
         if (w > ShadowRasterizer.MaxDeviceDimension || h > ShadowRasterizer.MaxDeviceDimension) return null;
         if ((long)w * h > ShadowRasterizer.MaxDevicePixels) return null;
+
+        // Only NOW decode the pixels (the caps above already passed).
+        SKBitmap? decoded;
+        try { decoded = SKBitmap.Decode(codec); }
+        catch (Exception) { return null; }
+        if (decoded is null) return null;
+        using var src = decoded;
+        if (src.Width != srcW || src.Height != srcH) return null; // header / pixels disagree
 
         SKImageFilter? chain;
         try { chain = BuildChain(steps); }
@@ -128,7 +141,7 @@ internal static class ImageFilterApplier
         foreach (var step in steps)
         {
             if (step.Kind != ImageFilterKind.DropShadow) continue;
-            var m = 3.0 * (step.ShadowBlur / 2.0); // 3σ
+            var m = 3.0 * step.ShadowBlur; // 3σ (the drop-shadow blur length IS σ — §2.5)
             l += Math.Max(0, m - step.ShadowDx);
             r += Math.Max(0, m + step.ShadowDx);
             t += Math.Max(0, m - step.ShadowDy);
@@ -153,9 +166,11 @@ internal static class ImageFilterApplier
                     chain = SKImageFilter.CreateBlur((float)step.Amount, (float)step.Amount, chain);
                     break;
                 case ImageFilterKind.DropShadow:
+                    // CSS Filter Effects §2.5 — the drop-shadow blur length IS the Gaussian standard
+                    // deviation (NOT 2σ like box-shadow's blur radius).
                     chain = SKImageFilter.CreateDropShadow(
                         (float)step.ShadowDx, (float)step.ShadowDy,
-                        (float)(step.ShadowBlur / 2.0), (float)(step.ShadowBlur / 2.0),
+                        (float)step.ShadowBlur, (float)step.ShadowBlur,
                         new SKColor(ToByte(step.ShadowR), ToByte(step.ShadowG), ToByte(step.ShadowB), ToByte(step.ShadowA)),
                         chain);
                     break;

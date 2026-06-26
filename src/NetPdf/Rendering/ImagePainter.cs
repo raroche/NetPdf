@@ -43,6 +43,7 @@ internal static class ImagePainter
         if (cache.ImageBoxes.Count == 0) return;
         var unknownPositionReported = false;   // object-position cycle — once per render.
         var filterRasterReported = false;      // Phase 4 filters — once-per-render raster Info.
+        var maskRasterReported = false;        // Phase 4 mask — once-per-render raster Info.
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -106,7 +107,8 @@ internal static class ImagePainter
                 objTopPx = topPx + (heightPx - objHPx) / 2.0;
             }
 
-            var (imageRef, filterPad) = ResolveImageRef(document, style, spec, entry, diagnostics, ref filterRasterReported);
+            var (imageRef, filterPad) = ResolveImageRef(document, style, spec, entry, cache, diagnostics,
+                ref filterRasterReported, ref maskRasterReported);
             // A drop-shadow filter pads the raster outward (the shadow extends past the image box);
             // the image CONTENT still maps to the object box, so expand the placement by the padding
             // fractions of the content size. Zero for colour / blur filters (byte-identical).
@@ -159,8 +161,28 @@ internal static class ImagePainter
     /// falls back to the unfiltered XObject so the picture still shows.</summary>
     private static (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad) ResolveImageRef(
         PdfDocument document, ComputedStyle style, ImageResourceCache.ImgSpec spec,
-        ImageResourceCache.Entry entry, IDiagnosticsSink? diagnostics, ref bool rasterReported)
+        ImageResourceCache.Entry entry, ImageResourceCache cache, IDiagnosticsSink? diagnostics,
+        ref bool rasterReported, ref bool maskRasterReported)
     {
+        // mask / mask-image (Phase 4 PR 4) — a masked <img> gets a Skia alpha-masked variant (deduped by
+        // mask URI). Applied to the UNFILTERED source this cut (filter + mask combined is a follow-up); the
+        // masked image still shows if the mask decodes, else falls through to the filter / plain path.
+        if (spec.MaskUriKey is { } maskKey && cache.TryGet(maskKey, out var maskEntry)
+            && ImageResourceCache.GetOrRegisterMasked(document, entry, maskEntry, maskKey) is { } masked)
+        {
+            if (!maskRasterReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.CssMaskRasterFallback001,
+                    "A CSS mask on an image was applied via the Skia raster fallback (PDF has no native "
+                    + "mask primitive); the image's alpha was multiplied by the mask and re-embedded as a "
+                    + "raster XObject.",
+                    DiagnosticSeverity.Info));
+                maskRasterReported = true;
+            }
+            return (masked, NetPdf.Pdf.Images.FilterPadding.None);
+        }
+
         if (spec.Filter is { } filter
             && ImageFilterBridge.TryBuildSteps(filter, FragmentPainter.ResolveCurrentColor(style), out var steps))
         {

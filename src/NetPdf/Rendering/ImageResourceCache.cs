@@ -57,6 +57,10 @@ internal sealed class ImageResourceCache
         /// its drop-shadow padding, so N <c>&lt;img&gt;</c>s with the same source + filter share one
         /// filtered XObject.</summary>
         public Dictionary<string, (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad)>? FilteredRefs;
+
+        /// <summary>Phase 4 mask (PR 4) — per-(mask-URI) cache of the masked XObject registration, so N
+        /// <c>&lt;img&gt;</c>s with the same source + mask share one masked XObject.</summary>
+        public Dictionary<string, PdfIndirectRef>? MaskedRefs;
     }
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
@@ -68,7 +72,8 @@ internal sealed class ImageResourceCache
     /// → the 50% 50% initial; the property stays UNREGISTERED — a 2-component position needs a
     /// new metadata type, so the raw read is the documented seam, like border-radius).</summary>
     internal readonly record struct ImgSpec(
-        string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw, CssFilter? Filter = null);
+        string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw, CssFilter? Filter = null,
+        string? MaskUriKey = null);
 
     /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its image spec. Only boxes whose fetch +
     /// decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
@@ -170,6 +175,22 @@ internal sealed class ImageResourceCache
         return entryRef;
     }
 
+    /// <summary>Phase 4 mask (PR 4) — register a MASKED variant of <paramref name="entry"/>'s image: its
+    /// alpha multiplied by <paramref name="mask"/>'s alpha (<see cref="NetPdf.Pdf.Images.ImageMaskApplier"/>),
+    /// memoized by the mask URI key so N identical (image + mask) placements share one XObject. Returns
+    /// <see langword="null"/> when either image can't be decoded / is over the raster cap (the caller falls
+    /// back to the unmasked image).</summary>
+    public static PdfIndirectRef? GetOrRegisterMasked(PdfDocument document, Entry entry, Entry mask, string maskKey)
+    {
+        entry.MaskedRefs ??= new Dictionary<string, PdfIndirectRef>(StringComparer.Ordinal);
+        if (entry.MaskedRefs.TryGetValue(maskKey, out var cached)) return cached;
+        var result = NetPdf.Pdf.Images.ImageMaskApplier.TryApply(entry.SourceBytes, mask.SourceBytes);
+        if (result is null) return null;
+        var entryRef = document.RegisterImage(result);
+        entry.MaskedRefs[maskKey] = entryRef;
+        return entryRef;
+    }
+
     /// <summary>Walk <paramref name="boxRoot"/> + fetch/decode every image reference. Never
     /// throws for a bad reference — each failure is a diagnostic + the reference is skipped.
     /// <paramref name="extraImageUrls"/> (margin-box-bg-image cycle) carries non-box references
@@ -203,6 +224,7 @@ internal sealed class ImageResourceCache
         var transformUnsupportedReported = false;
         var filterElementReported = false;
         var clipPathUnsupportedReported = false;
+        var maskElementReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
@@ -212,7 +234,7 @@ internal sealed class ImageResourceCache
             diagnostics, borderImages,
             ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
-            ref filterElementReported, ref clipPathUnsupportedReported);
+            ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported);
 
         var filterValueReported = false; // Phase 4 filters — once-per-render unparseable-value Warning.
         foreach (var (box, rawUrl, isBackground) in references)
@@ -263,11 +285,21 @@ internal sealed class ImageResourceCache
                         filterValueReported = true;
                     }
                 }
+                // mask / mask-image (Phase 4 PR 4) — on an <img>, a url() mask source is fetched + applied
+                // as an alpha mask (the raster path). mask-image wins over the mask shorthand. A non-url
+                // value (gradient / none) → no mask; a general element's mask is handled in CollectReferences.
+                var maskRaw = imgRules?.GetWinner("mask-image")?.ResolvedValue
+                    ?? imgRules?.GetWinner("mask")?.ResolvedValue;
+                string? maskKey = null;
+                if (ExtractFirstUrl(maskRaw) is { } maskUrl)
+                    maskKey = await ResolveAndFetchAsync(
+                        cache, loader, maskUrl, options.BaseUri, diagnostics, cancellationToken)
+                        .ConfigureAwait(false);
                 cache.ImageBoxes[box] = new ImgSpec(
                     key,
                     box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
                     imgRules?.GetWinner("object-position")?.ResolvedValue,
-                    filter);
+                    filter, maskKey);
             }
         }
 
@@ -345,7 +377,8 @@ internal sealed class ImageResourceCache
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
         ref bool filterElementReported,
-        ref bool clipPathUnsupportedReported)
+        ref bool clipPathUnsupportedReported,
+        ref bool maskElementReported)
     {
         if (box.SourceElement is { } element)
         {
@@ -426,6 +459,19 @@ internal sealed class ImageResourceCache
                     "A CSS filter on a non-image element was ignored — filtering a general element's "
                     + "rendered subtree needs a Skia subtree renderer NetPdf doesn't have yet; the "
                     + "element painted unfiltered. Filters on <img> elements ARE applied.");
+            }
+            // mask / mask-image (Phase 4 PR 4) — applied to an <img> (the img path resolves the mask + the
+            // painter composites it). On a NON-image element, masking the rendered subtree needs the same
+            // Skia subtree renderer, so the element paints UNMASKED + CSS-MASK-ELEMENT-UNSUPPORTED-001 once.
+            var elementMaskRaw = rules?.GetWinner("mask-image")?.ResolvedValue ?? rules?.GetWinner("mask")?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(elementMaskRaw)
+                && !elementMaskRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !isReplacedImg)
+            {
+                Report(diagnostics, ref maskElementReported, DiagnosticCodes.CssMaskElementUnsupported001,
+                    "A CSS mask on a non-image element was ignored — masking a general element's rendered "
+                    + "subtree needs a Skia subtree renderer NetPdf doesn't have yet; the element painted "
+                    + "unmasked. Masks on <img> elements ARE applied.");
             }
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
@@ -525,7 +571,22 @@ internal sealed class ImageResourceCache
                 borderImages,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
-                ref filterElementReported, ref clipPathUnsupportedReported);
+                ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported);
+    }
+
+    /// <summary>Extract the first <c>url(...)</c> target from a CSS value (mask-image / mask shorthand),
+    /// stripping quotes. Returns <see langword="null"/> when there's no url() (a gradient / <c>none</c> /
+    /// keyword value).</summary>
+    private static string? ExtractFirstUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var idx = value.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        var open = idx + 4;
+        var close = value.IndexOf(')', open);
+        if (close < 0) return null;
+        var inner = value.Substring(open, close - open).Trim().Trim('"', '\'');
+        return inner.Length == 0 ? null : inner;
     }
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>

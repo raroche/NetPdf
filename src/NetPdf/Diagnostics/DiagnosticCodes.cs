@@ -196,6 +196,22 @@ internal static class DiagnosticCodes
     public const string CssBorderImageUnsupported001 = "CSS-BORDER-IMAGE-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>mask</c> / <c>mask-image</c> on an <c>&lt;img&gt;</c> was applied via the Skia raster
+    /// fallback (PDF has no native CSS-mask primitive): the image's alpha was multiplied by the mask
+    /// image's alpha and the result re-embedded as a raster XObject + <c>/SMask</c>. Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssMaskRasterFallback001 = "CSS-MASK-RASTER-FALLBACK-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>mask</c> / <c>mask-image</c> on a NON-image element was ignored: masking a general
+    /// element's rendered subtree needs the Skia subtree renderer NetPdf doesn't have yet, so the element
+    /// painted UNMASKED. Masks on <c>&lt;img&gt;</c> elements ARE applied. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssMaskElementUnsupported001 = "CSS-MASK-ELEMENT-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

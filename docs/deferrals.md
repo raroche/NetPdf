@@ -2684,15 +2684,20 @@ flags the categories):
      rounded rect; blurred → the Skia `ShadowRasterizer` bridge → image XObject + `/SMask`),
      `text-shadow` (offset glyph run under the text), and 2D `transform`
      (`translate`/`scale`/`rotate`/`skew`/`matrix` → a `cm` about `transform-origin` wrapping the
-     decoration + text passes). **Gradient residuals (Phase 4 follow-ups):** elliptical radial
-     shaping via a CTM scale (the first cut paints ellipses circularly by their scalar extent),
-     `repeating-linear/radial-gradient`, conic gradients (Skia raster), length-positioned color
-     stops + color hints, per-stop alpha (a soft-mask alpha shading), multi-layer background-image
-     lists, and **gradient `background-clip` / `background-origin` insets** (PR #209 Copilot —
-     gradients paint/clip against the border box; the `url()` image path already honors origin/clip
-     + inset radii). **Shadow / transform residuals (Phase 4 follow-ups):** `box-shadow` INSET
-     (outset-only first cut; `CSS-BOXSHADOW-UNSUPPORTED-001`) + per-corner blur radii (the blur
-     raster uses one representative radius); `text-shadow` INHERITANCE to descendant text (only the
+     decoration + text passes). **Phase 4 PR 1 (gradient/shadow refinements) CLOSED:** conic /
+     `repeating-conic` gradients (Skia sweep raster, `CSS-CONIC-GRADIENT-RASTER-001`, per-stop alpha
+     preserved); `repeating-linear` / `repeating-radial` (native stop tiling); length-positioned
+     color stops (px + absolute units; resolve against the gradient-line length); elliptical radial
+     shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
+     raster for blur). **Remaining gradient residuals (Phase 4 follow-ups):** color-interpolation
+     hints, per-stop alpha on the NATIVE linear/radial shadings (a soft-mask alpha shading — the
+     conic raster path already preserves it), multi-layer background-image lists, **gradient
+     `background-clip` / `background-origin` insets** (PR #209 Copilot — gradients paint/clip against
+     the border box; the `url()` image path already honors origin/clip + inset radii), and a
+     repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default
+     farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
+     box-shadow per-corner blur radii (the blur raster uses one representative radius) + inset under
+     box-decoration-break:slice (painted per-slice); `text-shadow` INHERITANCE to descendant text (only the
      box's own declared value is read today) + true GLYPH BLUR (the blurred case paints a sharp
      offset, `CSS-TEXTSHADOW-UNSUPPORTED-001`); `transform` faithful 3D PROJECTION (genuinely-3D
      functions flatten to identity, not an orthographic projection) + the transformed-element

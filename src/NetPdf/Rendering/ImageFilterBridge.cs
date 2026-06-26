@@ -32,7 +32,8 @@ internal static class ImageFilterBridge
                 FilterKind.Saturate => ImageFilterKind.Saturate,
                 FilterKind.HueRotate => ImageFilterKind.HueRotate,
                 FilterKind.Opacity => ImageFilterKind.Opacity,
-                _ => null, // blur / drop-shadow — added in a later task
+                FilterKind.Blur => ImageFilterKind.Blur,
+                _ => null, // drop-shadow — added in a later task
             };
             if (kind is null) { steps.Clear(); return false; }
             steps.Add(new ImageFilterStep(kind.Value, op.Amount));

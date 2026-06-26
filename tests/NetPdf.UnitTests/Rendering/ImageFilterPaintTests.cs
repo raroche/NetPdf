@@ -46,6 +46,22 @@ public sealed class ImageFilterPaintTests
     }
 
     [Fact]
+    public void Blur_filter_on_an_img_rasterizes_and_emits_the_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("blur(2px)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Blur_chained_with_a_color_filter_on_an_img()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%) blur(3px)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
     public void An_unfiltered_img_emits_no_filter_diagnostic()
     {
         var result = HtmlPdf.ConvertDetailed(Html(""));

@@ -78,6 +78,31 @@ public sealed class ImageFilterApplierTests
         Near(131, r, 4); Near(131, g, 4); Near(131, b, 4);
     }
 
+    // A 32×32 image, left half (255,0,0), right half (0,0,255) — a sharp vertical seam at x=16.
+    private static byte[] HalfRedHalfBluePng()
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(32, 32, SKColorType.Rgba8888, SKAlphaType.Opaque));
+        for (var y = 0; y < 32; y++)
+            for (var x = 0; x < 32; x++)
+                bitmap.SetPixel(x, y, x < 16 ? new SKColor(255, 0, 0) : new SKColor(0, 0, 255));
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
+    }
+
+    [Fact]
+    public void Blur_blends_a_sharp_color_seam()
+    {
+        var raster = ImageFilterApplier.TryFilterToRaster(HalfRedHalfBluePng(),
+            new List<ImageFilterStep> { new(ImageFilterKind.Blur, 4.0) });
+        Assert.NotNull(raster);
+        // Sample the seam column (x=16, y=16): the blur mixes red + blue → both channels mid-range.
+        var idx = (16 * 32 + 16) * 4;
+        var p = raster!.PixelBytes;
+        Assert.InRange(p[idx], 40, 215);     // R partially present (was 0 just right of the seam)
+        Assert.InRange(p[idx + 2], 40, 215); // B partially present
+    }
+
     [Fact]
     public void Undecodable_bytes_return_null()
     {

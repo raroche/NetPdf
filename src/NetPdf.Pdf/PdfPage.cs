@@ -598,6 +598,66 @@ internal sealed class PdfPage
         AppendNumber(sb, height); sb.Append(" re ");
     }
 
+    /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with a
+    /// POLYGON (<c>q x0 y0 m x1 y1 l … h W n</c>) for <c>clip-path: polygon(...)</c>. Points are PDF
+    /// points (bottom-left origin). Fewer than 3 points → no clip change (the <c>q</c> still opens, so
+    /// the caller still balances with <see cref="RestoreGraphicsState"/>). Non-finite points throw.
+    /// <paramref name="evenOdd"/> selects the clip operator: <see langword="false"/> (the default) →
+    /// the nonzero winding rule (<c>W n</c>); <see langword="true"/> → the even-odd rule (<c>W* n</c>),
+    /// for <c>polygon(evenodd, …)</c> — a self-intersecting / hole-style polygon clips differently
+    /// under even-odd (CSS Shapes §funcdef-basic-shape-polygon).</summary>
+    public void BeginPolygonClip(IReadOnlyList<(double X, double Y)> points, bool evenOdd = false)
+    {
+        ThrowIfFinalized();
+        ArgumentNullException.ThrowIfNull(points);
+        var sb = new StringBuilder(16 + points.Count * 16);
+        sb.Append("q ");
+        if (points.Count >= 3)
+        {
+            for (var i = 0; i < points.Count; i++)
+            {
+                var (px, py) = points[i];
+                if (!double.IsFinite(px) || !double.IsFinite(py))
+                    throw new ArgumentException($"BeginPolygonClip points must be finite; got ({px},{py}).");
+                AppendNumber(sb, px); sb.Append(' '); AppendNumber(sb, py);
+                sb.Append(i == 0 ? " m " : " l ");
+            }
+            sb.Append(evenOdd ? "h W* n" : "h W n");
+        }
+        sb.Append('\n');
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with an
+    /// ELLIPSE centered (<paramref name="cx"/>, <paramref name="cy"/>) with radii
+    /// (<paramref name="rx"/>, <paramref name="ry"/>) via four cubic-Bézier quadrants (k ≈ 0.5523) —
+    /// for <c>clip-path: circle()</c> (rx == ry) / <c>ellipse()</c>. PDF points, bottom-left origin.
+    /// A non-positive radius opens the <c>q</c> with no clip (a zero-area clip). Callers MUST balance
+    /// with <see cref="RestoreGraphicsState"/>.</summary>
+    public void BeginEllipseClip(double cx, double cy, double rx, double ry)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(cx) || !double.IsFinite(cy) || !double.IsFinite(rx) || !double.IsFinite(ry))
+            throw new ArgumentException($"BeginEllipseClip args must be finite; got c=({cx},{cy}) r=({rx},{ry}).");
+        var sb = new StringBuilder(160);
+        sb.Append("q ");
+        if (rx > 0 && ry > 0)
+        {
+            const double k = 0.55228474983079;
+            var kx = rx * k;
+            var ky = ry * k;
+            void P(double x, double y) { AppendNumber(sb, x); sb.Append(' '); AppendNumber(sb, y); sb.Append(' '); }
+            P(cx + rx, cy); sb.Append("m ");
+            P(cx + rx, cy + ky); P(cx + kx, cy + ry); P(cx, cy + ry); sb.Append("c ");
+            P(cx - kx, cy + ry); P(cx - rx, cy + ky); P(cx - rx, cy); sb.Append("c ");
+            P(cx - rx, cy - ky); P(cx - kx, cy - ry); P(cx, cy - ry); sb.Append("c ");
+            P(cx + kx, cy - ry); P(cx + rx, cy - ky); P(cx + rx, cy); sb.Append("c ");
+            sb.Append("h W n");
+        }
+        sb.Append('\n');
+        AppendContent(sb.ToString());
+    }
+
     /// <summary>
     /// Push the graphics state and intersect the clip path with an axis-aligned rectangle —
     /// <c>q &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re W n</c> (ISO 32000-2 §8.5.4: <c>W</c> sets the
@@ -662,23 +722,30 @@ internal sealed class PdfPage
     }
 
     /// <summary>Get (or create) the per-page <c>/ExtGState</c> resource name for a constant
-    /// fill alpha (<c>/ca</c>), deduped by the alpha value (so equal alphas share one
-    /// ExtGState). The name is derived from the value, so it's deterministic.</summary>
-    private PdfName GetOrAddConstantAlpha(double alpha)
+    /// alpha, deduped by the alpha value (so equal alphas share one ExtGState). The name is
+    /// derived from the value, so it's deterministic. When <paramref name="stroke"/> is
+    /// <see langword="false"/> (the default) the ExtGState sets the FILL alpha (<c>/ca</c> —
+    /// applies to <c>f</c>/<c>re f</c>/text fills); when <see langword="true"/> it sets the
+    /// STROKE alpha (<c>/CA</c> — applies to <c>S</c>). A stroke that selected a <c>/ca</c>-only
+    /// ExtGState would render OPAQUE (the prior dashed/dotted border + outline pitfall), so the
+    /// stroke path gets its OWN distinct ExtGState — keeping every existing fill ExtGState (and
+    /// thus the emitted bytes) unchanged.</summary>
+    private PdfName GetOrAddConstantAlpha(double alpha, bool stroke = false)
     {
-        // Dedup by the EXACT serialized /ca value. The name must encode alpha at the same
+        // Dedup by the EXACT serialized alpha value. The name must encode alpha at the same
         // precision PdfReal/PdfWriter.WriteReal emits (PdfWriter.CanonicalRealFormat — 6
         // fraction digits) — otherwise a coarser name lets two distinct alphas (e.g. 0.123456
-        // and 0.123457) collide on one /GSca… name and silently reuse the wrong /ca value
+        // and 0.123457) collide on one /GS… name and silently reuse the wrong alpha value
         // (post-PR-#125 review P2). Sharing the canonical format makes the name 1:1 with the
-        // serialized value: equal /ca bytes share one ExtGState, distinct /ca bytes never do.
+        // serialized value. The fill (GSca…) and stroke (GSCA…) families are kept separate so a
+        // stroke alpha is written as /CA (stroke), not /ca (fill).
         var canonical = alpha.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
-        var name = new PdfName("GSca" + canonical.Replace('.', '_'));
+        var name = new PdfName((stroke ? "GSCA" : "GSca") + canonical.Replace('.', '_'));
         if (!_extGStateResource.ContainsKey(name))
         {
             _extGStateResource.Set(name, new PdfDictionary()
                 .Set(PdfNames.Type, PdfNames.ExtGState)
-                .Set(PdfNames.ca, new PdfReal(alpha)));
+                .Set(stroke ? PdfNames.CA : PdfNames.ca, new PdfReal(alpha)));
         }
         return name;
     }
@@ -770,6 +837,54 @@ internal sealed class PdfPage
             sb.Append(HexNibble(glyph));
         }
         sb.Append("> Tj ET Q\n");
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Phase 4 borders (PR 3) — stroke a single line segment (<paramref name="x1"/>,
+    /// <paramref name="y1"/>)→(<paramref name="x2"/>, <paramref name="y2"/>) (PDF points, bottom-left
+    /// origin) with <paramref name="width"/> line width, an optional <paramref name="dash"/> pattern
+    /// (PDF user-space units) at <paramref name="dashPhase"/>, and a line cap (<paramref name="lineCap"/>:
+    /// 0 butt, 1 round, 2 square). Used for dashed / dotted border + outline edges. Emits
+    /// <c>q [/GSn gs] &lt;width&gt; w [&lt;cap&gt; J] [[&lt;dash&gt;] &lt;phase&gt; d] r g b RG x1 y1 m x2 y2 l S Q</c>.
+    /// A non-positive width no-ops; non-finite args throw (as the fills do). Partial alpha → the
+    /// per-page STROKE constant-alpha ExtGState (<c>/CA</c> — a stroke honors <c>/CA</c>, not the
+    /// fill <c>/ca</c>; selecting <c>/ca</c> would render the stroke opaque).</summary>
+    public void StrokeLine(
+        double x1, double y1, double x2, double y2, double width,
+        double r, double g, double b, double alpha = 1.0,
+        double[]? dash = null, double dashPhase = 0.0, int lineCap = 0)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x1) || !double.IsFinite(y1) || !double.IsFinite(x2) || !double.IsFinite(y2)
+            || !double.IsFinite(width) || !double.IsFinite(alpha) || !double.IsFinite(dashPhase))
+        {
+            throw new ArgumentException(
+                $"StrokeLine args must be finite; got ({x1},{y1})-({x2},{y2}) w={width} alpha={alpha} phase={dashPhase}.");
+        }
+        if (width <= 0) return;
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+
+        var sb = new StringBuilder(112);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha, stroke: true).Value).Append(" gs ");
+        AppendNumber(sb, width); sb.Append(" w ");
+        if (lineCap is 1 or 2) { sb.Append(lineCap); sb.Append(" J "); }
+        if (dash is { Length: > 0 })
+        {
+            sb.Append('[');
+            for (var i = 0; i < dash.Length; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                AppendNumber(sb, Math.Max(0, dash[i]));
+            }
+            sb.Append("] "); AppendNumber(sb, dashPhase); sb.Append(" d ");
+        }
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" RG ");
+        AppendNumber(sb, x1); sb.Append(' '); AppendNumber(sb, y1); sb.Append(" m ");
+        AppendNumber(sb, x2); sb.Append(' '); AppendNumber(sb, y2); sb.Append(" l S Q\n");
         AppendContent(sb.ToString());
     }
 

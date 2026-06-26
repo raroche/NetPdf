@@ -55,7 +55,14 @@ internal static class FragmentPainter
     // none, hidden, dotted, dashed, solid, double, groove, ridge, inset, outset.
     private const int BorderStyleNone = 0;
     private const int BorderStyleHidden = 1;
+    private const int BorderStyleDotted = 2;
+    private const int BorderStyleDashed = 3;
     private const int BorderStyleSolid = 4;
+    private const int BorderStyleDouble = 5;
+    private const int BorderStyleGroove = 6;
+    private const int BorderStyleRidge = 7;
+    private const int BorderStyleInset = 8;
+    private const int BorderStyleOutset = 9;
 
     // outline-style keyword ids (outline cycle; post-PR-#173 review P2): CSS UI 4 §5.2 admits the
     // border-style values EXCEPT `hidden`, PLUS `auto`. The KeywordResolver table is
@@ -116,6 +123,8 @@ internal static class FragmentPainter
         var boxShadowCapReported = false;         // Phase 4 shadows — once-per-render over-cap Warning.
         var conicGradientRasterReported = false;  // Phase 4 gradients — once-per-render conic raster Info.
         var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
+        var clipPathRasterReported = false;       // Phase 4 clip-path — once-per-render path() Warning.
+        var clipPathSubtreeReported = false;      // Phase 4 clip-path — once-per-render subtree Warning.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -167,6 +176,17 @@ internal static class FragmentPainter
                     currentColorArgb, diagnostics, ref styleApproximationReported);
                 if (transformed) page.RestoreGraphicsState();
                 continue;
+            }
+
+            // clip-path (Phase 4 PR 3) — wrap this box's decoration in a native clip of its basic
+            // shape (inside the transform, so a transformed + clipped box clips in its local space).
+            // The descendant subtree + path() are documented residuals (diagnosed inside).
+            var clipPathClipped = false;
+            if (imageCache is not null
+                && imageCache.ClipPathBoxes.TryGetValue(fragment.Box, out var clipShape))
+            {
+                clipPathClipped = BeginClipPath(page, clipShape, pageHeightPt, leftPx, topPx, widthPx,
+                    heightPx, fragment.Box, diagnostics, ref clipPathRasterReported, ref clipPathSubtreeReported);
             }
 
             // Background first (behind borders), gated by PrintBackgrounds.
@@ -326,9 +346,125 @@ internal static class FragmentPainter
                 isFirstSlice: !fragment.SuppressBlockStartChrome,
                 isLastSlice: !fragment.SuppressBlockEndChrome);
 
+            if (clipPathClipped) page.RestoreGraphicsState(); // balance BeginClipPath's q
             if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
         }
     }
+
+    /// <summary>Phase 4 clip-path (PR 3) — begin a native PDF clip for the box's parsed basic shape
+    /// (CSS Masking L1 §3), measured against the box's border box. <c>inset()</c> → a (rounded) rect
+    /// clip; <c>circle()</c>/<c>ellipse()</c> → an ellipse clip (an omitted radius = closest-side; a
+    /// <c>%</c> radius resolves against √(w²+h²)/√2 per §3.1); <c>polygon()</c> → a polygon clip.
+    /// <c>path()</c> is deferred (raster follow-up) → no clip + a Warning. Returns <see langword="true"/>
+    /// when a clip was opened (the caller balances with RestoreGraphicsState). A box with CHILDREN also
+    /// warns — only its OWN decoration is clipped (the descendant subtree needs the Skia subtree
+    /// renderer).</summary>
+    internal static bool BeginClipPath(
+        PdfPage page, CssClipPath clip, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx, NetPdf.Layout.Boxes.Box box,
+        IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool subtreeReported)
+    {
+        if (clip.Kind == ClipShapeKind.Path)
+        {
+            if (!rasterReported)
+            {
+                diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathRasterFallback001,
+                    "A clip-path: path(\"…\") (an arbitrary SVG path) was not applied — native path-clip "
+                    + "emission is a tracked follow-up; the element painted unclipped.", DiagnosticSeverity.Warning));
+                rasterReported = true;
+            }
+            return false;
+        }
+        if (box.Children.Count > 0 && !subtreeReported)
+        {
+            diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathSubtreeUnsupported001,
+                "A clip-path on an element with children clipped only the element's own decoration "
+                + "(background / border / image), not its descendant content (a subtree clip needs the "
+                + "Skia subtree renderer NetPdf lacks).", DiagnosticSeverity.Warning));
+            subtreeReported = true;
+        }
+
+        static double Resolve(ClipLen len, double extent) =>
+            len.Px + (double.IsNaN(len.Frac) ? 0.0 : len.Frac) * extent;
+
+        switch (clip.Kind)
+        {
+            case ClipShapeKind.Inset:
+            {
+                var t = Resolve(clip.Edges![0], heightPx);
+                var rEdge = Resolve(clip.Edges![1], widthPx);
+                var bEdge = Resolve(clip.Edges![2], heightPx);
+                var l = Resolve(clip.Edges![3], widthPx);
+                var w = Math.Max(0, widthPx - l - rEdge);
+                var h = Math.Max(0, heightPx - t - bEdge);
+                ToPdfRect(leftPx + l, topPx + t, w, h, pageHeightPt, out var px, out var py, out var pw, out var ph);
+                if (clip.Radii is { } rad)
+                {
+                    var rPx = Resolve(rad[0], Math.Min(widthPx, heightPx)); // uniform (per-corner = a refinement)
+                    var rPt = PdfUnits.PxToPt(rPx);
+                    page.BeginRoundedRectangleClip(px, py, pw, ph, new CornerRadii(rPt, rPt, rPt, rPt, rPt, rPt, rPt, rPt));
+                }
+                else page.BeginRectangleClip(px, py, pw, ph);
+                return true;
+            }
+            case ClipShapeKind.Circle:
+            {
+                var cxPx = leftPx + Resolve(clip.Cx, widthPx);
+                var cyPx = topPx + Resolve(clip.Cy, heightPx);
+                var rPx = ResolveCircleRadius(clip.RadiusExtent, clip.Radius,
+                    cxPx - leftPx, leftPx + widthPx - cxPx, cyPx - topPx, topPx + heightPx - cyPx, widthPx, heightPx);
+                if (!(rPx > 0)) return false;
+                page.BeginEllipseClip(PdfUnits.PxToPt(cxPx), pageHeightPt - PdfUnits.PxToPt(cyPx), PdfUnits.PxToPt(rPx), PdfUnits.PxToPt(rPx));
+                return true;
+            }
+            case ClipShapeKind.Ellipse:
+            {
+                var cxPx = leftPx + Resolve(clip.Cx, widthPx);
+                var cyPx = topPx + Resolve(clip.Cy, heightPx);
+                var rxPx = ResolveEllipseAxis(clip.RxExtent, clip.Rx, cxPx - leftPx, leftPx + widthPx - cxPx, widthPx);
+                var ryPx = ResolveEllipseAxis(clip.RyExtent, clip.Ry, cyPx - topPx, topPx + heightPx - cyPx, heightPx);
+                if (!(rxPx > 0) || !(ryPx > 0)) return false;
+                page.BeginEllipseClip(PdfUnits.PxToPt(cxPx), pageHeightPt - PdfUnits.PxToPt(cyPx), PdfUnits.PxToPt(rxPx), PdfUnits.PxToPt(ryPx));
+                return true;
+            }
+            case ClipShapeKind.Polygon:
+            {
+                var pts = new (double, double)[clip.Points!.Length];
+                for (var i = 0; i < pts.Length; i++)
+                {
+                    var ptxPx = leftPx + Resolve(clip.Points[i].X, widthPx);
+                    var ptyPx = topPx + Resolve(clip.Points[i].Y, heightPx);
+                    pts[i] = (PdfUnits.PxToPt(ptxPx), pageHeightPt - PdfUnits.PxToPt(ptyPx));
+                }
+                page.BeginPolygonClip(pts, clip.EvenOdd); // polygon(evenodd, …) → W* n
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>The circle() radius in px: <c>closest-side</c> = the min distance to the four edges,
+    /// <c>farthest-side</c> = the max; a <c>%</c> length resolves against √(w²+h²)/√2 (CSS Masking
+    /// §3.1); a plain length is direct.</summary>
+    private static double ResolveCircleRadius(
+        ClipRadiusExtent ext, ClipLen radius,
+        double distL, double distR, double distT, double distB, double widthPx, double heightPx) => ext switch
+    {
+        ClipRadiusExtent.ClosestSide => Math.Min(Math.Min(distL, distR), Math.Min(distT, distB)),
+        ClipRadiusExtent.FarthestSide => Math.Max(Math.Max(distL, distR), Math.Max(distT, distB)),
+        _ => radius.Px + radius.Frac * (Math.Sqrt(widthPx * widthPx + heightPx * heightPx) / Math.Sqrt(2.0)),
+    };
+
+    /// <summary>One ellipse() axis radius in px: <c>closest-side</c>/<c>farthest-side</c> = the
+    /// min/max distance from the center to the two edges on this axis; a length/% is direct against the
+    /// axis's <paramref name="extentPx"/> (a <c>%</c> stored in <c>Frac</c>).</summary>
+    private static double ResolveEllipseAxis(ClipRadiusExtent ext, ClipLen len, double distNear, double distFar, double extentPx) => ext switch
+    {
+        ClipRadiusExtent.ClosestSide => Math.Min(distNear, distFar),
+        ClipRadiusExtent.FarthestSide => Math.Max(distNear, distFar),
+        _ => len.Px + len.Frac * extentPx,
+    };
 
     /// <summary>Per-fragment tile-count threshold ABOVE which the tiling emits ONE PDF
     /// tiling-pattern fill instead of per-tile placements (tiling-patterns cycle, ISO 32000-2
@@ -2191,16 +2327,11 @@ internal static class FragmentPainter
         var alpha = Alpha(argb);
         if (alpha == 0) return;
 
-        if (styleKeyword != BorderStyleSolid && !styleApproximationReported)
-        {
-            diagnostics?.Emit(new Diagnostic(
-                DiagnosticCodes.PaintBorderStyleApproximated001,
-                "A non-solid border-style (dotted / dashed / double / groove / ridge / inset / outset) " +
-                "was painted as a solid line. Styled border rendering is a tracked follow-up " +
-                "(deferrals.md#layout-to-pdf-pipeline).",
-                DiagnosticSeverity.Info));
-            styleApproximationReported = true;
-        }
+        // Phase 4 PR 3 — every border-style is now rendered on the square per-edge path (dashed /
+        // dotted strokes; double + the 3D groove/ridge/inset/outset bands), so no approximation
+        // diagnostic fires here (the uniform-ROUNDED ring path still approximates non-solid — a
+        // documented residual). The `styleApproximationReported` flag is shared with that path + outlines.
+        _ = styleApproximationReported;
 
         // Edge sub-rect within the border box (CSS px, page-top-relative). Edges span
         // the full box extent on their long axis; corners overlap, which is exact for
@@ -2227,10 +2358,126 @@ internal static class FragmentPainter
         }
 
         ColorChannels(argb, out var r, out var g, out var b);
-        ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
-            out var x, out var y, out var w, out var h);
-        // A partial border-color alpha is composited via the page's ExtGState constant-alpha (/ca).
-        page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+        var a = alpha / 255.0;
+        switch (styleKeyword)
+        {
+            case BorderStyleDashed:
+            case BorderStyleDotted:
+                // Stroke the edge CENTERLINE with line-width = the edge width and a dash pattern.
+                StrokeDashedEdge(page, edge, edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx,
+                    edgeWidthPx, pageHeightPt, r, g, b, a, dotted: styleKeyword == BorderStyleDotted);
+                return;
+            case BorderStyleDouble:
+            case BorderStyleGroove:
+            case BorderStyleRidge:
+            case BorderStyleInset:
+            case BorderStyleOutset:
+                PaintStyledBorderEdge(page, edge, edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx,
+                    edgeWidthPx, pageHeightPt, styleKeyword, r, g, b, a);
+                return;
+            default: // solid
+                ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
+                    out var x, out var y, out var w, out var h);
+                // A partial border-color alpha is composited via the page's constant-alpha (/ca).
+                page.FillRectangle(x, y, w, h, r, g, b, a);
+                return;
+        }
+    }
+
+    /// <summary>Phase 4 borders (PR 3) — paint a <c>double</c> / 3D (<c>groove</c>/<c>ridge</c>/
+    /// <c>inset</c>/<c>outset</c>) border edge (CSS B&amp;B §4.3) on the square per-edge path.
+    /// <c>double</c> = two solid bands (outer + inner thirds, the middle third a gap). The 3D styles
+    /// use a DARK (×0.5) and LIGHT (toward white) shade of the edge color: <c>inset</c> = top/left
+    /// dark, bottom/right light (sunken); <c>outset</c> = the inverse (raised); <c>groove</c> = outer
+    /// half inset-shaded + inner half outset-shaded (carved); <c>ridge</c> = the inverse.</summary>
+    private static void PaintStyledBorderEdge(
+        PdfPage page, BorderEdge edge, double edgeLeftPx, double edgeTopPx,
+        double edgeBoxWidthPx, double edgeBoxHeightPx, double edgeWidthPx, double pageHeightPt,
+        int styleKeyword, double r, double g, double b, double alpha)
+    {
+        // Fill a sub-band from fromFrac → toFrac of the edge thickness (0 = OUTER box edge, 1 = inner).
+        void Band(double fromFrac, double toFrac, double br, double bg, double bb)
+        {
+            double sl, st, sw, sh;
+            switch (edge)
+            {
+                case BorderEdge.Top:
+                    sl = edgeLeftPx; sw = edgeBoxWidthPx;
+                    st = edgeTopPx + fromFrac * edgeWidthPx; sh = (toFrac - fromFrac) * edgeWidthPx; break;
+                case BorderEdge.Bottom:
+                    sl = edgeLeftPx; sw = edgeBoxWidthPx;
+                    st = edgeTopPx + (1 - toFrac) * edgeWidthPx; sh = (toFrac - fromFrac) * edgeWidthPx; break;
+                case BorderEdge.Left:
+                    st = edgeTopPx; sh = edgeBoxHeightPx;
+                    sl = edgeLeftPx + fromFrac * edgeWidthPx; sw = (toFrac - fromFrac) * edgeWidthPx; break;
+                default: // Right
+                    st = edgeTopPx; sh = edgeBoxHeightPx;
+                    sl = edgeLeftPx + (1 - toFrac) * edgeWidthPx; sw = (toFrac - fromFrac) * edgeWidthPx; break;
+            }
+            ToPdfRect(sl, st, sw, sh, pageHeightPt, out var x, out var y, out var w, out var h);
+            page.FillRectangle(x, y, w, h, br, bg, bb, alpha);
+        }
+
+        double dr = r * 0.5, dg = g * 0.5, db = b * 0.5;             // dark shade
+        double lr = 0.5 + 0.5 * r, lg = 0.5 + 0.5 * g, lb = 0.5 + 0.5 * b; // light shade
+        var topLeft = edge is BorderEdge.Top or BorderEdge.Left;
+        switch (styleKeyword)
+        {
+            case BorderStyleDouble:
+                Band(0, 1.0 / 3.0, r, g, b);
+                Band(2.0 / 3.0, 1.0, r, g, b);
+                break;
+            case BorderStyleInset:
+                if (topLeft) Band(0, 1, dr, dg, db); else Band(0, 1, lr, lg, lb);
+                break;
+            case BorderStyleOutset:
+                if (topLeft) Band(0, 1, lr, lg, lb); else Band(0, 1, dr, dg, db);
+                break;
+            case BorderStyleGroove:
+                if (topLeft) { Band(0, 0.5, dr, dg, db); Band(0.5, 1, lr, lg, lb); }
+                else { Band(0, 0.5, lr, lg, lb); Band(0.5, 1, dr, dg, db); }
+                break;
+            case BorderStyleRidge:
+                if (topLeft) { Band(0, 0.5, lr, lg, lb); Band(0.5, 1, dr, dg, db); }
+                else { Band(0, 0.5, dr, dg, db); Band(0.5, 1, lr, lg, lb); }
+                break;
+        }
+    }
+
+    /// <summary>Phase 4 borders (PR 3) — stroke a dashed / dotted border edge: a centerline along the
+    /// edge's long axis, line-width = the edge width, with a dash pattern. Dashed → <c>[3w 3w]</c> butt
+    /// caps. Dotted → a ZERO-length on-dash with ROUND caps (<c>[0 2w]</c>): a round cap on a 0-length
+    /// dash renders a FILLED CIRCLE of diameter <c>w</c> (a true dot), spaced <c>2w</c> centre-to-centre
+    /// (≈ one dot-diameter gap). <c>[w w]</c> with round caps would instead extend each dash by a
+    /// half-cap on both ends → capsule / pill marks, not dots (PR #228 review P2). <c>w</c> = the edge
+    /// width in pt. The exact spacing is a browser-tunable approximation (the visual-regression harness
+    /// refines it).</summary>
+    private static void StrokeDashedEdge(
+        PdfPage page, BorderEdge edge, double edgeLeftPx, double edgeTopPx,
+        double edgeBoxWidthPx, double edgeBoxHeightPx, double edgeWidthPx, double pageHeightPt,
+        double r, double g, double b, double alpha, bool dotted)
+    {
+        var wPt = PdfUnits.PxToPt(edgeWidthPx);
+        if (!(wPt > 0)) return;
+        double x1Px, y1Px, x2Px, y2Px;
+        if (edge is BorderEdge.Top or BorderEdge.Bottom)
+        {
+            var cy = edgeTopPx + edgeBoxHeightPx / 2.0; // edgeBoxHeightPx == the edge width
+            x1Px = edgeLeftPx; x2Px = edgeLeftPx + edgeBoxWidthPx; y1Px = y2Px = cy;
+        }
+        else
+        {
+            var cx = edgeLeftPx + edgeBoxWidthPx / 2.0;  // edgeBoxWidthPx == the edge width
+            x1Px = x2Px = cx; y1Px = edgeTopPx; y2Px = edgeTopPx + edgeBoxHeightPx;
+        }
+        var x1 = PdfUnits.PxToPt(x1Px);
+        var y1 = pageHeightPt - PdfUnits.PxToPt(y1Px);
+        var x2 = PdfUnits.PxToPt(x2Px);
+        var y2 = pageHeightPt - PdfUnits.PxToPt(y2Px);
+        // Dotted: [0 2w] round caps → a 0-length dash becomes a round dot of diameter w, spaced 2w
+        // centre-to-centre (one dot-diameter gap). Dashed: [3w 3w] butt caps.
+        var dash = dotted ? new[] { 0.0, 2 * wPt } : new[] { 3 * wPt, 3 * wPt };
+        page.StrokeLine(x1, y1, x2, y2, wPt, r, g, b, alpha, dash, dashPhase: 0.0, lineCap: dotted ? 1 : 0);
     }
 
     /// <summary>multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — fill a

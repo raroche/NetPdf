@@ -2723,6 +2723,20 @@ flags the categories):
      expands the raster bounds); (4) filters on BACKGROUND images (the tiler path) aren't filtered;
      (5) `filter: opacity()` → native PDF `/ca` ExtGState + native `opacity` + `mix-blend-mode` (a
      compositing PR); (6) `url()` SVG-filter references.
+     **Phase 4 PR 3 (borders + clip-path) shipped — 4 of 5 tasks:** faithful `dashed`/`dotted` borders
+     (a new `PdfPage.StrokeLine` dash-stroke primitive), `double` + the 3D `groove`/`ridge`/`inset`/
+     `outset` styles (dark ×0.5 + light shades), and `clip-path` basic shapes (`inset`/`circle`/
+     `ellipse`/`polygon`) clipping the box decoration + the `<img>` image via native PDF clips
+     (`BeginPolygonClip`/`BeginEllipseClip`). **Border/clip-path residuals (Phase 4 follow-ups):**
+     (1) **`border-image`** 9-slice — the planned 5th PR-3 task, DEFERRED (a substantial image-decode +
+     9-region-slice feature; its own focused PR); (2) ROUNDED non-solid borders are still painted as a
+     solid ring (the uniform-ring path — `PAINT-BORDER-STYLE-APPROXIMATED-001`); per-corner inset-round
+     radii use a single uniform radius; (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
+     (`CSS-CLIP-PATH-RASTER-FALLBACK-001` — needs the SVG path parser from PR 6 + a native/raster
+     clip); (4) a `clip-path` on an element with CHILDREN clips only its OWN decoration, not the
+     descendant subtree (`CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001` — the same Skia SUBTREE RENDERER the
+     general element filters / masks need); (5) clip-path dash/3D-border metrics are browser-tunable
+     approximations the visual-regression harness (PR 8) will refine.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area

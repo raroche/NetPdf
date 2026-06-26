@@ -120,6 +120,18 @@ internal static class ImagePainter
             var transformed = effectiveTransforms is not null
                 && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
             if (transformed) page.BeginTransform(effCm.A, effCm.B, effCm.C, effCm.D, effCm.E, effCm.F);
+            // clip-path (Phase 4 PR 3) — clip the IMAGE to the box's basic shape too (FragmentPainter
+            // already clipped the box decoration + emitted any diagnostics, so suppress them here).
+            // Reconstruct the BORDER box (the clip reference) from the content box + insets.
+            var clipPathClipped = false;
+            if (cache.ClipPathBoxes.TryGetValue(fragment.Box, out var clipShape))
+            {
+                var suppressed = true;
+                clipPathClipped = FragmentPainter.BeginClipPath(
+                    page, clipShape, pageHeightPt, leftPx - insetL, topPx - insetT,
+                    widthPx + insetL + insetR, heightPx + insetT + insetB, fragment.Box,
+                    diagnostics: null, ref suppressed, ref suppressed);
+            }
             // cover / none can overflow the content box — clip there (CSS Images 3 §5.5: the
             // content's painted area is the content box).
             const double overflowEps = 0.01;
@@ -136,6 +148,7 @@ internal static class ImagePainter
                 out var x, out var y, out var w, out var h);
             page.PlaceImage(imageRef, x, y, w, h);
             if (clips) page.RestoreGraphicsState();
+            if (clipPathClipped) page.RestoreGraphicsState(); // balance BeginClipPath's q
             if (transformed) page.RestoreGraphicsState();
         }
     }

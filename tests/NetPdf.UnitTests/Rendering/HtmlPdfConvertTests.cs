@@ -166,12 +166,14 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Non_solid_border_style_emits_the_approximation_diagnostic()
+    public void Non_solid_ROUNDED_border_style_emits_the_approximation_diagnostic()
     {
+        // Phase 4 PR 3 — dashed/dotted/double/3D borders are now rendered faithfully on the SQUARE
+        // per-edge path, so the approximation diagnostic only fires for a non-solid border on a
+        // ROUNDED box (the uniform-ring path still paints it as a solid ring — a documented residual).
         const string html =
             "<!DOCTYPE html><html><body>" +
-            "<div style=\"width:80px;height:40px;" +
-            "border-top-width:3px;border-top-style:dashed;border-top-color:#000000\"></div>" +
+            "<div style=\"width:80px;height:40px;border:3px dashed #000000;border-radius:8px\"></div>" +
             "</body></html>";
 
         var result = HtmlPdf.ConvertDetailed(html);

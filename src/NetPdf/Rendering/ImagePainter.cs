@@ -7,6 +7,7 @@ using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
+using NetPdf.Pdf.Objects;
 
 namespace NetPdf.Rendering;
 
@@ -41,6 +42,7 @@ internal static class ImagePainter
     {
         if (cache.ImageBoxes.Count == 0) return;
         var unknownPositionReported = false;   // object-position cycle — once per render.
+        var filterRasterReported = false;      // Phase 4 filters — once-per-render raster Info.
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -104,7 +106,7 @@ internal static class ImagePainter
                 objTopPx = topPx + (heightPx - objHPx) / 2.0;
             }
 
-            var imageRef = ImageResourceCache.GetOrRegister(document, entry);
+            var imageRef = ResolveImageRef(document, spec, entry, diagnostics, ref filterRasterReported);
             // transform (Phase 4, review [P1]) — a transformed <img> wraps its XObject placement
             // (and the overflow clip) in the box's effective cm, so the image moves with the box.
             (double A, double B, double C, double D, double E, double F) effCm = default;
@@ -129,6 +131,35 @@ internal static class ImagePainter
             if (clips) page.RestoreGraphicsState();
             if (transformed) page.RestoreGraphicsState();
         }
+    }
+
+    /// <summary>Phase 4 filters (PR 2) — the image XObject ref to place: a <c>filter</c>-bearing
+    /// <c>&lt;img&gt;</c> gets a Skia-filtered variant (deduped, with <c>CSS-FILTER-RASTER-FALLBACK-001</c>
+    /// once per render); a filter NetPdf can't build in this cut, or an undecodable / over-cap image,
+    /// falls back to the unfiltered XObject so the picture still shows.</summary>
+    private static PdfIndirectRef ResolveImageRef(
+        PdfDocument document, ImageResourceCache.ImgSpec spec, ImageResourceCache.Entry entry,
+        IDiagnosticsSink? diagnostics, ref bool rasterReported)
+    {
+        if (spec.Filter is { } filter && ImageFilterBridge.TryBuildSteps(filter, out var steps))
+        {
+            var key = ImageFilterBridge.FilterKey(filter);
+            var filteredRef = ImageResourceCache.GetOrRegisterFiltered(document, entry, steps, key);
+            if (filteredRef is not null)
+            {
+                if (!rasterReported)
+                {
+                    diagnostics?.Emit(new Diagnostic(
+                        DiagnosticCodes.CssFilterRasterFallback001,
+                        "A CSS filter on an image was applied via the Skia raster fallback (PDF has no "
+                        + "native filter primitive); the filtered image was re-embedded as a raster XObject.",
+                        DiagnosticSeverity.Info));
+                    rasterReported = true;
+                }
+                return filteredRef;
+            }
+        }
+        return ImageResourceCache.GetOrRegister(document, entry);
     }
 
     /// <summary>The §5.5 concrete object size for the computed <c>object-fit</c> keyword

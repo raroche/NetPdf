@@ -46,6 +46,16 @@ internal sealed class ImageResourceCache
         public required double HeightPx { get; init; }
         public required ImageXObjectResult XObject { get; init; }
         public PdfIndirectRef? RegisteredRef;
+
+        /// <summary>Phase 4 filters (PR 2) — the RAW fetched image bytes, retained so a CSS
+        /// <c>filter</c> on an <c>&lt;img&gt;</c> can re-decode + filter the image into a separate
+        /// XObject. (A minor retention cost on every image; a documented optimization is to keep it
+        /// only when a filtered box references the URI.)</summary>
+        public required byte[] SourceBytes { get; init; }
+
+        /// <summary>Phase 4 filters — per-(filter-key) cache of the filtered XObject registrations, so
+        /// N <c>&lt;img&gt;</c>s with the same source + filter share one filtered XObject.</summary>
+        public Dictionary<string, PdfIndirectRef>? FilteredRefs;
     }
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
@@ -56,7 +66,8 @@ internal sealed class ImageResourceCache
     /// property since PR #168 review P2) + the RAW <c>object-position</c> winner (null = unset
     /// → the 50% 50% initial; the property stays UNREGISTERED — a 2-component position needs a
     /// new metadata type, so the raw read is the documented seam, like border-radius).</summary>
-    internal readonly record struct ImgSpec(string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw);
+    internal readonly record struct ImgSpec(
+        string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw, CssFilter? Filter = null);
 
     /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its image spec. Only boxes whose fetch +
     /// decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
@@ -129,6 +140,24 @@ internal sealed class ImageResourceCache
     public static PdfIndirectRef GetOrRegister(PdfDocument document, Entry entry) =>
         entry.RegisteredRef ??= document.RegisterImage(entry.XObject);
 
+    /// <summary>Phase 4 filters (PR 2) — register a FILTERED variant of <paramref name="entry"/>'s
+    /// image (the source bytes run through <paramref name="steps"/> via
+    /// <see cref="NetPdf.Pdf.Images.ImageFilterApplier"/>), memoized by <paramref name="filterKey"/> so
+    /// N identical (image + filter) placements share one XObject. Returns <see langword="null"/> when
+    /// the image can't be decoded / is over the raster cap (the caller falls back to the unfiltered
+    /// image).</summary>
+    public static PdfIndirectRef? GetOrRegisterFiltered(
+        PdfDocument document, Entry entry, IReadOnlyList<NetPdf.Pdf.Images.ImageFilterStep> steps, string filterKey)
+    {
+        entry.FilteredRefs ??= new Dictionary<string, PdfIndirectRef>(StringComparer.Ordinal);
+        if (entry.FilteredRefs.TryGetValue(filterKey, out var cached)) return cached;
+        var result = NetPdf.Pdf.Images.ImageFilterApplier.TryApply(entry.SourceBytes, steps);
+        if (result is null) return null;
+        var reg = document.RegisterImage(result);
+        entry.FilteredRefs[filterKey] = reg;
+        return reg;
+    }
+
     /// <summary>Walk <paramref name="boxRoot"/> + fetch/decode every image reference. Never
     /// throws for a bad reference — each failure is a diagnostic + the reference is skipped.
     /// <paramref name="extraImageUrls"/> (margin-box-bg-image cycle) carries non-box references
@@ -194,12 +223,19 @@ internal sealed class ImageResourceCache
                 // object-fit rides along as the COMPUTED keyword index (object-fit cycle;
                 // the registered property's slot — 0 = fill, the initial); object-position as
                 // the RAW winner (object-position cycle — unregistered, the documented seam).
+                var imgRules = box.SourceElement is { } imgEl ? cascade.TryGetStylesFor(imgEl) : null;
+                // filter (Phase 4 PR 2) — the box's OWN declared value (filter doesn't inherit),
+                // parsed into the function chain; the painter applies it to the decoded image.
+                var filterRaw = imgRules?.GetWinner("filter")?.ResolvedValue;
+                var filter = !string.IsNullOrWhiteSpace(filterRaw)
+                    && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                    ? CssFilter_Parser.TryParse(filterRaw)
+                    : null;
                 cache.ImageBoxes[box] = new ImgSpec(
                     key,
                     box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
-                    box.SourceElement is { } imgEl
-                        ? cascade.TryGetStylesFor(imgEl)?.GetWinner("object-position")?.ResolvedValue
-                        : null);
+                    imgRules?.GetWinner("object-position")?.ResolvedValue,
+                    filter);
             }
         }
 
@@ -536,6 +572,7 @@ internal sealed class ImageResourceCache
                 WidthPx = info.Width,
                 HeightPx = info.Height,
                 XObject = PngImageXObject.Build(info),
+                SourceBytes = bytes,
             };
         }
         if (bytes.Length > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8)
@@ -546,6 +583,7 @@ internal sealed class ImageResourceCache
                 WidthPx = info.Width,
                 HeightPx = info.Height,
                 XObject = new ImageXObjectResult { Image = JpegImageXObject.Build(bytes, info) },
+                SourceBytes = bytes,
             };
         }
         var raster = RasterImageDecoder.Decode(bytes);
@@ -554,6 +592,7 @@ internal sealed class ImageResourceCache
             WidthPx = raster.Width,
             HeightPx = raster.Height,
             XObject = RasterImageXObject.Build(raster),
+            SourceBytes = bytes,
         };
     }
 

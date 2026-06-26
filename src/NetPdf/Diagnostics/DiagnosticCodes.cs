@@ -135,6 +135,24 @@ internal static class DiagnosticCodes
     public const string CssConicGradientUnsupported001 = "CSS-CONIC-GRADIENT-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a CSS <c>filter</c> on an image was applied via the Skia raster fallback (the
+    /// decoded image is run through the filter chain — color matrices for grayscale / sepia / invert
+    /// / brightness / contrast / saturate / hue-rotate / opacity, plus blur / drop-shadow — and
+    /// re-embedded as a raster XObject) because PDF has no native filter primitive. Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssFilterRasterFallback001 = "CSS-FILTER-RASTER-FALLBACK-001";
+
+    /// <summary>
+    /// Phase 4 — a CSS <c>filter</c> on a NON-replaced element (a <c>&lt;div&gt;</c> / text box, not
+    /// an <c>&lt;img&gt;</c>) was IGNORED: filtering a general element's rendered subtree needs a
+    /// Skia subtree renderer NetPdf does not have yet (the painter draws straight to PDF), so the
+    /// element painted UNFILTERED. Filters on images ARE applied. A tracked follow-up. Surfaced once
+    /// per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssFilterElementUnsupported001 = "CSS-FILTER-ELEMENT-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

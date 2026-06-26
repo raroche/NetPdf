@@ -220,6 +220,10 @@ internal static class CssPreprocessor
         // raw-read seam, like `page` above).
         "transform",
         "transform-origin",
+        // Per Phase 4 filters (PR 2) — AngleSharp.Css 1.0.0-beta.144 drops the `filter` property
+        // (CSS Filter Effects L1). The recovery emits it verbatim so the painter reads the winner +
+        // parses the function list (an unregistered raw-read seam, like `transform`).
+        "filter",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

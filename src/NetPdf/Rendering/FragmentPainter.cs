@@ -359,7 +359,7 @@ internal static class FragmentPainter
     /// when a clip was opened (the caller balances with RestoreGraphicsState). A box with CHILDREN also
     /// warns — only its OWN decoration is clipped (the descendant subtree needs the Skia subtree
     /// renderer).</summary>
-    private static bool BeginClipPath(
+    internal static bool BeginClipPath(
         PdfPage page, CssClipPath clip, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx, NetPdf.Layout.Boxes.Box box,
         IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool subtreeReported)

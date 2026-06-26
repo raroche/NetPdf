@@ -5,6 +5,7 @@ using System;
 using System.Text;
 using NetPdf;
 using NetPdf.Diagnostics;
+using NetPdf.UnitTests.Pdf.Images;
 using Xunit;
 
 namespace NetPdf.UnitTests.Rendering;
@@ -62,6 +63,22 @@ public sealed class ClipPathPaintTests
             "</body></html>";
         var result = HtmlPdf.ConvertDetailed(html);
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathSubtreeUnsupported001);
+    }
+
+    [Fact]
+    public void Clip_path_on_an_img_clips_the_image()
+    {
+        // The most common clip-path use: clipping a photo to a shape. The image (Do) is wrapped in
+        // the ellipse clip; the box is a leaf, so no subtree warning.
+        var dataUri = "data:image/png;base64," + Convert.ToBase64String(SyntheticRasterImage.BuildOpaquePng(16, 16));
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{dataUri}\" style=\"width:64px;height:64px;clip-path:circle(30px)\">" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        var text = Latin1(result.Pdf);
+        Assert.Contains("W n", text);
+        Assert.Contains("Do", text);          // the image is drawn (inside the clip)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathSubtreeUnsupported001);
     }
 
     [Fact]

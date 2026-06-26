@@ -196,6 +196,7 @@ internal sealed class ImageResourceCache
         var transform3DReported = false;
         var transformUnsupportedReported = false;
         var filterElementReported = false;
+        var clipPathUnsupportedReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
@@ -204,7 +205,7 @@ internal sealed class ImageResourceCache
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
-            ref filterElementReported);
+            ref filterElementReported, ref clipPathUnsupportedReported);
 
         var filterValueReported = false; // Phase 4 filters — once-per-render unparseable-value Warning.
         foreach (var (box, rawUrl, isBackground) in references)
@@ -324,7 +325,8 @@ internal sealed class ImageResourceCache
         ref bool textShadowUnsupportedReported,
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
-        ref bool filterElementReported)
+        ref bool filterElementReported,
+        ref bool clipPathUnsupportedReported)
     {
         if (box.SourceElement is { } element)
         {
@@ -361,14 +363,21 @@ internal sealed class ImageResourceCache
                 }
             }
             // clip-path (Phase 4 PR 3) — the box's OWN declared basic shape (clip-path doesn't inherit).
-            // The painter clips the box decoration (+ image) to it; an unparseable / url() value is the
-            // null case (no clip). Always collected (it clips text + image too, not just backgrounds).
+            // The painter clips the box decoration (+ image) to it. A non-none value the parser CAN'T
+            // turn into a supported basic shape (url(#…), <geometry-box>, em/rem, malformed) surfaces
+            // CSS-CLIP-PATH-UNSUPPORTED-001 once per render — never a silent unclipped paint. Always
+            // collected (it clips text + image too, not just backgrounds).
             var clipPathRaw = rules?.GetWinner("clip-path")?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(clipPathRaw)
-                && !clipPathRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
-                && CssClipPath_Parser.TryParse(clipPathRaw) is { } clip)
+                && !clipPathRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
-                clipPathBoxes[box] = clip;
+                if (CssClipPath_Parser.TryParse(clipPathRaw) is { } clip)
+                    clipPathBoxes[box] = clip;
+                else
+                    Report(diagnostics, ref clipPathUnsupportedReported, DiagnosticCodes.CssClipPathUnsupported001,
+                        "A clip-path value could not be applied — it is a url(#…) SVG reference, a "
+                        + "<geometry-box> keyword, a font-relative (em/rem) length, or malformed basic-shape "
+                        + "syntax. The element painted unclipped.");
             }
             // filter (Phase 4 PR 2) — a filter on a REPLACED <img> is applied to the image (the img
             // path below). On a NON-replaced element (div / text box), filtering the rendered subtree
@@ -483,7 +492,7 @@ internal sealed class ImageResourceCache
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
-                ref filterElementReported);
+                ref filterElementReported, ref clipPathUnsupportedReported);
     }
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>

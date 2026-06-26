@@ -31,12 +31,31 @@ public sealed class BorderStylePaintTests
     }
 
     [Fact]
-    public void Dotted_border_strokes_with_round_caps()
+    public void Dotted_border_strokes_round_dots_with_a_zero_length_dash()
     {
+        // 4px border → 3pt line width. Dotted = a ZERO-length on-dash + round caps → a true round
+        // dot of diameter w, spaced 2w (= [0 6]) — NOT [w w] (which would be capsule/pill marks under
+        // round caps; PR #228 review P2).
         var text = Latin1(HtmlPdf.Convert(Html("dotted")));
         Assert.Contains("0.8 0.2 0.4 RG", text);
         Assert.Contains("1 J", text);               // round line cap → round dots
-        Assert.Contains("] 0 d", text);
+        Assert.Contains("[0 6] 0 d", text);         // 0-length dash, 2w gap (NOT [3 3] / [w w])
+        Assert.DoesNotContain("[3 3]", text);       // not the pill/capsule pattern
+    }
+
+    [Fact]
+    public void Semi_transparent_dashed_border_composites_via_stroke_alpha_CA()
+    {
+        // PR #228 review P1 — a dashed/dotted border is STROKED, so its partial alpha must select a
+        // STROKE-alpha ExtGState (/CA), not the fill /ca (which a stroke ignores → opaque). rgba alpha
+        // 0.5 → 8-bit-quantized 128/255 = 0.501961.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border:4px dashed rgba(204,51,102,0.5)\"></div>" +
+            "</body></html>"));
+        Assert.Contains("/CA 0.501961", text);       // STROKE constant-alpha
+        Assert.DoesNotContain("/ca 0.501961", text);  // ... never the fill alpha for the stroke
+        Assert.Contains(" S Q", text);
     }
 
     [Fact]

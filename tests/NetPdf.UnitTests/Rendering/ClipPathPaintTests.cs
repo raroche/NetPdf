@@ -48,6 +48,49 @@ public sealed class ClipPathPaintTests
     }
 
     [Fact]
+    public void Polygon_evenodd_clips_with_the_even_odd_operator()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("polygon(evenodd, 50% 0%, 100% 100%, 0% 100%)")));
+        Assert.Contains("W* n", text);            // even-odd clip rule
+        Assert.Contains("1 0 0 rg", text);
+    }
+
+    [Fact]
+    public void Polygon_nonzero_clips_with_the_nonzero_operator()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("polygon(50% 0%, 100% 100%, 0% 100%)")));
+        Assert.Contains("W n", text);
+        Assert.DoesNotContain("W* n", text);      // default is nonzero, not even-odd
+    }
+
+    [Fact]
+    public void Circle_closest_side_keyword_clips()
+    {
+        // circle(closest-side) is explicitly valid (CSS Shapes §funcdef-basic-shape-circle) — it must
+        // clip (an ellipse Bézier path), not surface the unsupported diagnostic (PR #228 review P3).
+        var result = HtmlPdf.ConvertDetailed(Html("circle(closest-side)"));
+        Assert.Contains("W n", Latin1(result.Pdf));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathUnsupported001);
+    }
+
+    [Fact]
+    public void Url_reference_clip_path_warns_unsupported_and_paints_unclipped()
+    {
+        // PR #228 review P2 — a url(#clip) SVG-reference clip can't be applied natively; it must warn
+        // (never drop content silently) and paint unclipped.
+        var result = HtmlPdf.ConvertDetailed(Html("url(#myclip)"));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathUnsupported001);
+        Assert.Contains("1 0 0 rg", Latin1(result.Pdf)); // still painted (unclipped)
+    }
+
+    [Fact]
+    public void Malformed_basic_shape_clip_path_warns_unsupported()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("polygon(0% 0%)")); // < 3 vertices
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathUnsupported001);
+    }
+
+    [Fact]
     public void Path_clip_is_deferred_with_a_diagnostic_and_paints_unclipped()
     {
         var result = HtmlPdf.ConvertDetailed(Html("path('M0 0 L100 0 L50 100 Z')"));

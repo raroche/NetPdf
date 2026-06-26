@@ -178,6 +178,15 @@ internal static class DiagnosticCodes
     public const string CssClipPathSubtreeUnsupported001 = "CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a non-<c>none</c> <c>clip-path</c> value could not be applied because it isn't a
+    /// supported basic shape: a <c>url(#clip)</c> SVG-reference clip, a bare <c>&lt;geometry-box&gt;</c>
+    /// keyword, a font-relative length (em/rem) the parser can't resolve, or otherwise malformed
+    /// syntax. The element painted UNCLIPPED rather than dropping content silently. Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssClipPathUnsupported001 = "CSS-CLIP-PATH-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

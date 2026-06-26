@@ -69,6 +69,61 @@ public sealed class CssClipPathParserTests
     }
 
     [Fact]
+    public void Polygon_nonzero_is_the_default_fill_rule()
+    {
+        var c = CssClipPath_Parser.TryParse("polygon(0 0, 10px 0, 5px 10px)");
+        Assert.False(c!.EvenOdd);
+    }
+
+    [Fact]
+    public void Polygon_evenodd_fill_rule_is_honored()
+    {
+        var c = CssClipPath_Parser.TryParse("polygon(evenodd, 0 0, 10px 0, 5px 10px)");
+        Assert.Equal(ClipShapeKind.Polygon, c!.Kind);
+        Assert.True(c.EvenOdd);
+        Assert.Equal(3, c.Points!.Length);
+    }
+
+    [Fact]
+    public void Circle_closest_side_keyword_radius_parses()
+    {
+        var c = CssClipPath_Parser.TryParse("circle(closest-side at center)");
+        Assert.Equal(ClipShapeKind.Circle, c!.Kind);
+        Assert.Equal(ClipRadiusExtent.ClosestSide, c.RadiusExtent);
+    }
+
+    [Fact]
+    public void Circle_farthest_side_keyword_radius_parses()
+    {
+        var c = CssClipPath_Parser.TryParse("circle(farthest-side at center)");
+        Assert.Equal(ClipRadiusExtent.FarthestSide, c!.RadiusExtent);
+    }
+
+    [Fact]
+    public void Ellipse_per_axis_side_keywords_parse()
+    {
+        var c = CssClipPath_Parser.TryParse("ellipse(closest-side farthest-side)");
+        Assert.Equal(ClipShapeKind.Ellipse, c!.Kind);
+        Assert.Equal(ClipRadiusExtent.ClosestSide, c.RxExtent);
+        Assert.Equal(ClipRadiusExtent.FarthestSide, c.RyExtent);
+    }
+
+    [Fact]
+    public void Omitted_circle_radius_defaults_to_closest_side()
+    {
+        var c = CssClipPath_Parser.TryParse("circle()");
+        Assert.Equal(ClipRadiusExtent.ClosestSide, c!.RadiusExtent);
+    }
+
+    [Theory]
+    [InlineData("circle(closest-corner)")]   // corner keywords are radial-gradient-only, invalid for basic shapes
+    [InlineData("ellipse(farthest-corner closest-side)")]
+    public void Corner_radius_keywords_are_rejected(string value)
+    {
+        Assert.Null(CssClipPath_Parser.TryParse(value));
+    }
+
+    [Fact]
     public void Path_keeps_the_svg_data()
     {
         var c = CssClipPath_Parser.TryParse("path(\"M0 0 L10 10 Z\")");

@@ -411,7 +411,8 @@ internal static class FragmentPainter
             {
                 var cxPx = leftPx + Resolve(clip.Cx, widthPx);
                 var cyPx = topPx + Resolve(clip.Cy, heightPx);
-                var rPx = ResolveRadius(clip.Radius, cxPx - leftPx, leftPx + widthPx - cxPx, cyPx - topPx, topPx + heightPx - cyPx, widthPx, heightPx);
+                var rPx = ResolveCircleRadius(clip.RadiusExtent, clip.Radius,
+                    cxPx - leftPx, leftPx + widthPx - cxPx, cyPx - topPx, topPx + heightPx - cyPx, widthPx, heightPx);
                 if (!(rPx > 0)) return false;
                 page.BeginEllipseClip(PdfUnits.PxToPt(cxPx), pageHeightPt - PdfUnits.PxToPt(cyPx), PdfUnits.PxToPt(rPx), PdfUnits.PxToPt(rPx));
                 return true;
@@ -420,8 +421,8 @@ internal static class FragmentPainter
             {
                 var cxPx = leftPx + Resolve(clip.Cx, widthPx);
                 var cyPx = topPx + Resolve(clip.Cy, heightPx);
-                var rxPx = double.IsNaN(clip.Rx.Frac) ? Math.Min(cxPx - leftPx, leftPx + widthPx - cxPx) : Resolve(clip.Rx, widthPx);
-                var ryPx = double.IsNaN(clip.Ry.Frac) ? Math.Min(cyPx - topPx, topPx + heightPx - cyPx) : Resolve(clip.Ry, heightPx);
+                var rxPx = ResolveEllipseAxis(clip.RxExtent, clip.Rx, cxPx - leftPx, leftPx + widthPx - cxPx, widthPx);
+                var ryPx = ResolveEllipseAxis(clip.RyExtent, clip.Ry, cyPx - topPx, topPx + heightPx - cyPx, heightPx);
                 if (!(rxPx > 0) || !(ryPx > 0)) return false;
                 page.BeginEllipseClip(PdfUnits.PxToPt(cxPx), pageHeightPt - PdfUnits.PxToPt(cyPx), PdfUnits.PxToPt(rxPx), PdfUnits.PxToPt(ryPx));
                 return true;
@@ -435,7 +436,7 @@ internal static class FragmentPainter
                     var ptyPx = topPx + Resolve(clip.Points[i].Y, heightPx);
                     pts[i] = (PdfUnits.PxToPt(ptxPx), pageHeightPt - PdfUnits.PxToPt(ptyPx));
                 }
-                page.BeginPolygonClip(pts);
+                page.BeginPolygonClip(pts, clip.EvenOdd); // polygon(evenodd, …) → W* n
                 return true;
             }
             default:
@@ -443,15 +444,27 @@ internal static class FragmentPainter
         }
     }
 
-    /// <summary>The circle() radius in px: an omitted (NaN) radius = closest-side (the min distance to
-    /// the four edges); a <c>%</c> resolves against √(w²+h²)/√2 (CSS Masking §3.1); a length is direct.</summary>
-    private static double ResolveRadius(ClipLen radius, double distL, double distR, double distT, double distB, double widthPx, double heightPx)
+    /// <summary>The circle() radius in px: <c>closest-side</c> = the min distance to the four edges,
+    /// <c>farthest-side</c> = the max; a <c>%</c> length resolves against √(w²+h²)/√2 (CSS Masking
+    /// §3.1); a plain length is direct.</summary>
+    private static double ResolveCircleRadius(
+        ClipRadiusExtent ext, ClipLen radius,
+        double distL, double distR, double distT, double distB, double widthPx, double heightPx) => ext switch
     {
-        if (double.IsNaN(radius.Frac))
-            return Math.Min(Math.Min(distL, distR), Math.Min(distT, distB)); // closest-side
-        var reference = Math.Sqrt(widthPx * widthPx + heightPx * heightPx) / Math.Sqrt(2.0);
-        return radius.Px + radius.Frac * reference;
-    }
+        ClipRadiusExtent.ClosestSide => Math.Min(Math.Min(distL, distR), Math.Min(distT, distB)),
+        ClipRadiusExtent.FarthestSide => Math.Max(Math.Max(distL, distR), Math.Max(distT, distB)),
+        _ => radius.Px + radius.Frac * (Math.Sqrt(widthPx * widthPx + heightPx * heightPx) / Math.Sqrt(2.0)),
+    };
+
+    /// <summary>One ellipse() axis radius in px: <c>closest-side</c>/<c>farthest-side</c> = the
+    /// min/max distance from the center to the two edges on this axis; a length/% is direct against the
+    /// axis's <paramref name="extentPx"/> (a <c>%</c> stored in <c>Frac</c>).</summary>
+    private static double ResolveEllipseAxis(ClipRadiusExtent ext, ClipLen len, double distNear, double distFar, double extentPx) => ext switch
+    {
+        ClipRadiusExtent.ClosestSide => Math.Min(distNear, distFar),
+        ClipRadiusExtent.FarthestSide => Math.Max(distNear, distFar),
+        _ => len.Px + len.Frac * extentPx,
+    };
 
     /// <summary>Per-fragment tile-count threshold ABOVE which the tiling emits ONE PDF
     /// tiling-pattern fill instead of per-tile placements (tiling-patterns cycle, ISO 32000-2
@@ -2432,9 +2445,13 @@ internal static class FragmentPainter
     }
 
     /// <summary>Phase 4 borders (PR 3) — stroke a dashed / dotted border edge: a centerline along the
-    /// edge's long axis, line-width = the edge width, with a dash pattern (dashed → <c>[3w 3w]</c>
-    /// butt caps; dotted → <c>[w w]</c> round caps; <c>w</c> = the edge width in pt). The exact dash
-    /// metrics are a browser-tunable approximation (the visual-regression harness refines them).</summary>
+    /// edge's long axis, line-width = the edge width, with a dash pattern. Dashed → <c>[3w 3w]</c> butt
+    /// caps. Dotted → a ZERO-length on-dash with ROUND caps (<c>[0 2w]</c>): a round cap on a 0-length
+    /// dash renders a FILLED CIRCLE of diameter <c>w</c> (a true dot), spaced <c>2w</c> centre-to-centre
+    /// (≈ one dot-diameter gap). <c>[w w]</c> with round caps would instead extend each dash by a
+    /// half-cap on both ends → capsule / pill marks, not dots (PR #228 review P2). <c>w</c> = the edge
+    /// width in pt. The exact spacing is a browser-tunable approximation (the visual-regression harness
+    /// refines it).</summary>
     private static void StrokeDashedEdge(
         PdfPage page, BorderEdge edge, double edgeLeftPx, double edgeTopPx,
         double edgeBoxWidthPx, double edgeBoxHeightPx, double edgeWidthPx, double pageHeightPt,
@@ -2457,7 +2474,9 @@ internal static class FragmentPainter
         var y1 = pageHeightPt - PdfUnits.PxToPt(y1Px);
         var x2 = PdfUnits.PxToPt(x2Px);
         var y2 = pageHeightPt - PdfUnits.PxToPt(y2Px);
-        var dash = dotted ? new[] { wPt, wPt } : new[] { 3 * wPt, 3 * wPt };
+        // Dotted: [0 2w] round caps → a 0-length dash becomes a round dot of diameter w, spaced 2w
+        // centre-to-centre (one dot-diameter gap). Dashed: [3w 3w] butt caps.
+        var dash = dotted ? new[] { 0.0, 2 * wPt } : new[] { 3 * wPt, 3 * wPt };
         page.StrokeLine(x1, y1, x2, y2, wPt, r, g, b, alpha, dash, dashPhase: 0.0, lineCap: dotted ? 1 : 0);
     }
 

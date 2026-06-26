@@ -601,8 +601,12 @@ internal sealed class PdfPage
     /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with a
     /// POLYGON (<c>q x0 y0 m x1 y1 l … h W n</c>) for <c>clip-path: polygon(...)</c>. Points are PDF
     /// points (bottom-left origin). Fewer than 3 points → no clip change (the <c>q</c> still opens, so
-    /// the caller still balances with <see cref="RestoreGraphicsState"/>). Non-finite points throw.</summary>
-    public void BeginPolygonClip(IReadOnlyList<(double X, double Y)> points)
+    /// the caller still balances with <see cref="RestoreGraphicsState"/>). Non-finite points throw.
+    /// <paramref name="evenOdd"/> selects the clip operator: <see langword="false"/> (the default) →
+    /// the nonzero winding rule (<c>W n</c>); <see langword="true"/> → the even-odd rule (<c>W* n</c>),
+    /// for <c>polygon(evenodd, …)</c> — a self-intersecting / hole-style polygon clips differently
+    /// under even-odd (CSS Shapes §funcdef-basic-shape-polygon).</summary>
+    public void BeginPolygonClip(IReadOnlyList<(double X, double Y)> points, bool evenOdd = false)
     {
         ThrowIfFinalized();
         ArgumentNullException.ThrowIfNull(points);
@@ -618,7 +622,7 @@ internal sealed class PdfPage
                 AppendNumber(sb, px); sb.Append(' '); AppendNumber(sb, py);
                 sb.Append(i == 0 ? " m " : " l ");
             }
-            sb.Append("h W n");
+            sb.Append(evenOdd ? "h W* n" : "h W n");
         }
         sb.Append('\n');
         AppendContent(sb.ToString());
@@ -718,23 +722,30 @@ internal sealed class PdfPage
     }
 
     /// <summary>Get (or create) the per-page <c>/ExtGState</c> resource name for a constant
-    /// fill alpha (<c>/ca</c>), deduped by the alpha value (so equal alphas share one
-    /// ExtGState). The name is derived from the value, so it's deterministic.</summary>
-    private PdfName GetOrAddConstantAlpha(double alpha)
+    /// alpha, deduped by the alpha value (so equal alphas share one ExtGState). The name is
+    /// derived from the value, so it's deterministic. When <paramref name="stroke"/> is
+    /// <see langword="false"/> (the default) the ExtGState sets the FILL alpha (<c>/ca</c> —
+    /// applies to <c>f</c>/<c>re f</c>/text fills); when <see langword="true"/> it sets the
+    /// STROKE alpha (<c>/CA</c> — applies to <c>S</c>). A stroke that selected a <c>/ca</c>-only
+    /// ExtGState would render OPAQUE (the prior dashed/dotted border + outline pitfall), so the
+    /// stroke path gets its OWN distinct ExtGState — keeping every existing fill ExtGState (and
+    /// thus the emitted bytes) unchanged.</summary>
+    private PdfName GetOrAddConstantAlpha(double alpha, bool stroke = false)
     {
-        // Dedup by the EXACT serialized /ca value. The name must encode alpha at the same
+        // Dedup by the EXACT serialized alpha value. The name must encode alpha at the same
         // precision PdfReal/PdfWriter.WriteReal emits (PdfWriter.CanonicalRealFormat — 6
         // fraction digits) — otherwise a coarser name lets two distinct alphas (e.g. 0.123456
-        // and 0.123457) collide on one /GSca… name and silently reuse the wrong /ca value
+        // and 0.123457) collide on one /GS… name and silently reuse the wrong alpha value
         // (post-PR-#125 review P2). Sharing the canonical format makes the name 1:1 with the
-        // serialized value: equal /ca bytes share one ExtGState, distinct /ca bytes never do.
+        // serialized value. The fill (GSca…) and stroke (GSCA…) families are kept separate so a
+        // stroke alpha is written as /CA (stroke), not /ca (fill).
         var canonical = alpha.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
-        var name = new PdfName("GSca" + canonical.Replace('.', '_'));
+        var name = new PdfName((stroke ? "GSCA" : "GSca") + canonical.Replace('.', '_'));
         if (!_extGStateResource.ContainsKey(name))
         {
             _extGStateResource.Set(name, new PdfDictionary()
                 .Set(PdfNames.Type, PdfNames.ExtGState)
-                .Set(PdfNames.ca, new PdfReal(alpha)));
+                .Set(stroke ? PdfNames.CA : PdfNames.ca, new PdfReal(alpha)));
         }
         return name;
     }
@@ -836,7 +847,8 @@ internal sealed class PdfPage
     /// 0 butt, 1 round, 2 square). Used for dashed / dotted border + outline edges. Emits
     /// <c>q [/GSn gs] &lt;width&gt; w [&lt;cap&gt; J] [[&lt;dash&gt;] &lt;phase&gt; d] r g b RG x1 y1 m x2 y2 l S Q</c>.
     /// A non-positive width no-ops; non-finite args throw (as the fills do). Partial alpha → the
-    /// per-page constant-alpha ExtGState (<c>/ca</c> — fill alpha applies to the stroke too here).</summary>
+    /// per-page STROKE constant-alpha ExtGState (<c>/CA</c> — a stroke honors <c>/CA</c>, not the
+    /// fill <c>/ca</c>; selecting <c>/ca</c> would render the stroke opaque).</summary>
     public void StrokeLine(
         double x1, double y1, double x2, double y2, double width,
         double r, double g, double b, double alpha = 1.0,
@@ -855,7 +867,7 @@ internal sealed class PdfPage
 
         var sb = new StringBuilder(112);
         sb.Append("q ");
-        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha, stroke: true).Value).Append(" gs ");
         AppendNumber(sb, width); sb.Append(" w ");
         if (lineCap is 1 or 2) { sb.Append(lineCap); sb.Append(" J "); }
         if (dash is { Length: > 0 })

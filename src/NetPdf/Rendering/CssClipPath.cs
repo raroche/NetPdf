@@ -12,6 +12,13 @@ namespace NetPdf.Rendering;
 /// rendered via the raster fallback.</summary>
 internal enum ClipShapeKind { Inset, Circle, Ellipse, Polygon, Path }
 
+/// <summary>Phase 4 clip-path — a circle()/ellipse() radius's sizing keyword. CSS Shapes L1
+/// <c>&lt;shape-radius&gt; = &lt;length-percentage&gt; | closest-side | farthest-side</c> — only the
+/// two SIDE keywords are valid for the basic shapes (corner keywords are radial-gradient-only and are
+/// rejected as unsupported). <see cref="Length"/> = an explicit length/percentage in the matching
+/// <see cref="ClipLen"/>; the keywords size the radius to the box edges at paint time.</summary>
+internal enum ClipRadiusExtent { Length, ClosestSide, FarthestSide }
+
 /// <summary>Phase 4 clip-path — a length-percentage stored as a (px, fraction) pair so the painter
 /// resolves it against the box at paint time (a fraction × the box width for X / inline lengths, ×
 /// the height for Y / block lengths). A <c>NaN</c> fraction marks an OMITTED circle/ellipse radius
@@ -29,7 +36,11 @@ internal sealed record CssClipPath(
     ClipLen Radius = default, ClipLen Rx = default, ClipLen Ry = default,
     ClipLen Cx = default, ClipLen Cy = default,
     (ClipLen X, ClipLen Y)[]? Points = null,
-    string? PathData = null);
+    string? PathData = null,
+    bool EvenOdd = false,              // polygon(evenodd, …) → even-odd clip rule (default nonzero)
+    ClipRadiusExtent RadiusExtent = ClipRadiusExtent.Length,   // circle() radius sizing keyword
+    ClipRadiusExtent RxExtent = ClipRadiusExtent.Length,       // ellipse() x-radius sizing keyword
+    ClipRadiusExtent RyExtent = ClipRadiusExtent.Length);      // ellipse() y-radius sizing keyword
 
 /// <summary>Phase 4 clip-path — a parser for the <c>clip-path</c> basic shapes
 /// <c>inset()</c> / <c>circle()</c> / <c>ellipse()</c> / <c>polygon()</c> / <c>path()</c>. The
@@ -93,31 +104,62 @@ internal static class CssClipPath_Parser
 
     private static CssClipPath? ParseCircle(string args)
     {
-        // circle( <radius>? [ at <position> ]? )
+        // circle( [ <length-percentage> | closest-side | farthest-side | closest-corner | farthest-corner ]?
+        //         [ at <position> ]? ) — an OMITTED radius defaults to closest-side.
         SplitAt(args, out var shape, out var pos);
-        var radius = new ClipLen(0, double.NaN); // NaN frac = OMITTED → closest-side (painter resolves)
+        var radius = new ClipLen(0, double.NaN);   // length sentinel (unused when an extent keyword applies)
+        var ext = ClipRadiusExtent.ClosestSide;    // omitted → closest-side
         if (shape.Length > 0)
         {
             var toks = SplitWs(shape);
-            if (toks.Count != 1 || !TryLen(toks[0], out radius)) return null;
+            if (toks.Count != 1) return null;
+            if (TryRadiusExtent(toks[0], out var kw)) ext = kw;
+            else if (TryLen(toks[0], out radius)) ext = ClipRadiusExtent.Length;
+            else return null;
         }
         if (!ParsePosition(pos, out var cx, out var cy)) return null;
-        return new CssClipPath(ClipShapeKind.Circle, Radius: radius, Cx: cx, Cy: cy);
+        return new CssClipPath(ClipShapeKind.Circle, Radius: radius, RadiusExtent: ext, Cx: cx, Cy: cy);
     }
 
     private static CssClipPath? ParseEllipse(string args)
     {
-        // ellipse( [ <rx> <ry> ]? [ at <position> ]? )
+        // ellipse( [ <rx> <ry> ]? [ at <position> ]? ) — each radius is a length-percentage OR a
+        // sizing keyword; an OMITTED pair defaults to closest-side per axis.
         SplitAt(args, out var shape, out var pos);
-        var rx = new ClipLen(0, double.NaN); // OMITTED → closest-side per axis
-        var ry = new ClipLen(0, double.NaN);
+        var rx = new ClipLen(0, double.NaN); var rxE = ClipRadiusExtent.ClosestSide;
+        var ry = new ClipLen(0, double.NaN); var ryE = ClipRadiusExtent.ClosestSide;
         if (shape.Length > 0)
         {
             var toks = SplitWs(shape);
-            if (toks.Count != 2 || !TryLen(toks[0], out rx) || !TryLen(toks[1], out ry)) return null;
+            if (toks.Count != 2
+                || !TryAxisRadius(toks[0], out rx, out rxE)
+                || !TryAxisRadius(toks[1], out ry, out ryE)) return null;
         }
         if (!ParsePosition(pos, out var cx, out var cy)) return null;
-        return new CssClipPath(ClipShapeKind.Ellipse, Rx: rx, Ry: ry, Cx: cx, Cy: cy);
+        return new CssClipPath(ClipShapeKind.Ellipse, Rx: rx, Ry: ry, RxExtent: rxE, RyExtent: ryE, Cx: cx, Cy: cy);
+    }
+
+    /// <summary>A single ellipse-axis radius: a length-percentage (→ Length) or a sizing keyword.</summary>
+    private static bool TryAxisRadius(string tok, out ClipLen len, out ClipRadiusExtent ext)
+    {
+        if (TryRadiusExtent(tok, out ext)) { len = new ClipLen(0, double.NaN); return true; }
+        if (TryLen(tok, out len)) { ext = ClipRadiusExtent.Length; return true; }
+        ext = ClipRadiusExtent.Length;
+        return false;
+    }
+
+    /// <summary>Map a circle()/ellipse() <c>&lt;shape-radius&gt;</c> keyword to
+    /// <see cref="ClipRadiusExtent"/>. Only <c>closest-side</c> / <c>farthest-side</c> are valid for the
+    /// basic shapes (CSS Shapes L1); corner keywords are radial-gradient-only → not matched (the value
+    /// then fails to parse and surfaces the unsupported diagnostic).</summary>
+    private static bool TryRadiusExtent(string tok, out ClipRadiusExtent ext)
+    {
+        switch (tok.ToLowerInvariant())
+        {
+            case "closest-side": ext = ClipRadiusExtent.ClosestSide; return true;
+            case "farthest-side": ext = ClipRadiusExtent.FarthestSide; return true;
+            default: ext = ClipRadiusExtent.Length; return false;
+        }
     }
 
     private static CssClipPath? ParsePolygon(string args)
@@ -125,11 +167,16 @@ internal static class CssClipPath_Parser
         // polygon( [<fill-rule>,]? <length-percentage> <length-percentage> [, ...]+ )
         var parts = args.Split(',');
         var start = 0;
-        // An optional leading fill-rule (nonzero|evenodd) — accepted + ignored (we always use nonzero).
+        var evenOdd = false;
+        // An optional leading fill-rule (nonzero|evenodd). nonzero is the default; evenodd is honored
+        // (the painter emits W* n).
         var firstToks = SplitWs(parts[0]);
         if (firstToks.Count == 1 && (firstToks[0].Equals("nonzero", StringComparison.OrdinalIgnoreCase)
             || firstToks[0].Equals("evenodd", StringComparison.OrdinalIgnoreCase)))
+        {
             start = 1;
+            evenOdd = firstToks[0].Equals("evenodd", StringComparison.OrdinalIgnoreCase);
+        }
         var pts = new List<(ClipLen, ClipLen)>();
         for (var i = start; i < parts.Length; i++)
         {
@@ -137,7 +184,7 @@ internal static class CssClipPath_Parser
             if (toks.Count != 2 || !TryLen(toks[0], out var x) || !TryLen(toks[1], out var y)) return null;
             pts.Add((x, y));
         }
-        return pts.Count >= 3 ? new CssClipPath(ClipShapeKind.Polygon, Points: pts.ToArray()) : null;
+        return pts.Count >= 3 ? new CssClipPath(ClipShapeKind.Polygon, Points: pts.ToArray(), EvenOdd: evenOdd) : null;
     }
 
     private static CssClipPath? ParsePath(string args)

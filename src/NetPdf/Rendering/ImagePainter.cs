@@ -7,6 +7,7 @@ using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Pdf;
+using NetPdf.Pdf.Objects;
 
 namespace NetPdf.Rendering;
 
@@ -41,6 +42,7 @@ internal static class ImagePainter
     {
         if (cache.ImageBoxes.Count == 0) return;
         var unknownPositionReported = false;   // object-position cycle — once per render.
+        var filterRasterReported = false;      // Phase 4 filters — once-per-render raster Info.
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -104,7 +106,14 @@ internal static class ImagePainter
                 objTopPx = topPx + (heightPx - objHPx) / 2.0;
             }
 
-            var imageRef = ImageResourceCache.GetOrRegister(document, entry);
+            var (imageRef, filterPad) = ResolveImageRef(document, style, spec, entry, diagnostics, ref filterRasterReported);
+            // A drop-shadow filter pads the raster outward (the shadow extends past the image box);
+            // the image CONTENT still maps to the object box, so expand the placement by the padding
+            // fractions of the content size. Zero for colour / blur filters (byte-identical).
+            var placeLeftPx = objLeftPx - objWPx * filterPad.LeftFrac;
+            var placeTopPx = objTopPx - objHPx * filterPad.TopFrac;
+            var placeWPx = objWPx * (1 + filterPad.LeftFrac + filterPad.RightFrac);
+            var placeHPx = objHPx * (1 + filterPad.TopFrac + filterPad.BottomFrac);
             // transform (Phase 4, review [P1]) — a transformed <img> wraps its XObject placement
             // (and the overflow clip) in the box's effective cm, so the image moves with the box.
             (double A, double B, double C, double D, double E, double F) effCm = default;
@@ -123,12 +132,42 @@ internal static class ImagePainter
                 page.BeginRectangleClip(cx, cy, cw, ch);
             }
             FragmentPainter.ToPdfRect(
-                objLeftPx, objTopPx, objWPx, objHPx, pageHeightPt,
+                placeLeftPx, placeTopPx, placeWPx, placeHPx, pageHeightPt,
                 out var x, out var y, out var w, out var h);
             page.PlaceImage(imageRef, x, y, w, h);
             if (clips) page.RestoreGraphicsState();
             if (transformed) page.RestoreGraphicsState();
         }
+    }
+
+    /// <summary>Phase 4 filters (PR 2) — the image XObject ref to place: a <c>filter</c>-bearing
+    /// <c>&lt;img&gt;</c> gets a Skia-filtered variant (deduped, with <c>CSS-FILTER-RASTER-FALLBACK-001</c>
+    /// once per render); a filter NetPdf can't build in this cut, or an undecodable / over-cap image,
+    /// falls back to the unfiltered XObject so the picture still shows.</summary>
+    private static (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad) ResolveImageRef(
+        PdfDocument document, ComputedStyle style, ImageResourceCache.ImgSpec spec,
+        ImageResourceCache.Entry entry, IDiagnosticsSink? diagnostics, ref bool rasterReported)
+    {
+        if (spec.Filter is { } filter
+            && ImageFilterBridge.TryBuildSteps(filter, FragmentPainter.ResolveCurrentColor(style), out var steps))
+        {
+            var key = ImageFilterBridge.FilterKey(steps); // keyed on the RESOLVED steps (incl. shadow RGBA)
+            var filtered = ImageResourceCache.GetOrRegisterFiltered(document, entry, steps, key);
+            if (filtered is { } f)
+            {
+                if (!rasterReported)
+                {
+                    diagnostics?.Emit(new Diagnostic(
+                        DiagnosticCodes.CssFilterRasterFallback001,
+                        "A CSS filter on an image was applied via the Skia raster fallback (PDF has no "
+                        + "native filter primitive); the filtered image was re-embedded as a raster XObject.",
+                        DiagnosticSeverity.Info));
+                    rasterReported = true;
+                }
+                return (f.Ref, f.Pad);
+            }
+        }
+        return (ImageResourceCache.GetOrRegister(document, entry), NetPdf.Pdf.Images.FilterPadding.None);
     }
 
     /// <summary>The §5.5 concrete object size for the computed <c>object-fit</c> keyword

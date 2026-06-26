@@ -2323,7 +2323,7 @@ internal static class FragmentPainter
     /// <summary>The alpha channel (0–255) of a packed 0xAARRGGBB color.</summary>
     internal static int Alpha(uint argb) => (int)((argb >> 24) & 0xFF);
 
-    private static uint ResolveCurrentColor(ComputedStyle style)
+    internal static uint ResolveCurrentColor(ComputedStyle style)
     {
         var slot = style.Get(PropertyId.Color);
         return slot.Tag == ComputedSlotTag.Color ? slot.AsColor() : DefaultColorArgb;

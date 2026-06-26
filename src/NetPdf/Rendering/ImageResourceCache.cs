@@ -46,6 +46,17 @@ internal sealed class ImageResourceCache
         public required double HeightPx { get; init; }
         public required ImageXObjectResult XObject { get; init; }
         public PdfIndirectRef? RegisteredRef;
+
+        /// <summary>Phase 4 filters (PR 2) — the RAW fetched image bytes, retained so a CSS
+        /// <c>filter</c> on an <c>&lt;img&gt;</c> can re-decode + filter the image into a separate
+        /// XObject. (A minor retention cost on every image; a documented optimization is to keep it
+        /// only when a filtered box references the URI.)</summary>
+        public required byte[] SourceBytes { get; init; }
+
+        /// <summary>Phase 4 filters — per-(filter-key) cache of the filtered XObject registration +
+        /// its drop-shadow padding, so N <c>&lt;img&gt;</c>s with the same source + filter share one
+        /// filtered XObject.</summary>
+        public Dictionary<string, (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad)>? FilteredRefs;
     }
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
@@ -56,7 +67,8 @@ internal sealed class ImageResourceCache
     /// property since PR #168 review P2) + the RAW <c>object-position</c> winner (null = unset
     /// → the 50% 50% initial; the property stays UNREGISTERED — a 2-component position needs a
     /// new metadata type, so the raw read is the documented seam, like border-radius).</summary>
-    internal readonly record struct ImgSpec(string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw);
+    internal readonly record struct ImgSpec(
+        string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw, CssFilter? Filter = null);
 
     /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its image spec. Only boxes whose fetch +
     /// decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
@@ -129,6 +141,24 @@ internal sealed class ImageResourceCache
     public static PdfIndirectRef GetOrRegister(PdfDocument document, Entry entry) =>
         entry.RegisteredRef ??= document.RegisterImage(entry.XObject);
 
+    /// <summary>Phase 4 filters (PR 2) — register a FILTERED variant of <paramref name="entry"/>'s
+    /// image (the source bytes run through <paramref name="steps"/> via
+    /// <see cref="NetPdf.Pdf.Images.ImageFilterApplier"/>), memoized by <paramref name="filterKey"/> so
+    /// N identical (image + filter) placements share one XObject. Returns <see langword="null"/> when
+    /// the image can't be decoded / is over the raster cap (the caller falls back to the unfiltered
+    /// image).</summary>
+    public static (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad)? GetOrRegisterFiltered(
+        PdfDocument document, Entry entry, IReadOnlyList<NetPdf.Pdf.Images.ImageFilterStep> steps, string filterKey)
+    {
+        entry.FilteredRefs ??= new Dictionary<string, (PdfIndirectRef, NetPdf.Pdf.Images.FilterPadding)>(StringComparer.Ordinal);
+        if (entry.FilteredRefs.TryGetValue(filterKey, out var cached)) return cached;
+        var result = NetPdf.Pdf.Images.ImageFilterApplier.TryApply(entry.SourceBytes, steps);
+        if (result is null) return null;
+        var entryRef = (document.RegisterImage(result.Value.Image), result.Value.Padding);
+        entry.FilteredRefs[filterKey] = entryRef;
+        return entryRef;
+    }
+
     /// <summary>Walk <paramref name="boxRoot"/> + fetch/decode every image reference. Never
     /// throws for a bad reference — each failure is a diagnostic + the reference is skipped.
     /// <paramref name="extraImageUrls"/> (margin-box-bg-image cycle) carries non-box references
@@ -159,6 +189,7 @@ internal sealed class ImageResourceCache
         var textShadowUnsupportedReported = false;
         var transform3DReported = false;
         var transformUnsupportedReported = false;
+        var filterElementReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
@@ -166,8 +197,10 @@ internal sealed class ImageResourceCache
             cache.TransformBoxes,
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-            ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
+            ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
+            ref filterElementReported);
 
+        var filterValueReported = false; // Phase 4 filters — once-per-render unparseable-value Warning.
         foreach (var (box, rawUrl, isBackground) in references)
         {
             var key = await ResolveAndFetchAsync(
@@ -194,12 +227,33 @@ internal sealed class ImageResourceCache
                 // object-fit rides along as the COMPUTED keyword index (object-fit cycle;
                 // the registered property's slot — 0 = fill, the initial); object-position as
                 // the RAW winner (object-position cycle — unregistered, the documented seam).
+                var imgRules = box.SourceElement is { } imgEl ? cascade.TryGetStylesFor(imgEl) : null;
+                // filter (Phase 4 PR 2) — the box's OWN declared value (filter doesn't inherit),
+                // parsed into the function chain; the painter applies it to the decoded image.
+                var filterRaw = imgRules?.GetWinner("filter")?.ResolvedValue;
+                CssFilter? filter = null;
+                if (!string.IsNullOrWhiteSpace(filterRaw)
+                    && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                {
+                    filter = CssFilter_Parser.TryParse(filterRaw);
+                    // A non-none value that won't parse (url(#id) SVG ref, unknown function, bad arg /
+                    // color) is DROPPED — surface it (PR 227 review [P2]) instead of silently ignoring.
+                    if (filter is null && !filterValueReported)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.CssFilterUnsupported001,
+                            "A CSS filter value on an <img> could not be parsed (a url(#id) SVG-filter "
+                            + "reference, an unknown function, or a bad argument / color); the filter was "
+                            + "dropped and the image painted unfiltered.",
+                            DiagnosticSeverity.Warning));
+                        filterValueReported = true;
+                    }
+                }
                 cache.ImageBoxes[box] = new ImgSpec(
                     key,
                     box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
-                    box.SourceElement is { } imgEl
-                        ? cascade.TryGetStylesFor(imgEl)?.GetWinner("object-position")?.ResolvedValue
-                        : null);
+                    imgRules?.GetWinner("object-position")?.ResolvedValue,
+                    filter);
             }
         }
 
@@ -262,7 +316,8 @@ internal sealed class ImageResourceCache
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
         ref bool transform3DReported,
-        ref bool transformUnsupportedReported)
+        ref bool transformUnsupportedReported,
+        ref bool filterElementReported)
     {
         if (box.SourceElement is { } element)
         {
@@ -297,6 +352,22 @@ internal sealed class ImageResourceCache
                         + "(translate/scale/rotate/skew/matrix + axis variants); the element painted "
                         + "untransformed.");
                 }
+            }
+            // filter (Phase 4 PR 2) — a filter on a REPLACED <img> is applied to the image (the img
+            // path below). On a NON-replaced element (div / text box), filtering the rendered subtree
+            // needs a Skia subtree renderer NetPdf doesn't have yet, so the element paints UNFILTERED
+            // and CSS-FILTER-ELEMENT-UNSUPPORTED-001 surfaces once per render.
+            var elementFilterRaw = rules?.GetWinner("filter")?.ResolvedValue;
+            var isReplacedImg = box.Kind is BoxKind.BlockReplacedElement or BoxKind.InlineReplacedElement
+                && string.Equals(element.LocalName, "img", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(elementFilterRaw)
+                && !elementFilterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !isReplacedImg)
+            {
+                Report(diagnostics, ref filterElementReported, DiagnosticCodes.CssFilterElementUnsupported001,
+                    "A CSS filter on a non-image element was ignored — filtering a general element's "
+                    + "rendered subtree needs a Skia subtree renderer NetPdf doesn't have yet; the "
+                    + "element painted unfiltered. Filters on <img> elements ARE applied.");
             }
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
@@ -394,7 +465,8 @@ internal sealed class ImageResourceCache
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-                ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
+                ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
+                ref filterElementReported);
     }
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>
@@ -536,6 +608,7 @@ internal sealed class ImageResourceCache
                 WidthPx = info.Width,
                 HeightPx = info.Height,
                 XObject = PngImageXObject.Build(info),
+                SourceBytes = bytes,
             };
         }
         if (bytes.Length > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8)
@@ -546,6 +619,7 @@ internal sealed class ImageResourceCache
                 WidthPx = info.Width,
                 HeightPx = info.Height,
                 XObject = new ImageXObjectResult { Image = JpegImageXObject.Build(bytes, info) },
+                SourceBytes = bytes,
             };
         }
         var raster = RasterImageDecoder.Decode(bytes);
@@ -554,6 +628,7 @@ internal sealed class ImageResourceCache
             WidthPx = raster.Width,
             HeightPx = raster.Height,
             XObject = RasterImageXObject.Build(raster),
+            SourceBytes = bytes,
         };
     }
 

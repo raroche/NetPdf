@@ -1,0 +1,145 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System;
+using System.Text;
+using NetPdf;
+using NetPdf.Diagnostics;
+using NetPdf.Rendering;
+using NetPdf.UnitTests.Pdf.Images;
+using Xunit;
+
+namespace NetPdf.UnitTests.Rendering;
+
+/// <summary>Phase 4 filters (PR 2) — end-to-end: a CSS <c>filter</c> on an <c>&lt;img&gt;</c> applies
+/// via the Skia raster fallback (the decoded image runs through the filter chain and re-embeds as a
+/// raster XObject), surfacing <c>CSS-FILTER-RASTER-FALLBACK-001</c>. Page content is uncompressed.</summary>
+public sealed class ImageFilterPaintTests
+{
+    private static string DataUriPng()
+    {
+        var png = SyntheticRasterImage.BuildOpaquePng(8, 8);
+        return "data:image/png;base64," + Convert.ToBase64String(png);
+    }
+
+    private static string Html(string filter)
+    {
+        var styleFilter = filter.Length == 0 ? "" : $";filter:{filter}";
+        return "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{DataUriPng()}\" style=\"width:32px;height:32px{styleFilter}\">" +
+            "</body></html>";
+    }
+
+    [Fact]
+    public void Grayscale_filter_on_an_img_rasterizes_and_emits_the_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Multiple_color_filters_chain_on_an_img()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%) brightness(1.2) invert(100%)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Blur_filter_on_an_img_rasterizes_and_emits_the_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("blur(2px)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Blur_chained_with_a_color_filter_on_an_img()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%) blur(3px)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Drop_shadow_filter_on_an_img_rasterizes_and_emits_the_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("drop-shadow(4px 4px 2px red)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Drop_shadow_uses_currentColor_when_no_color_is_given()
+    {
+        // No crash + a filtered raster when the shadow color defaults to the element's color.
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{DataUriPng()}\" style=\"width:32px;height:32px;color:green;filter:drop-shadow(3px 3px)\">" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void An_unfiltered_img_emits_no_filter_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html(""));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void All_color_filters_chained_on_an_img_render()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html(
+            "grayscale(20%) sepia(30%) saturate(1.4) hue-rotate(45deg) brightness(1.1) contrast(0.9) invert(10%) opacity(0.8) blur(1px)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Filter_on_a_div_is_deferred_with_a_diagnostic_and_paints_unfiltered()
+    {
+        // A general-element filter needs a subtree renderer NetPdf lacks → element paints UNFILTERED
+        // (the red background still paints as red, not grayscale) + CSS-FILTER-ELEMENT-UNSUPPORTED-001.
+        var html = "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:50px;height:50px;background:red;filter:grayscale(100%)\"></div>" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterElementUnsupported001);
+        Assert.Contains("1 0 0 rg", Encoding.Latin1.GetString(result.Pdf)); // bg painted unfiltered (red)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Filter_on_an_img_does_not_emit_the_element_unsupported_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%)"));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterElementUnsupported001);
+    }
+
+    [Fact]
+    public void An_unparseable_img_filter_is_surfaced_and_paints_unfiltered()
+    {
+        // url(#id) SVG-filter refs (and other unparseable values) are dropped with a Warning, not
+        // silently ignored (PR 227 review [P2]).
+        var result = HtmlPdf.ConvertDetailed(Html("url(#myfilter)"));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterUnsupported001);
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf)); // the image still paints
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Drop_shadow_cache_key_distinguishes_resolved_currentColor()
+    {
+        // Two <img>s with the same source + `drop-shadow(2px 2px)` (no color → currentColor) but a
+        // different element color must NOT share one filtered XObject (PR 227 review [P1]). The dedup
+        // key is built from the RESOLVED steps, so the keys differ.
+        var filter = CssFilter_Parser.TryParse("drop-shadow(2px 2px)")!;
+        Assert.True(ImageFilterBridge.TryBuildSteps(filter, 0xFFFF0000u, out var redSteps));   // currentColor red
+        Assert.True(ImageFilterBridge.TryBuildSteps(filter, 0xFF0000FFu, out var blueSteps));  // currentColor blue
+        Assert.NotEqual(ImageFilterBridge.FilterKey(redSteps), ImageFilterBridge.FilterKey(blueSteps));
+    }
+}

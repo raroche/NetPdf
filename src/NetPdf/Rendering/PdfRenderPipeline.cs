@@ -353,6 +353,10 @@ internal static class PdfRenderPipeline
         // a size/efficiency follow-up, deferrals.md#layout-to-pdf-pipeline.) The painters read
         // the box-tree styles, so they run before phase2 is disposed (method end).
         var document = new PdfDocument(PdfVersionString(options.EmittedPdfVersion));
+        // Phase 4 links (PR 4) — the HTML→PDF path intentionally emits <a href> hyperlink annotations, so
+        // opt into the active-content preflight's narrow /URI-action allowance (JS / Launch / embedded
+        // files stay blocked).
+        document.AllowUriLinkAnnotations = true;
         if (!string.IsNullOrEmpty(options.Title)) document.Title = options.Title;
         if (!string.IsNullOrEmpty(options.Author)) document.Author = options.Author;
         var mediaBox = new MediaBoxSize(
@@ -456,6 +460,10 @@ internal static class PdfRenderPipeline
         var textSession = new TextPainter.TextPaintSession(
             shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics,
             imageCache.TextShadowBoxes);
+        // Phase 4 outlines (PR 4): <h1>–<h6> → the document outline. Collected in page order (= document
+        // order) so the level-nesting builds the right tree; the seen-set dedups a split heading.
+        var seenHeadings = new System.Collections.Generic.HashSet<AngleSharp.Dom.IElement>();
+        var linkSchemeReported = false; // PR-229 review [P1] — once-per-render blocked-scheme Warning.
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -505,6 +513,16 @@ internal static class PdfRenderPipeline
             ImagePainter.PaintImages(
                 bodyFragments, page, document, imageCache, ppMediaBox.HeightPts,
                 ppMargins.LeftPx, ppMargins.TopPx, diagnostics, effectiveTransforms);
+
+            // Hyperlinks (Phase 4 PR 4): <a href> elements → PDF /Link annotations over their fragments.
+            // The href scheme is allowlisted (http/https/mailto) before emitting (PR-229 review [P1]).
+            LinkAnnotationCollector.AddLinks(
+                page, bodyFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx,
+                options.BaseUri, diagnostics, ref linkSchemeReported);
+
+            // Document outline (Phase 4 PR 4): <h1>–<h6> headings → /Outlines bookmarks.
+            OutlineCollector.Collect(
+                document, page, bodyFragments, ppMediaBox.HeightPts, ppMargins.TopPx, seenHeadings);
 
             var textFragments = bodyFragments;
             if (hasMarginBoxes)

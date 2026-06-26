@@ -187,6 +187,41 @@ internal static class DiagnosticCodes
     public const string CssClipPathUnsupported001 = "CSS-CLIP-PATH-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>border-image</c> sub-feature is approximated: a non-<c>stretch</c>
+    /// <c>border-image-repeat</c> (repeat / round / space) was painted STRETCHED (edge tiling is a
+    /// follow-up), or <c>border-image-width</c> / <c>-outset</c> were ignored (the element's border
+    /// widths + zero outset are used). The border-image still paints (sliced + stretched). Surfaced
+    /// once per render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssBorderImageUnsupported001 = "CSS-BORDER-IMAGE-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>mask</c> / <c>mask-image</c> on an <c>&lt;img&gt;</c> was applied via the Skia raster
+    /// fallback (PDF has no native CSS-mask primitive): the image's alpha was multiplied by the mask
+    /// image's alpha and the result re-embedded as a raster XObject + <c>/SMask</c>. Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssMaskRasterFallback001 = "CSS-MASK-RASTER-FALLBACK-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>mask</c> / <c>mask-image</c> on a NON-image element was ignored: masking a general
+    /// element's rendered subtree needs the Skia subtree renderer NetPdf doesn't have yet, so the element
+    /// painted UNMASKED. Masks on <c>&lt;img&gt;</c> elements ARE applied. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssMaskElementUnsupported001 = "CSS-MASK-ELEMENT-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — an <c>&lt;a href&gt;</c> hyperlink was NOT emitted as a PDF <c>/Link</c> annotation because
+    /// its URI scheme is not on the safe allowlist (<c>http</c> / <c>https</c> / <c>mailto</c>). Blocked
+    /// schemes include <c>file:</c>, <c>data:</c>, <c>javascript:</c>, <c>ftp:</c>, custom schemes, and a
+    /// relative href that can't resolve against a safe <c>http(s)</c> base. The link text still renders;
+    /// only the clickable annotation is dropped. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LinkUriUnsupported001 = "LINK-URI-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

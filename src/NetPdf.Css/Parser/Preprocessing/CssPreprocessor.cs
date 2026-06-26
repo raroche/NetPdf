@@ -227,6 +227,19 @@ internal static class CssPreprocessor
         // Per Phase 4 clip-path (PR 3) — AngleSharp.Css drops the `clip-path` property (CSS Masking L1).
         // The recovery emits it verbatim so the painter reads the winner + parses the basic shape.
         "clip-path",
+        // Per Phase 4 compositing (PR 4) — AngleSharp.Css 1.0.0-beta.144 doesn't reliably round-trip the
+        // `border-image` shorthand + its longhands, `mix-blend-mode`, or `mask` / `mask-image` (none are
+        // registered properties here). The recovery emits each verbatim so the painter reads the winner +
+        // parses it (the raw-read seam, like `transform` / `filter` / `clip-path`).
+        "border-image",
+        "border-image-source",
+        "border-image-slice",
+        "border-image-width",
+        "border-image-outset",
+        "border-image-repeat",
+        "mix-blend-mode",
+        "mask",
+        "mask-image",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -1072,6 +1085,27 @@ internal static class CssPreprocessor
                         cornerYProperty, cornerYValue, isImportant,
                         IsFromShorthandExpansion: true,
                         SourceOrdinal: ordinal));
+                }
+                // Phase 4 border-image (PR 4 review) — expand the `border-image` shorthand into its five
+                // longhands so the cascade resolves them by SOURCE ORDER against any explicit longhands
+                // (CSS Cascade §3). The longhands are themselves recovered verbatim (KnownDroppedProperties),
+                // so a later explicit `border-image-source` overrides an earlier shorthand and vice-versa.
+                else if (normalizedName == "border-image"
+                    && BorderImageShorthandExpander.TryExpand(
+                        cleanValue, out var biSource, out var biSlice, out var biWidth, out var biOutset, out var biRepeat))
+                {
+                    output.Add(new CssDeclarationRecovery("border-image-source", biSource, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery("border-image-slice", biSlice, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery("border-image-width", biWidth, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery("border-image-outset", biOutset, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery("border-image-repeat", biRepeat, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                }
+                // Phase 4 mask (PR 4 review) — expand the `mask` shorthand to a `mask-image` longhand so a
+                // later `mask-image: none` / `mask: url(...)` resolves by source order (the painter only
+                // consumes the image component; mask-repeat/-position/etc. are not yet rendered).
+                else if (normalizedName == "mask")
+                {
+                    output.Add(new CssDeclarationRecovery("mask-image", cleanValue, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
                 }
                 else
                 {

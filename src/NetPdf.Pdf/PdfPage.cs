@@ -143,6 +143,53 @@ internal sealed class PdfPage
         return resourceName;
     }
 
+    /// <summary>Phase 4 border-image (PR 4) — place a SUB-RECTANGLE of an Image XObject scaled to fill a
+    /// destination rectangle, CLIPPED to that rectangle (so only the requested slice shows). Source bounds
+    /// are unit fractions of the image: <paramref name="sx0"/>..<paramref name="sx1"/> across (0 = left,
+    /// 1 = right) and <paramref name="sy0"/>..<paramref name="sy1"/> DOWN FROM THE TOP (0 = top row, 1 =
+    /// bottom row — CSS slice convention). The destination (<paramref name="dx"/>, <paramref name="dy"/>,
+    /// <paramref name="dw"/>, <paramref name="dh"/>) is PDF points, bottom-left origin. Emits
+    /// <c>q dx dy dw dh re W n a 0 0 d e f cm /ImN Do Q</c> where the CTM maps the slice onto the dest rect
+    /// (and the clip hides the rest of the image). A degenerate source span or non-positive dest no-ops.
+    /// Non-finite args throw.</summary>
+    public string PlaceImageSlice(
+        PdfIndirectRef imageRef, double dx, double dy, double dw, double dh,
+        double sx0, double sy0, double sx1, double sy1)
+    {
+        ArgumentNullException.ThrowIfNull(imageRef);
+        ThrowIfFinalized();
+        foreach (var n in stackalloc[] { dx, dy, dw, dh, sx0, sy0, sx1, sy1 })
+            if (!double.IsFinite(n))
+                throw new ArgumentException("PlaceImageSlice args must be finite.");
+        var fsx = sx1 - sx0;
+        var fsy = sy1 - sy0;
+        if (!(dw > 0) || !(dh > 0) || !(fsx > 0) || !(fsy > 0)) return string.Empty;
+
+        var resourceName = $"Im{_xobjectsResource.Count + 1}";
+        _xobjectsResource.Set(new PdfName(resourceName), imageRef);
+
+        // a = dw/fsx, d = dh/fsy place the WHOLE image so its [sx0,sx1]×[1-sy1,1-sy0] portion fills the
+        // dest; the clip rect then shows only that portion. Image v=1 is the TOP row, so the CSS top
+        // fraction sy0 sits at v=1-sy0 and the bottom sy1 at v=1-sy1.
+        var a = dw / fsx;
+        var d = dh / fsy;
+        var e = dx - sx0 * a;
+        var f = dy - (1.0 - sy1) * d;
+
+        var sb = new StringBuilder(96);
+        sb.Append("q ");
+        AppendNumber(sb, dx); sb.Append(' '); AppendNumber(sb, dy); sb.Append(' ');
+        AppendNumber(sb, dw); sb.Append(' '); AppendNumber(sb, dh); sb.Append(" re W n ");
+        AppendNumber(sb, a); sb.Append(" 0 0 ");
+        AppendNumber(sb, d); sb.Append(' ');
+        AppendNumber(sb, e); sb.Append(' ');
+        AppendNumber(sb, f); sb.Append(" cm /");
+        sb.Append(resourceName);
+        sb.Append(" Do Q\n");
+        AppendContent(sb.ToString());
+        return resourceName;
+    }
+
     /// <summary>
     /// Register a font in this page's <c>/Font</c> resource and return the resource name a
     /// content-stream <c>Tf</c> operator references (e.g. <c>F1</c>). The font must already
@@ -696,6 +743,26 @@ internal sealed class PdfPage
         AppendContent("Q\n");
     }
 
+    /// <summary>Phase 4 mix-blend-mode (PR 4) — push the graphics state and select a separable/non-separable
+    /// PDF blend mode (<c>q /GSbm&lt;Mode&gt; gs</c>, ISO 32000-2 §11.3.5): subsequent painting composites
+    /// with the backdrop using <paramref name="blendMode"/> (a PDF <c>/BM</c> name, e.g. <c>Multiply</c> /
+    /// <c>Screen</c> / <c>Luminosity</c>). The ExtGState is deduped by mode name. Callers MUST balance with
+    /// <see cref="RestoreGraphicsState"/>. A faithful result needs an isolated transparency group; this first
+    /// cut sets <c>/BM</c> directly on the element's painting (good for the common solid-fill blend).</summary>
+    public void BeginBlendMode(string blendMode)
+    {
+        ArgumentNullException.ThrowIfNull(blendMode);
+        ThrowIfFinalized();
+        var name = new PdfName("GSbm" + blendMode);
+        if (!_extGStateResource.ContainsKey(name))
+        {
+            _extGStateResource.Set(name, new PdfDictionary()
+                .Set(PdfNames.Type, PdfNames.ExtGState)
+                .Set(PdfNames.BM, new PdfName(blendMode)));
+        }
+        AppendContent("q /" + name.Value + " gs\n");
+    }
+
     /// <summary>Phase 4 transforms — push the graphics state and concatenate a 2D affine CTM
     /// (<c>q a b c d e f cm</c>, ISO 32000-2 §8.3.4): a point (x, y) maps to
     /// (a·x + c·y + e, b·x + d·y + f) in PDF user space. Callers MUST balance with
@@ -888,6 +955,43 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    private List<PdfObject>? _annotations;
+
+    /// <summary>Phase 4 links (PR 4) — add a hyperlink <c>/Link</c> annotation over the page-space
+    /// rectangle (<paramref name="x"/>, <paramref name="y"/>, <paramref name="width"/>,
+    /// <paramref name="height"/>) (PDF points, bottom-left origin) whose <c>/A</c> action opens
+    /// <paramref name="uri"/> (a <c>/URI</c> action, ISO 32000-2 §12.5.6.5 + §12.6.4.7). The annotation's
+    /// <c>/Border</c> is <c>[0 0 0]</c> (no visible frame — the link text already shows). A non-positive
+    /// rect no-ops; non-finite coordinates throw. The annotation rides the page's <c>/Annots</c> array,
+    /// emitted at <see cref="Finalize"/>. Multiple calls accumulate.</summary>
+    public void AddUriLinkAnnotation(double x, double y, double width, double height, string uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+            throw new ArgumentException($"AddUriLinkAnnotation rect must be finite; got ({x},{y},{width},{height}).");
+        if (!(width > 0) || !(height > 0) || uri.Length == 0) return;
+
+        var action = new PdfDictionary()
+            .Set(PdfNames.S, PdfNames.URI)
+            .Set(PdfNames.URI, new PdfLiteralString(System.Text.Encoding.UTF8.GetBytes(uri)));
+        var annot = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Annot)
+            .Set(PdfNames.Subtype, PdfNames.Link)
+            .Set(PdfNames.Rect, new PdfArray()
+                .Add(new PdfReal(x)).Add(new PdfReal(y))
+                .Add(new PdfReal(x + width)).Add(new PdfReal(y + height)))
+            .Set(PdfNames.Border, new PdfArray()
+                .Add(new PdfInteger(0)).Add(new PdfInteger(0)).Add(new PdfInteger(0)))
+            .Set(PdfNames.A, action);
+        (_annotations ??= new List<PdfObject>()).Add(annot);
+    }
+
+    /// <summary>Phase 4 links (PR 4) — the page's pending annotation dictionaries (direct objects), which
+    /// <see cref="PdfDocument.SaveTo"/> promotes to INDIRECT objects + references from <c>/Annots</c> (ISO
+    /// 32000 §12.5.2: a page's <c>/Annots</c> entries are indirect references). Null when no annotations.</summary>
+    internal IReadOnlyList<PdfObject>? PendingAnnotations => _annotations;
+
     private static char HexNibble(int value) => "0123456789ABCDEF"[value & 0xF];
 
     private static void AppendNumber(StringBuilder sb, double value)
@@ -930,6 +1034,10 @@ internal sealed class PdfPage
             .Set(PdfNames.Resources, Resources)
             .Set(PdfNames.MediaBox, mediaBox)
             .Set(PdfNames.Contents, ContentsRef);
+
+        // Phase 4 links (PR 4) — the page's /Annots array is built by PdfDocument.SaveTo, which promotes
+        // each annotation to an INDIRECT object (ISO 32000 §12.5.2) and references it here. See
+        // PendingAnnotations.
 
         return (pageDict, _contentBuffer.WrittenSpan.ToArray());
     }

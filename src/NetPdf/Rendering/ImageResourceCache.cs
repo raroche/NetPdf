@@ -57,6 +57,10 @@ internal sealed class ImageResourceCache
         /// its drop-shadow padding, so N <c>&lt;img&gt;</c>s with the same source + filter share one
         /// filtered XObject.</summary>
         public Dictionary<string, (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad)>? FilteredRefs;
+
+        /// <summary>Phase 4 mask (PR 4) — per-(mask-URI) cache of the masked XObject registration, so N
+        /// <c>&lt;img&gt;</c>s with the same source + mask share one masked XObject.</summary>
+        public Dictionary<string, PdfIndirectRef>? MaskedRefs;
     }
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
@@ -68,7 +72,8 @@ internal sealed class ImageResourceCache
     /// → the 50% 50% initial; the property stays UNREGISTERED — a 2-component position needs a
     /// new metadata type, so the raw read is the documented seam, like border-radius).</summary>
     internal readonly record struct ImgSpec(
-        string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw, CssFilter? Filter = null);
+        string UriKey, int ObjectFitKeyword, string? ObjectPositionRaw, CssFilter? Filter = null,
+        string? MaskUriKey = null);
 
     /// <summary>Replaced (<c>&lt;img&gt;</c>) box → its image spec. Only boxes whose fetch +
     /// decode SUCCEEDED appear (a failed image lays out / paints nothing).</summary>
@@ -126,6 +131,16 @@ internal sealed class ImageResourceCache
     /// documented residuals.</summary>
     public Dictionary<Box, CssClipPath> ClipPathBoxes { get; } = new();
 
+    /// <summary>Phase 4 border-image (PR 4) — element-backed box → its parsed <c>border-image</c> + the
+    /// RESOLVED cache key for the decoded source image. The painter slices the image into the 9 border
+    /// regions; only boxes whose source decoded successfully appear.</summary>
+    public Dictionary<Box, (CssBorderImage Spec, string UriKey)> BorderImageBoxes { get; } = new();
+
+    /// <summary>Phase 4 mix-blend-mode (PR 4) — element-backed box → its PDF <c>/BM</c> blend-mode name
+    /// (e.g. <c>Multiply</c>). The painter wraps the box's decoration in a blend-mode graphics state; only
+    /// boxes with a non-<c>normal</c>, recognized mode appear.</summary>
+    public Dictionary<Box, string> BlendModeBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -165,6 +180,22 @@ internal sealed class ImageResourceCache
         return entryRef;
     }
 
+    /// <summary>Phase 4 mask (PR 4) — register a MASKED variant of <paramref name="entry"/>'s image: its
+    /// alpha multiplied by <paramref name="mask"/>'s alpha (<see cref="NetPdf.Pdf.Images.ImageMaskApplier"/>),
+    /// memoized by the mask URI key so N identical (image + mask) placements share one XObject. Returns
+    /// <see langword="null"/> when either image can't be decoded / is over the raster cap (the caller falls
+    /// back to the unmasked image).</summary>
+    public static PdfIndirectRef? GetOrRegisterMasked(PdfDocument document, Entry entry, Entry mask, string maskKey)
+    {
+        entry.MaskedRefs ??= new Dictionary<string, PdfIndirectRef>(StringComparer.Ordinal);
+        if (entry.MaskedRefs.TryGetValue(maskKey, out var cached)) return cached;
+        var result = NetPdf.Pdf.Images.ImageMaskApplier.TryApply(entry.SourceBytes, mask.SourceBytes);
+        if (result is null) return null;
+        var entryRef = document.RegisterImage(result);
+        entry.MaskedRefs[maskKey] = entryRef;
+        return entryRef;
+    }
+
     /// <summary>Walk <paramref name="boxRoot"/> + fetch/decode every image reference. Never
     /// throws for a bad reference — each failure is a diagnostic + the reference is skipped.
     /// <paramref name="extraImageUrls"/> (margin-box-bg-image cycle) carries non-box references
@@ -191,21 +222,26 @@ internal sealed class ImageResourceCache
         // data-URI decode cost, diagnostics, or budget consumption for backgrounds the
         // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
+        var borderImages = new List<(Box Box, CssBorderImage Spec)>(); // Phase 4 border-image (PR 4)
         var boxShadowUnsupportedReported = false;
         var textShadowUnsupportedReported = false;
         var transform3DReported = false;
         var transformUnsupportedReported = false;
         var filterElementReported = false;
         var clipPathUnsupportedReported = false;
+        var maskElementReported = false;
+        var borderImageReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes, cache.ClipPathBoxes,
             collectBackgrounds: options.PrintBackgrounds,
-            diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
+            diagnostics, borderImages, cache.BlendModeBoxes,
+            ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
-            ref filterElementReported, ref clipPathUnsupportedReported);
+            ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
+            ref borderImageReported);
 
         var filterValueReported = false; // Phase 4 filters — once-per-render unparseable-value Warning.
         foreach (var (box, rawUrl, isBackground) in references)
@@ -256,12 +292,34 @@ internal sealed class ImageResourceCache
                         filterValueReported = true;
                     }
                 }
+                // mask / mask-image (Phase 4 PR 4) — on an <img>, a url() mask source is fetched + applied
+                // as an alpha mask (the raster path). mask-image wins over the mask shorthand. A non-url
+                // value (gradient / none) → no mask; a general element's mask is handled in CollectReferences.
+                // The `mask` shorthand is expanded into `mask-image` by the preprocessor (source order
+                // respected; PR-229 review [P2]), so reading the mask-image winner alone is correct.
+                var maskRaw = imgRules?.GetWinner("mask-image")?.ResolvedValue;
+                string? maskKey = null;
+                if (ExtractFirstUrl(maskRaw) is { } maskUrl)
+                    maskKey = await ResolveAndFetchAsync(
+                        cache, loader, maskUrl, options.BaseUri, diagnostics, cancellationToken)
+                        .ConfigureAwait(false);
                 cache.ImageBoxes[box] = new ImgSpec(
                     key,
                     box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
                     imgRules?.GetWinner("object-position")?.ResolvedValue,
-                    filter);
+                    filter, maskKey);
             }
+        }
+
+        // Phase 4 border-image (PR 4) — resolve + decode each border-image source; store the spec + key
+        // for the painter. A failed fetch is already diagnosed by ResolveAndFetchAsync (the box simply
+        // gets no border-image; its normal border, if any, paints).
+        foreach (var (box, spec) in borderImages)
+        {
+            var key = await ResolveAndFetchAsync(
+                cache, loader, spec.SourceUrl, options.BaseUri, diagnostics, cancellationToken)
+                .ConfigureAwait(false);
+            if (key is not null) cache.BorderImageBoxes[box] = (spec, key);
         }
 
         if (extraImageUrls is not null)
@@ -320,13 +378,17 @@ internal sealed class ImageResourceCache
         Dictionary<Box, CssClipPath> clipPathBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
+        List<(Box Box, CssBorderImage Spec)> borderImages,
+        Dictionary<Box, string> blendModeBoxes,
         ref bool unsupportedBackgroundReported,
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
         ref bool filterElementReported,
-        ref bool clipPathUnsupportedReported)
+        ref bool clipPathUnsupportedReported,
+        ref bool maskElementReported,
+        ref bool borderImageReported)
     {
         if (box.SourceElement is { } element)
         {
@@ -379,6 +441,38 @@ internal sealed class ImageResourceCache
                         + "<geometry-box> keyword, a font-relative (em/rem) length, or malformed basic-shape "
                         + "syntax. The element painted unclipped.");
             }
+            // border-image (Phase 4 PR 4) — NOT gated by PrintBackgrounds (it paints the BORDER area, which
+            // renders regardless, like normal borders; PR-229 review [P2]). Read the LONGHANDS — the
+            // `border-image` SHORTHAND is expanded into them by the preprocessor, so the cascade resolves
+            // shorthand-vs-longhand by source order (PR-229 [P2]). A url() source resolves → queued for fetch
+            // (the painter slices it into the 9 border regions).
+            var biSource = rules?.GetWinner("border-image-source")?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(biSource)
+                && !biSource.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            {
+                var biSlice = rules?.GetWinner("border-image-slice")?.ResolvedValue;
+                var biRepeat = rules?.GetWinner("border-image-repeat")?.ResolvedValue;
+                var biSpec = CssBorderImage_Parser.TryParse(biSource, biSlice, biRepeat);
+                if (biSpec is not null)
+                {
+                    borderImages.Add((box, biSpec));
+                    // PR-229 review [P3] — diagnose the approximated sub-features (once per render): a
+                    // non-stretch repeat painted STRETCHED, or an ignored border-image-width / -outset.
+                    var biWidth = rules?.GetWinner("border-image-width")?.ResolvedValue;
+                    var biOutset = rules?.GetWinner("border-image-outset")?.ResolvedValue;
+                    if (IsNonStretchRepeat(biRepeat) || IsNonInitial(biWidth, "1") || IsNonInitial(biOutset, "0"))
+                        Report(diagnostics, ref borderImageReported, DiagnosticCodes.CssBorderImageUnsupported001,
+                            "A border-image sub-feature was approximated: a non-stretch border-image-repeat "
+                            + "(repeat / round / space) painted STRETCHED, or border-image-width / -outset were "
+                            + "ignored (the element's border widths + zero outset are used).");
+                }
+                else if (CssBorderImage_Parser.IsUnsupportedSource(biSource))
+                {
+                    Report(diagnostics, ref borderImageReported, DiagnosticCodes.CssBorderImageUnsupported001,
+                        "A border-image-source that is not a url() (e.g. a gradient) is not supported yet; the "
+                        + "border-image was not painted.");
+                }
+            }
             // filter (Phase 4 PR 2) — a filter on a REPLACED <img> is applied to the image (the img
             // path below). On a NON-replaced element (div / text box), filtering the rendered subtree
             // needs a Skia subtree renderer NetPdf doesn't have yet, so the element paints UNFILTERED
@@ -395,6 +489,24 @@ internal sealed class ImageResourceCache
                     + "rendered subtree needs a Skia subtree renderer NetPdf doesn't have yet; the "
                     + "element painted unfiltered. Filters on <img> elements ARE applied.");
             }
+            // mask / mask-image (Phase 4 PR 4) — applied to an <img> (the img path resolves the mask + the
+            // painter composites it). On a NON-image element, masking the rendered subtree needs the same
+            // Skia subtree renderer, so the element paints UNMASKED + CSS-MASK-ELEMENT-UNSUPPORTED-001 once.
+            var elementMaskRaw = rules?.GetWinner("mask-image")?.ResolvedValue; // `mask` shorthand → mask-image (preprocessor)
+            if (!string.IsNullOrWhiteSpace(elementMaskRaw)
+                && !elementMaskRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !isReplacedImg)
+            {
+                Report(diagnostics, ref maskElementReported, DiagnosticCodes.CssMaskElementUnsupported001,
+                    "A CSS mask on a non-image element was ignored — masking a general element's rendered "
+                    + "subtree needs a Skia subtree renderer NetPdf doesn't have yet; the element painted "
+                    + "unmasked. Masks on <img> elements ARE applied.");
+            }
+            // mix-blend-mode (Phase 4 PR 4) — the box's OWN declared value (doesn't inherit) → a PDF /BM
+            // blend-mode name. The painter wraps the box's decoration in that blend mode. `normal` (the
+            // initial) + an unrecognized keyword → no entry (composite normally).
+            if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
+                blendModeBoxes[box] = bmName;
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
             // sharp offset (CSS-TEXTSHADOW-UNSUPPORTED-001); an unparseable value surfaces the same
@@ -490,10 +602,67 @@ internal sealed class ImageResourceCache
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
+                borderImages, blendModeBoxes,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
-                ref filterElementReported, ref clipPathUnsupportedReported);
+                ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
+                ref borderImageReported);
     }
+
+    /// <summary>True when a <c>border-image-repeat</c> winner names a non-<c>stretch</c> mode.</summary>
+    private static bool IsNonStretchRepeat(string? repeat)
+    {
+        if (string.IsNullOrWhiteSpace(repeat)) return false;
+        foreach (var t in repeat.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            if (t.Equals("repeat", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("round", StringComparison.OrdinalIgnoreCase)
+                || t.Equals("space", StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
+    /// <summary>True when a longhand winner is present and differs from its <paramref name="initial"/>
+    /// value (used to flag an ignored border-image-width / -outset).</summary>
+    private static bool IsNonInitial(string? value, string initial) =>
+        !string.IsNullOrWhiteSpace(value) && !value.Trim().Equals(initial, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Extract the first <c>url(...)</c> target from a CSS value (mask-image / mask shorthand),
+    /// stripping quotes. Returns <see langword="null"/> when there's no url() (a gradient / <c>none</c> /
+    /// keyword value).</summary>
+    private static string? ExtractFirstUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var idx = value.IndexOf("url(", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        var open = idx + 4;
+        var close = value.IndexOf(')', open);
+        if (close < 0) return null;
+        var inner = value.Substring(open, close - open).Trim().Trim('"', '\'');
+        return inner.Length == 0 ? null : inner;
+    }
+
+    /// <summary>Map a CSS <c>mix-blend-mode</c> keyword (CSS Compositing &amp; Blending L1) to its PDF
+    /// <c>/BM</c> blend-mode name (ISO 32000-2 §11.3.5). <c>normal</c> (the initial), <c>plus-lighter</c>
+    /// (no PDF equivalent), and any unrecognized value → <see langword="null"/> (composite normally).</summary>
+    private static string? PdfBlendModeName(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "multiply" => "Multiply",
+        "screen" => "Screen",
+        "overlay" => "Overlay",
+        "darken" => "Darken",
+        "lighten" => "Lighten",
+        "color-dodge" => "ColorDodge",
+        "color-burn" => "ColorBurn",
+        "hard-light" => "HardLight",
+        "soft-light" => "SoftLight",
+        "difference" => "Difference",
+        "exclusion" => "Exclusion",
+        "hue" => "Hue",
+        "saturation" => "Saturation",
+        "color" => "Color",
+        "luminosity" => "Luminosity",
+        _ => null,
+    };
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>
     private static void Report(IDiagnosticsSink diagnostics, ref bool reported, string code, string message)

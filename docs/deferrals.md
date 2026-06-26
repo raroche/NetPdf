@@ -2727,9 +2727,19 @@ flags the categories):
      (a new `PdfPage.StrokeLine` dash-stroke primitive), `double` + the 3D `groove`/`ridge`/`inset`/
      `outset` styles (dark ×0.5 + light shades), and `clip-path` basic shapes (`inset`/`circle`/
      `ellipse`/`polygon`) clipping the box decoration + the `<img>` image via native PDF clips
-     (`BeginPolygonClip`/`BeginEllipseClip`). **Border/clip-path residuals (Phase 4 follow-ups):**
-     (1) **`border-image`** 9-slice — the planned 5th PR-3 task, DEFERRED (a substantial image-decode +
-     9-region-slice feature; its own focused PR); (2) ROUNDED non-solid borders are still painted as a
+     (`BeginPolygonClip`/`BeginEllipseClip`). A PR-3 review then shipped stroke-alpha `/CA` for dashed/dotted
+     borders + outlines, `polygon(evenodd)` → `W* n`, `CSS-CLIP-PATH-UNSUPPORTED-001`, dotted `[0 2w]` round
+     dots, and circle()/ellipse() `closest-side`/`farthest-side`. **Phase 4 PR 4 (compositing + navigation)
+     shipped — 5 tasks:** `border-image` 9-slice (stretch), `mask`/`mask-image` on `<img>` (Skia alpha →
+     `/SMask`), `mix-blend-mode` (native `/BM` ExtGState), hyperlink `/Link` annotations (`<a href>` → `/URI`
+     behind the preflight's narrow opt-in), document outline (`<h1>`–`<h6>` → `/Outlines`). **PR-4 residuals:**
+     (1a) border-image edge TILING (`repeat`/`round`/`space` paint STRETCHED, `CSS-BORDER-IMAGE-UNSUPPORTED-001`),
+     `border-image-width`/`-outset` ignored, gradient source unsupported (only `url()`); (1b) `mask` only on
+     `<img>` (general elements → `CSS-MASK-ELEMENT-UNSUPPORTED-001`; luminance masks + filter+mask combined need
+     the subtree renderer / SVG); (1c) `mix-blend-mode` blends DECORATION only + sets `/BM` directly (faithful
+     isolated-group compositing needs the subtree renderer; `plus-lighter` has no PDF equivalent); (1d) links
+     only for anchors with their OWN box fragment (inline-flow line-box link rects + `#fragment` links deferred).
+     (2) ROUNDED non-solid borders are still painted as a
      solid ring (the uniform-ring path — `PAINT-BORDER-STYLE-APPROXIMATED-001`); per-corner inset-round
      radii use a single uniform radius; (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
      (`CSS-CLIP-PATH-RASTER-FALLBACK-001` — needs the SVG path parser from PR 6 + a native/raster

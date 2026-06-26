@@ -85,6 +85,12 @@ internal sealed class ImageResourceCache
     /// <c>background-image: radial-gradient(...)</c> (PDF native radial shading).</summary>
     public Dictionary<Box, CssRadialGradient> BackgroundRadialGradientBoxes { get; } = new();
 
+    /// <summary>Phase 4 gradients (PR 1 refinements) — element-backed box → its parsed
+    /// <c>conic-gradient(...)</c> / <c>repeating-conic-gradient(...)</c>. PDF has no native conic
+    /// shading, so the painter rasterizes it via Skia (a sweep gradient) and places it as an image
+    /// XObject with an alpha <c>/SMask</c> — emitting <c>CSS-CONIC-GRADIENT-RASTER-001</c>.</summary>
+    public Dictionary<Box, CssConicGradient> BackgroundConicGradientBoxes { get; } = new();
+
     /// <summary>Phase 4 shadows — element-backed box → its parsed <c>box-shadow</c> layers
     /// (computed, not fetched). The painter emits each OUTSET layer UNDER the background — sharp
     /// as a native filled (rounded) rect, blurred via the Skia raster bridge.</summary>
@@ -155,7 +161,8 @@ internal sealed class ImageResourceCache
         var transformUnsupportedReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
-            cache.BackgroundRadialGradientBoxes, cache.BoxShadowBoxes, cache.TextShadowBoxes,
+            cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
+            cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes,
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
@@ -245,6 +252,7 @@ internal sealed class ImageResourceCache
         List<(Box, string, bool)> references,
         Dictionary<Box, CssLinearGradient> gradientBoxes,
         Dictionary<Box, CssRadialGradient> radialGradientBoxes,
+        Dictionary<Box, CssConicGradient> conicGradientBoxes,
         Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
         Dictionary<Box, IReadOnlyList<CssTextShadow>> textShadowBoxes,
         Dictionary<Box, BoxTransform> transformBoxes,
@@ -312,9 +320,9 @@ internal sealed class ImageResourceCache
                 }
             }
             // box-shadow (Phase 4 shadows) — the raw cascade winner, parsed into layers. Gated by
-            // PrintBackgrounds like the other decoration. A list whose every paintable layer is
-            // outset stores cleanly; an unparseable value or any INSET layer (outset-only first
-            // cut) surfaces CSS-BOXSHADOW-UNSUPPORTED-001 once per render.
+            // PrintBackgrounds like the other decoration. OUTSET + INSET layers (PR 1 refinements)
+            // both store + paint; an unparseable value (e.g. an em/rem/% offset the parser can't
+            // resolve) surfaces CSS-BOXSHADOW-UNSUPPORTED-001 once per render.
             if (collectBackgrounds)
             {
                 var shadowRaw = rules?.GetWinner("box-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
@@ -323,16 +331,9 @@ internal sealed class ImageResourceCache
                 {
                     var shadows = CssBoxShadow_Parser.TryParse(shadowRaw);
                     if (shadows is not null)
-                    {
                         boxShadowBoxes[box] = shadows;
-                        var hasInset = false;
-                        foreach (var s in shadows) if (s.Inset) { hasInset = true; break; }
-                        if (hasInset) ReportBoxShadowUnsupported(diagnostics, ref boxShadowUnsupportedReported);
-                    }
                     else
-                    {
                         ReportBoxShadowUnsupported(diagnostics, ref boxShadowUnsupportedReported);
-                    }
                 }
             }
             // <img src> on a replaced box (inline imgs are skipped by the inline pass today —
@@ -369,14 +370,20 @@ internal sealed class ImageResourceCache
                 {
                     radialGradientBoxes[box] = radial;
                 }
+                else if (CssConicGradient_Parser.TryParse(bgRaw) is { } conic)
+                {
+                    // Phase 4 gradients (PR 1) — conic / repeating-conic has no PDF native shading;
+                    // store the parsed spec for the painter to rasterize via Skia (a sweep gradient).
+                    conicGradientBoxes[box] = conic;
+                }
                 else if (!unsupportedBackgroundReported)
                 {
                     diagnostics.Emit(new Diagnostic(
                         DiagnosticCodes.CssBackgroundImageUnsupported001,
-                        "background-image supports a single url(...), linear-gradient(...), or "
-                        + "radial-gradient(...) this cycle; a conic/repeating gradient, a "
-                        + "multi-layer list, or an unrecognized form was ignored "
-                        + "(background-color still paints).",
+                        "background-image supports a single url(...), linear-gradient(...), "
+                        + "radial-gradient(...), or conic-gradient(...) (incl. repeating-linear / "
+                        + "repeating-radial / repeating-conic) this cycle; a multi-layer list or an "
+                        + "unrecognized form was ignored (background-color still paints).",
                         DiagnosticSeverity.Warning));
                     unsupportedBackgroundReported = true;
                 }
@@ -384,8 +391,8 @@ internal sealed class ImageResourceCache
         }
         foreach (var child in box.Children)
             CollectReferences(
-                child, cascade, references, gradientBoxes, radialGradientBoxes, boxShadowBoxes,
-                textShadowBoxes, transformBoxes, collectBackgrounds, diagnostics,
+                child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
+                boxShadowBoxes, textShadowBoxes, transformBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
     }
@@ -403,9 +410,10 @@ internal sealed class ImageResourceCache
         if (reported) return;
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.CssBoxShadowUnsupported001,
-            "A box-shadow form not painted yet was ignored — an inset shadow (the first cut "
-            + "paints OUTSET shadows only) or an offset/blur/spread in a unit the parser can't "
-            + "resolve (px + absolute units supported; em/rem/% not). Other layers still paint.",
+            "A box-shadow value was ignored — an offset/blur/spread used a unit the parser can't "
+            + "resolve (px + absolute units supported; em/rem/% not), so the whole value was dropped. "
+            + "Both outset and inset shadows are otherwise painted (an oversize blur falls back to a "
+            + "sharp shadow with this same code).",
             DiagnosticSeverity.Warning));
         reported = true;
     }

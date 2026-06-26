@@ -49,7 +49,6 @@ public sealed class CssRadialGradientParserTests
     [Theory]
     [InlineData("linear-gradient(red, blue)")]
     [InlineData("radial-gradient(red)")]                  // < 2 stops
-    [InlineData("repeating-radial-gradient(red, blue)")]  // repeating (deferred)
     [InlineData("url(bg.png)")]
     // A multi-layer list must not mis-terminate on a later layer's `)` (PR #209 Copilot).
     [InlineData("radial-gradient(red, blue), url(bg.png)")]
@@ -57,6 +56,20 @@ public sealed class CssRadialGradientParserTests
     public void Unsupported_forms_return_null(string value)
     {
         Assert.Null(CssRadialGradient_Parser.TryParse(value));
+    }
+
+    [Fact]
+    public void Repeating_radial_gradient_sets_the_repeating_flag()
+    {
+        var plain = CssRadialGradient_Parser.TryParse("radial-gradient(circle, red, blue 20px)");
+        Assert.NotNull(plain);
+        Assert.False(plain!.Repeating);
+
+        var rep = CssRadialGradient_Parser.TryParse("repeating-radial-gradient(circle, red, blue 20px)");
+        Assert.NotNull(rep);
+        Assert.True(rep!.Repeating);
+        Assert.True(rep.IsCircle);
+        Assert.Equal(2, rep.Stops.Count);
     }
 
     [Theory]

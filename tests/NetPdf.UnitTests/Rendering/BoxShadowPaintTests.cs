@@ -50,12 +50,42 @@ public sealed class BoxShadowPaintTests
     }
 
     [Fact]
-    public void Inset_shadow_is_skipped_with_an_unsupported_diagnostic()
+    public void Sharp_inset_shadow_paints_a_native_ring_over_the_background()
     {
         var result = HtmlPdf.ConvertDetailed(Html("inset 3px 3px #cc3366"));
+        var text = Latin1(result.Pdf);
 
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
-        Assert.DoesNotContain("0.8 0.2 0.4 rg", Latin1(result.Pdf)); // inset not painted (first cut)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+        Assert.Contains("0.8 0.2 0.4 rg", text);   // the inset shadow band fill color
+        Assert.Contains("f*", text);                // an even-odd ring (padding box minus the lit hole)
+        // The inset shadow paints OVER (after) the background color, not under it.
+        var shadowIdx = text.IndexOf("0.8 0.2 0.4 rg", StringComparison.Ordinal);
+        var bgIdx = text.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(bgIdx >= 0 && shadowIdx > bgIdx,
+            "an inset box-shadow must paint OVER (after) the background color");
+    }
+
+    [Fact]
+    public void Blurred_inset_shadow_rasterizes_and_emits_the_raster_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("inset 4px 4px 8px #cc3366"));
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/Subtype /Image", text);  // the rasterized inset band placed as an image XObject
+        Assert.Contains("/SMask", text);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowBlurRaster001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+    }
+
+    [Fact]
+    public void Mixed_inset_and_outset_shadows_both_paint()
+    {
+        // Outset paints UNDER the background; inset paints OVER it — both in the same value.
+        var result = HtmlPdf.ConvertDetailed(Html("6px 6px #33cc66, inset 3px 3px #cc3366"));
+        var text = Latin1(result.Pdf);
+        Assert.Contains("0.2 0.8 0.4 rg", text);   // the outset shadow (#33cc66)
+        Assert.Contains("0.8 0.2 0.4 rg", text);   // the inset shadow band (#cc3366)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
     }
 
     [Fact]

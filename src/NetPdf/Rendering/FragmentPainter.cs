@@ -114,6 +114,8 @@ internal static class FragmentPainter
         var variantUnsupportedReported = false;   // bg-variants cycle — once per render.
         var boxShadowRasterReported = false;      // Phase 4 shadows — once-per-render raster Info.
         var boxShadowCapReported = false;         // Phase 4 shadows — once-per-render over-cap Warning.
+        var conicGradientRasterReported = false;  // Phase 4 gradients — once-per-render conic raster Info.
+        var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -261,7 +263,8 @@ internal static class FragmentPainter
                 if (gradientSliced
                     && imageCache is not null && document is not null
                     && (imageCache.BackgroundGradientBoxes.ContainsKey(fragment.Box)
-                        || imageCache.BackgroundRadialGradientBoxes.ContainsKey(fragment.Box)))
+                        || imageCache.BackgroundRadialGradientBoxes.ContainsKey(fragment.Box)
+                        || imageCache.BackgroundConicGradientBoxes.ContainsKey(fragment.Box)))
                 {
                     ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var gcx, out var gcy, out var gcw, out var gch);
                     page.BeginRectangleClip(gcx, gcy, gcw, gch);
@@ -279,7 +282,25 @@ internal static class FragmentPainter
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
                 }
+                else if (imageCache is not null && document is not null
+                    && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))
+                {
+                    PaintConicGradient(page, document, conic, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
+                        ref conicGradientRasterReported, ref conicGradientCapReported, axisTopPx, axisHeightPx);
+                }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
+
+                // box-shadow INSET (Phase 4 PR 1) paints OVER the background (CSS B&B §7.2 — inset
+                // shadows are drawn on top of the background, clipped to the padding box) but UNDER
+                // the border (which paints next, occluding the band under it).
+                if (imageCache is not null && document is not null
+                    && imageCache.BoxShadowBoxes.TryGetValue(fragment.Box, out var insetShadows))
+                {
+                    PaintInsetBoxShadows(page, document, insetShadows, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
+                        ref boxShadowRasterReported, ref boxShadowCapReported);
+                }
             }
 
             // Borders (foreground — always painted regardless of PrintBackgrounds). A sliced inline-only
@@ -1555,6 +1576,144 @@ internal static class FragmentPainter
         Math.Max(Math.Max(c.TopLeftX, c.TopLeftY), Math.Max(c.TopRightX, c.TopRightY)),
         Math.Max(Math.Max(c.BottomRightX, c.BottomRightY), Math.Max(c.BottomLeftX, c.BottomLeftY)));
 
+    /// <summary>Phase 4 shadows (PR 1 refinements) — paint a box's INSET <c>box-shadow</c> layers
+    /// OVER the background, clipped to the PADDING box (CSS B&amp;B §7.2 — an inset shadow casts a
+    /// soft band inward from the inside edges; the lit HOLE is the padding box offset by (x, y) and
+    /// contracted by the spread). A sharp (blur ≈ 0) layer is a native even-odd RING (padding box
+    /// minus the hole); a blurred layer rasterizes the band via the Skia bridge (fill + a
+    /// <c>DstOut</c> blurred hole) and places it. Layers paint in REVERSE list order (first listed on
+    /// top). Outset layers are skipped here (the under-background pass painted them). The box's OWN
+    /// (fragment) geometry is used — a box-decoration-break: slice fragment paints relative to the
+    /// slice (a documented residual; the common single-page box is exact).</summary>
+    private static void PaintInsetBoxShadows(
+        PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+    {
+        var (bt, br, bb, bl) = BackgroundAreaInset(style, "padding-box", defaultArea: 'p');
+        var padLeftPx = leftPx + bl;
+        var padTopPx = topPx + bt;
+        var padWidthPx = widthPx - bl - br;
+        var padHeightPx = heightPx - bt - bb;
+        if (padWidthPx <= 0 || padHeightPx <= 0) return;
+        var padRadii = InsetRadii(ReadCornerRadii(style, widthPx, heightPx), bt, br, bb, bl);
+
+        for (var i = shadows.Count - 1; i >= 0; i--)
+        {
+            var s = shadows[i];
+            if (!s.Inset) continue; // the outset pass handled non-inset layers
+
+            uint argb;
+            if (s.ColorRaw is null) argb = currentColorArgb;
+            else
+            {
+                var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                    s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+                if (!TryResolveColor(resolved.Slot, currentColorArgb, out argb)) continue;
+            }
+            var alpha = Alpha(argb) / 255.0;
+            if (alpha <= 0) continue;
+            ColorChannels(argb, out var r, out var g, out var b);
+
+            // The lit hole = the padding box offset by (x, y) and contracted by the spread.
+            var holeLeftPx = padLeftPx + s.OffsetXPx + s.SpreadPx;
+            var holeTopPx = padTopPx + s.OffsetYPx + s.SpreadPx;
+            var holeWidthPx = padWidthPx - 2 * s.SpreadPx;
+            var holeHeightPx = padHeightPx - 2 * s.SpreadPx;
+            var holeRadii = ExpandRadiiForSpread(padRadii, -s.SpreadPx);
+
+            ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt,
+                out var px, out var py, out var pw, out var ph);
+
+            if (s.BlurPx <= BoxShadowBlurEpsilonPx)
+            {
+                // Sharp inset → a native even-odd ring (padding box minus the hole), clipped to the
+                // padding box so the offset hole's overflow doesn't fill outside the box.
+                page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
+                if (holeWidthPx > 0 && holeHeightPx > 0)
+                {
+                    ToPdfRect(holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, pageHeightPt,
+                        out var hx, out var hy, out var hw, out var hh);
+                    page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii),
+                        hx, hy, hw, hh, ToPt(holeRadii), r, g, b, alpha);
+                }
+                else
+                {
+                    // The hole vanished (spread swallowed it) → the whole padding box is in shadow.
+                    page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), 0, 0, 0, 0, default, r, g, b, alpha);
+                }
+                page.RestoreGraphicsState();
+            }
+            else
+            {
+                PaintBlurredInsetShadow(page, document, padLeftPx, padTopPx, padWidthPx, padHeightPx, padRadii,
+                    holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, holeRadii, s.BlurPx, pageHeightPt,
+                    r, g, b, alpha, diagnostics, ref rasterReported, ref capReported);
+            }
+        }
+    }
+
+    /// <summary>Rasterize a blurred INSET shadow band through the Skia bridge and place it clipped to
+    /// the padding box. The bitmap IS the padding box (no blur-margin expansion — the band is
+    /// inside); an over-cap bitmap falls back to a sharp inset ring.</summary>
+    private static void PaintBlurredInsetShadow(
+        PdfPage page, PdfDocument document,
+        double padLeftPx, double padTopPx, double padWidthPx, double padHeightPx, CornerRadii padRadii,
+        double holeLeftPx, double holeTopPx, double holeWidthPx, double holeHeightPx, CornerRadii holeRadii,
+        double blurPx, double pageHeightPt, double r, double g, double b, double alpha,
+        IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+    {
+        var sigmaPx = blurPx / 2.0;
+        var deviceW = (int)Math.Ceiling(padWidthPx * BoxShadowRasterScale);
+        var deviceH = (int)Math.Ceiling(padHeightPx * BoxShadowRasterScale);
+        var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterizeInset(
+            deviceW, deviceH, (float)(MaxCorner(padRadii) * BoxShadowRasterScale),
+            holeLeft: (float)((holeLeftPx - padLeftPx) * BoxShadowRasterScale),
+            holeTop: (float)((holeTopPx - padTopPx) * BoxShadowRasterScale),
+            holeWidth: (float)(holeWidthPx * BoxShadowRasterScale),
+            holeHeight: (float)(holeHeightPx * BoxShadowRasterScale),
+            holeRadius: (float)(MaxCorner(holeRadii) * BoxShadowRasterScale),
+            blurSigma: (float)(sigmaPx * BoxShadowRasterScale), r, g, b, alpha);
+
+        ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt, out var px, out var py, out var pw, out var ph);
+        if (result is null)
+        {
+            // Over-cap → a sharp inset ring is better than nothing; SURFACE the approximation.
+            page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
+            if (holeWidthPx > 0 && holeHeightPx > 0)
+            {
+                ToPdfRect(holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, pageHeightPt, out var hx, out var hy, out var hw, out var hh);
+                page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), hx, hy, hw, hh, ToPt(holeRadii), r, g, b, alpha);
+            }
+            page.RestoreGraphicsState();
+            if (!capReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.CssBoxShadowUnsupported001,
+                    "A blurred inset box-shadow was too large to rasterize (the band bitmap would exceed "
+                    + $"the {NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); it was painted SHARP.",
+                    DiagnosticSeverity.Warning));
+                capReported = true;
+            }
+            return;
+        }
+
+        var imageRef = document.RegisterImage(result);
+        page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
+        page.PlaceImage(imageRef, px, py, pw, ph);
+        page.RestoreGraphicsState();
+
+        if (!rasterReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.CssBoxShadowBlurRaster001,
+                "A blurred inset box-shadow was painted via the Skia raster fallback (PDF has no native "
+                + $"Gaussian blur); the band was rasterized at {BoxShadowRasterScale:0}× and placed as an image XObject.",
+                DiagnosticSeverity.Info));
+            rasterReported = true;
+        }
+    }
+
     /// <summary>Phase 4 gradients — paint a parsed <c>linear-gradient(...)</c> background layer
     /// as a PDF native axial shading (ISO 32000-2 §8.7.4.5.3) clipped to the box's (rounded)
     /// border box. Resolves each stop's color, normalizes the stop positions (CSS Images §3.4),
@@ -1571,9 +1730,6 @@ internal static class FragmentPainter
         // limit the paint to this fragment (PR #223 review [P1]). Null → the box itself (byte-identical).
         double? axisTopPx = null, double? axisHeightPx = null)
     {
-        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb);
-        if (stops.Count < 2) return;
-
         // CLIP rect = AXIS rect = the whole (composite) decoration box. The inline axis is shared (slices
         // differ only in the block axis); the radii resolve against the COMPOSITE height.
         var clipHeightPx = axisHeightPx ?? heightPx;
@@ -1582,6 +1738,13 @@ internal static class FragmentPainter
         // A `to <corner>` direction's angle depends on the box aspect ratio (PR #209 review [P2]) —
         // compute it from the whole (axis) box; an explicit angle / side uses the parsed value as-is.
         var angleDeg = gradient.Corner is { } corner ? CornerAngleDeg(corner, aw, ah) : gradient.AngleDeg;
+        // The gradient-line length in CSS px (CSS Images §3.1) — a length-positioned stop resolves
+        // its fraction against this (PR 1 refinements).
+        var theta = angleDeg * Math.PI / 180.0;
+        var lineLengthCssPx = Math.Abs(widthPx * Math.Sin(theta)) + Math.Abs(clipHeightPx * Math.Cos(theta));
+        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb, lineLengthCssPx, gradient.Repeating);
+        if (stops.Count < 2) return;
+
         var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
@@ -1596,10 +1759,36 @@ internal static class FragmentPainter
     /// missing last → 1, missing interior spread evenly between the nearest positioned stops,
     /// and the running max enforces non-decreasing offsets.</summary>
     private static List<PdfGradientStop> ResolveGradientStops(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb)
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx,
+        bool repeating = false)
+    {
+        var normalized = ResolveAndNormalizeStops(gradientStops, currentColorArgb, lineLengthCssPx, repeating);
+        var result = new List<PdfGradientStop>(normalized.Count);
+        foreach (var s in normalized) result.Add(new PdfGradientStop(s.Offset, s.R, s.G, s.B)); // native shading drops alpha
+        return result;
+    }
+
+    private const int GradientMaxReplicatedStops = 1024; // safety cap on repeating-gradient expansion
+    private const double GradientPeriodEpsilon = 1e-9;    // a period ≤ this is degenerate (average-color)
+
+    /// <summary>Phase 4 gradients — one fully-resolved gradient stop: an offset (a fraction of the
+    /// gradient line) + a premultiply-free DeviceRGB color with per-stop alpha.</summary>
+    private readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
+
+    /// <summary>Phase 4 gradients (PR 1 review) — the SHARED stop pipeline for linear / radial / conic.
+    /// Resolves each stop's color + position (a length resolves against <paramref name="lineLengthCssPx"/>),
+    /// applies the CSS Images §3.4 defaults (missing first → 0, last → 1, interior spread evenly) and the
+    /// non-decreasing fixup WITHOUT clamping to [0, 1] (out-of-range stops are legal and shape the
+    /// interpolation — PR 226 review [P1]). For a REPEATING gradient the PERIOD is
+    /// <c>last − first</c> specified position (NOT just the last); prior + next cycles are tiled so the
+    /// whole [0, 1] line is covered, and a zero-width period collapses to the average color. Finally the
+    /// covering stops are CLIPPED to [0, 1] by inserting boundary stops whose colors are interpolated from
+    /// the surrounding raw stops — so the visible PDF function / sweep only ever sees offsets in [0, 1].</summary>
+    private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
     {
         var n = gradientStops.Count;
-        var rgb = new (double R, double G, double B)[n];
+        var col = new (double R, double G, double B, double A)[n];
         var pos = new double?[n];
         var ok = new bool[n];
         for (var i = 0; i < n; i++)
@@ -1610,14 +1799,15 @@ internal static class FragmentPainter
             if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
             {
                 ColorChannels(argb, out var r, out var g, out var b);
-                rgb[i] = (r, g, b);
+                col[i] = (r, g, b, Alpha(argb) / 255.0);
                 ok[i] = true;
             }
-            pos[i] = s.Position;
+            pos[i] = s.Position
+                ?? (s.PositionPx is { } px && lineLengthCssPx > 0 ? px / lineLengthCssPx : (double?)null);
         }
 
-        // §3.4 position defaults + even spread + non-decreasing clamp (over ALL stops first,
-        // so an unresolved stop still anchors positions correctly), then drop the unresolved.
+        // §3.4 defaults + even interior spread (over ALL stops so an unresolved stop still anchors
+        // positions), NOT clamped to [0, 1].
         if (pos[0] is null) pos[0] = 0.0;
         if (pos[n - 1] is null) pos[n - 1] = 1.0;
         for (var i = 1; i < n - 1; i++)
@@ -1632,15 +1822,92 @@ internal static class FragmentPainter
                 pos[k] = prev + (next - prev) * (k - (i - 1)) / span;
             i = j - 1;
         }
-        var running = 0.0;
-        var result = new List<PdfGradientStop>(n);
+        // Non-decreasing fixup (CSS Images §3.4.3) — a stop never precedes the prior one — keeping raw,
+        // possibly out-of-range positions (running starts at −∞ so a negative first stop survives).
+        var running = double.NegativeInfinity;
+        var raw = new List<ResolvedGradientStop>(n);
         for (var i = 0; i < n; i++)
         {
-            var p = Math.Clamp(pos[i]!.Value, 0.0, 1.0);
+            var p = pos[i]!.Value;
             if (p < running) p = running; else running = p;
-            if (ok[i]) result.Add(new PdfGradientStop(p, rgb[i].R, rgb[i].G, rgb[i].B));
+            if (ok[i]) raw.Add(new ResolvedGradientStop(p, col[i].R, col[i].G, col[i].B, col[i].A));
         }
-        return result;
+        if (raw.Count == 0) return raw;
+        if (raw.Count == 1)
+            return [raw[0] with { Offset = Math.Clamp(raw[0].Offset, 0.0, 1.0) }];
+
+        var covering = repeating ? TileRepeatingStops(raw) : raw;
+        return ClipStopsToUnitInterval(covering);
+    }
+
+    /// <summary>Tile a repeating gradient: the PERIOD is the last − first specified offset; cycles are
+    /// generated shifted by every integer multiple of the period that overlaps [0, 1] (so the partial
+    /// cycles before the first stop and after the last are present). A zero-width period (all stops
+    /// coincident) collapses to the average color (CSS Images §3.4.3). Bounded by
+    /// <see cref="GradientMaxReplicatedStops"/>.</summary>
+    private static List<ResolvedGradientStop> TileRepeatingStops(List<ResolvedGradientStop> raw)
+    {
+        var first = raw[0].Offset;
+        var last = raw[^1].Offset;
+        var period = last - first;
+        if (period <= GradientPeriodEpsilon)
+        {
+            double r = 0, g = 0, b = 0, a = 0;
+            foreach (var s in raw) { r += s.R; g += s.G; b += s.B; a += s.A; }
+            var avg = new ResolvedGradientStop(0, r / raw.Count, g / raw.Count, b / raw.Count, a / raw.Count);
+            return [avg, avg with { Offset = 1.0 }]; // a solid fill (two coincident-color endpoints)
+        }
+        var kMin = (int)Math.Floor((0.0 - first) / period);
+        var kMax = (int)Math.Ceiling((1.0 - last) / period);
+        var covering = new List<ResolvedGradientStop>((kMax - kMin + 1) * raw.Count);
+        for (var k = kMin; k <= kMax && covering.Count < GradientMaxReplicatedStops; k++)
+        {
+            var shift = k * period;
+            foreach (var s in raw)
+            {
+                covering.Add(s with { Offset = s.Offset + shift });
+                if (covering.Count >= GradientMaxReplicatedStops) break;
+            }
+        }
+        return covering;
+    }
+
+    /// <summary>Clip non-decreasing <paramref name="stops"/> (offsets possibly outside [0, 1]) to the
+    /// [0, 1] gradient line: a boundary stop at 0 and 1 carries the color INTERPOLATED from the
+    /// surrounding raw stops (so a stop at −50px / 150px still tints the visible ends), and only the
+    /// strictly-interior raw stops are kept between them.</summary>
+    private static List<ResolvedGradientStop> ClipStopsToUnitInterval(List<ResolvedGradientStop> stops)
+    {
+        var (r0, g0, b0, a0) = ColorAt(stops, 0.0);
+        var (r1, g1, b1, a1) = ColorAt(stops, 1.0);
+        var res = new List<ResolvedGradientStop>(stops.Count + 2) { new(0.0, r0, g0, b0, a0) };
+        foreach (var s in stops)
+            if (s.Offset > 0.0 && s.Offset < 1.0) res.Add(s);
+        res.Add(new ResolvedGradientStop(1.0, r1, g1, b1, a1));
+        return res;
+    }
+
+    /// <summary>The interpolated color at offset <paramref name="t"/> along non-decreasing
+    /// <paramref name="stops"/>. Outside the stop range the nearest end color is held; a zero-width
+    /// (hard-stop) segment is skipped so the boundary lands on the segment just after it.</summary>
+    private static (double R, double G, double B, double A) ColorAt(List<ResolvedGradientStop> stops, double t)
+    {
+        if (t <= stops[0].Offset) return (stops[0].R, stops[0].G, stops[0].B, stops[0].A);
+        var lastStop = stops[^1];
+        if (t >= lastStop.Offset) return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);
+        for (var i = 0; i < stops.Count - 1; i++)
+        {
+            var a = stops[i];
+            var b = stops[i + 1];
+            if (a.Offset <= t && t <= b.Offset)
+            {
+                var span = b.Offset - a.Offset;
+                if (span <= 0) continue; // hard stop — fall through to the next positive-width segment
+                var f = (t - a.Offset) / span;
+                return (a.R + (b.R - a.R) * f, a.G + (b.G - a.G) * f, a.B + (b.B - a.B) * f, a.A + (b.A - a.A) * f);
+            }
+        }
+        return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);
     }
 
     /// <summary>Phase 4 gradients — the gradient-line endpoints (offset 0 → 1) in PDF user
@@ -1685,10 +1952,11 @@ internal static class FragmentPainter
 
     /// <summary>Phase 4 gradients — paint a parsed <c>radial-gradient(...)</c> as a PDF native
     /// radial shading (ISO 32000-2 §8.7.4.5.4) clipped to the box. The center comes from the
-    /// gradient's box-relative fractions; the radius from the ending-shape size keyword
-    /// (closest/farthest side/corner) measured against the box. FIRST CUT: the ending shape is
-    /// painted as a CIRCLE (an <c>ellipse</c> is approximated by the same scalar extent — exact
-    /// for a centered gradient on a square box; a documented residual otherwise).</summary>
+    /// gradient's box-relative fractions; the per-axis ending radii from the shape + extent keyword
+    /// (closest/farthest side/corner) measured against the box. An ELLIPSE (the default) is rendered
+    /// by registering a CIRCLE of the larger radius and squashing the other axis with a CTM scale
+    /// about the center (PR 1 refinements); a circle (or a centered ellipse on a square box) emits no
+    /// CTM — byte-identical with the pre-ellipse output.</summary>
     private static void PaintRadialGradient(
         PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
@@ -1699,9 +1967,6 @@ internal static class FragmentPainter
         // (PR #223 review [P1]). Null → the box itself (byte-identical).
         double? axisTopPx = null, double? axisHeightPx = null)
     {
-        var stops = ResolveGradientStops(radial.Stops, currentColorArgb);
-        if (stops.Count < 2) return;
-
         // CLIP rect = AXIS rect = the whole (composite) decoration box — the center + radius + radii are
         // measured against it for slice continuity; the radii resolve against the COMPOSITE height.
         var clipHeightPx = axisHeightPx ?? heightPx;
@@ -1715,19 +1980,144 @@ internal static class FragmentPainter
         var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * aw;
         var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
         var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
-        var radius = radial.Extent switch
+        // The ending-shape radii (CSS Images L3 §3.2). A CIRCLE uses a single scalar extent; an
+        // ELLIPSE (the default) is per-axis. For a corner ellipse the closest/farthest-side ellipse's
+        // aspect ratio is scaled to pass through the corner — and since the corner's component
+        // distances equal those sides' distances here (axis-aligned box, center inside), that scale
+        // is exactly √2 on each axis (rx = sideX·√2, ry = sideY·√2).
+        double rx, ry;
+        if (radial.IsCircle)
         {
-            RadialExtent.ClosestSide => Math.Min(minX, minY),
-            RadialExtent.FarthestSide => Math.Max(maxX, maxY),
-            RadialExtent.ClosestCorner => Math.Sqrt(minX * minX + minY * minY),
-            _ => Math.Sqrt(maxX * maxX + maxY * maxY), // FarthestCorner (default)
-        };
-        if (!(radius > 0)) return;
+            var radius = radial.Extent switch
+            {
+                RadialExtent.ClosestSide => Math.Min(minX, minY),
+                RadialExtent.FarthestSide => Math.Max(maxX, maxY),
+                RadialExtent.ClosestCorner => Math.Sqrt(minX * minX + minY * minY),
+                _ => Math.Sqrt(maxX * maxX + maxY * maxY), // FarthestCorner (default)
+            };
+            rx = ry = radius;
+        }
+        else
+        {
+            const double sqrt2 = 1.4142135623730951;
+            (rx, ry) = radial.Extent switch
+            {
+                RadialExtent.ClosestSide => (minX, minY),
+                RadialExtent.FarthestSide => (maxX, maxY),
+                RadialExtent.ClosestCorner => (minX * sqrt2, minY * sqrt2),
+                _ => (maxX * sqrt2, maxY * sqrt2), // FarthestCorner (default)
+            };
+        }
+        // Register the shading as a CIRCLE of the larger radius, then squash the other axis with a
+        // CTM (scale about the center) so a non-circular ellipse renders correctly. rx == ry (a
+        // circle, or a centered ellipse on a square box) needs no CTM → byte-identical with the
+        // pre-ellipse circular output.
+        var baseRadius = Math.Max(rx, ry);
+        if (!(baseRadius > 0)) return;
 
-        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);
+        // A length-positioned stop resolves against the gradient RAY — the rightward radius rx, where
+        // it intersects the ending shape (CSS Images §3.2; PR 226 review [P2] — NOT max(rx, ry), which
+        // placed stops too early on tall/narrow ellipses). rx is in pt, homogeneous degree 1, so
+        // rxCssPx = rx / PointsPerPixel.
+        var stops = ResolveGradientStops(
+            radial.Stops, currentColorArgb, rx / PdfUnits.PointsPerPixel, radial.Repeating);
+        if (stops.Count < 2) return;
+
+        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
+        (double, double, double, double, double, double)? shadingCtm = null;
+        if (rx != ry)
+        {
+            var sx = rx / baseRadius;
+            var sy = ry / baseRadius;
+            shadingCtm = (sx, 0.0, 0.0, sy, pcx * (1 - sx), pcy * (1 - sy));
+        }
         page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
-            radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
+            radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null, shadingCtm: shadingCtm);
+    }
+
+    private const double ConicGradientRasterScale = 2.0; // device px per CSS px for the conic raster
+
+    /// <summary>Phase 4 gradients (PR 1 refinements) — paint a parsed <c>conic-gradient(...)</c> /
+    /// <c>repeating-conic-gradient(...)</c> background layer. PDF has no native conic shading, so the
+    /// sweep is rasterized via Skia at <see cref="ConicGradientRasterScale"/>× the box size and placed
+    /// as an image XObject (RGB + alpha <c>/SMask</c>) clipped to the (rounded) border box —
+    /// preserving per-stop alpha. A gradient with &lt; 2 resolvable stops is skipped; an over-cap
+    /// bitmap is skipped with <c>CSS-CONIC-GRADIENT-RASTER-001</c> (the background-color shows).</summary>
+    private static void PaintConicGradient(
+        PdfPage page, PdfDocument document, CssConicGradient conic, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported,
+        // box-decoration-break: slice — the sweep is rasterized over the WHOLE (composite) box for
+        // continuity; the CALLER adds the per-slice rect clip. Null → the box itself (byte-identical).
+        double? axisTopPx = null, double? axisHeightPx = null)
+    {
+        var stops = ResolveConicStops(conic, currentColorArgb, conic.Repeating);
+        if (stops.Count < 2) return;
+
+        var boxTopPx = axisTopPx ?? topPx;
+        var boxHeightPx = axisHeightPx ?? heightPx;
+        if (widthPx <= 0 || boxHeightPx <= 0) return;
+
+        var deviceW = (int)Math.Ceiling(widthPx * ConicGradientRasterScale);
+        var deviceH = (int)Math.Ceiling(boxHeightPx * ConicGradientRasterScale);
+        var result = NetPdf.Pdf.Images.ConicGradientRasterizer.TryRasterize(
+            deviceW, deviceH,
+            centerX: (float)(conic.CenterXFraction * deviceW),
+            centerY: (float)(conic.CenterYFraction * deviceH),
+            conic.FromAngleDeg, stops);
+
+        if (result is null)
+        {
+            // Over-cap / degenerate raster → skip (the background-color shows) but SURFACE it as a
+            // Warning under a DISTINCT code (the raster-fallback code stays Info-only — PR 226 [P2]).
+            if (!capReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.CssConicGradientUnsupported001,
+                    "A conic-gradient was too large to rasterize (the sweep bitmap would exceed the "
+                    + $"{NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); the "
+                    + "background-color shows instead.",
+                    DiagnosticSeverity.Warning));
+                capReported = true;
+            }
+            return;
+        }
+
+        var imageRef = document.RegisterImage(result);
+        ToPdfRect(leftPx, boxTopPx, widthPx, boxHeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        var radiiPx = ReadCornerRadii(style, widthPx, boxHeightPx);
+        var rounded = radiiPx.AnyPositive;
+        if (rounded) page.BeginRoundedRectangleClip(x, y, w, h, ToPt(radiiPx));
+        page.PlaceImage(imageRef, x, y, w, h);
+        if (rounded) page.RestoreGraphicsState();
+
+        if (!rasterReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.CssConicGradientRaster001,
+                "A conic-gradient was painted via the Skia raster fallback (PDF has no native conic "
+                + $"shading); the sweep was rasterized at {ConicGradientRasterScale:0}× and placed as "
+                + "an image XObject with an alpha /SMask.",
+                DiagnosticSeverity.Info));
+            rasterReported = true;
+        }
+    }
+
+    /// <summary>Phase 4 gradients — resolve a conic gradient's stops to the rasterizer's
+    /// (turn-fraction, RGBA) form via the shared <see cref="ResolveAndNormalizeStops"/> pipeline,
+    /// KEEPING per-stop alpha (the raster carries an /SMask). Conic positions are angular (turn
+    /// fractions), so there is no length resolution (lineLength = 0); the §3.4 defaults, the
+    /// <c>last − first</c> repeating period, the out-of-range handling, and the [0, 1] clip are all
+    /// shared with linear / radial (PR 226 review [P1]).</summary>
+    private static List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop> ResolveConicStops(
+        CssConicGradient conic, uint currentColorArgb, bool repeating)
+    {
+        var normalized = ResolveAndNormalizeStops(conic.Stops, currentColorArgb, lineLengthCssPx: 0.0, repeating);
+        var result = new List<NetPdf.Pdf.Images.ConicGradientRasterizer.Stop>(normalized.Count);
+        foreach (var s in normalized)
+            result.Add(new NetPdf.Pdf.Images.ConicGradientRasterizer.Stop(s.Offset, s.R, s.G, s.B, s.A));
+        return result;
     }
 
     /// <summary>The four <c>border-radius</c> corners in CSS px (border-radius-completion cycle): each

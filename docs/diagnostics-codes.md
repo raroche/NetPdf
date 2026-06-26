@@ -40,7 +40,7 @@ Severity levels:
 | `CSS-PROPERTY-VALUE-INVALID-001` | Warning | A property's value text could not be parsed into the property's typed value per its declared `PropertyType` (e.g., `color: not-a-color`, `width: nonsense`, `display: foo`). The cascade's "invalid at computed value time" rule applies — the property's initial value (or the inherited value for inherited properties) is used. |
 | `CSS-CONTAINER-QUERY-UNSUPPORTED-001` | Warning | `@container` rule encountered; condition not evaluated, contained rules skipped. Roadmap v1.4. |
 | `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001` | Warning | `:has()` selector parsed but treated as no-match in v1. Roadmap v1.4. |
-| `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` | Warning | A `background-image` value other than a single `url(...)`, `linear-gradient(...)`, `radial-gradient(...)`, or `none` was ignored — i.e. a conic/repeating gradient, a multi-layer list, or an unrecognized form (single linear & radial gradients ARE painted as PDF native shadings); any `background-color` still paints. Once per render. |
+| `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` | Warning | A `background-image` value other than a single `url(...)`, `linear-gradient(...)`, `radial-gradient(...)`, `conic-gradient(...)` (incl. the `repeating-*` forms), or `none` was ignored — i.e. a multi-layer list or an unrecognized form (single linear/radial are PDF native shadings; conic is a Skia raster); any `background-color` still paints. Once per render. |
 | `CSS-SUBGRID-UNSUPPORTED-001` | Warning | `subgrid` value used; treated as `none`. Roadmap v1.3. |
 | `CSS-ANCHOR-POSITIONING-UNSUPPORTED-001` | Warning | `anchor()`/`anchor-size()` used; falls back to `auto`. |
 | `CSS-POSITION-STICKY-UNSUPPORTED-001` | Warning | `position: sticky` treated as `relative` in v1. |
@@ -50,9 +50,10 @@ Severity levels:
 | `CSS-FILTER-RASTER-FALLBACK-001` | Info | A subtree with `filter` was rasterized at `DevicePixelRatio * 96` DPI and embedded as PNG. |
 | `CSS-CLIP-PATH-RASTER-FALLBACK-001` | Info | `clip-path: path()` triggered raster fallback. |
 | `CSS-MASK-RASTER-FALLBACK-001` | Info | `mask`/`mask-image` triggered raster fallback. |
-| `CSS-CONIC-GRADIENT-RASTER-001` | Info | Conic gradient triggered raster fallback. |
-| `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | Blurred box-shadow triggered raster fallback. |
-| `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not painted exactly was ignored or approximated — an `inset` shadow (outset only in the first cut), an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not), or a blurred shadow too large to rasterize (painted sharp, over the 4096 px cap). Other layers still paint. Once per render. |
+| `CSS-CONIC-GRADIENT-RASTER-001` | Info | A `conic-gradient` / `repeating-conic-gradient` was painted via the Skia sweep-gradient raster fallback (PDF has no native conic shading); placed as an image XObject with an alpha `/SMask`. Once per render. |
+| `CSS-CONIC-GRADIENT-UNSUPPORTED-001` | Warning | A `conic-gradient` / `repeating-conic-gradient` could not be rasterized (the sweep bitmap would exceed the 4096 px / 4 Mpx cap) and was SKIPPED — the background-color shows. Distinct from the Info raster-fallback code. Once per render. |
+| `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | A blurred box-shadow (outset or inset) was painted via the Skia raster fallback. Once per render. |
+| `CSS-BOXSHADOW-UNSUPPORTED-001` | Warning | A box-shadow form not painted exactly was ignored or approximated — an offset/blur/spread in an unresolvable unit (px + absolute units supported; `em`/`rem` not), or a blurred shadow (outset or inset) too large to rasterize (painted sharp, over the 4096 px cap). Outset AND inset shadows are otherwise painted. Other layers still paint. Once per render. |
 | `CSS-TEXTSHADOW-BLUR-RASTER-001` | Info | Blurred text-shadow triggered raster fallback. |
 | `CSS-TEXTSHADOW-UNSUPPORTED-001` | Warning | A text-shadow not painted exactly yet was approximated/ignored — a non-zero blur painted as a sharp offset (glyph blur not yet applied), or an offset/blur in an unresolvable unit (px + absolute units supported; `em`/`rem`/`%` not, dropping the value). Once per render. |
 | `CSS-WRITING-MODE-SIDEWAYS-UNSUPPORTED-001` | Warning | `sideways-rl`/`sideways-lr` writing modes treated as `vertical-rl`/`vertical-lr`. |

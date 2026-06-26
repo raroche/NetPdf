@@ -106,11 +106,37 @@ public sealed class CssLinearGradientParserTests
     [InlineData("url(bg.png)")]
     [InlineData("radial-gradient(red, blue)")]
     [InlineData("linear-gradient(red)")]                 // < 2 stops
-    [InlineData("linear-gradient(red 20px, blue)")]      // length-positioned stop (deferred)
-    [InlineData("repeating-linear-gradient(red, blue)")] // repeating (deferred)
+    [InlineData("linear-gradient(red 2em, blue)")]       // font-relative stop (no context here)
+    [InlineData("linear-gradient(red 50vw, blue)")]      // viewport-relative stop (no context here)
     public void Unsupported_forms_return_null(string value)
     {
         Assert.Null(CssLinearGradient_Parser.TryParse(value));
+    }
+
+    [Fact]
+    public void Repeating_linear_gradient_sets_the_repeating_flag()
+    {
+        var plain = CssLinearGradient_Parser.TryParse("linear-gradient(to right, red, blue 20px)");
+        Assert.NotNull(plain);
+        Assert.False(plain!.Repeating);
+
+        var rep = CssLinearGradient_Parser.TryParse("repeating-linear-gradient(to right, red, blue 20px)");
+        Assert.NotNull(rep);
+        Assert.True(rep!.Repeating);
+        Assert.Equal(2, rep.Stops.Count);
+        Assert.Equal(20.0, rep.Stops[1].PositionPx!.Value, precision: 4);
+    }
+
+    [Theory]
+    [InlineData("linear-gradient(red 20px, blue)", 20.0)] // px
+    [InlineData("linear-gradient(red 1in, blue)", 96.0)]  // absolute unit → CSS px
+    [InlineData("linear-gradient(red -50px, blue 150px)", -50.0)] // negative (out of range) — kept raw
+    public void Length_positioned_stops_carry_a_px_position(string value, double expectedPx)
+    {
+        var g = CssLinearGradient_Parser.TryParse(value);
+        Assert.NotNull(g);
+        Assert.Null(g!.Stops[0].Position);                 // not a fraction
+        Assert.Equal(expectedPx, g.Stops[0].PositionPx!.Value, precision: 4);
     }
 
     [Theory]

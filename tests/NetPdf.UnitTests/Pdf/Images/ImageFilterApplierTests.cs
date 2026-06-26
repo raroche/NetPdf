@@ -104,6 +104,32 @@ public sealed class ImageFilterApplierTests
     }
 
     [Fact]
+    public void Drop_shadow_pads_the_raster_and_casts_the_shadow_outside_the_image()
+    {
+        // A 4×4 opaque blue image + drop-shadow(6px 6px, no blur, red): σ=0 → pads right/bottom by 6,
+        // output 10×10. The red shadow (alpha-following, offset 6,6) shows at the bottom-right
+        // OUTSIDE the image; the image interior stays blue.
+        var step = new ImageFilterStep(ImageFilterKind.DropShadow, 0,
+            ShadowDx: 6, ShadowDy: 6, ShadowBlur: 0, ShadowR: 1, ShadowG: 0, ShadowB: 0, ShadowA: 1);
+        var raster = ImageFilterApplier.TryFilterToRaster(SolidPng(0, 0, 255), new List<ImageFilterStep> { step });
+        Assert.NotNull(raster);
+        Assert.Equal(10, raster!.Width);
+        Assert.Equal(10, raster.Height);
+
+        var shadow = Pixel(raster, 8, 8);   // inside the offset shadow rect, outside the image
+        Near(255, shadow.R); Near(0, shadow.G); Near(0, shadow.B);
+        var inside = Pixel(raster, 2, 2);   // the image interior
+        Near(0, inside.R); Near(0, inside.G); Near(255, inside.B);
+    }
+
+    private static (byte R, byte G, byte B, byte A) Pixel(RasterImageInfo raster, int x, int y)
+    {
+        var idx = (y * raster.Width + x) * 4;
+        var p = raster.PixelBytes;
+        return (p[idx], p[idx + 1], p[idx + 2], p[idx + 3]);
+    }
+
+    [Fact]
     public void Undecodable_bytes_return_null()
     {
         Assert.Null(ImageFilterApplier.TryFilterToRaster([0, 1, 2, 3],

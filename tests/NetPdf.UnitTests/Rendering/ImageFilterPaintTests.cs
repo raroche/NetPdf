@@ -62,6 +62,26 @@ public sealed class ImageFilterPaintTests
     }
 
     [Fact]
+    public void Drop_shadow_filter_on_an_img_rasterizes_and_emits_the_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("drop-shadow(4px 4px 2px red)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Drop_shadow_uses_currentColor_when_no_color_is_given()
+    {
+        // No crash + a filtered raster when the shadow color defaults to the element's color.
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{DataUriPng()}\" style=\"width:32px;height:32px;color:green;filter:drop-shadow(3px 3px)\">" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
     public void An_unfiltered_img_emits_no_filter_diagnostic()
     {
         var result = HtmlPdf.ConvertDetailed(Html(""));

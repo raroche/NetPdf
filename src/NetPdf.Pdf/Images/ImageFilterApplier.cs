@@ -18,6 +18,21 @@ internal readonly record struct ImageFilterStep(
     double ShadowDx = 0, double ShadowDy = 0, double ShadowBlur = 0,
     double ShadowR = 0, double ShadowG = 0, double ShadowB = 0, double ShadowA = 1);
 
+/// <summary>Phase 4 filters — the per-side padding a filtered raster adds AROUND the source image
+/// (for a drop-shadow's outward extent), as FRACTIONS of the source dimension so the painter can
+/// scale them to whatever display size the image is placed at. <see cref="None"/> = no padding.</summary>
+internal readonly record struct FilterPadding(float LeftFrac, float TopFrac, float RightFrac, float BottomFrac)
+{
+    public static readonly FilterPadding None = new(0, 0, 0, 0);
+
+    public bool IsZero => LeftFrac == 0 && TopFrac == 0 && RightFrac == 0 && BottomFrac == 0;
+}
+
+/// <summary>Phase 4 filters — a filtered image XObject + its <see cref="FilterPadding"/> (the
+/// drop-shadow frame), so the painter places the larger raster with the image CONTENT still aligned
+/// to the element's box and the shadow extending outward.</summary>
+internal readonly record struct FilteredImageResult(ImageXObjectResult Image, FilterPadding Padding);
+
 /// <summary>
 /// Phase 4 filters — applies a CSS <c>filter</c> chain to a decoded raster image via Skia (PDF has
 /// no native filter primitive). The image is decoded, drawn through a composed
@@ -33,17 +48,23 @@ internal static class ImageFilterApplier
     /// <paramref name="imageBytes"/>. Returns <see langword="null"/> for an undecodable / over-cap
     /// image or a step kind not yet implemented. The output keeps the source pixel dimensions
     /// (color filters don't change bounds; blur / drop-shadow render within the same frame for now).</summary>
-    public static ImageXObjectResult? TryApply(byte[] imageBytes, IReadOnlyList<ImageFilterStep> steps)
+    public static FilteredImageResult? TryApply(byte[] imageBytes, IReadOnlyList<ImageFilterStep> steps)
     {
-        var raster = TryFilterToRaster(imageBytes, steps);
-        return raster is null ? null : RasterImageXObject.Build(raster);
+        var raster = TryRender(imageBytes, steps, out var padding);
+        return raster is null ? null : new FilteredImageResult(RasterImageXObject.Build(raster), padding);
     }
 
     /// <summary>Apply <paramref name="steps"/> and return the raw filtered RGBA8888 raster (the
-    /// pre-XObject form — used by <see cref="TryApply"/> and exercised directly by tests). Returns
-    /// <see langword="null"/> for an undecodable / over-cap image or an unimplemented step kind.</summary>
-    public static RasterImageInfo? TryFilterToRaster(byte[] imageBytes, IReadOnlyList<ImageFilterStep> steps)
+    /// pre-XObject form — exercised directly by tests). The raster INCLUDES any drop-shadow padding
+    /// frame. Returns <see langword="null"/> for an undecodable / over-cap image or an unimplemented
+    /// step kind.</summary>
+    public static RasterImageInfo? TryFilterToRaster(byte[] imageBytes, IReadOnlyList<ImageFilterStep> steps) =>
+        TryRender(imageBytes, steps, out _);
+
+    private static RasterImageInfo? TryRender(
+        byte[] imageBytes, IReadOnlyList<ImageFilterStep> steps, out FilterPadding padding)
     {
+        padding = FilterPadding.None;
         ArgumentNullException.ThrowIfNull(imageBytes);
         ArgumentNullException.ThrowIfNull(steps);
         if (steps.Count == 0) return null;
@@ -56,8 +77,15 @@ internal static class ImageFilterApplier
         if (decoded is null) return null;
         using var src = decoded;
         if (src.Width <= 0 || src.Height <= 0) return null;
-        var w = src.Width;
-        var h = src.Height;
+        var srcW = src.Width;
+        var srcH = src.Height;
+
+        // A drop-shadow extends OUTSIDE the image box (offset + blur), so the output frame is padded
+        // by the shadow extent and the source is drawn at (padL, padT). Colour matrices + blur add no
+        // padding (blur's halo is clipped at the image box — a documented residual).
+        ComputeShadowPadding(steps, out var padL, out var padT, out var padR, out var padB);
+        var w = srcW + padL + padR;
+        var h = srcH + padT + padB;
         if (w > ShadowRasterizer.MaxDeviceDimension || h > ShadowRasterizer.MaxDeviceDimension) return null;
         if ((long)w * h > ShadowRasterizer.MaxDevicePixels) return null;
 
@@ -74,7 +102,7 @@ internal static class ImageFilterApplier
         using (chain)
         using (var paint = new SKPaint { IsAntialias = true, ImageFilter = chain })
         {
-            canvas.DrawBitmap(src, 0, 0, paint);
+            canvas.DrawBitmap(src, padL, padT, paint);
         }
 
         using var image = surface.Snapshot();
@@ -86,7 +114,30 @@ internal static class ImageFilterApplier
         for (var y = 0; y < h; y++)
             source.Slice(y * rowBytes, width4).CopyTo(pixels.AsSpan(y * width4));
 
+        padding = new FilterPadding(padL / (float)srcW, padT / (float)srcH, padR / (float)srcW, padB / (float)srcH);
         return new RasterImageInfo { Width = w, Height = h, HasAlpha = true, PixelBytes = pixels };
+    }
+
+    /// <summary>Per-side padding (source px) needed to fit the drop-shadow steps: a shadow offset by
+    /// (dx, dy) with σ = blur/2 reaches the image box by (dx ± 3σ, dy ± 3σ). Colour matrices + blur
+    /// contribute nothing (their output stays within the image box in this cut).</summary>
+    private static void ComputeShadowPadding(
+        IReadOnlyList<ImageFilterStep> steps, out int padL, out int padT, out int padR, out int padB)
+    {
+        double l = 0, t = 0, r = 0, b = 0;
+        foreach (var step in steps)
+        {
+            if (step.Kind != ImageFilterKind.DropShadow) continue;
+            var m = 3.0 * (step.ShadowBlur / 2.0); // 3σ
+            l += Math.Max(0, m - step.ShadowDx);
+            r += Math.Max(0, m + step.ShadowDx);
+            t += Math.Max(0, m - step.ShadowDy);
+            b += Math.Max(0, m + step.ShadowDy);
+        }
+        padL = (int)Math.Ceiling(l);
+        padT = (int)Math.Ceiling(t);
+        padR = (int)Math.Ceiling(r);
+        padB = (int)Math.Ceiling(b);
     }
 
     /// <summary>Fold the steps into a composed <see cref="SKImageFilter"/> chain — each step wraps the

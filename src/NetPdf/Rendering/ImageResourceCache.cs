@@ -53,9 +53,10 @@ internal sealed class ImageResourceCache
         /// only when a filtered box references the URI.)</summary>
         public required byte[] SourceBytes { get; init; }
 
-        /// <summary>Phase 4 filters — per-(filter-key) cache of the filtered XObject registrations, so
-        /// N <c>&lt;img&gt;</c>s with the same source + filter share one filtered XObject.</summary>
-        public Dictionary<string, PdfIndirectRef>? FilteredRefs;
+        /// <summary>Phase 4 filters — per-(filter-key) cache of the filtered XObject registration +
+        /// its drop-shadow padding, so N <c>&lt;img&gt;</c>s with the same source + filter share one
+        /// filtered XObject.</summary>
+        public Dictionary<string, (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad)>? FilteredRefs;
     }
 
     private readonly Dictionary<string, Entry> _byUri = new(StringComparer.Ordinal);
@@ -146,16 +147,16 @@ internal sealed class ImageResourceCache
     /// N identical (image + filter) placements share one XObject. Returns <see langword="null"/> when
     /// the image can't be decoded / is over the raster cap (the caller falls back to the unfiltered
     /// image).</summary>
-    public static PdfIndirectRef? GetOrRegisterFiltered(
+    public static (PdfIndirectRef Ref, NetPdf.Pdf.Images.FilterPadding Pad)? GetOrRegisterFiltered(
         PdfDocument document, Entry entry, IReadOnlyList<NetPdf.Pdf.Images.ImageFilterStep> steps, string filterKey)
     {
-        entry.FilteredRefs ??= new Dictionary<string, PdfIndirectRef>(StringComparer.Ordinal);
+        entry.FilteredRefs ??= new Dictionary<string, (PdfIndirectRef, NetPdf.Pdf.Images.FilterPadding)>(StringComparer.Ordinal);
         if (entry.FilteredRefs.TryGetValue(filterKey, out var cached)) return cached;
         var result = NetPdf.Pdf.Images.ImageFilterApplier.TryApply(entry.SourceBytes, steps);
         if (result is null) return null;
-        var reg = document.RegisterImage(result);
-        entry.FilteredRefs[filterKey] = reg;
-        return reg;
+        var entryRef = (document.RegisterImage(result.Value.Image), result.Value.Padding);
+        entry.FilteredRefs[filterKey] = entryRef;
+        return entryRef;
     }
 
     /// <summary>Walk <paramref name="boxRoot"/> + fetch/decode every image reference. Never

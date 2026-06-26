@@ -50,7 +50,7 @@ internal static class PdfPreflightValidator
         // is a real risk. The preflight catches it BEFORE bytes are
         // written, in a unit-testable way (negative tests use
         // constructed PdfDictionary objects).
-        ValidateNoActiveContent(writer.Objects, writer.Trailer);
+        ValidateNoActiveContent(writer.Objects, writer.Trailer, writer.AllowUriLinkAnnotations);
     }
 
     /// <summary>Per Phase D D-6 — walk dictionaries + reject any
@@ -73,14 +73,14 @@ internal static class PdfPreflightValidator
     /// <see cref="PdfName"/> array (was allocating a new
     /// <see cref="PdfName"/> per key per dictionary visited).</para>
     /// </remarks>
-    private static void ValidateNoActiveContent(IndirectObjectStore store, PdfDictionary trailer)
+    private static void ValidateNoActiveContent(IndirectObjectStore store, PdfDictionary trailer, bool allowUriLinkActions)
     {
         var visited = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
         for (int i = 0; i < store.Count; i++)
         {
-            VisitDictionariesForActiveContent(store.AllEntries[i].Object!, visited);
+            VisitDictionariesForActiveContent(store.AllEntries[i].Object!, visited, allowUriLinkActions);
         }
-        VisitDictionariesForActiveContent(trailer, visited);
+        VisitDictionariesForActiveContent(trailer, visited, allowUriLinkActions);
     }
 
     /// <summary>Per Phase D D-6 — names that, as dictionary keys,
@@ -118,7 +118,7 @@ internal static class PdfPreflightValidator
         return arr;
     }
 
-    private static void VisitDictionariesForActiveContent(PdfObject obj, HashSet<PdfObject> visited)
+    private static void VisitDictionariesForActiveContent(PdfObject obj, HashSet<PdfObject> visited, bool allowUriLinkActions)
     {
         if (obj is PdfIndirectRef) return; // refs are walked at the store level
         if (!visited.Add(obj)) return;
@@ -126,18 +126,26 @@ internal static class PdfPreflightValidator
         {
             for (var i = 0; i < ActiveContentKeys.Length; i++)
             {
-                if (dict.Get(ActiveContentKeys[i]) is not null)
+                if (dict.Get(ActiveContentKeys[i]) is null) continue;
+                // The single opt-in (Phase 4 links): a /URI key is allowed INSIDE a well-formed URI action
+                // (/S /URI) when AllowUriLinkAnnotations is set. Every other key — and a /URI outside a URI
+                // action — still throws. This unblocks external hyperlinks without opening the JS / Launch /
+                // SubmitForm / embedded-file surfaces.
+                if (allowUriLinkActions
+                    && ActiveContentKeyNames[i] == "URI"
+                    && dict.Get(PdfNames.S) is PdfName s && s.Value == "URI")
                 {
-                    throw new InvalidOperationException(
-                        $"PdfPreflightValidator: dictionary contains the active-content key '/{ActiveContentKeyNames[i]}', "
-                        + "which NetPdf v1 must never emit. If this is intentional, the writer needs "
-                        + "an explicit allowlist gate (currently no such opt-in exists).");
+                    continue;
                 }
+                throw new InvalidOperationException(
+                    $"PdfPreflightValidator: dictionary contains the active-content key '/{ActiveContentKeyNames[i]}', "
+                    + "which NetPdf v1 must never emit. If this is intentional, the writer needs "
+                    + "an explicit allowlist gate (currently no such opt-in exists).");
             }
         }
         foreach (var child in obj.EnumerateChildren())
         {
-            VisitDictionariesForActiveContent(child, visited);
+            VisitDictionariesForActiveContent(child, visited, allowUriLinkActions);
         }
     }
 

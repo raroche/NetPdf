@@ -38,6 +38,13 @@ internal sealed class PdfDocumentWriter
     /// </summary>
     public string Version { get; init; } = "1.7";
 
+    /// <summary>Phase 4 links (PR 4) — the explicit opt-in the active-content preflight anticipated:
+    /// when <see langword="true"/>, a <c>/URI</c> key is permitted ONLY inside a well-formed URI action
+    /// (<c>/S /URI</c>) — for hyperlink <c>/Link</c> annotations. Every other active-content surface
+    /// (JavaScript / Launch / SubmitForm / GoToR / embedded files / …) stays blocked unconditionally, and
+    /// a <c>/URI</c> outside a URI action still throws. Default <see langword="false"/> (locked down).</summary>
+    public bool AllowUriLinkAnnotations { get; set; }
+
     public void WriteTo(IBufferWriter<byte> output)
     {
         ArgumentNullException.ThrowIfNull(output);

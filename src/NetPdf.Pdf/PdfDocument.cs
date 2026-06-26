@@ -78,6 +78,15 @@ internal sealed class PdfDocument
     /// <summary>Document modification date. Null = omit. Same determinism rule as <see cref="CreationDate"/>.</summary>
     public DateTimeOffset? ModDate { get; set; }
 
+    /// <summary>Phase 4 links (PR 4) — opt into emitting hyperlink <c>/URI</c> link-annotation actions
+    /// (the active-content preflight blocks <c>/URI</c> by default). When set, ONLY well-formed URI
+    /// actions (<c>/S /URI</c>) pass; JavaScript / Launch / SubmitForm / embedded files stay blocked.</summary>
+    public bool AllowUriLinkAnnotations
+    {
+        get => _writer.AllowUriLinkAnnotations;
+        set => _writer.AllowUriLinkAnnotations = value;
+    }
+
     // ───── Pages ─────────────────────────────────────────────────────────────
 
     public IReadOnlyList<PdfPage> Pages => _pages;

@@ -353,6 +353,10 @@ internal static class PdfRenderPipeline
         // a size/efficiency follow-up, deferrals.md#layout-to-pdf-pipeline.) The painters read
         // the box-tree styles, so they run before phase2 is disposed (method end).
         var document = new PdfDocument(PdfVersionString(options.EmittedPdfVersion));
+        // Phase 4 links (PR 4) — the HTML→PDF path intentionally emits <a href> hyperlink annotations, so
+        // opt into the active-content preflight's narrow /URI-action allowance (JS / Launch / embedded
+        // files stay blocked).
+        document.AllowUriLinkAnnotations = true;
         if (!string.IsNullOrEmpty(options.Title)) document.Title = options.Title;
         if (!string.IsNullOrEmpty(options.Author)) document.Author = options.Author;
         var mediaBox = new MediaBoxSize(
@@ -505,6 +509,10 @@ internal static class PdfRenderPipeline
             ImagePainter.PaintImages(
                 bodyFragments, page, document, imageCache, ppMediaBox.HeightPts,
                 ppMargins.LeftPx, ppMargins.TopPx, diagnostics, effectiveTransforms);
+
+            // Hyperlinks (Phase 4 PR 4): <a href> elements → PDF /Link annotations over their fragments.
+            LinkAnnotationCollector.AddLinks(
+                page, bodyFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx);
 
             var textFragments = bodyFragments;
             if (hasMarginBoxes)

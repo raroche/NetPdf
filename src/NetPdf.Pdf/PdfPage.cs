@@ -955,6 +955,38 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    private List<PdfObject>? _annotations;
+
+    /// <summary>Phase 4 links (PR 4) — add a hyperlink <c>/Link</c> annotation over the page-space
+    /// rectangle (<paramref name="x"/>, <paramref name="y"/>, <paramref name="width"/>,
+    /// <paramref name="height"/>) (PDF points, bottom-left origin) whose <c>/A</c> action opens
+    /// <paramref name="uri"/> (a <c>/URI</c> action, ISO 32000-2 §12.5.6.5 + §12.6.4.7). The annotation's
+    /// <c>/Border</c> is <c>[0 0 0]</c> (no visible frame — the link text already shows). A non-positive
+    /// rect no-ops; non-finite coordinates throw. The annotation rides the page's <c>/Annots</c> array,
+    /// emitted at <see cref="Finalize"/>. Multiple calls accumulate.</summary>
+    public void AddUriLinkAnnotation(double x, double y, double width, double height, string uri)
+    {
+        ArgumentNullException.ThrowIfNull(uri);
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+            throw new ArgumentException($"AddUriLinkAnnotation rect must be finite; got ({x},{y},{width},{height}).");
+        if (!(width > 0) || !(height > 0) || uri.Length == 0) return;
+
+        var action = new PdfDictionary()
+            .Set(PdfNames.S, PdfNames.URI)
+            .Set(PdfNames.URI, new PdfLiteralString(System.Text.Encoding.UTF8.GetBytes(uri)));
+        var annot = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Annot)
+            .Set(PdfNames.Subtype, PdfNames.Link)
+            .Set(PdfNames.Rect, new PdfArray()
+                .Add(new PdfReal(x)).Add(new PdfReal(y))
+                .Add(new PdfReal(x + width)).Add(new PdfReal(y + height)))
+            .Set(PdfNames.Border, new PdfArray()
+                .Add(new PdfInteger(0)).Add(new PdfInteger(0)).Add(new PdfInteger(0)))
+            .Set(PdfNames.A, action);
+        (_annotations ??= new List<PdfObject>()).Add(annot);
+    }
+
     private static char HexNibble(int value) => "0123456789ABCDEF"[value & 0xF];
 
     private static void AppendNumber(StringBuilder sb, double value)
@@ -997,6 +1029,14 @@ internal sealed class PdfPage
             .Set(PdfNames.Resources, Resources)
             .Set(PdfNames.MediaBox, mediaBox)
             .Set(PdfNames.Contents, ContentsRef);
+
+        // Phase 4 links (PR 4) — the page's hyperlink annotations (direct dicts in /Annots).
+        if (_annotations is { Count: > 0 })
+        {
+            var annots = new PdfArray();
+            foreach (var a in _annotations) annots.Add(a);
+            pageDict.Set(PdfNames.Annots, annots);
+        }
 
         return (pageDict, _contentBuffer.WrittenSpan.ToArray());
     }

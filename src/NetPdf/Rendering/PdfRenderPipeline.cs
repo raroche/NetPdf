@@ -460,6 +460,9 @@ internal static class PdfRenderPipeline
         var textSession = new TextPainter.TextPaintSession(
             shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics,
             imageCache.TextShadowBoxes);
+        // Phase 4 outlines (PR 4): <h1>–<h6> → the document outline. Collected in page order (= document
+        // order) so the level-nesting builds the right tree; the seen-set dedups a split heading.
+        var seenHeadings = new System.Collections.Generic.HashSet<AngleSharp.Dom.IElement>();
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -513,6 +516,10 @@ internal static class PdfRenderPipeline
             // Hyperlinks (Phase 4 PR 4): <a href> elements → PDF /Link annotations over their fragments.
             LinkAnnotationCollector.AddLinks(
                 page, bodyFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx);
+
+            // Document outline (Phase 4 PR 4): <h1>–<h6> headings → /Outlines bookmarks.
+            OutlineCollector.Collect(
+                document, page, bodyFragments, ppMediaBox.HeightPts, ppMargins.TopPx, seenHeadings);
 
             var textFragments = bodyFragments;
             if (hasMarginBoxes)

@@ -87,6 +87,26 @@ internal sealed class PdfDocument
         set => _writer.AllowUriLinkAnnotations = value;
     }
 
+    // ───── Document outline (bookmarks) ──────────────────────────────────────
+
+    /// <summary>Phase 4 outlines (PR 4) — one accumulated heading for the document outline: its level
+    /// (1–6), title, target page, and the destination top in PDF points (page-bottom origin).</summary>
+    private readonly record struct OutlineHeading(int Level, string Title, PdfPage Page, double TopPt);
+
+    private List<OutlineHeading>? _outlineHeadings;
+
+    /// <summary>Phase 4 outlines (PR 4) — add a heading to the document outline (bookmarks panel). Call in
+    /// DOCUMENT ORDER; <see cref="SaveTo"/> nests headings by <paramref name="level"/> into the
+    /// <c>/Outlines</c> tree, each item a <c>/XYZ</c> destination to <paramref name="page"/> at
+    /// <paramref name="topPt"/>. An empty title is ignored.</summary>
+    public void AddOutlineHeading(int level, string title, PdfPage page, double topPt)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(title);
+        if (level < 1 || string.IsNullOrWhiteSpace(title)) return;
+        (_outlineHeadings ??= new List<OutlineHeading>()).Add(new OutlineHeading(level, title.Trim(), page, topPt));
+    }
+
     // ───── Pages ─────────────────────────────────────────────────────────────
 
     public IReadOnlyList<PdfPage> Pages => _pages;
@@ -765,6 +785,9 @@ internal sealed class PdfDocument
         var catalogDict = new PdfDictionary()
             .Set(PdfNames.Type, PdfNames.Catalog)
             .Set(PdfNames.Pages, _pagesRef);
+        // Phase 4 outlines (PR 4) — the document outline (bookmarks) from <h1>–<h6>.
+        if (_outlineHeadings is { Count: > 0 })
+            catalogDict.Set(PdfNames.Outlines, BuildOutlineTree(_outlineHeadings));
         _writer.Objects.Assign(_catalogRef, catalogDict);
         _writer.Trailer.Set(PdfNames.Root, _catalogRef);
 
@@ -775,6 +798,82 @@ internal sealed class PdfDocument
         _writer.Trailer.Set(PdfNames.Info, infoRef);
 
         _writer.WriteTo(output);
+    }
+
+    // ───── Outline tree construction ─────────────────────────────────────────
+
+    private sealed class OutlineNode
+    {
+        public required OutlineHeading Heading { get; init; }
+        public List<OutlineNode> Children { get; } = new();
+        public PdfIndirectRef Ref { get; set; } = null!;
+    }
+
+    /// <summary>Build the <c>/Outlines</c> tree from the document-order headings: nest each heading under
+    /// the most recent heading of a SMALLER level (so an h3 nests under the preceding h2 under its h1), then
+    /// emit one indirect outline item per node with /Title /Parent /First /Last /Next /Prev /Count /Dest.
+    /// Returns the <c>/Outlines</c> root indirect ref for the catalog.</summary>
+    private PdfIndirectRef BuildOutlineTree(List<OutlineHeading> headings)
+    {
+        var roots = new List<OutlineNode>();
+        var stack = new List<OutlineNode>();
+        foreach (var h in headings)
+        {
+            var node = new OutlineNode { Heading = h };
+            while (stack.Count > 0 && stack[^1].Heading.Level >= h.Level) stack.RemoveAt(stack.Count - 1);
+            if (stack.Count == 0) roots.Add(node); else stack[^1].Children.Add(node);
+            stack.Add(node);
+        }
+
+        var rootRef = _writer.Objects.Allocate();
+        AllocateOutlineRefs(roots);
+        var (first, last, count) = EmitOutlineSiblings(roots, rootRef);
+        var outlinesDict = new PdfDictionary().Set(PdfNames.Type, PdfNames.Outlines);
+        if (first is not null) outlinesDict.Set(PdfNames.First, first).Set(PdfNames.Last, last!);
+        outlinesDict.Set(PdfNames.Count, new PdfInteger(count));
+        _writer.Objects.Assign(rootRef, outlinesDict);
+        return rootRef;
+    }
+
+    private void AllocateOutlineRefs(List<OutlineNode> nodes)
+    {
+        foreach (var n in nodes)
+        {
+            n.Ref = _writer.Objects.Allocate();
+            AllocateOutlineRefs(n.Children);
+        }
+    }
+
+    /// <summary>Emit a sibling list of outline items under <paramref name="parentRef"/>; returns the first +
+    /// last child refs and the count of (open) descendant items in this list.</summary>
+    private (PdfIndirectRef? First, PdfIndirectRef? Last, int Count) EmitOutlineSiblings(
+        List<OutlineNode> nodes, PdfIndirectRef parentRef)
+    {
+        if (nodes.Count == 0) return (null, null, 0);
+        var total = 0;
+        for (var i = 0; i < nodes.Count; i++)
+        {
+            var n = nodes[i];
+            var h = n.Heading;
+            var dict = new PdfDictionary()
+                .Set(PdfNames.Title, EncodeMetadataString(SanitizeMetadataString(h.Title)))
+                .Set(PdfNames.Parent, parentRef)
+                .Set(PdfNames.Dest, new PdfArray()
+                    .Add(h.Page.PageRef).Add(new PdfName("XYZ"))
+                    .Add(PdfNull.Instance).Add(new PdfReal(h.TopPt)).Add(PdfNull.Instance));
+            if (i > 0) dict.Set(PdfNames.Prev, nodes[i - 1].Ref);
+            if (i < nodes.Count - 1) dict.Set(PdfNames.Next, nodes[i + 1].Ref);
+
+            var (cFirst, cLast, cCount) = EmitOutlineSiblings(n.Children, n.Ref);
+            if (cFirst is not null)
+            {
+                dict.Set(PdfNames.First, cFirst).Set(PdfNames.Last, cLast!);
+                dict.Set(PdfNames.Count, new PdfInteger(cCount)); // positive = subtree shown open
+            }
+            _writer.Objects.Assign(n.Ref, dict);
+            total += 1 + cCount;
+        }
+        return (nodes[0].Ref, nodes[^1].Ref, total);
     }
 
     private PdfDictionary BuildInfoDictionary()

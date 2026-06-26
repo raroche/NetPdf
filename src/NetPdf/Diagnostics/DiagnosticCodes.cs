@@ -162,6 +162,22 @@ internal static class DiagnosticCodes
     public const string CssFilterUnsupported001 = "CSS-FILTER-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>clip-path: path("…")</c> (an arbitrary SVG path) on an element was not applied:
+    /// native path-clip emission is a tracked follow-up (the basic shapes <c>inset</c> / <c>circle</c>
+    /// / <c>ellipse</c> / <c>polygon</c> ARE clipped natively). The element painted UNCLIPPED. Surfaced
+    /// once per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssClipPathRasterFallback001 = "CSS-CLIP-PATH-RASTER-FALLBACK-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>clip-path</c> on an element with CHILDREN clipped only the element's OWN
+    /// decoration (background / border / image), not its descendant content — a general subtree clip
+    /// needs the Skia subtree renderer NetPdf doesn't have yet. The descendants painted unclipped.
+    /// Surfaced once per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssClipPathSubtreeUnsupported001 = "CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

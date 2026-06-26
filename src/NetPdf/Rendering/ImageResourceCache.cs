@@ -120,6 +120,12 @@ internal sealed class ImageResourceCache
 
     public Dictionary<Box, BoxTransform> TransformBoxes { get; } = new();
 
+    /// <summary>Phase 4 clip-path (PR 3) — element-backed box → its parsed <c>clip-path</c> basic
+    /// shape (the box's OWN declared value; clip-path doesn't inherit). The painter wraps the box's
+    /// decoration (+ image) in a native PDF clip; <c>path()</c> + the descendant subtree are
+    /// documented residuals.</summary>
+    public Dictionary<Box, CssClipPath> ClipPathBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -194,7 +200,7 @@ internal sealed class ImageResourceCache
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
-            cache.TransformBoxes,
+            cache.TransformBoxes, cache.ClipPathBoxes,
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
@@ -310,6 +316,7 @@ internal sealed class ImageResourceCache
         Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
         Dictionary<Box, IReadOnlyList<CssTextShadow>> textShadowBoxes,
         Dictionary<Box, BoxTransform> transformBoxes,
+        Dictionary<Box, CssClipPath> clipPathBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         ref bool unsupportedBackgroundReported,
@@ -352,6 +359,16 @@ internal sealed class ImageResourceCache
                         + "(translate/scale/rotate/skew/matrix + axis variants); the element painted "
                         + "untransformed.");
                 }
+            }
+            // clip-path (Phase 4 PR 3) — the box's OWN declared basic shape (clip-path doesn't inherit).
+            // The painter clips the box decoration (+ image) to it; an unparseable / url() value is the
+            // null case (no clip). Always collected (it clips text + image too, not just backgrounds).
+            var clipPathRaw = rules?.GetWinner("clip-path")?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(clipPathRaw)
+                && !clipPathRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && CssClipPath_Parser.TryParse(clipPathRaw) is { } clip)
+            {
+                clipPathBoxes[box] = clip;
             }
             // filter (Phase 4 PR 2) — a filter on a REPLACED <img> is applied to the image (the img
             // path below). On a NON-replaced element (div / text box), filtering the rendered subtree
@@ -463,7 +480,7 @@ internal sealed class ImageResourceCache
         foreach (var child in box.Children)
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
-                boxShadowBoxes, textShadowBoxes, transformBoxes, collectBackgrounds, diagnostics,
+                boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported);

@@ -598,6 +598,62 @@ internal sealed class PdfPage
         AppendNumber(sb, height); sb.Append(" re ");
     }
 
+    /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with a
+    /// POLYGON (<c>q x0 y0 m x1 y1 l … h W n</c>) for <c>clip-path: polygon(...)</c>. Points are PDF
+    /// points (bottom-left origin). Fewer than 3 points → no clip change (the <c>q</c> still opens, so
+    /// the caller still balances with <see cref="RestoreGraphicsState"/>). Non-finite points throw.</summary>
+    public void BeginPolygonClip(IReadOnlyList<(double X, double Y)> points)
+    {
+        ThrowIfFinalized();
+        ArgumentNullException.ThrowIfNull(points);
+        var sb = new StringBuilder(16 + points.Count * 16);
+        sb.Append("q ");
+        if (points.Count >= 3)
+        {
+            for (var i = 0; i < points.Count; i++)
+            {
+                var (px, py) = points[i];
+                if (!double.IsFinite(px) || !double.IsFinite(py))
+                    throw new ArgumentException($"BeginPolygonClip points must be finite; got ({px},{py}).");
+                AppendNumber(sb, px); sb.Append(' '); AppendNumber(sb, py);
+                sb.Append(i == 0 ? " m " : " l ");
+            }
+            sb.Append("h W n");
+        }
+        sb.Append('\n');
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with an
+    /// ELLIPSE centered (<paramref name="cx"/>, <paramref name="cy"/>) with radii
+    /// (<paramref name="rx"/>, <paramref name="ry"/>) via four cubic-Bézier quadrants (k ≈ 0.5523) —
+    /// for <c>clip-path: circle()</c> (rx == ry) / <c>ellipse()</c>. PDF points, bottom-left origin.
+    /// A non-positive radius opens the <c>q</c> with no clip (a zero-area clip). Callers MUST balance
+    /// with <see cref="RestoreGraphicsState"/>.</summary>
+    public void BeginEllipseClip(double cx, double cy, double rx, double ry)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(cx) || !double.IsFinite(cy) || !double.IsFinite(rx) || !double.IsFinite(ry))
+            throw new ArgumentException($"BeginEllipseClip args must be finite; got c=({cx},{cy}) r=({rx},{ry}).");
+        var sb = new StringBuilder(160);
+        sb.Append("q ");
+        if (rx > 0 && ry > 0)
+        {
+            const double k = 0.55228474983079;
+            var kx = rx * k;
+            var ky = ry * k;
+            void P(double x, double y) { AppendNumber(sb, x); sb.Append(' '); AppendNumber(sb, y); sb.Append(' '); }
+            P(cx + rx, cy); sb.Append("m ");
+            P(cx + rx, cy + ky); P(cx + kx, cy + ry); P(cx, cy + ry); sb.Append("c ");
+            P(cx - kx, cy + ry); P(cx - rx, cy + ky); P(cx - rx, cy); sb.Append("c ");
+            P(cx - rx, cy - ky); P(cx - kx, cy - ry); P(cx, cy - ry); sb.Append("c ");
+            P(cx + kx, cy - ry); P(cx + rx, cy - ky); P(cx + rx, cy); sb.Append("c ");
+            sb.Append("h W n");
+        }
+        sb.Append('\n');
+        AppendContent(sb.ToString());
+    }
+
     /// <summary>
     /// Push the graphics state and intersect the clip path with an axis-aligned rectangle —
     /// <c>q &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re W n</c> (ISO 32000-2 §8.5.4: <c>W</c> sets the

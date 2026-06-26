@@ -224,6 +224,9 @@ internal static class CssPreprocessor
         // (CSS Filter Effects L1). The recovery emits it verbatim so the painter reads the winner +
         // parses the function list (an unregistered raw-read seam, like `transform`).
         "filter",
+        // Per Phase 4 clip-path (PR 3) — AngleSharp.Css drops the `clip-path` property (CSS Masking L1).
+        // The recovery emits it verbatim so the painter reads the winner + parses the basic shape.
+        "clip-path",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

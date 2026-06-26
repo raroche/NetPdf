@@ -123,6 +123,8 @@ internal static class FragmentPainter
         var boxShadowCapReported = false;         // Phase 4 shadows — once-per-render over-cap Warning.
         var conicGradientRasterReported = false;  // Phase 4 gradients — once-per-render conic raster Info.
         var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
+        var clipPathRasterReported = false;       // Phase 4 clip-path — once-per-render path() Warning.
+        var clipPathSubtreeReported = false;      // Phase 4 clip-path — once-per-render subtree Warning.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -174,6 +176,17 @@ internal static class FragmentPainter
                     currentColorArgb, diagnostics, ref styleApproximationReported);
                 if (transformed) page.RestoreGraphicsState();
                 continue;
+            }
+
+            // clip-path (Phase 4 PR 3) — wrap this box's decoration in a native clip of its basic
+            // shape (inside the transform, so a transformed + clipped box clips in its local space).
+            // The descendant subtree + path() are documented residuals (diagnosed inside).
+            var clipPathClipped = false;
+            if (imageCache is not null
+                && imageCache.ClipPathBoxes.TryGetValue(fragment.Box, out var clipShape))
+            {
+                clipPathClipped = BeginClipPath(page, clipShape, pageHeightPt, leftPx, topPx, widthPx,
+                    heightPx, fragment.Box, diagnostics, ref clipPathRasterReported, ref clipPathSubtreeReported);
             }
 
             // Background first (behind borders), gated by PrintBackgrounds.
@@ -333,8 +346,111 @@ internal static class FragmentPainter
                 isFirstSlice: !fragment.SuppressBlockStartChrome,
                 isLastSlice: !fragment.SuppressBlockEndChrome);
 
+            if (clipPathClipped) page.RestoreGraphicsState(); // balance BeginClipPath's q
             if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
         }
+    }
+
+    /// <summary>Phase 4 clip-path (PR 3) — begin a native PDF clip for the box's parsed basic shape
+    /// (CSS Masking L1 §3), measured against the box's border box. <c>inset()</c> → a (rounded) rect
+    /// clip; <c>circle()</c>/<c>ellipse()</c> → an ellipse clip (an omitted radius = closest-side; a
+    /// <c>%</c> radius resolves against √(w²+h²)/√2 per §3.1); <c>polygon()</c> → a polygon clip.
+    /// <c>path()</c> is deferred (raster follow-up) → no clip + a Warning. Returns <see langword="true"/>
+    /// when a clip was opened (the caller balances with RestoreGraphicsState). A box with CHILDREN also
+    /// warns — only its OWN decoration is clipped (the descendant subtree needs the Skia subtree
+    /// renderer).</summary>
+    private static bool BeginClipPath(
+        PdfPage page, CssClipPath clip, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx, NetPdf.Layout.Boxes.Box box,
+        IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool subtreeReported)
+    {
+        if (clip.Kind == ClipShapeKind.Path)
+        {
+            if (!rasterReported)
+            {
+                diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathRasterFallback001,
+                    "A clip-path: path(\"…\") (an arbitrary SVG path) was not applied — native path-clip "
+                    + "emission is a tracked follow-up; the element painted unclipped.", DiagnosticSeverity.Warning));
+                rasterReported = true;
+            }
+            return false;
+        }
+        if (box.Children.Count > 0 && !subtreeReported)
+        {
+            diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathSubtreeUnsupported001,
+                "A clip-path on an element with children clipped only the element's own decoration "
+                + "(background / border / image), not its descendant content (a subtree clip needs the "
+                + "Skia subtree renderer NetPdf lacks).", DiagnosticSeverity.Warning));
+            subtreeReported = true;
+        }
+
+        static double Resolve(ClipLen len, double extent) =>
+            len.Px + (double.IsNaN(len.Frac) ? 0.0 : len.Frac) * extent;
+
+        switch (clip.Kind)
+        {
+            case ClipShapeKind.Inset:
+            {
+                var t = Resolve(clip.Edges![0], heightPx);
+                var rEdge = Resolve(clip.Edges![1], widthPx);
+                var bEdge = Resolve(clip.Edges![2], heightPx);
+                var l = Resolve(clip.Edges![3], widthPx);
+                var w = Math.Max(0, widthPx - l - rEdge);
+                var h = Math.Max(0, heightPx - t - bEdge);
+                ToPdfRect(leftPx + l, topPx + t, w, h, pageHeightPt, out var px, out var py, out var pw, out var ph);
+                if (clip.Radii is { } rad)
+                {
+                    var rPx = Resolve(rad[0], Math.Min(widthPx, heightPx)); // uniform (per-corner = a refinement)
+                    var rPt = PdfUnits.PxToPt(rPx);
+                    page.BeginRoundedRectangleClip(px, py, pw, ph, new CornerRadii(rPt, rPt, rPt, rPt, rPt, rPt, rPt, rPt));
+                }
+                else page.BeginRectangleClip(px, py, pw, ph);
+                return true;
+            }
+            case ClipShapeKind.Circle:
+            {
+                var cxPx = leftPx + Resolve(clip.Cx, widthPx);
+                var cyPx = topPx + Resolve(clip.Cy, heightPx);
+                var rPx = ResolveRadius(clip.Radius, cxPx - leftPx, leftPx + widthPx - cxPx, cyPx - topPx, topPx + heightPx - cyPx, widthPx, heightPx);
+                if (!(rPx > 0)) return false;
+                page.BeginEllipseClip(PdfUnits.PxToPt(cxPx), pageHeightPt - PdfUnits.PxToPt(cyPx), PdfUnits.PxToPt(rPx), PdfUnits.PxToPt(rPx));
+                return true;
+            }
+            case ClipShapeKind.Ellipse:
+            {
+                var cxPx = leftPx + Resolve(clip.Cx, widthPx);
+                var cyPx = topPx + Resolve(clip.Cy, heightPx);
+                var rxPx = double.IsNaN(clip.Rx.Frac) ? Math.Min(cxPx - leftPx, leftPx + widthPx - cxPx) : Resolve(clip.Rx, widthPx);
+                var ryPx = double.IsNaN(clip.Ry.Frac) ? Math.Min(cyPx - topPx, topPx + heightPx - cyPx) : Resolve(clip.Ry, heightPx);
+                if (!(rxPx > 0) || !(ryPx > 0)) return false;
+                page.BeginEllipseClip(PdfUnits.PxToPt(cxPx), pageHeightPt - PdfUnits.PxToPt(cyPx), PdfUnits.PxToPt(rxPx), PdfUnits.PxToPt(ryPx));
+                return true;
+            }
+            case ClipShapeKind.Polygon:
+            {
+                var pts = new (double, double)[clip.Points!.Length];
+                for (var i = 0; i < pts.Length; i++)
+                {
+                    var ptxPx = leftPx + Resolve(clip.Points[i].X, widthPx);
+                    var ptyPx = topPx + Resolve(clip.Points[i].Y, heightPx);
+                    pts[i] = (PdfUnits.PxToPt(ptxPx), pageHeightPt - PdfUnits.PxToPt(ptyPx));
+                }
+                page.BeginPolygonClip(pts);
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>The circle() radius in px: an omitted (NaN) radius = closest-side (the min distance to
+    /// the four edges); a <c>%</c> resolves against √(w²+h²)/√2 (CSS Masking §3.1); a length is direct.</summary>
+    private static double ResolveRadius(ClipLen radius, double distL, double distR, double distT, double distB, double widthPx, double heightPx)
+    {
+        if (double.IsNaN(radius.Frac))
+            return Math.Min(Math.Min(distL, distR), Math.Min(distT, distB)); // closest-side
+        var reference = Math.Sqrt(widthPx * widthPx + heightPx * heightPx) / Math.Sqrt(2.0);
+        return radius.Px + radius.Frac * reference;
     }
 
     /// <summary>Per-fragment tile-count threshold ABOVE which the tiling emits ONE PDF

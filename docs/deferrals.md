@@ -2707,6 +2707,22 @@ flags the categories):
      z-order group; a transformed ancestor split onto another page is also skipped) + `em`/`rem`/`%`
      lengths in transform offsets / `transform-origin`. The `NetPdf.Paint` `DisplayCommand` IR still has no
      fragment→command or command→PDF consumer — the bridge emits straight to `IContentStream`.
+     **Phase 4 PR 2 (CSS filters) shipped — IMAGES only:** `filter` on an `<img>` applies via the Skia
+     `ImageFilterApplier` (a composed `SKImageFilter` chain → raster XObject + `/SMask`,
+     `CSS-FILTER-RASTER-FALLBACK-001`): the ten functions (grayscale/sepia/invert/brightness/contrast/
+     saturate/hue-rotate/opacity color matrices, `blur`, alpha-following `drop-shadow` with raster
+     bounds-expansion), chained in order. **Filter residuals (Phase 4 follow-ups):** (1) GENERAL
+     element-subtree filters (a filter on a `<div>` / text box) are DEFERRED with
+     `CSS-FILTER-ELEMENT-UNSUPPORTED-001` — they need a Skia SUBTREE RENDERER (an `IPaintTarget`
+     abstraction so `FragmentPainter` / `TextPainter` can target an `SKCanvas` instead of a `PdfPage`)
+     that doesn't exist yet; Roland's call (PR #226 follow-up) was "image filters first". This is the
+     enabling capability for general filters AND masks AND complex clip-path. (2) blur / drop-shadow
+     lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
+     approximate when heavily scaled — the filtered XObject is shared across placements so it can't
+     depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow
+     expands the raster bounds); (4) filters on BACKGROUND images (the tiler path) aren't filtered;
+     (5) `filter: opacity()` → native PDF `/ca` ExtGState + native `opacity` + `mix-blend-mode` (a
+     compositing PR); (6) `url()` SVG-filter references.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area

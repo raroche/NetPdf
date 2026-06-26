@@ -227,6 +227,19 @@ internal static class CssPreprocessor
         // Per Phase 4 clip-path (PR 3) — AngleSharp.Css drops the `clip-path` property (CSS Masking L1).
         // The recovery emits it verbatim so the painter reads the winner + parses the basic shape.
         "clip-path",
+        // Per Phase 4 compositing (PR 4) — AngleSharp.Css 1.0.0-beta.144 doesn't reliably round-trip the
+        // `border-image` shorthand + its longhands, `mix-blend-mode`, or `mask` / `mask-image` (none are
+        // registered properties here). The recovery emits each verbatim so the painter reads the winner +
+        // parses it (the raw-read seam, like `transform` / `filter` / `clip-path`).
+        "border-image",
+        "border-image-source",
+        "border-image-slice",
+        "border-image-width",
+        "border-image-outset",
+        "border-image-repeat",
+        "mix-blend-mode",
+        "mask",
+        "mask-image",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

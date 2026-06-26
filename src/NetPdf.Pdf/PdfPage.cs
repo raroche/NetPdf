@@ -143,6 +143,53 @@ internal sealed class PdfPage
         return resourceName;
     }
 
+    /// <summary>Phase 4 border-image (PR 4) — place a SUB-RECTANGLE of an Image XObject scaled to fill a
+    /// destination rectangle, CLIPPED to that rectangle (so only the requested slice shows). Source bounds
+    /// are unit fractions of the image: <paramref name="sx0"/>..<paramref name="sx1"/> across (0 = left,
+    /// 1 = right) and <paramref name="sy0"/>..<paramref name="sy1"/> DOWN FROM THE TOP (0 = top row, 1 =
+    /// bottom row — CSS slice convention). The destination (<paramref name="dx"/>, <paramref name="dy"/>,
+    /// <paramref name="dw"/>, <paramref name="dh"/>) is PDF points, bottom-left origin. Emits
+    /// <c>q dx dy dw dh re W n a 0 0 d e f cm /ImN Do Q</c> where the CTM maps the slice onto the dest rect
+    /// (and the clip hides the rest of the image). A degenerate source span or non-positive dest no-ops.
+    /// Non-finite args throw.</summary>
+    public string PlaceImageSlice(
+        PdfIndirectRef imageRef, double dx, double dy, double dw, double dh,
+        double sx0, double sy0, double sx1, double sy1)
+    {
+        ArgumentNullException.ThrowIfNull(imageRef);
+        ThrowIfFinalized();
+        foreach (var n in stackalloc[] { dx, dy, dw, dh, sx0, sy0, sx1, sy1 })
+            if (!double.IsFinite(n))
+                throw new ArgumentException("PlaceImageSlice args must be finite.");
+        var fsx = sx1 - sx0;
+        var fsy = sy1 - sy0;
+        if (!(dw > 0) || !(dh > 0) || !(fsx > 0) || !(fsy > 0)) return string.Empty;
+
+        var resourceName = $"Im{_xobjectsResource.Count + 1}";
+        _xobjectsResource.Set(new PdfName(resourceName), imageRef);
+
+        // a = dw/fsx, d = dh/fsy place the WHOLE image so its [sx0,sx1]×[1-sy1,1-sy0] portion fills the
+        // dest; the clip rect then shows only that portion. Image v=1 is the TOP row, so the CSS top
+        // fraction sy0 sits at v=1-sy0 and the bottom sy1 at v=1-sy1.
+        var a = dw / fsx;
+        var d = dh / fsy;
+        var e = dx - sx0 * a;
+        var f = dy - (1.0 - sy1) * d;
+
+        var sb = new StringBuilder(96);
+        sb.Append("q ");
+        AppendNumber(sb, dx); sb.Append(' '); AppendNumber(sb, dy); sb.Append(' ');
+        AppendNumber(sb, dw); sb.Append(' '); AppendNumber(sb, dh); sb.Append(" re W n ");
+        AppendNumber(sb, a); sb.Append(" 0 0 ");
+        AppendNumber(sb, d); sb.Append(' ');
+        AppendNumber(sb, e); sb.Append(' ');
+        AppendNumber(sb, f); sb.Append(" cm /");
+        sb.Append(resourceName);
+        sb.Append(" Do Q\n");
+        AppendContent(sb.ToString());
+        return resourceName;
+    }
+
     /// <summary>
     /// Register a font in this page's <c>/Font</c> resource and return the resource name a
     /// content-stream <c>Tf</c> operator references (e.g. <c>F1</c>). The font must already

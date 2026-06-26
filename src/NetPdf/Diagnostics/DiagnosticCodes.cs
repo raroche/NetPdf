@@ -187,6 +187,15 @@ internal static class DiagnosticCodes
     public const string CssClipPathUnsupported001 = "CSS-CLIP-PATH-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a <c>border-image</c> sub-feature is approximated: a non-<c>stretch</c>
+    /// <c>border-image-repeat</c> (repeat / round / space) was painted STRETCHED (edge tiling is a
+    /// follow-up), or <c>border-image-width</c> / <c>-outset</c> were ignored (the element's border
+    /// widths + zero outset are used). The border-image still paints (sliced + stretched). Surfaced
+    /// once per render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssBorderImageUnsupported001 = "CSS-BORDER-IMAGE-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

@@ -126,6 +126,11 @@ internal sealed class ImageResourceCache
     /// documented residuals.</summary>
     public Dictionary<Box, CssClipPath> ClipPathBoxes { get; } = new();
 
+    /// <summary>Phase 4 border-image (PR 4) — element-backed box → its parsed <c>border-image</c> + the
+    /// RESOLVED cache key for the decoded source image. The painter slices the image into the 9 border
+    /// regions; only boxes whose source decoded successfully appear.</summary>
+    public Dictionary<Box, (CssBorderImage Spec, string UriKey)> BorderImageBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -191,6 +196,7 @@ internal sealed class ImageResourceCache
         // data-URI decode cost, diagnostics, or budget consumption for backgrounds the
         // caller explicitly disabled; <img> is content and always fetches).
         var references = new List<(Box Box, string RawUrl, bool IsBackground)>();
+        var borderImages = new List<(Box Box, CssBorderImage Spec)>(); // Phase 4 border-image (PR 4)
         var boxShadowUnsupportedReported = false;
         var textShadowUnsupportedReported = false;
         var transform3DReported = false;
@@ -203,7 +209,8 @@ internal sealed class ImageResourceCache
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes, cache.ClipPathBoxes,
             collectBackgrounds: options.PrintBackgrounds,
-            diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
+            diagnostics, borderImages,
+            ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported);
 
@@ -264,6 +271,17 @@ internal sealed class ImageResourceCache
             }
         }
 
+        // Phase 4 border-image (PR 4) — resolve + decode each border-image source; store the spec + key
+        // for the painter. A failed fetch is already diagnosed by ResolveAndFetchAsync (the box simply
+        // gets no border-image; its normal border, if any, paints).
+        foreach (var (box, spec) in borderImages)
+        {
+            var key = await ResolveAndFetchAsync(
+                cache, loader, spec.SourceUrl, options.BaseUri, diagnostics, cancellationToken)
+                .ConfigureAwait(false);
+            if (key is not null) cache.BorderImageBoxes[box] = (spec, key);
+        }
+
         if (extraImageUrls is not null)
         {
             foreach (var rawUrl in extraImageUrls)
@@ -320,6 +338,7 @@ internal sealed class ImageResourceCache
         Dictionary<Box, CssClipPath> clipPathBoxes,
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
+        List<(Box Box, CssBorderImage Spec)> borderImages,
         ref bool unsupportedBackgroundReported,
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
@@ -378,6 +397,19 @@ internal sealed class ImageResourceCache
                         "A clip-path value could not be applied — it is a url(#…) SVG reference, a "
                         + "<geometry-box> keyword, a font-relative (em/rem) length, or malformed basic-shape "
                         + "syntax. The element painted unclipped.");
+            }
+            // border-image (Phase 4 PR 4) — the box's OWN declared border-image (decoration; gated by
+            // PrintBackgrounds). Parse the shorthand + longhands; if a url() source resolves, queue it for
+            // fetch (the painter slices the decoded image into the 9 border regions). A gradient / none
+            // source → no border-image.
+            if (collectBackgrounds)
+            {
+                var biSpec = CssBorderImage_Parser.TryParse(
+                    rules?.GetWinner("border-image")?.ResolvedValue,
+                    rules?.GetWinner("border-image-source")?.ResolvedValue,
+                    rules?.GetWinner("border-image-slice")?.ResolvedValue,
+                    rules?.GetWinner("border-image-repeat")?.ResolvedValue);
+                if (biSpec is not null) borderImages.Add((box, biSpec));
             }
             // filter (Phase 4 PR 2) — a filter on a REPLACED <img> is applied to the image (the img
             // path below). On a NON-replaced element (div / text box), filtering the rendered subtree
@@ -490,6 +522,7 @@ internal sealed class ImageResourceCache
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
+                borderImages,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported);

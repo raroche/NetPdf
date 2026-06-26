@@ -125,6 +125,7 @@ internal static class FragmentPainter
         var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
         var clipPathRasterReported = false;       // Phase 4 clip-path — once-per-render path() Warning.
         var clipPathSubtreeReported = false;      // Phase 4 clip-path — once-per-render subtree Warning.
+        var borderImageReported = false;          // Phase 4 border-image — once-per-render approximation Info.
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -323,15 +324,29 @@ internal static class FragmentPainter
                 }
             }
 
+            // border-image (Phase 4 PR 4) — a decoded border-image replaces the normal border rendering
+            // (CSS B&B L3 §6: border-image is painted OVER the border area in place of border-style). The
+            // image is sliced into the 9 regions + stretched to the box's border widths.
+            var borderImagePainted = false;
+            if (imageCache is not null && document is not null
+                && imageCache.BorderImageBoxes.TryGetValue(fragment.Box, out var biEntry)
+                && imageCache.TryGet(biEntry.UriKey, out var biImg))
+            {
+                PaintBorderImage(page, document, biImg, biEntry.Spec, style, pageHeightPt,
+                    leftPx, topPx, widthPx, heightPx, diagnostics, ref borderImageReported);
+                borderImagePainted = true;
+            }
+
             // Borders (foreground — always painted regardless of PrintBackgrounds). A sliced inline-only
             // block (box-decoration-break: slice) draws each block-axis border once: the block-start (top)
             // border edge is skipped on a non-first slice, the block-end (bottom) on a non-last slice.
-            PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref styleApproximationReported,
-                suppressTopEdge: fragment.SuppressBlockStartChrome,
-                suppressBottomEdge: fragment.SuppressBlockEndChrome,
-                decorationBlockExtentPx: fragment.DecorationBlockExtentPx,
-                decorationBlockOffsetPx: fragment.DecorationBlockOffsetPx);
+            if (!borderImagePainted)
+                PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                    currentColorArgb, diagnostics, ref styleApproximationReported,
+                    suppressTopEdge: fragment.SuppressBlockStartChrome,
+                    suppressBottomEdge: fragment.SuppressBlockEndChrome,
+                    decorationBlockExtentPx: fragment.DecorationBlockExtentPx,
+                    decorationBlockOffsetPx: fragment.DecorationBlockOffsetPx);
 
             // Outline (CSS UI 4 §5 — outline cycle): painted OUTSIDE the border box, over everything,
             // and it does NOT affect layout. Always painted (it's not a background). It shares the
@@ -1214,6 +1229,80 @@ internal static class FragmentPainter
             currentColors.Left, diagnostics, ref styleApproximationReported);
         if (rounded) page.RestoreGraphicsState();         // rounded-outline clip
         if (sliceClipped) page.RestoreGraphicsState();    // per-slice rect clip
+    }
+
+    /// <summary>Phase 4 border-image (PR 4) — paint a decoded <c>border-image</c>: slice the source image
+    /// into the 9 regions (4 corners, 4 edges, optional center) and place each scaled into its destination
+    /// region of the border area (CSS B&amp;B L3 §6). Corners scale source→dest; edges + center STRETCH this
+    /// first cut (non-stretch <c>border-image-repeat</c> + <c>border-image-width</c>/<c>-outset</c> are
+    /// approximated, diagnosed once). The border widths come from the element's used border widths; an
+    /// all-zero border area paints nothing.</summary>
+    private static void PaintBorderImage(
+        PdfPage page, PdfDocument document, ImageResourceCache.Entry entry, CssBorderImage spec,
+        ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx,
+        IDiagnosticsSink? diagnostics, ref bool borderImageReported)
+    {
+        var bt = UsedBorderEdgeWidthPx(style, PropertyId.BorderTopStyle, PropertyId.BorderTopWidth);
+        var br = UsedBorderEdgeWidthPx(style, PropertyId.BorderRightStyle, PropertyId.BorderRightWidth);
+        var bb = UsedBorderEdgeWidthPx(style, PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth);
+        var bl = UsedBorderEdgeWidthPx(style, PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth);
+        if (!(bt > 0 || br > 0 || bb > 0 || bl > 0)) return; // no border area to fill
+
+        // Slice offsets → image fractions (negative sentinel = an image-pixel offset, resolved here).
+        var sl = SliceFrac(spec.SliceLeftFrac, entry.WidthPx);
+        var sr = SliceFrac(spec.SliceRightFrac, entry.WidthPx);
+        var st = SliceFrac(spec.SliceTopFrac, entry.HeightPx);
+        var sb = SliceFrac(spec.SliceBottomFrac, entry.HeightPx);
+
+        if ((spec.RepeatX != BorderImageRepeat.Stretch || spec.RepeatY != BorderImageRepeat.Stretch)
+            && !borderImageReported)
+        {
+            diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssBorderImageUnsupported001,
+                "A non-stretch border-image-repeat (repeat / round / space) was painted STRETCHED — edge "
+                + "tiling is a tracked follow-up; the sliced image still fills the border.",
+                DiagnosticSeverity.Info));
+            borderImageReported = true;
+        }
+
+        var imageRef = ImageResourceCache.GetOrRegister(document, entry);
+        var innerW = widthPx - bl - br;
+        var innerH = heightPx - bt - bb;
+        var ix0 = sl; var ix1 = 1 - sr;   // inner source x band (between the left + right slices)
+        var iy0 = st; var iy1 = 1 - sb;   // inner source y band (between the top + bottom slices)
+
+        void Region(double dxPx, double dyPx, double dwPx, double dhPx,
+            double sx0, double sy0, double sx1, double sy1)
+        {
+            if (!(dwPx > 0) || !(dhPx > 0) || !(sx1 > sx0) || !(sy1 > sy0)) return;
+            ToPdfRect(dxPx, dyPx, dwPx, dhPx, pageHeightPt, out var x, out var y, out var w, out var h);
+            page.PlaceImageSlice(imageRef, x, y, w, h, sx0, sy0, sx1, sy1);
+        }
+
+        var rightDx = leftPx + widthPx - br;
+        var bottomDy = topPx + heightPx - bb;
+        // Corners (source corner → dest corner, scaled).
+        Region(leftPx, topPx, bl, bt, 0, 0, sl, st);                 // top-left
+        Region(rightDx, topPx, br, bt, 1 - sr, 0, 1, st);           // top-right
+        Region(leftPx, bottomDy, bl, bb, 0, 1 - sb, sl, 1);         // bottom-left
+        Region(rightDx, bottomDy, br, bb, 1 - sr, 1 - sb, 1, 1);    // bottom-right
+        // Edges (stretch).
+        Region(leftPx + bl, topPx, innerW, bt, ix0, 0, ix1, st);            // top
+        Region(leftPx + bl, bottomDy, innerW, bb, ix0, 1 - sb, ix1, 1);    // bottom
+        Region(leftPx, topPx + bt, bl, innerH, 0, iy0, sl, iy1);            // left
+        Region(rightDx, topPx + bt, br, innerH, 1 - sr, iy0, 1, iy1);      // right
+        // Center (only with the `fill` keyword).
+        if (spec.Fill)
+            Region(leftPx + bl, topPx + bt, innerW, innerH, ix0, iy0, ix1, iy1);
+    }
+
+    /// <summary>Resolve a border-image-slice offset (CssBorderImage's encoding) to an image fraction in
+    /// [0, 1]: a non-negative value is already a fraction (a <c>%</c> slice); a negative sentinel
+    /// <c>-(px + 1)</c> is an image-pixel slice resolved against <paramref name="imageDimPx"/>.</summary>
+    private static double SliceFrac(double encoded, double imageDimPx)
+    {
+        var frac = encoded >= 0 ? encoded : (imageDimPx > 0 ? (-encoded - 1.0) / imageDimPx : 0);
+        return Math.Clamp(frac, 0, 1);
     }
 
     /// <summary>box-decoration-break: slice — push a per-slice rectangular clip (the fragment's own border

@@ -47,4 +47,30 @@ public sealed class BorderStylePaintTests
         Assert.DoesNotContain(" S Q", text);        // no stroke
         Assert.DoesNotContain("] 0 d", text);       // no dash
     }
+
+    [Fact]
+    public void Double_border_paints_two_bands_in_the_base_color()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("double")));
+        Assert.Contains("0.8 0.2 0.4 rg", text);   // the base color (the two thirds)
+        // NOT a 3D-shaded fill (no dark / light shade).
+        Assert.DoesNotContain("0.4 0.1 0.2 rg", text);
+    }
+
+    [Fact]
+    public void Inset_border_uses_a_dark_and_a_light_3d_shade()
+    {
+        // #cc3366 → (0.8, 0.2, 0.4); dark = ×0.5 = (0.4, 0.1, 0.2); light = (0.9, 0.6, 0.7).
+        var text = Latin1(HtmlPdf.Convert(Html("inset")));
+        Assert.Contains("0.4 0.1 0.2 rg", text);   // dark (top / left)
+        Assert.Contains("0.9 0.6 0.7 rg", text);   // light (bottom / right)
+    }
+
+    [Fact]
+    public void Groove_border_splits_each_edge_into_two_shaded_halves()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("groove")));
+        Assert.Contains("0.4 0.1 0.2 rg", text);   // dark half
+        Assert.Contains("0.9 0.6 0.7 rg", text);   // light half
+    }
 }

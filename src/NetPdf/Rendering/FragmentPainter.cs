@@ -2198,19 +2198,11 @@ internal static class FragmentPainter
         var alpha = Alpha(argb);
         if (alpha == 0) return;
 
-        // dashed / dotted (Phase 4 PR 3) are now STROKED faithfully on the square per-edge path;
-        // only the remaining 3D / double styles are still approximated as a solid fill here.
-        var rendered = styleKeyword is BorderStyleSolid or BorderStyleDashed or BorderStyleDotted;
-        if (!rendered && !styleApproximationReported)
-        {
-            diagnostics?.Emit(new Diagnostic(
-                DiagnosticCodes.PaintBorderStyleApproximated001,
-                "A non-solid border-style (double / groove / ridge / inset / outset) was painted as a " +
-                "solid line. Styled border rendering is a tracked follow-up " +
-                "(deferrals.md#layout-to-pdf-pipeline).",
-                DiagnosticSeverity.Info));
-            styleApproximationReported = true;
-        }
+        // Phase 4 PR 3 — every border-style is now rendered on the square per-edge path (dashed /
+        // dotted strokes; double + the 3D groove/ridge/inset/outset bands), so no approximation
+        // diagnostic fires here (the uniform-ROUNDED ring path still approximates non-solid — a
+        // documented residual). The `styleApproximationReported` flag is shared with that path + outlines.
+        _ = styleApproximationReported;
 
         // Edge sub-rect within the border box (CSS px, page-top-relative). Edges span
         // the full box extent on their long axis; corners overlap, which is exact for
@@ -2237,19 +2229,90 @@ internal static class FragmentPainter
         }
 
         ColorChannels(argb, out var r, out var g, out var b);
-        if (styleKeyword is BorderStyleDashed or BorderStyleDotted)
+        var a = alpha / 255.0;
+        switch (styleKeyword)
         {
-            // Stroke the edge CENTERLINE with line-width = the edge width and a dash pattern, so the
-            // band is dashed / dotted (CSS B&B §4.3). Corners overlap (the full-extent centerline) as
-            // the solid fill does. Rounded dashed borders stay approximated (the uniform-ring path).
-            StrokeDashedEdge(page, edge, edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx,
-                edgeWidthPx, pageHeightPt, r, g, b, alpha / 255.0, dotted: styleKeyword == BorderStyleDotted);
-            return;
+            case BorderStyleDashed:
+            case BorderStyleDotted:
+                // Stroke the edge CENTERLINE with line-width = the edge width and a dash pattern.
+                StrokeDashedEdge(page, edge, edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx,
+                    edgeWidthPx, pageHeightPt, r, g, b, a, dotted: styleKeyword == BorderStyleDotted);
+                return;
+            case BorderStyleDouble:
+            case BorderStyleGroove:
+            case BorderStyleRidge:
+            case BorderStyleInset:
+            case BorderStyleOutset:
+                PaintStyledBorderEdge(page, edge, edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx,
+                    edgeWidthPx, pageHeightPt, styleKeyword, r, g, b, a);
+                return;
+            default: // solid
+                ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
+                    out var x, out var y, out var w, out var h);
+                // A partial border-color alpha is composited via the page's constant-alpha (/ca).
+                page.FillRectangle(x, y, w, h, r, g, b, a);
+                return;
         }
-        ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
-            out var x, out var y, out var w, out var h);
-        // A partial border-color alpha is composited via the page's ExtGState constant-alpha (/ca).
-        page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+    }
+
+    /// <summary>Phase 4 borders (PR 3) — paint a <c>double</c> / 3D (<c>groove</c>/<c>ridge</c>/
+    /// <c>inset</c>/<c>outset</c>) border edge (CSS B&amp;B §4.3) on the square per-edge path.
+    /// <c>double</c> = two solid bands (outer + inner thirds, the middle third a gap). The 3D styles
+    /// use a DARK (×0.5) and LIGHT (toward white) shade of the edge color: <c>inset</c> = top/left
+    /// dark, bottom/right light (sunken); <c>outset</c> = the inverse (raised); <c>groove</c> = outer
+    /// half inset-shaded + inner half outset-shaded (carved); <c>ridge</c> = the inverse.</summary>
+    private static void PaintStyledBorderEdge(
+        PdfPage page, BorderEdge edge, double edgeLeftPx, double edgeTopPx,
+        double edgeBoxWidthPx, double edgeBoxHeightPx, double edgeWidthPx, double pageHeightPt,
+        int styleKeyword, double r, double g, double b, double alpha)
+    {
+        // Fill a sub-band from fromFrac → toFrac of the edge thickness (0 = OUTER box edge, 1 = inner).
+        void Band(double fromFrac, double toFrac, double br, double bg, double bb)
+        {
+            double sl, st, sw, sh;
+            switch (edge)
+            {
+                case BorderEdge.Top:
+                    sl = edgeLeftPx; sw = edgeBoxWidthPx;
+                    st = edgeTopPx + fromFrac * edgeWidthPx; sh = (toFrac - fromFrac) * edgeWidthPx; break;
+                case BorderEdge.Bottom:
+                    sl = edgeLeftPx; sw = edgeBoxWidthPx;
+                    st = edgeTopPx + (1 - toFrac) * edgeWidthPx; sh = (toFrac - fromFrac) * edgeWidthPx; break;
+                case BorderEdge.Left:
+                    st = edgeTopPx; sh = edgeBoxHeightPx;
+                    sl = edgeLeftPx + fromFrac * edgeWidthPx; sw = (toFrac - fromFrac) * edgeWidthPx; break;
+                default: // Right
+                    st = edgeTopPx; sh = edgeBoxHeightPx;
+                    sl = edgeLeftPx + (1 - toFrac) * edgeWidthPx; sw = (toFrac - fromFrac) * edgeWidthPx; break;
+            }
+            ToPdfRect(sl, st, sw, sh, pageHeightPt, out var x, out var y, out var w, out var h);
+            page.FillRectangle(x, y, w, h, br, bg, bb, alpha);
+        }
+
+        double dr = r * 0.5, dg = g * 0.5, db = b * 0.5;             // dark shade
+        double lr = 0.5 + 0.5 * r, lg = 0.5 + 0.5 * g, lb = 0.5 + 0.5 * b; // light shade
+        var topLeft = edge is BorderEdge.Top or BorderEdge.Left;
+        switch (styleKeyword)
+        {
+            case BorderStyleDouble:
+                Band(0, 1.0 / 3.0, r, g, b);
+                Band(2.0 / 3.0, 1.0, r, g, b);
+                break;
+            case BorderStyleInset:
+                if (topLeft) Band(0, 1, dr, dg, db); else Band(0, 1, lr, lg, lb);
+                break;
+            case BorderStyleOutset:
+                if (topLeft) Band(0, 1, lr, lg, lb); else Band(0, 1, dr, dg, db);
+                break;
+            case BorderStyleGroove:
+                if (topLeft) { Band(0, 0.5, dr, dg, db); Band(0.5, 1, lr, lg, lb); }
+                else { Band(0, 0.5, lr, lg, lb); Band(0.5, 1, dr, dg, db); }
+                break;
+            case BorderStyleRidge:
+                if (topLeft) { Band(0, 0.5, lr, lg, lb); Band(0.5, 1, dr, dg, db); }
+                else { Band(0, 0.5, dr, dg, db); Band(0.5, 1, lr, lg, lb); }
+                break;
+        }
     }
 
     /// <summary>Phase 4 borders (PR 3) — stroke a dashed / dotted border edge: a centerline along the

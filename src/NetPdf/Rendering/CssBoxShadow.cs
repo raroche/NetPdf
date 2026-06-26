@@ -9,8 +9,8 @@ namespace NetPdf.Rendering;
 /// <summary>Phase 4 shadows — one parsed <c>box-shadow</c> layer (CSS Backgrounds &amp; Borders 3
 /// §7.2): <see cref="Inset"/> + the offset / blur / spread in CSS px + the raw shadow color
 /// (resolved by the painter via the shared color resolver; <see langword="null"/> = the initial
-/// <c>currentColor</c>). The first cut paints OUTSET layers; <see cref="Inset"/> ones are skipped
-/// with a diagnostic.</summary>
+/// <c>currentColor</c>). OUTSET layers paint under the background; INSET layers (PR 1 refinements)
+/// paint over it, clipped to the padding box — both sharp (native) and blurred (Skia raster).</summary>
 internal readonly record struct CssBoxShadow(
     bool Inset, double OffsetXPx, double OffsetYPx, double BlurPx, double SpreadPx, string? ColorRaw);
 
@@ -18,8 +18,9 @@ internal readonly record struct CssBoxShadow(
 /// of <c>[ inset? &amp;&amp; &lt;length&gt;{2,4} &amp;&amp; &lt;color&gt;? ]</c> layers. Offsets /
 /// blur / spread are resolved as <c>px</c> + the absolute units (<c>pt/pc/in/cm/mm/Q</c>);
 /// font-relative (<c>em</c>/<c>rem</c>) and percentage lengths are NOT resolved here (the whole
-/// value is rejected → the caller emits <c>CSS-BOXSHADOW-UNSUPPORTED-001</c>). Returns
-/// <see langword="null"/> for <c>none</c> / empty / any unparseable layer.</summary>
+/// value is rejected → the caller emits <c>CSS-BOXSHADOW-UNSUPPORTED-001</c>). The <c>inset</c>
+/// keyword is parsed onto <see cref="CssBoxShadow.Inset"/> (the painter renders both outset + inset).
+/// Returns <see langword="null"/> for <c>none</c> / empty / any unparseable layer.</summary>
 internal static class CssBoxShadow_Parser
 {
     public static IReadOnlyList<CssBoxShadow>? TryParse(string? raw)

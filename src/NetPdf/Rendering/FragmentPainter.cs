@@ -290,6 +290,17 @@ internal static class FragmentPainter
                         ref conicGradientRasterReported, ref conicGradientCapReported, axisTopPx, axisHeightPx);
                 }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
+
+                // box-shadow INSET (Phase 4 PR 1) paints OVER the background (CSS B&B §7.2 — inset
+                // shadows are drawn on top of the background, clipped to the padding box) but UNDER
+                // the border (which paints next, occluding the band under it).
+                if (imageCache is not null && document is not null
+                    && imageCache.BoxShadowBoxes.TryGetValue(fragment.Box, out var insetShadows))
+                {
+                    PaintInsetBoxShadows(page, document, insetShadows, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
+                        ref boxShadowRasterReported, ref boxShadowCapReported);
+                }
             }
 
             // Borders (foreground — always painted regardless of PrintBackgrounds). A sliced inline-only
@@ -1564,6 +1575,144 @@ internal static class FragmentPainter
     private static double MaxCorner(CornerRadii c) => Math.Max(
         Math.Max(Math.Max(c.TopLeftX, c.TopLeftY), Math.Max(c.TopRightX, c.TopRightY)),
         Math.Max(Math.Max(c.BottomRightX, c.BottomRightY), Math.Max(c.BottomLeftX, c.BottomLeftY)));
+
+    /// <summary>Phase 4 shadows (PR 1 refinements) — paint a box's INSET <c>box-shadow</c> layers
+    /// OVER the background, clipped to the PADDING box (CSS B&amp;B §7.2 — an inset shadow casts a
+    /// soft band inward from the inside edges; the lit HOLE is the padding box offset by (x, y) and
+    /// contracted by the spread). A sharp (blur ≈ 0) layer is a native even-odd RING (padding box
+    /// minus the hole); a blurred layer rasterizes the band via the Skia bridge (fill + a
+    /// <c>DstOut</c> blurred hole) and places it. Layers paint in REVERSE list order (first listed on
+    /// top). Outset layers are skipped here (the under-background pass painted them). The box's OWN
+    /// (fragment) geometry is used — a box-decoration-break: slice fragment paints relative to the
+    /// slice (a documented residual; the common single-page box is exact).</summary>
+    private static void PaintInsetBoxShadows(
+        PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
+        double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+    {
+        var (bt, br, bb, bl) = BackgroundAreaInset(style, "padding-box", defaultArea: 'p');
+        var padLeftPx = leftPx + bl;
+        var padTopPx = topPx + bt;
+        var padWidthPx = widthPx - bl - br;
+        var padHeightPx = heightPx - bt - bb;
+        if (padWidthPx <= 0 || padHeightPx <= 0) return;
+        var padRadii = InsetRadii(ReadCornerRadii(style, widthPx, heightPx), bt, br, bb, bl);
+
+        for (var i = shadows.Count - 1; i >= 0; i--)
+        {
+            var s = shadows[i];
+            if (!s.Inset) continue; // the outset pass handled non-inset layers
+
+            uint argb;
+            if (s.ColorRaw is null) argb = currentColorArgb;
+            else
+            {
+                var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                    s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+                if (!TryResolveColor(resolved.Slot, currentColorArgb, out argb)) continue;
+            }
+            var alpha = Alpha(argb) / 255.0;
+            if (alpha <= 0) continue;
+            ColorChannels(argb, out var r, out var g, out var b);
+
+            // The lit hole = the padding box offset by (x, y) and contracted by the spread.
+            var holeLeftPx = padLeftPx + s.OffsetXPx + s.SpreadPx;
+            var holeTopPx = padTopPx + s.OffsetYPx + s.SpreadPx;
+            var holeWidthPx = padWidthPx - 2 * s.SpreadPx;
+            var holeHeightPx = padHeightPx - 2 * s.SpreadPx;
+            var holeRadii = ExpandRadiiForSpread(padRadii, -s.SpreadPx);
+
+            ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt,
+                out var px, out var py, out var pw, out var ph);
+
+            if (s.BlurPx <= BoxShadowBlurEpsilonPx)
+            {
+                // Sharp inset → a native even-odd ring (padding box minus the hole), clipped to the
+                // padding box so the offset hole's overflow doesn't fill outside the box.
+                page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
+                if (holeWidthPx > 0 && holeHeightPx > 0)
+                {
+                    ToPdfRect(holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, pageHeightPt,
+                        out var hx, out var hy, out var hw, out var hh);
+                    page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii),
+                        hx, hy, hw, hh, ToPt(holeRadii), r, g, b, alpha);
+                }
+                else
+                {
+                    // The hole vanished (spread swallowed it) → the whole padding box is in shadow.
+                    page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), 0, 0, 0, 0, default, r, g, b, alpha);
+                }
+                page.RestoreGraphicsState();
+            }
+            else
+            {
+                PaintBlurredInsetShadow(page, document, padLeftPx, padTopPx, padWidthPx, padHeightPx, padRadii,
+                    holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, holeRadii, s.BlurPx, pageHeightPt,
+                    r, g, b, alpha, diagnostics, ref rasterReported, ref capReported);
+            }
+        }
+    }
+
+    /// <summary>Rasterize a blurred INSET shadow band through the Skia bridge and place it clipped to
+    /// the padding box. The bitmap IS the padding box (no blur-margin expansion — the band is
+    /// inside); an over-cap bitmap falls back to a sharp inset ring.</summary>
+    private static void PaintBlurredInsetShadow(
+        PdfPage page, PdfDocument document,
+        double padLeftPx, double padTopPx, double padWidthPx, double padHeightPx, CornerRadii padRadii,
+        double holeLeftPx, double holeTopPx, double holeWidthPx, double holeHeightPx, CornerRadii holeRadii,
+        double blurPx, double pageHeightPt, double r, double g, double b, double alpha,
+        IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+    {
+        var sigmaPx = blurPx / 2.0;
+        var deviceW = (int)Math.Ceiling(padWidthPx * BoxShadowRasterScale);
+        var deviceH = (int)Math.Ceiling(padHeightPx * BoxShadowRasterScale);
+        var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterizeInset(
+            deviceW, deviceH, (float)(MaxCorner(padRadii) * BoxShadowRasterScale),
+            holeLeft: (float)((holeLeftPx - padLeftPx) * BoxShadowRasterScale),
+            holeTop: (float)((holeTopPx - padTopPx) * BoxShadowRasterScale),
+            holeWidth: (float)(holeWidthPx * BoxShadowRasterScale),
+            holeHeight: (float)(holeHeightPx * BoxShadowRasterScale),
+            holeRadius: (float)(MaxCorner(holeRadii) * BoxShadowRasterScale),
+            blurSigma: (float)(sigmaPx * BoxShadowRasterScale), r, g, b, alpha);
+
+        ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt, out var px, out var py, out var pw, out var ph);
+        if (result is null)
+        {
+            // Over-cap → a sharp inset ring is better than nothing; SURFACE the approximation.
+            page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
+            if (holeWidthPx > 0 && holeHeightPx > 0)
+            {
+                ToPdfRect(holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, pageHeightPt, out var hx, out var hy, out var hw, out var hh);
+                page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), hx, hy, hw, hh, ToPt(holeRadii), r, g, b, alpha);
+            }
+            page.RestoreGraphicsState();
+            if (!capReported)
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.CssBoxShadowUnsupported001,
+                    "A blurred inset box-shadow was too large to rasterize (the band bitmap would exceed "
+                    + $"the {NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); it was painted SHARP.",
+                    DiagnosticSeverity.Warning));
+                capReported = true;
+            }
+            return;
+        }
+
+        var imageRef = document.RegisterImage(result);
+        page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
+        page.PlaceImage(imageRef, px, py, pw, ph);
+        page.RestoreGraphicsState();
+
+        if (!rasterReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.CssBoxShadowBlurRaster001,
+                "A blurred inset box-shadow was painted via the Skia raster fallback (PDF has no native "
+                + $"Gaussian blur); the band was rasterized at {BoxShadowRasterScale:0}× and placed as an image XObject.",
+                DiagnosticSeverity.Info));
+            rasterReported = true;
+        }
+    }
 
     /// <summary>Phase 4 gradients — paint a parsed <c>linear-gradient(...)</c> background layer
     /// as a PDF native axial shading (ISO 32000-2 §8.7.4.5.3) clipped to the box's (rounded)

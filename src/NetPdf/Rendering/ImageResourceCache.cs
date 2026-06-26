@@ -320,9 +320,9 @@ internal sealed class ImageResourceCache
                 }
             }
             // box-shadow (Phase 4 shadows) — the raw cascade winner, parsed into layers. Gated by
-            // PrintBackgrounds like the other decoration. A list whose every paintable layer is
-            // outset stores cleanly; an unparseable value or any INSET layer (outset-only first
-            // cut) surfaces CSS-BOXSHADOW-UNSUPPORTED-001 once per render.
+            // PrintBackgrounds like the other decoration. OUTSET + INSET layers (PR 1 refinements)
+            // both store + paint; an unparseable value (e.g. an em/rem/% offset the parser can't
+            // resolve) surfaces CSS-BOXSHADOW-UNSUPPORTED-001 once per render.
             if (collectBackgrounds)
             {
                 var shadowRaw = rules?.GetWinner("box-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
@@ -331,16 +331,9 @@ internal sealed class ImageResourceCache
                 {
                     var shadows = CssBoxShadow_Parser.TryParse(shadowRaw);
                     if (shadows is not null)
-                    {
                         boxShadowBoxes[box] = shadows;
-                        var hasInset = false;
-                        foreach (var s in shadows) if (s.Inset) { hasInset = true; break; }
-                        if (hasInset) ReportBoxShadowUnsupported(diagnostics, ref boxShadowUnsupportedReported);
-                    }
                     else
-                    {
                         ReportBoxShadowUnsupported(diagnostics, ref boxShadowUnsupportedReported);
-                    }
                 }
             }
             // <img src> on a replaced box (inline imgs are skipped by the inline pass today —

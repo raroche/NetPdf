@@ -127,12 +127,12 @@ internal static class DiagnosticCodes
 
     /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
-    /// approximated: an <c>inset</c> shadow (the first cut paints OUTSET shadows only); a value
-    /// whose offsets / blur / spread use a unit the parser can't resolve (e.g. <c>em</c>/<c>rem</c>
-    /// — absolute units + <c>px</c> are supported); or a BLURRED shadow too large to rasterize (the
-    /// bitmap would exceed the 4096 px cap, so it was painted SHARP instead of blurred). Any other
-    /// shadow layers in the list still paint. Surfaced once per render.
-    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
+    /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole
+    /// value); or a BLURRED shadow (outset or inset) too large to rasterize (the bitmap would exceed
+    /// the 4096 px cap, so it was painted SHARP instead of blurred). Both outset AND inset shadows
+    /// are otherwise painted (PR 1 refinements). Any other shadow layers in the list still paint.
+    /// Surfaced once per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssBoxShadowUnsupported001 = "CSS-BOXSHADOW-UNSUPPORTED-001";
 

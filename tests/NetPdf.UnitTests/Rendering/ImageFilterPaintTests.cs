@@ -88,4 +88,34 @@ public sealed class ImageFilterPaintTests
         Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
     }
+
+    [Fact]
+    public void All_color_filters_chained_on_an_img_render()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html(
+            "grayscale(20%) sepia(30%) saturate(1.4) hue-rotate(45deg) brightness(1.1) contrast(0.9) invert(10%) opacity(0.8) blur(1px)"));
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Filter_on_a_div_is_deferred_with_a_diagnostic_and_paints_unfiltered()
+    {
+        // A general-element filter needs a subtree renderer NetPdf lacks → element paints UNFILTERED
+        // (the red background still paints as red, not grayscale) + CSS-FILTER-ELEMENT-UNSUPPORTED-001.
+        var html = "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:50px;height:50px;background:red;filter:grayscale(100%)\"></div>" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterElementUnsupported001);
+        Assert.Contains("1 0 0 rg", Encoding.Latin1.GetString(result.Pdf)); // bg painted unfiltered (red)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+    }
+
+    [Fact]
+    public void Filter_on_an_img_does_not_emit_the_element_unsupported_diagnostic()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("grayscale(100%)"));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterElementUnsupported001);
+    }
 }

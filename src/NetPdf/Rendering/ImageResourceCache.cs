@@ -189,6 +189,7 @@ internal sealed class ImageResourceCache
         var textShadowUnsupportedReported = false;
         var transform3DReported = false;
         var transformUnsupportedReported = false;
+        var filterElementReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
@@ -196,7 +197,8 @@ internal sealed class ImageResourceCache
             cache.TransformBoxes,
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-            ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
+            ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
+            ref filterElementReported);
 
         foreach (var (box, rawUrl, isBackground) in references)
         {
@@ -299,7 +301,8 @@ internal sealed class ImageResourceCache
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
         ref bool transform3DReported,
-        ref bool transformUnsupportedReported)
+        ref bool transformUnsupportedReported,
+        ref bool filterElementReported)
     {
         if (box.SourceElement is { } element)
         {
@@ -334,6 +337,22 @@ internal sealed class ImageResourceCache
                         + "(translate/scale/rotate/skew/matrix + axis variants); the element painted "
                         + "untransformed.");
                 }
+            }
+            // filter (Phase 4 PR 2) — a filter on a REPLACED <img> is applied to the image (the img
+            // path below). On a NON-replaced element (div / text box), filtering the rendered subtree
+            // needs a Skia subtree renderer NetPdf doesn't have yet, so the element paints UNFILTERED
+            // and CSS-FILTER-ELEMENT-UNSUPPORTED-001 surfaces once per render.
+            var elementFilterRaw = rules?.GetWinner("filter")?.ResolvedValue;
+            var isReplacedImg = box.Kind is BoxKind.BlockReplacedElement or BoxKind.InlineReplacedElement
+                && string.Equals(element.LocalName, "img", StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(elementFilterRaw)
+                && !elementFilterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !isReplacedImg)
+            {
+                Report(diagnostics, ref filterElementReported, DiagnosticCodes.CssFilterElementUnsupported001,
+                    "A CSS filter on a non-image element was ignored — filtering a general element's "
+                    + "rendered subtree needs a Skia subtree renderer NetPdf doesn't have yet; the "
+                    + "element painted unfiltered. Filters on <img> elements ARE applied.");
             }
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
@@ -431,7 +450,8 @@ internal sealed class ImageResourceCache
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, collectBackgrounds, diagnostics,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-                ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported);
+                ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
+                ref filterElementReported);
     }
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>

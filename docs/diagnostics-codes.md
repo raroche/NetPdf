@@ -47,7 +47,8 @@ Severity levels:
 | `CSS-TRANSFORM-3D-UNSUPPORTED-001` | Warning | A 3D transform was found; the matrix was projected to 2D. |
 | `CSS-TRANSFORM-UNSUPPORTED-001` | Warning | A `transform` value could not be parsed into the supported 2D function set (`translate`/`scale`/`rotate`/`skew`/`matrix` + axis variants) — an unknown function or an unresolvable unit; the element painted untransformed. Once per render. |
 | `CSS-ANIMATION-UNSUPPORTED-001` | Info | `@keyframes`/`animation`/`transition` were ignored. PDF is static. |
-| `CSS-FILTER-RASTER-FALLBACK-001` | Info | A subtree with `filter` was rasterized at `DevicePixelRatio * 96` DPI and embedded as PNG. |
+| `CSS-FILTER-RASTER-FALLBACK-001` | Info | A CSS `filter` on an `<img>` was applied via the Skia raster fallback (the decoded image runs through the filter chain — color matrices for grayscale/sepia/invert/brightness/contrast/saturate/hue-rotate/opacity, plus blur / drop-shadow — and re-embeds as a raster XObject). Once per render. |
+| `CSS-FILTER-ELEMENT-UNSUPPORTED-001` | Warning | A CSS `filter` on a NON-replaced element (a `<div>` / text box, not an `<img>`) was ignored — filtering a general element's rendered subtree needs a Skia subtree renderer NetPdf doesn't have yet, so the element painted UNFILTERED. Filters on images ARE applied. Once per render. |
 | `CSS-CLIP-PATH-RASTER-FALLBACK-001` | Info | `clip-path: path()` triggered raster fallback. |
 | `CSS-MASK-RASTER-FALLBACK-001` | Info | `mask`/`mask-image` triggered raster fallback. |
 | `CSS-CONIC-GRADIENT-RASTER-001` | Info | A `conic-gradient` / `repeating-conic-gradient` was painted via the Skia sweep-gradient raster fallback (PDF has no native conic shading); placed as an image XObject with an alpha `/SMask`. Once per render. |

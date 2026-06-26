@@ -292,7 +292,12 @@ internal sealed class PdfPage
     /// empty) for a non-positive rectangle.</summary>
     public string PaintShadingInRect(
         PdfIndirectRef shadingRef, double x, double y, double width, double height,
-        CornerRadii? radii = null, double alpha = 1.0)
+        CornerRadii? radii = null, double alpha = 1.0,
+        // Phase 4 gradients (PR 1) — an optional CTM (a b c d e f) concatenated AFTER the clip
+        // (`W n`) and BEFORE the `sh`, so the clip stays in PAGE space while the shading's /Coords
+        // are interpreted in this transformed space. Used to render a radial shading registered as a
+        // unit CIRCLE as an ELLIPSE (a scale about the center). Null → no transform (byte-identical).
+        (double A, double B, double C, double D, double E, double F)? shadingCtm = null)
     {
         ArgumentNullException.ThrowIfNull(shadingRef);
         ThrowIfFinalized();
@@ -301,6 +306,11 @@ internal sealed class PdfPage
         {
             throw new ArgumentException(
                 $"PaintShadingInRect args must be finite; got x={x}, y={y}, w={width}, h={height}, alpha={alpha}.");
+        }
+        if (shadingCtm is { } cm && !(double.IsFinite(cm.A) && double.IsFinite(cm.B) && double.IsFinite(cm.C)
+            && double.IsFinite(cm.D) && double.IsFinite(cm.E) && double.IsFinite(cm.F)))
+        {
+            throw new ArgumentException($"PaintShadingInRect CTM must be finite; got [{cm.A} {cm.B} {cm.C} {cm.D} {cm.E} {cm.F}].");
         }
         if (width <= 0 || height <= 0) return string.Empty;
 
@@ -335,7 +345,17 @@ internal sealed class PdfPage
             AppendNumber(sb, width); sb.Append(' ');
             AppendNumber(sb, height); sb.Append(" re ");
         }
-        sb.Append("W n /").Append(resourceName).Append(" sh Q\n");
+        sb.Append("W n ");
+        if (shadingCtm is { } m)
+        {
+            AppendNumber(sb, m.A); sb.Append(' ');
+            AppendNumber(sb, m.B); sb.Append(' ');
+            AppendNumber(sb, m.C); sb.Append(' ');
+            AppendNumber(sb, m.D); sb.Append(' ');
+            AppendNumber(sb, m.E); sb.Append(' ');
+            AppendNumber(sb, m.F); sb.Append(" cm ");
+        }
+        sb.Append('/').Append(resourceName).Append(" sh Q\n");
         AppendContent(sb.ToString());
         return resourceName;
     }

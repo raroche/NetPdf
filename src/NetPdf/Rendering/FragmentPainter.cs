@@ -1723,10 +1723,11 @@ internal static class FragmentPainter
 
     /// <summary>Phase 4 gradients — paint a parsed <c>radial-gradient(...)</c> as a PDF native
     /// radial shading (ISO 32000-2 §8.7.4.5.4) clipped to the box. The center comes from the
-    /// gradient's box-relative fractions; the radius from the ending-shape size keyword
-    /// (closest/farthest side/corner) measured against the box. FIRST CUT: the ending shape is
-    /// painted as a CIRCLE (an <c>ellipse</c> is approximated by the same scalar extent — exact
-    /// for a centered gradient on a square box; a documented residual otherwise).</summary>
+    /// gradient's box-relative fractions; the per-axis ending radii from the shape + extent keyword
+    /// (closest/farthest side/corner) measured against the box. An ELLIPSE (the default) is rendered
+    /// by registering a CIRCLE of the larger radius and squashing the other axis with a CTM scale
+    /// about the center (PR 1 refinements); a circle (or a centered ellipse on a square box) emits no
+    /// CTM — byte-identical with the pre-ellipse output.</summary>
     private static void PaintRadialGradient(
         PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
@@ -1750,25 +1751,58 @@ internal static class FragmentPainter
         var maxX = Math.Max(radial.CenterXFraction, 1.0 - radial.CenterXFraction) * aw;
         var minY = Math.Min(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
         var maxY = Math.Max(radial.CenterYFraction, 1.0 - radial.CenterYFraction) * ah;
-        var radius = radial.Extent switch
+        // The ending-shape radii (CSS Images L3 §3.2). A CIRCLE uses a single scalar extent; an
+        // ELLIPSE (the default) is per-axis. For a corner ellipse the closest/farthest-side ellipse's
+        // aspect ratio is scaled to pass through the corner — and since the corner's component
+        // distances equal those sides' distances here (axis-aligned box, center inside), that scale
+        // is exactly √2 on each axis (rx = sideX·√2, ry = sideY·√2).
+        double rx, ry;
+        if (radial.IsCircle)
         {
-            RadialExtent.ClosestSide => Math.Min(minX, minY),
-            RadialExtent.FarthestSide => Math.Max(maxX, maxY),
-            RadialExtent.ClosestCorner => Math.Sqrt(minX * minX + minY * minY),
-            _ => Math.Sqrt(maxX * maxX + maxY * maxY), // FarthestCorner (default)
-        };
-        if (!(radius > 0)) return;
+            var radius = radial.Extent switch
+            {
+                RadialExtent.ClosestSide => Math.Min(minX, minY),
+                RadialExtent.FarthestSide => Math.Max(maxX, maxY),
+                RadialExtent.ClosestCorner => Math.Sqrt(minX * minX + minY * minY),
+                _ => Math.Sqrt(maxX * maxX + maxY * maxY), // FarthestCorner (default)
+            };
+            rx = ry = radius;
+        }
+        else
+        {
+            const double sqrt2 = 1.4142135623730951;
+            (rx, ry) = radial.Extent switch
+            {
+                RadialExtent.ClosestSide => (minX, minY),
+                RadialExtent.FarthestSide => (maxX, maxY),
+                RadialExtent.ClosestCorner => (minX * sqrt2, minY * sqrt2),
+                _ => (maxX * sqrt2, maxY * sqrt2), // FarthestCorner (default)
+            };
+        }
+        // Register the shading as a CIRCLE of the larger radius, then squash the other axis with a
+        // CTM (scale about the center) so a non-circular ellipse renders correctly. rx == ry (a
+        // circle, or a centered ellipse on a square box) needs no CTM → byte-identical with the
+        // pre-ellipse circular output.
+        var baseRadius = Math.Max(rx, ry);
+        if (!(baseRadius > 0)) return;
 
         // A length-positioned stop (PR 1 refinements) resolves against the ending radius in CSS px;
         // the extent formula is homogeneous degree 1, so radiusCssPx = radiusPt / PointsPerPixel.
         var stops = ResolveGradientStops(
-            radial.Stops, currentColorArgb, radius / PdfUnits.PointsPerPixel, radial.Repeating);
+            radial.Stops, currentColorArgb, baseRadius / PdfUnits.PointsPerPixel, radial.Repeating);
         if (stops.Count < 2) return;
 
-        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, radius, stops);
+        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
+        (double, double, double, double, double, double)? shadingCtm = null;
+        if (rx != ry)
+        {
+            var sx = rx / baseRadius;
+            var sy = ry / baseRadius;
+            shadingCtm = (sx, 0.0, 0.0, sy, pcx * (1 - sx), pcy * (1 - sy));
+        }
         page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
-            radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
+            radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null, shadingCtm: shadingCtm);
     }
 
     private const double ConicGradientRasterScale = 2.0; // device px per CSS px for the conic raster

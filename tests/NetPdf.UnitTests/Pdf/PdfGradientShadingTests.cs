@@ -122,4 +122,34 @@ public sealed class PdfGradientShadingTests
         Assert.Equal(a.ObjectNumber, b.ObjectNumber);
         Assert.NotEqual(a.ObjectNumber, c.ObjectNumber);
     }
+
+    [Fact]
+    public void Shading_ctm_is_concatenated_between_the_clip_and_the_sh()
+    {
+        // Phase 4 PR 1 — the optional shadingCtm (used to render a radial ellipse) emits a `cm`
+        // AFTER the clip (`W n`) and BEFORE the `sh`, so the clip stays in page space.
+        var doc = new PdfDocument();
+        var stops = new List<PdfGradientStop> { Stop(0, 1, 0, 0), Stop(1, 0, 0, 1) };
+        var sh = doc.RegisterRadialShading(50, 50, 0, 50, stops);
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.PaintShadingInRect(sh, 0, 0, 100, 100, radii: null, alpha: 1.0,
+            shadingCtm: (2.0, 0.0, 0.0, 1.0, -50.0, 0.0));
+        var pdf = Latin1(doc.Save());
+
+        Assert.Matches(@"W n\s+2 0 0 1 -50 0 cm\s+/Sh1 sh", pdf);
+    }
+
+    [Fact]
+    public void No_shading_ctm_emits_no_cm_before_the_sh()
+    {
+        var doc = new PdfDocument();
+        var stops = new List<PdfGradientStop> { Stop(0, 1, 0, 0), Stop(1, 0, 0, 1) };
+        var sh = doc.RegisterRadialShading(50, 50, 0, 50, stops);
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.PaintShadingInRect(sh, 0, 0, 100, 100);
+        var pdf = Latin1(doc.Save());
+
+        Assert.Matches(@"W n /Sh1 sh", pdf);   // no cm — byte-identical with the pre-ellipse path
+        Assert.DoesNotContain("cm /Sh1 sh", pdf);
+    }
 }

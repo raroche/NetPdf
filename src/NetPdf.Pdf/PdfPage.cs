@@ -743,6 +743,26 @@ internal sealed class PdfPage
         AppendContent("Q\n");
     }
 
+    /// <summary>Phase 4 mix-blend-mode (PR 4) — push the graphics state and select a separable/non-separable
+    /// PDF blend mode (<c>q /GSbm&lt;Mode&gt; gs</c>, ISO 32000-2 §11.3.5): subsequent painting composites
+    /// with the backdrop using <paramref name="blendMode"/> (a PDF <c>/BM</c> name, e.g. <c>Multiply</c> /
+    /// <c>Screen</c> / <c>Luminosity</c>). The ExtGState is deduped by mode name. Callers MUST balance with
+    /// <see cref="RestoreGraphicsState"/>. A faithful result needs an isolated transparency group; this first
+    /// cut sets <c>/BM</c> directly on the element's painting (good for the common solid-fill blend).</summary>
+    public void BeginBlendMode(string blendMode)
+    {
+        ArgumentNullException.ThrowIfNull(blendMode);
+        ThrowIfFinalized();
+        var name = new PdfName("GSbm" + blendMode);
+        if (!_extGStateResource.ContainsKey(name))
+        {
+            _extGStateResource.Set(name, new PdfDictionary()
+                .Set(PdfNames.Type, PdfNames.ExtGState)
+                .Set(PdfNames.BM, new PdfName(blendMode)));
+        }
+        AppendContent("q /" + name.Value + " gs\n");
+    }
+
     /// <summary>Phase 4 transforms — push the graphics state and concatenate a 2D affine CTM
     /// (<c>q a b c d e f cm</c>, ISO 32000-2 §8.3.4): a point (x, y) maps to
     /// (a·x + c·y + e, b·x + d·y + f) in PDF user space. Callers MUST balance with

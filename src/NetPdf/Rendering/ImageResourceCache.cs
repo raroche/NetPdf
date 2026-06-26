@@ -136,6 +136,11 @@ internal sealed class ImageResourceCache
     /// regions; only boxes whose source decoded successfully appear.</summary>
     public Dictionary<Box, (CssBorderImage Spec, string UriKey)> BorderImageBoxes { get; } = new();
 
+    /// <summary>Phase 4 mix-blend-mode (PR 4) — element-backed box → its PDF <c>/BM</c> blend-mode name
+    /// (e.g. <c>Multiply</c>). The painter wraps the box's decoration in a blend-mode graphics state; only
+    /// boxes with a non-<c>normal</c>, recognized mode appear.</summary>
+    public Dictionary<Box, string> BlendModeBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -231,7 +236,7 @@ internal sealed class ImageResourceCache
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes, cache.ClipPathBoxes,
             collectBackgrounds: options.PrintBackgrounds,
-            diagnostics, borderImages,
+            diagnostics, borderImages, cache.BlendModeBoxes,
             ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported);
@@ -371,6 +376,7 @@ internal sealed class ImageResourceCache
         bool collectBackgrounds,
         IDiagnosticsSink diagnostics,
         List<(Box Box, CssBorderImage Spec)> borderImages,
+        Dictionary<Box, string> blendModeBoxes,
         ref bool unsupportedBackgroundReported,
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
@@ -473,6 +479,11 @@ internal sealed class ImageResourceCache
                     + "subtree needs a Skia subtree renderer NetPdf doesn't have yet; the element painted "
                     + "unmasked. Masks on <img> elements ARE applied.");
             }
+            // mix-blend-mode (Phase 4 PR 4) — the box's OWN declared value (doesn't inherit) → a PDF /BM
+            // blend-mode name. The painter wraps the box's decoration in that blend mode. `normal` (the
+            // initial) + an unrecognized keyword → no entry (composite normally).
+            if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
+                blendModeBoxes[box] = bmName;
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
             // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
             // sharp offset (CSS-TEXTSHADOW-UNSUPPORTED-001); an unparseable value surfaces the same
@@ -568,7 +579,7 @@ internal sealed class ImageResourceCache
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
-                borderImages,
+                borderImages, blendModeBoxes,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported);
@@ -588,6 +599,29 @@ internal sealed class ImageResourceCache
         var inner = value.Substring(open, close - open).Trim().Trim('"', '\'');
         return inner.Length == 0 ? null : inner;
     }
+
+    /// <summary>Map a CSS <c>mix-blend-mode</c> keyword (CSS Compositing &amp; Blending L1) to its PDF
+    /// <c>/BM</c> blend-mode name (ISO 32000-2 §11.3.5). <c>normal</c> (the initial), <c>plus-lighter</c>
+    /// (no PDF equivalent), and any unrecognized value → <see langword="null"/> (composite normally).</summary>
+    private static string? PdfBlendModeName(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "multiply" => "Multiply",
+        "screen" => "Screen",
+        "overlay" => "Overlay",
+        "darken" => "Darken",
+        "lighten" => "Lighten",
+        "color-dodge" => "ColorDodge",
+        "color-burn" => "ColorBurn",
+        "hard-light" => "HardLight",
+        "soft-light" => "SoftLight",
+        "difference" => "Difference",
+        "exclusion" => "Exclusion",
+        "hue" => "Hue",
+        "saturation" => "Saturation",
+        "color" => "Color",
+        "luminosity" => "Luminosity",
+        _ => null,
+    };
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>
     private static void Report(IDiagnosticsSink diagnostics, ref bool reported, string code, string message)

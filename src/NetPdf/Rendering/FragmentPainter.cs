@@ -159,6 +159,14 @@ internal static class FragmentPainter
             // EFFECTIVE cm (its own transform composed with every ancestor's), so a child of a
             // transformed element transforms too. The text + image passes use the SAME map.
             // Non-transformed fragments emit no wrap (byte-identical).
+            // mix-blend-mode (Phase 4 PR 4) — wrap this box's decoration in a PDF blend-mode graphics
+            // state, OUTERMOST (so it composites the whole element against the backdrop). Text + image
+            // blend is a documented residual (this cut blends the decoration). Non-blended → no wrap.
+            string? blendModeName = null;
+            var blended = imageCache is not null
+                && imageCache.BlendModeBoxes.TryGetValue(fragment.Box, out blendModeName);
+            if (blended) page.BeginBlendMode(blendModeName!);
+
             (double A, double B, double C, double D, double E, double F) effCm = default;
             var transformed = effectiveTransforms is not null
                 && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
@@ -176,6 +184,7 @@ internal static class FragmentPainter
                 PaintColumnRule(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                     currentColorArgb, diagnostics, ref styleApproximationReported);
                 if (transformed) page.RestoreGraphicsState();
+                if (blended) page.RestoreGraphicsState();
                 continue;
             }
 
@@ -363,6 +372,7 @@ internal static class FragmentPainter
 
             if (clipPathClipped) page.RestoreGraphicsState(); // balance BeginClipPath's q
             if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
+            if (blended) page.RestoreGraphicsState(); // balance BeginBlendMode's q
         }
     }
 

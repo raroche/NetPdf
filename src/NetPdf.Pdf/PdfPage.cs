@@ -773,6 +773,53 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Phase 4 borders (PR 3) — stroke a single line segment (<paramref name="x1"/>,
+    /// <paramref name="y1"/>)→(<paramref name="x2"/>, <paramref name="y2"/>) (PDF points, bottom-left
+    /// origin) with <paramref name="width"/> line width, an optional <paramref name="dash"/> pattern
+    /// (PDF user-space units) at <paramref name="dashPhase"/>, and a line cap (<paramref name="lineCap"/>:
+    /// 0 butt, 1 round, 2 square). Used for dashed / dotted border + outline edges. Emits
+    /// <c>q [/GSn gs] &lt;width&gt; w [&lt;cap&gt; J] [[&lt;dash&gt;] &lt;phase&gt; d] r g b RG x1 y1 m x2 y2 l S Q</c>.
+    /// A non-positive width no-ops; non-finite args throw (as the fills do). Partial alpha → the
+    /// per-page constant-alpha ExtGState (<c>/ca</c> — fill alpha applies to the stroke too here).</summary>
+    public void StrokeLine(
+        double x1, double y1, double x2, double y2, double width,
+        double r, double g, double b, double alpha = 1.0,
+        double[]? dash = null, double dashPhase = 0.0, int lineCap = 0)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x1) || !double.IsFinite(y1) || !double.IsFinite(x2) || !double.IsFinite(y2)
+            || !double.IsFinite(width) || !double.IsFinite(alpha) || !double.IsFinite(dashPhase))
+        {
+            throw new ArgumentException(
+                $"StrokeLine args must be finite; got ({x1},{y1})-({x2},{y2}) w={width} alpha={alpha} phase={dashPhase}.");
+        }
+        if (width <= 0) return;
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+
+        var sb = new StringBuilder(112);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        AppendNumber(sb, width); sb.Append(" w ");
+        if (lineCap is 1 or 2) { sb.Append(lineCap); sb.Append(" J "); }
+        if (dash is { Length: > 0 })
+        {
+            sb.Append('[');
+            for (var i = 0; i < dash.Length; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                AppendNumber(sb, Math.Max(0, dash[i]));
+            }
+            sb.Append("] "); AppendNumber(sb, dashPhase); sb.Append(" d ");
+        }
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" RG ");
+        AppendNumber(sb, x1); sb.Append(' '); AppendNumber(sb, y1); sb.Append(" m ");
+        AppendNumber(sb, x2); sb.Append(' '); AppendNumber(sb, y2); sb.Append(" l S Q\n");
+        AppendContent(sb.ToString());
+    }
+
     private static char HexNibble(int value) => "0123456789ABCDEF"[value & 0xF];
 
     private static void AppendNumber(StringBuilder sb, double value)

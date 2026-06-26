@@ -55,7 +55,14 @@ internal static class FragmentPainter
     // none, hidden, dotted, dashed, solid, double, groove, ridge, inset, outset.
     private const int BorderStyleNone = 0;
     private const int BorderStyleHidden = 1;
+    private const int BorderStyleDotted = 2;
+    private const int BorderStyleDashed = 3;
     private const int BorderStyleSolid = 4;
+    private const int BorderStyleDouble = 5;
+    private const int BorderStyleGroove = 6;
+    private const int BorderStyleRidge = 7;
+    private const int BorderStyleInset = 8;
+    private const int BorderStyleOutset = 9;
 
     // outline-style keyword ids (outline cycle; post-PR-#173 review P2): CSS UI 4 §5.2 admits the
     // border-style values EXCEPT `hidden`, PLUS `auto`. The KeywordResolver table is
@@ -2191,12 +2198,15 @@ internal static class FragmentPainter
         var alpha = Alpha(argb);
         if (alpha == 0) return;
 
-        if (styleKeyword != BorderStyleSolid && !styleApproximationReported)
+        // dashed / dotted (Phase 4 PR 3) are now STROKED faithfully on the square per-edge path;
+        // only the remaining 3D / double styles are still approximated as a solid fill here.
+        var rendered = styleKeyword is BorderStyleSolid or BorderStyleDashed or BorderStyleDotted;
+        if (!rendered && !styleApproximationReported)
         {
             diagnostics?.Emit(new Diagnostic(
                 DiagnosticCodes.PaintBorderStyleApproximated001,
-                "A non-solid border-style (dotted / dashed / double / groove / ridge / inset / outset) " +
-                "was painted as a solid line. Styled border rendering is a tracked follow-up " +
+                "A non-solid border-style (double / groove / ridge / inset / outset) was painted as a " +
+                "solid line. Styled border rendering is a tracked follow-up " +
                 "(deferrals.md#layout-to-pdf-pipeline).",
                 DiagnosticSeverity.Info));
             styleApproximationReported = true;
@@ -2227,10 +2237,49 @@ internal static class FragmentPainter
         }
 
         ColorChannels(argb, out var r, out var g, out var b);
+        if (styleKeyword is BorderStyleDashed or BorderStyleDotted)
+        {
+            // Stroke the edge CENTERLINE with line-width = the edge width and a dash pattern, so the
+            // band is dashed / dotted (CSS B&B §4.3). Corners overlap (the full-extent centerline) as
+            // the solid fill does. Rounded dashed borders stay approximated (the uniform-ring path).
+            StrokeDashedEdge(page, edge, edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx,
+                edgeWidthPx, pageHeightPt, r, g, b, alpha / 255.0, dotted: styleKeyword == BorderStyleDotted);
+            return;
+        }
         ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
             out var x, out var y, out var w, out var h);
         // A partial border-color alpha is composited via the page's ExtGState constant-alpha (/ca).
         page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
+    }
+
+    /// <summary>Phase 4 borders (PR 3) — stroke a dashed / dotted border edge: a centerline along the
+    /// edge's long axis, line-width = the edge width, with a dash pattern (dashed → <c>[3w 3w]</c>
+    /// butt caps; dotted → <c>[w w]</c> round caps; <c>w</c> = the edge width in pt). The exact dash
+    /// metrics are a browser-tunable approximation (the visual-regression harness refines them).</summary>
+    private static void StrokeDashedEdge(
+        PdfPage page, BorderEdge edge, double edgeLeftPx, double edgeTopPx,
+        double edgeBoxWidthPx, double edgeBoxHeightPx, double edgeWidthPx, double pageHeightPt,
+        double r, double g, double b, double alpha, bool dotted)
+    {
+        var wPt = PdfUnits.PxToPt(edgeWidthPx);
+        if (!(wPt > 0)) return;
+        double x1Px, y1Px, x2Px, y2Px;
+        if (edge is BorderEdge.Top or BorderEdge.Bottom)
+        {
+            var cy = edgeTopPx + edgeBoxHeightPx / 2.0; // edgeBoxHeightPx == the edge width
+            x1Px = edgeLeftPx; x2Px = edgeLeftPx + edgeBoxWidthPx; y1Px = y2Px = cy;
+        }
+        else
+        {
+            var cx = edgeLeftPx + edgeBoxWidthPx / 2.0;  // edgeBoxWidthPx == the edge width
+            x1Px = x2Px = cx; y1Px = edgeTopPx; y2Px = edgeTopPx + edgeBoxHeightPx;
+        }
+        var x1 = PdfUnits.PxToPt(x1Px);
+        var y1 = pageHeightPt - PdfUnits.PxToPt(y1Px);
+        var x2 = PdfUnits.PxToPt(x2Px);
+        var y2 = pageHeightPt - PdfUnits.PxToPt(y2Px);
+        var dash = dotted ? new[] { wPt, wPt } : new[] { 3 * wPt, 3 * wPt };
+        page.StrokeLine(x1, y1, x2, y2, wPt, r, g, b, alpha, dash, dashPhase: 0.0, lineCap: dotted ? 1 : 0);
     }
 
     /// <summary>multicol-balancing-pagination (column rules, CSS Multi-column L1 §5) — fill a

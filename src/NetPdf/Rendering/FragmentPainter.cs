@@ -1255,37 +1255,43 @@ internal static class FragmentPainter
         var br = UsedBorderEdgeWidthPx(style, PropertyId.BorderRightStyle, PropertyId.BorderRightWidth);
         var bb = UsedBorderEdgeWidthPx(style, PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth);
         var bl = UsedBorderEdgeWidthPx(style, PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth);
-        if (!(bt > 0 || br > 0 || bb > 0 || bl > 0)) return; // no border area to fill
 
-        // Slice offsets → image fractions (negative sentinel = an image-pixel offset, resolved here). The
-        // non-stretch-repeat / width / outset approximations are diagnosed at collection (PR-229 review [P3]).
+        // Slice offsets → image fractions (negative sentinel = an image-pixel offset, resolved here).
         var sl = SliceFrac(spec.SliceLeftFrac, entry.WidthPx);
         var sr = SliceFrac(spec.SliceRightFrac, entry.WidthPx);
         var st = SliceFrac(spec.SliceTopFrac, entry.HeightPx);
         var sb = SliceFrac(spec.SliceBottomFrac, entry.HeightPx);
 
-        var imageRef = ImageResourceCache.GetOrRegister(document, entry);
-
         // border-image-outset (§6.5) grows the border-image AREA outward from the border box; the 9-grid is
         // laid out in this area. border-image-width (§6.4) sets the DEST thickness of each edge/corner band
-        // (default = the element's border width).
+        // (default = the element's border width). These resolve INDEPENDENTLY of the CSS border widths, so a
+        // box with zero borders but an explicit border-image-width / -outset still paints (PR-232 review [P2]).
         var ot = ResolveOutset(spec.OutsetTop, bt);
         var or = ResolveOutset(spec.OutsetRight, br);
         var ob = ResolveOutset(spec.OutsetBottom, bb);
         var ol = ResolveOutset(spec.OutsetLeft, bl);
         var areaLeft = leftPx - ol; var areaTop = topPx - ot;
         var areaW = widthPx + ol + or; var areaH = heightPx + ot + ob;
+        if (!(areaW > 0) || !(areaH > 0)) return;
 
         // Intrinsic slice sizes (px) for border-image-width: auto.
         var wt = ResolveWidth(spec.WidthTop, bt, areaH, st * entry.HeightPx);
         var wr = ResolveWidth(spec.WidthRight, br, areaW, sr * entry.WidthPx);
         var wb = ResolveWidth(spec.WidthBottom, bb, areaH, sb * entry.HeightPx);
         var wl = ResolveWidth(spec.WidthLeft, bl, areaW, sl * entry.WidthPx);
-        // The dest border widths may not exceed the area (CSS B&B §6.4: reduce proportionally if they
-        // would overlap); a simple per-axis clamp keeps the inner band non-negative.
-        if (wl + wr > areaW && wl + wr > 0) { var k = areaW / (wl + wr); wl *= k; wr *= k; }
-        if (wt + wb > areaH && wt + wb > 0) { var k = areaH / (wt + wb); wt *= k; wb *= k; }
+        // The dest widths may not exceed the area (CSS B&B §6.4): if top+bottom > area height OR left+right
+        // > area width, reduce ALL FOUR by the SAME global factor f = min(areaW/(wl+wr), areaH/(wt+wb), 1) so
+        // the corners keep their aspect ratio (PR-232 review [P1] — a per-axis clamp distorted corners).
+        var f = 1.0;
+        if (wl + wr > 0) f = Math.Min(f, areaW / (wl + wr));
+        if (wt + wb > 0) f = Math.Min(f, areaH / (wt + wb));
+        if (f < 1.0 && f > 0) { wt *= f; wr *= f; wb *= f; wl *= f; }
 
+        // Nothing to paint when every dest band is zero and there's no center fill (e.g. zero borders +
+        // default border-image-width:1 + no outset) — skip before registering the image XObject.
+        if (!(wt > 0 || wr > 0 || wb > 0 || wl > 0) && !spec.Fill) return;
+
+        var imageRef = ImageResourceCache.GetOrRegister(document, entry);
         var innerW = areaW - wl - wr;
         var innerH = areaH - wt - wb;
         var ix0 = sl; var ix1 = 1 - sr;   // inner source x band (between the left + right slices)

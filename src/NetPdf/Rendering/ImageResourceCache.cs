@@ -31,10 +31,12 @@ namespace NetPdf.Rendering;
 /// </summary>
 /// <remarks>Failures NEVER throw: a fetch failure surfaces <c>RES-LOAD-FAILED-001</c>, an
 /// undecodable payload <c>IMG-DECODE-FAILED-001</c> (CLAUDE.md #7 — the element still lays out
-/// at its declared/attribute size; nothing paints). A single <c>linear-gradient(...)</c> /
-/// <c>radial-gradient(...)</c> is now SUPPORTED (collected as a parsed spec, painted as a PDF
-/// native shading — Phase 4); only an <c>background-image</c> form still beyond the engine (a
-/// conic / repeating gradient, a multi-layer list, or an unrecognized value) surfaces
+/// at its declared/attribute size; nothing paints). A <c>linear-gradient(...)</c> /
+/// <c>radial-gradient(...)</c> / <c>conic-gradient(...)</c> (incl. the <c>repeating-</c> forms), and a
+/// multi-layer (comma-separated) list of url / gradient layers, are SUPPORTED (a gradient is collected
+/// as a parsed spec, painted as a PDF native shading — conic via a Skia raster; a multi-layer list as
+/// an ordered <see cref="BgLayer"/> list — Phase 4). Only an <c>background-image</c> form still beyond
+/// the engine (an unrecognized value, or a multi-layer list with an unparseable layer) surfaces
 /// <c>CSS-BACKGROUND-IMAGE-UNSUPPORTED-001</c> once per render.</remarks>
 internal sealed class ImageResourceCache
 {

@@ -2,6 +2,8 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using NetPdf;
 using NetPdf.Diagnostics;
@@ -32,6 +34,31 @@ public sealed class MultiLayerBackgroundPaintTests
         for (var i = h.IndexOf(n, StringComparison.Ordinal); i >= 0; i = h.IndexOf(n, i + n.Length, StringComparison.Ordinal)) c++;
         return c;
     }
+
+    /// <summary>Every shading/clip rectangle (<c>x y w h re W n</c>) in DOCUMENT order, as (w, h) in
+    /// PDF points. PdfPage writes numbers with the <c>0.#####</c> format, so a whole-pt edge prints as
+    /// a clean integer. px→pt is ×0.75.</summary>
+    private static List<(double W, double H)> ClipRects(string content)
+    {
+        var rects = new List<(double, double)>();
+        const string marker = " re W n";
+        for (var i = content.IndexOf(marker, StringComparison.Ordinal); i >= 0;
+             i = content.IndexOf(marker, i + marker.Length, StringComparison.Ordinal))
+        {
+            var start = Math.Max(0, i - 80);
+            var window = content.Substring(start, i - start);
+            var toks = window.Split(new[] { ' ', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+            if (toks.Length < 4) continue;
+            if (double.TryParse(toks[^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var w)
+                && double.TryParse(toks[^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var h))
+            {
+                rects.Add((w, h));
+            }
+        }
+        return rects;
+    }
+
+    private static string BadPng() => "data:image/png;base64,AAAAAAAA"; // valid base64, not a decodable PNG
 
     [Fact]
     public void Two_linear_gradient_layers_both_paint()
@@ -102,5 +129,78 @@ public sealed class MultiLayerBackgroundPaintTests
         var result = HtmlPdf.ConvertDetailed(Html("linear-gradient(red, blue)"));
         Assert.Equal(1, Count(Latin1(result.Pdf), "/ShadingType 2"));
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Gradient_layers_paint_back_to_front_with_their_own_background_clip()
+    {
+        // content 100×60, padding 10 (no border) → padding/border box 120×80, content box 100×60.
+        // Source order: layer0 (top) = red/blue with content-box clip; layer1 (bottom) = lime/yellow with
+        // border-box clip. Back-to-front means the BOTTOM layer (border-box, 90×60pt) paints FIRST and the
+        // TOP layer (content-box, 75×45pt) paints LAST.
+        var t = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:100px;height:60px;padding:10px;"
+            + "background-image:linear-gradient(red,blue),linear-gradient(lime,yellow);"
+            + "background-clip:content-box,border-box\"></div></body></html>"));
+        var rects = ClipRects(t);
+        Assert.Equal(2, rects.Count);
+        Assert.Equal((90.0, 60.0), rects[0]);   // bottom layer (border-box) painted first
+        Assert.Equal((75.0, 45.0), rects[1]);   // top layer (content-box) painted last
+    }
+
+    [Fact]
+    public void Gradient_layer_background_origin_changes_the_axis()
+    {
+        // border 20 (no padding) → border box 160×120, padding box 120×80. Two SAME-color gradient layers:
+        // distinct origins ⇒ distinct axes ⇒ two shading objects (each with its own /Coords); identical
+        // origins ⇒ one cached shading (one /Coords). Proves origin actually moves a gradient's axis.
+        static string Doc(string origin) =>
+            "<!DOCTYPE html><html><body><div style=\"width:120px;height:80px;border:20px solid black;"
+            + "background-image:linear-gradient(red,blue),linear-gradient(red,blue);"
+            + $"background-origin:{origin}\"></div></body></html>";
+
+        var distinct = Latin1(HtmlPdf.Convert(Doc("border-box,padding-box")));
+        var same = Latin1(HtmlPdf.Convert(Doc("border-box,border-box")));
+        Assert.Equal(2, Count(distinct, "/Coords"));   // two different axes
+        Assert.Equal(1, Count(same, "/Coords"));        // identical axes share one shading
+    }
+
+    [Fact]
+    public void Gradient_layer_size_position_repeat_are_deferred_with_a_diagnostic()
+    {
+        // background-size/-position/-repeat are not honoured for a gradient layer (the shading fills the
+        // origin box) — each surfaces CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 once; the gradients still paint.
+        foreach (var variant in new[]
+                 {
+                     "background-size:cover,cover",
+                     "background-position:10px 10px,20px 20px",
+                     "background-repeat:no-repeat,no-repeat",
+                 })
+        {
+            var r = HtmlPdf.ConvertDetailed(Html("linear-gradient(red,blue), radial-gradient(lime,yellow)", variant));
+            Assert.Contains(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+            Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 2"));
+            Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 3"));
+        }
+    }
+
+    [Fact]
+    public void Default_variants_on_gradient_layers_emit_no_deferral_diagnostic()
+    {
+        // Initial size/position/repeat (auto / 0% 0% / repeat) are no-ops for a gradient layer.
+        var r = HtmlPdf.ConvertDetailed(Html(
+            "linear-gradient(red,blue), radial-gradient(lime,yellow)",
+            "background-size:auto,auto;background-position:0% 0%,0% 0%;background-repeat:repeat,repeat"));
+        Assert.DoesNotContain(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void A_url_layer_that_fails_to_decode_does_not_prevent_other_layers()
+    {
+        // The url layer parses (so the list is supported) but its bytes don't decode → it's skipped, while
+        // the gradient layer still paints.
+        var t = Latin1(HtmlPdf.Convert(Html($"url({BadPng()}), linear-gradient(red,blue)")));
+        Assert.Equal(1, Count(t, "/ShadingType 2"));   // the gradient still paints
+        Assert.DoesNotContain(" Do Q", t);              // the undecodable image painted nothing
     }
 }

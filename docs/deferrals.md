@@ -2691,11 +2691,15 @@ flags the categories):
      shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
      raster for blur). **Remaining gradient residuals (Phase 4 follow-ups):** color-interpolation
      hints, per-stop alpha on the NATIVE linear/radial shadings (a soft-mask alpha shading — the
-     conic raster path already preserves it), **gradient
-     `background-clip` / `background-origin` insets** (PR #209 Copilot — gradients paint/clip against
-     the border box; the `url()` image path already honors origin/clip + inset radii), and a
-     repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default
-     farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
+     conic raster path already preserves it), **gradient `background-clip` / `background-origin`
+     insets on a SINGLE-layer gradient** (a single-layer gradient still paints/clips against the
+     border box; the `url()` image path already honors origin/clip + inset radii — and as of
+     PR #235 a MULTI-LAYER gradient LAYER honors `-origin`/`-clip` too), **gradient
+     `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin box; a
+     multi-layer gradient layer that specifies any of these surfaces
+     `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` and falls back to the default — the `url()` path honors
+     all three), and a repeating-radial under a `closest-*` extent clamps beyond the ending shape
+     (the default farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
      box-shadow per-corner blur radii (the blur raster uses one representative radius) + inset under
      box-decoration-break:slice (painted per-slice); `text-shadow` INHERITANCE to descendant text (only the
      box's own declared value is read today) + true GLYPH BLUR (the blurred case paints a sharp

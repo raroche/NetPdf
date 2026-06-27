@@ -3418,9 +3418,11 @@ flags the categories):
          a large negative offset would drive below 0 (matching `ReduceRadii`); **(Copilot)** `outline-width` is a
          non-negative `<line-width>` (`NonNegativeProperties` — a negative value invalidates + falls back to
          `medium`); **(Copilot)** borders + outline SHARE one style-approximation flag so
-         `PAINT-BORDER-STYLE-APPROXIMATED-001` fires once per conversion. STILL DEFERRED: non-solid
-         `outline-style` (dotted/dashed/double/groove/ridge/inset/outset painted SOLID + diagnosed; `auto` paints
-         solid without a diagnostic); `outline-color: auto`'s true UA colour (approximated currentcolor).
+         `PAINT-BORDER-STYLE-APPROXIMATED-001` fires once per conversion. **UPDATE (rounded-non-solid-borders
+         PR):** non-solid OUTLINES now render faithfully — `dotted`/`dashed` stroke the (sharp/rounded) outline
+         ring centreline + `double` = two concentric rings (shared `PaintStyledRing`). STILL DEFERRED: only the
+         3D `outline-style` (groove/ridge/inset/outset) is painted SOLID + diagnosed (per-side bevel can't follow
+         the ring; `auto`/`solid` paint solid without a diagnostic); `outline-color: auto`'s true UA colour.
        - **body `border-radius` COMPLETION (per-corner + `%` band fill, rounded uniform border
          strokes, rounded background-image clip) — DONE (border-radius-completion cycle, 3 tasks):**
          the body border-radius first cut (uniform-circular band fill only) is finished. **(Task 1 —

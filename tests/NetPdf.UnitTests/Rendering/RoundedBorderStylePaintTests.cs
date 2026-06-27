@@ -115,4 +115,89 @@ public sealed class RoundedBorderStylePaintTests
         Assert.Contains("] 0 d", t);
         Assert.Contains(" S Q", t);
     }
+
+    // ---- PR-233 review [P2]/[P3]: numeric geometry, mixed-style fallback, alpha, outline-offset ----
+
+    [Fact]
+    public void Rounded_dashed_border_pins_the_numeric_stroke_width_and_dash()
+    {
+        // 9px border → 6.75pt line width; dashed = [3w 3w] = [20.25 20.25]; the centreline is a Bézier path
+        // (curved corners, no `re`). These numbers pin the centreline-stroke geometry.
+        var t = Latin1(HtmlPdf.Convert(Border("dashed")));
+        Assert.Contains("6.75 w", t);                  // line width == the border width
+        Assert.Contains("[20.25 20.25] 0 d", t);       // 3w on / 3w off
+        Assert.Contains(" c ", t);                     // rounded centreline (curves)
+    }
+
+    [Fact]
+    public void Rounded_dotted_border_pins_the_numeric_dot_dash()
+    {
+        // Dotted = [0 2w] = [0 13.5] with a round cap (1 J).
+        var t = Latin1(HtmlPdf.Convert(Border("dotted")));
+        Assert.Contains("6.75 w", t);
+        Assert.Contains("1 J", t);
+        Assert.Contains("[0 13.5] 0 d", t);
+    }
+
+    [Fact]
+    public void Mixed_style_rounded_border_falls_to_the_per_edge_path_and_is_diagnosed()
+    {
+        // Per-edge-differing styles (dashed top, solid elsewhere) aren't a uniform ring → the clipped
+        // per-edge path (straight dashes clipped to the rounded outline, square inner corners). It still
+        // paints, and the residual is now DELIBERATELY diagnosed (PR-233 review [P2]).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border:9px solid #cc3366;border-top-style:dashed;border-radius:15px\"></div>" +
+            "</body></html>");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
+        Assert.Contains(" S Q", Latin1(result.Pdf));   // the dashed top edge still strokes (clipped to the outline)
+    }
+
+    [Fact]
+    public void Uniform_solid_per_edge_color_mix_is_not_diagnosed()
+    {
+        // Non-uniform COLOUR (all solid) takes the per-edge path too, but no non-solid style is involved →
+        // no approximation diagnostic (guards against over-diagnosing).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border:9px solid #cc3366;border-top-color:#0000ff;border-radius:15px\"></div>" +
+            "</body></html>");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
+    }
+
+    [Fact]
+    public void Rounded_dashed_border_with_partial_alpha_uses_a_stroke_alpha_extgstate()
+    {
+        // A translucent border colour → the stroke selects a stroke-alpha ExtGState (/CA via `gs`), not an
+        // opaque stroke. rgba(204,51,102,0.5) → 0.5 alpha.
+        var t = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border:9px dashed rgba(204,51,102,0.5);border-radius:15px\"></div>" +
+            "</body></html>"));
+        Assert.Contains("0.8 0.2 0.4 RG", t);
+        Assert.Contains(" gs ", t);                    // an ExtGState (the constant stroke alpha) is selected
+        Assert.Contains("[20.25 20.25] 0 d", t);
+    }
+
+    [Fact]
+    public void Dashed_outline_with_offset_still_strokes_a_dashed_ring()
+    {
+        var t = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:15px;outline:9px dashed #cc3366;outline-offset:5px\"></div>" +
+            "</body></html>"));
+        Assert.Contains("0.8 0.2 0.4 RG", t);
+        Assert.Contains("[20.25 20.25] 0 d", t);
+        Assert.Contains(" S Q", t);
+    }
+
+    [Fact]
+    public void Double_outline_with_offset_draws_two_rings()
+    {
+        var t = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:15px;outline:9px double #cc3366;outline-offset:5px\"></div>" +
+            "</body></html>"));
+        Assert.Equal(2, Count(t, "0.8 0.2 0.4 rg"));
+    }
 }

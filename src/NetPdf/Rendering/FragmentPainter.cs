@@ -28,10 +28,13 @@ namespace NetPdf.Rendering;
 /// <c>DisplayCommand</c> IR consumer arrives with the full paint pipeline.
 /// </para>
 /// <para>
-/// <b>Borders.</b> Only <c>solid</c> is rendered faithfully; the other painted
-/// styles (<c>dotted</c> / <c>dashed</c> / <c>double</c> / <c>groove</c> /
-/// <c>ridge</c> / <c>inset</c> / <c>outset</c>) are approximated as a solid fill of
-/// the border color and surfaced via <c>PAINT-BORDER-STYLE-APPROXIMATED-001</c>.
+/// <b>Borders.</b> <c>solid</c>, <c>dashed</c>, <c>dotted</c>, and <c>double</c> render
+/// faithfully on the square per-edge path AND the uniform rounded ring (dashed/dotted
+/// stroke a rounded centreline; double = two concentric rings); outlines too. Only the
+/// 3D styles (<c>groove</c> / <c>ridge</c> / <c>inset</c> / <c>outset</c>) on a ROUNDED
+/// ring/outline, and a NON-UNIFORM (mixed) non-solid style on a rounded border, stay a
+/// solid-ring / clipped per-edge approximation surfaced via
+/// <c>PAINT-BORDER-STYLE-APPROXIMATED-001</c>.
 /// <c>none</c> and <c>hidden</c> paint nothing (CSS Backgrounds &amp; Borders 3
 /// §4.3 — the used border width is 0 for those styles; layout reserves no space and
 /// the painter skips them). Edges span the full box extent on their long axis, so
@@ -1230,6 +1233,21 @@ internal static class FragmentPainter
         {
             ToPdfRect(leftPx, compTopPx, widthPx, compHeightPx, pageHeightPt, out var bx, out var by, out var bw, out var bh);
             page.BeginRoundedRectangleClip(bx, by, bw, bh, ToPt(radiiPx));
+            // A ROUNDED border reaches this per-edge fallback only when it ISN'T uniform (per-edge-differing
+            // width / colour / style). A non-solid style here is approximated — the dashes / dots are STRAIGHT
+            // strokes clipped to the rounded outline (cut at the corners) and double / 3D keep SQUARE inner
+            // corners. Diagnose it (the uniform rounded ring path renders dashed/dotted/double faithfully).
+            if (!styleApproximationReported && AnyNonSolidBorderEdge(style))
+            {
+                diagnostics?.Emit(new Diagnostic(
+                    DiagnosticCodes.PaintBorderStyleApproximated001,
+                    "A rounded border with non-uniform (per-edge-differing) non-solid styles was painted via " +
+                    "the clipped per-edge path — straight dashes clipped to the rounded outline + square inner " +
+                    "corners. A UNIFORM rounded dashed/dotted/double border renders faithfully; this mix is a " +
+                    "tracked follow-up (deferrals.md#layout-to-pdf-pipeline).",
+                    DiagnosticSeverity.Info));
+                styleApproximationReported = true;
+            }
         }
         // The SQUARE path keeps the per-slice rects + cut-edge suppression (byte-identical, #221); the
         // ROUNDED path draws all four composite edges (the slice clip cuts the ones off-fragment).
@@ -1673,6 +1691,22 @@ internal static class FragmentPainter
                     innerLeftPx, innerTopPx, innerWPx, innerHPx, innerRadiiPx);
                 return;
         }
+    }
+
+    /// <summary>True when any of the four border edges has a painted NON-solid style (dotted / dashed /
+    /// double / groove / ridge / inset / outset) — i.e. not none/hidden/solid. Used to diagnose the rounded
+    /// per-edge fallback (which approximates non-solid styles).</summary>
+    private static bool AnyNonSolidBorderEdge(ComputedStyle style)
+    {
+        static bool NonSolid(ComputedStyle s, PropertyId id)
+        {
+            var slot = s.Get(id);
+            if (slot.Tag != ComputedSlotTag.Keyword) return false;
+            var kw = slot.AsKeyword();
+            return kw is not (BorderStyleNone or BorderStyleHidden or BorderStyleSolid);
+        }
+        return NonSolid(style, PropertyId.BorderTopStyle) || NonSolid(style, PropertyId.BorderRightStyle)
+            || NonSolid(style, PropertyId.BorderBottomStyle) || NonSolid(style, PropertyId.BorderLeftStyle);
     }
 
     /// <summary>Map a uniform border-style keyword to the ring line style (3D + solid → one ring).</summary>

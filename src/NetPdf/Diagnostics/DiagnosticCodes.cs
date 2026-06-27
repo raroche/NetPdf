@@ -899,12 +899,15 @@ internal static class DiagnosticCodes
 
     /// <summary>
     /// Per Phase 5 layout→PDF wiring cycle 3 — emitted by the <c>FragmentPainter</c>
-    /// when a border edge uses a painted <c>border-style</c> other than <c>solid</c>
-    /// (<c>dotted</c> / <c>dashed</c> / <c>double</c> / <c>groove</c> / <c>ridge</c> /
-    /// <c>inset</c> / <c>outset</c>). Cycle 3 paints all painted styles as a solid fill
-    /// of the border color; the dash / double / bevel rendering is a tracked follow-up
-    /// (<c>docs/deferrals.md#layout-to-pdf-pipeline</c>). <c>none</c> and <c>hidden</c>
-    /// paint nothing and do NOT emit this. Fires at most once per conversion.
+    /// when a <c>border-style</c> / <c>outline-style</c> is painted as a solid-ring
+    /// APPROXIMATION. <c>dashed</c> / <c>dotted</c> / <c>double</c> now render FAITHFULLY
+    /// everywhere (square + uniform-rounded borders + sharp/rounded outlines), so this
+    /// fires only for: (a) a 3D style (<c>groove</c> / <c>ridge</c> / <c>inset</c> /
+    /// <c>outset</c>) on a ROUNDED border ring or an outline ring (its per-side bevel
+    /// can't follow a concentric rounded ring), or (b) a ROUNDED border whose per-edge
+    /// styles are NON-UNIFORM (mixed), painted via the clipped per-edge path (straight
+    /// dashes clipped to the rounded outline + square inner corners). <c>solid</c> /
+    /// <c>none</c> / <c>hidden</c> never emit this. Fires at most once per conversion.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.
     /// </summary>
     public const string PaintBorderStyleApproximated001 = "PAINT-BORDER-STYLE-APPROXIMATED-001";

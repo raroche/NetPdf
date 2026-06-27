@@ -55,8 +55,8 @@ Renders `dashed` / `dotted` / `double` faithfully on the uniform ROUNDED border 
 - **`PdfPage.StrokeRoundedRectangle`** — a new primitive that strokes the rounded-rectangle Bézier path (the same outline the rounded fill/clip use) with a line width, colour, alpha, and an optional dash + cap.
 - **Rounded `dashed` / `dotted` borders + outlines** — stroke the rounded centreline (the ring inset by half its thickness) with the thickness as the line width and the per-style dash (`[3w 3w]` butt for dashed; `[0 2w]` round-cap dots for dotted), matching the existing square per-edge patterns.
 - **`double` borders + outlines** — two concentric rounded rings (outer + inner thirds, a middle-third gap).
-- A shared `PaintStyledRing` drives both the border and outline rings from an outer/inner box pair + thickness; `TryUniformBorder` now also requires a uniform style (a per-edge style mix falls to the per-edge clipped path).
-- The 3D styles (`groove` / `ridge` / `inset` / `outset`) on a rounded ring or an outline stay a solid-ring approximation — their per-side bevel can't follow a concentric rounded ring — so `PAINT-BORDER-STYLE-APPROXIMATED-001` now fires ONLY for those.
+- A shared `PaintStyledRing` drives both the border and outline rings from an outer/inner box pair + thickness; `TryUniformBorder` now also requires a uniform style.
+- `PAINT-BORDER-STYLE-APPROXIMATED-001` now fires only for the genuinely-approximate cases: a 3D style (`groove` / `ridge` / `inset` / `outset`) on a rounded ring or outline (its per-side bevel can't follow a concentric rounded ring), or a ROUNDED border with NON-UNIFORM (mixed) per-edge non-solid styles, which falls to the clipped per-edge path (straight dashes clipped to the outline + square inner corners) and is now diagnosed.
 
 ### Added — Phase 4 visual parity: border-image completion (edge tiling + width + outset)
 

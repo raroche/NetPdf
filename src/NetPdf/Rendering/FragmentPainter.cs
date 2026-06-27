@@ -69,7 +69,10 @@ internal static class FragmentPainter
     // none, dotted, dashed, solid, double, groove, ridge, inset, outset, auto — so the indices differ
     // from border-style (no hidden ⇒ solid is 3, not 4). `none` paints nothing; `auto` paints solid.
     private const int OutlineStyleNone = 0;
+    private const int OutlineStyleDotted = 1;
+    private const int OutlineStyleDashed = 2;
     private const int OutlineStyleSolid = 3;
+    private const int OutlineStyleDouble = 4;
     private const int OutlineStyleAuto = 9;
 
     /// <summary>Fallback when <c>currentcolor</c> can't be resolved — opaque
@@ -1176,14 +1179,18 @@ internal static class FragmentPainter
         // and it composites the border colour's alpha correctly (a fill, /ca). A non-uniform border falls
         // through to the per-edge rects below (CLIPPED to the rounded outline when there's a radius).
         if (radiiPx.AnyPositive
-            && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid))
+            && TryUniformBorder(style, currentColors, out var borderWidthPx, out var borderArgb, out var nonSolid, out var uniformStyleKw))
         {
-            if (nonSolid && !styleApproximationReported)
+            // Faithful dashed / dotted / double now render on the rounded ring; only the 3D styles
+            // (groove / ridge / inset / outset) stay approximated as a solid ring — their per-SIDE light/dark
+            // shading can't be expressed by a concentric rounded ring (a documented residual).
+            var threeD = uniformStyleKw is BorderStyleGroove or BorderStyleRidge or BorderStyleInset or BorderStyleOutset;
+            if (threeD && nonSolid && !styleApproximationReported)
             {
                 diagnostics?.Emit(new Diagnostic(
                     DiagnosticCodes.PaintBorderStyleApproximated001,
-                    "A non-solid border-style (dotted / dashed / double / groove / ridge / inset / outset) " +
-                    "was painted as a solid line. Styled border rendering is a tracked follow-up " +
+                    "A 3D rounded border-style (groove / ridge / inset / outset) was painted as a solid ring; " +
+                    "per-side bevel shading on rounded corners is a tracked follow-up " +
                     "(deferrals.md#layout-to-pdf-pipeline).",
                     DiagnosticSeverity.Info));
                 styleApproximationReported = true;
@@ -1194,13 +1201,13 @@ internal static class FragmentPainter
             var outerRadiiPx = radiiPx.NormalizedFor(widthPx, compHeightPx);
             var innerRadiiPx = ReduceRadii(outerRadiiPx, borderWidthPx);
             var uniformClipped = BeginSliceClip(page, sliced, pageHeightPt, leftPx, topPx, widthPx, heightPx);
-            ToPdfRect(leftPx, compTopPx, widthPx, compHeightPx, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
-            ToPdfRect(leftPx + borderWidthPx, compTopPx + borderWidthPx,
-                widthPx - 2 * borderWidthPx, compHeightPx - 2 * borderWidthPx,
-                pageHeightPt, out var ix, out var iy, out var iw, out var ih);
             ColorChannels(borderArgb, out var cr, out var cg, out var cb);
-            page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadiiPx),
-                ix, iy, iw, ih, ToPt(innerRadiiPx), cr, cg, cb, Alpha(borderArgb) / 255.0);
+            var ca = Alpha(borderArgb) / 255.0;
+            // Outer = the composite border box; inner = the padding box (inset by the full border width).
+            PaintStyledRing(page, BorderRingStyle(uniformStyleKw), pageHeightPt,
+                leftPx, compTopPx, widthPx, compHeightPx, outerRadiiPx,
+                leftPx + borderWidthPx, compTopPx + borderWidthPx, widthPx - 2 * borderWidthPx, compHeightPx - 2 * borderWidthPx, innerRadiiPx,
+                borderWidthPx, cr, cg, cb, ca);
             if (uniformClipped) page.RestoreGraphicsState();
             return;
         }
@@ -1474,15 +1481,23 @@ internal static class FragmentPainter
             argb = currentColorArgb;
         if (Alpha(argb) == 0) return;
 
-        // `auto` paints solid (the UA's choice) WITHOUT a diagnostic; only a genuine non-solid LINE style
-        // (dotted / dashed / double / groove / ridge / inset / outset) is the approximated case.
-        if (styleKw != OutlineStyleSolid && styleKw != OutlineStyleAuto && !styleApproximationReported)
+        // dotted / dashed / double now render faithfully (below); `auto` + `solid` paint solid WITHOUT a
+        // diagnostic. Only the 3D styles (groove / ridge / inset / outset) stay approximated as a solid ring
+        // (their per-side bevel can't follow the outline ring) — diagnosed once.
+        var outlineLineStyle = styleKw switch
+        {
+            OutlineStyleDashed => RingLineStyle.Dashed,
+            OutlineStyleDotted => RingLineStyle.Dotted,
+            OutlineStyleDouble => RingLineStyle.Double,
+            _ => RingLineStyle.Solid,
+        };
+        var outline3D = styleKw is >= 5 and <= 8; // groove / ridge / inset / outset
+        if (outline3D && !styleApproximationReported)
         {
             diagnostics?.Emit(new Diagnostic(
                 DiagnosticCodes.PaintBorderStyleApproximated001,
-                "A non-solid outline-style (dotted / dashed / double / groove / ridge / inset / outset) " +
-                "was painted as a solid line. Styled outline rendering is a tracked follow-up " +
-                "(deferrals.md#layout-to-pdf-pipeline).",
+                "A 3D outline-style (groove / ridge / inset / outset) was painted as a solid line; per-side " +
+                "bevel shading is a tracked follow-up (deferrals.md#layout-to-pdf-pipeline).",
                 DiagnosticSeverity.Info));
             styleApproximationReported = true;
         }
@@ -1545,11 +1560,13 @@ internal static class FragmentPainter
             page.BeginRectangleClip(ccx, ccy, ccw, cch);
             sliceClipped = true;
         }
-        ToPdfRect(outerLeft, outerTop, outerW, outerH, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
-        ToPdfRect(innerLeft, innerTop, innerW, innerH, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
         ColorChannels(argb, out var r, out var g, out var b);
-        page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(outerRadii), ix, iy, iw, ih, ToPt(innerRadii),
-            r, g, b, Alpha(argb) / 255.0);
+        // dotted / dashed / double stroke or split the ring; solid + 3D fill one ring. The outline thickness
+        // is outlineWidthPx; outer / inner are the ring's outer / inner boxes.
+        PaintStyledRing(page, outlineLineStyle, pageHeightPt,
+            outerLeft, outerTop, outerW, outerH, outerRadii,
+            innerLeft, innerTop, innerW, innerH, innerRadii,
+            outlineWidthPx, r, g, b, Alpha(argb) / 255.0);
         if (sliceClipped) page.RestoreGraphicsState();
     }
 
@@ -1564,19 +1581,19 @@ internal static class FragmentPainter
     /// are deferred).</summary>
     private static bool TryUniformBorder(
         ComputedStyle style, in BorderEdgeCurrentColors cc,
-        out double widthPx, out uint argb, out bool nonSolid)
+        out double widthPx, out uint argb, out bool nonSolid, out int styleKw)
     {
-        widthPx = 0; argb = 0; nonSolid = false;
+        widthPx = 0; argb = 0; nonSolid = false; styleKw = BorderStyleSolid;
 
         bool ReadEdge(PropertyId styleId, PropertyId widthId, PropertyId colorId, uint edgeCc,
-            out double w, out uint a, out bool solid)
+            out double w, out uint a, out int kwOut)
         {
-            w = 0; a = 0; solid = false;
+            w = 0; a = 0; kwOut = BorderStyleNone;
             var styleSlot = style.Get(styleId);
             if (styleSlot.Tag != ComputedSlotTag.Keyword) return false;       // unset → none
             var kw = styleSlot.AsKeyword();
             if (kw is BorderStyleNone or BorderStyleHidden) return false;
-            solid = kw == BorderStyleSolid;
+            kwOut = kw;
             var widthSlot = style.Get(widthId);
             w = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0;
             if (w <= 0) return false;
@@ -1584,10 +1601,10 @@ internal static class FragmentPainter
             return Alpha(a) != 0;
         }
 
-        if (!ReadEdge(PropertyId.BorderTopStyle, PropertyId.BorderTopWidth, PropertyId.BorderTopColor, cc.Top, out var wt, out var at, out var solidT)
-            || !ReadEdge(PropertyId.BorderRightStyle, PropertyId.BorderRightWidth, PropertyId.BorderRightColor, cc.Right, out var wr, out var ar, out var solidR)
-            || !ReadEdge(PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth, PropertyId.BorderBottomColor, cc.Bottom, out var wb, out var ab, out var solidB)
-            || !ReadEdge(PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth, PropertyId.BorderLeftColor, cc.Left, out var wl, out var al, out var solidL))
+        if (!ReadEdge(PropertyId.BorderTopStyle, PropertyId.BorderTopWidth, PropertyId.BorderTopColor, cc.Top, out var wt, out var at, out var kwT)
+            || !ReadEdge(PropertyId.BorderRightStyle, PropertyId.BorderRightWidth, PropertyId.BorderRightColor, cc.Right, out var wr, out var ar, out var kwR)
+            || !ReadEdge(PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth, PropertyId.BorderBottomColor, cc.Bottom, out var wb, out var ab, out var kwB)
+            || !ReadEdge(PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth, PropertyId.BorderLeftColor, cc.Left, out var wl, out var al, out var kwL))
             return false;
         // Used widths come from unit conversions, so compare against the top edge with a tolerance well
         // below a visible difference (rather than exact `==`, which equivalent lengths from different
@@ -1595,9 +1612,77 @@ internal static class FragmentPainter
         static bool SameWidth(double a, double b) => Math.Abs(a - b) <= 1e-4;
         if (!SameWidth(wt, wr) || !SameWidth(wt, wb) || !SameWidth(wt, wl)) return false;
         if (at != ar || ar != ab || ab != al) return false;   // equal colours
-        widthPx = wt; argb = at; nonSolid = !(solidT && solidR && solidB && solidL);
+        // The STYLE must also be uniform for the single-ring path to render it faithfully (a per-edge mix
+        // like dashed-top + dotted-bottom falls through to the per-edge rounded path). Required so the new
+        // faithful dashed/dotted/double dispatch has one well-defined style.
+        if (kwT != kwR || kwR != kwB || kwB != kwL) return false;
+        widthPx = wt; argb = at; styleKw = kwT; nonSolid = kwT != BorderStyleSolid;
         return true;
     }
+
+    /// <summary>A non-solid line style the rounded ring paths render faithfully (dashed / dotted / double);
+    /// <c>Solid</c> covers solid + the 3D approximation (one filled ring).</summary>
+    private enum RingLineStyle { Solid, Dashed, Dotted, Double }
+
+    /// <summary>Phase 4 — paint a uniform-style ROUNDED ring (a border or an outline) between an OUTER and an
+    /// INNER rounded box of the given <paramref name="thicknessPx"/>. <c>Dashed</c> / <c>Dotted</c> stroke the
+    /// rounded CENTRELINE (the outer box inset by half the thickness) with the thickness line + the per-style
+    /// dash; <c>Double</c> draws two concentric rings (outer + inner thirds, a middle-third gap); <c>Solid</c>
+    /// fills one ring. All inputs are CSS px (page-top-relative).</summary>
+    private static void PaintStyledRing(
+        PdfPage page, RingLineStyle ls, double pageHeightPt,
+        double outerLeftPx, double outerTopPx, double outerWPx, double outerHPx, CornerRadii outerRadiiPx,
+        double innerLeftPx, double innerTopPx, double innerWPx, double innerHPx, CornerRadii innerRadiiPx,
+        double thicknessPx, double r, double g, double b, double a)
+    {
+        void Ring(double oL, double oT, double oW, double oH, CornerRadii oR,
+            double iL, double iT, double iW, double iH, CornerRadii iR)
+        {
+            ToPdfRect(oL, oT, oW, oH, pageHeightPt, out var ox, out var oy, out var ow, out var oh);
+            ToPdfRect(iL, iT, iW, iH, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
+            page.FillRoundedRectangleRing(ox, oy, ow, oh, ToPt(oR), ix, iy, iw, ih, ToPt(iR), r, g, b, a);
+        }
+
+        switch (ls)
+        {
+            case RingLineStyle.Dashed:
+            case RingLineStyle.Dotted:
+            {
+                var hw = thicknessPx / 2.0;   // centreline = the outer box inset by half the thickness
+                ToPdfRect(outerLeftPx + hw, outerTopPx + hw, outerWPx - thicknessPx, outerHPx - thicknessPx,
+                    pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+                var wPt = PdfUnits.PxToPt(thicknessPx);
+                // Dotted: [0 2w] round caps → a round dot Ø w spaced 2w centre-to-centre; dashed: [3w 3w]
+                // butt caps (matching the square per-edge StrokeDashedEdge).
+                var dash = ls == RingLineStyle.Dotted ? new[] { 0.0, 2 * wPt } : new[] { 3 * wPt, 3 * wPt };
+                page.StrokeRoundedRectangle(cx, cy, cw, ch, ToPt(ReduceRadii(outerRadiiPx, hw)), wPt, r, g, b, a,
+                    dash, dashPhase: 0.0, lineCap: ls == RingLineStyle.Dotted ? 1 : 0);
+                return;
+            }
+            case RingLineStyle.Double:
+            {
+                var t = thicknessPx / 3.0;    // two solid thirds with a middle-third gap
+                Ring(outerLeftPx, outerTopPx, outerWPx, outerHPx, outerRadiiPx,
+                    outerLeftPx + t, outerTopPx + t, outerWPx - 2 * t, outerHPx - 2 * t, ReduceRadii(outerRadiiPx, t));
+                Ring(outerLeftPx + 2 * t, outerTopPx + 2 * t, outerWPx - 4 * t, outerHPx - 4 * t, ReduceRadii(outerRadiiPx, 2 * t),
+                    innerLeftPx, innerTopPx, innerWPx, innerHPx, innerRadiiPx);
+                return;
+            }
+            default: // solid + the 3D approximation (one filled ring)
+                Ring(outerLeftPx, outerTopPx, outerWPx, outerHPx, outerRadiiPx,
+                    innerLeftPx, innerTopPx, innerWPx, innerHPx, innerRadiiPx);
+                return;
+        }
+    }
+
+    /// <summary>Map a uniform border-style keyword to the ring line style (3D + solid → one ring).</summary>
+    private static RingLineStyle BorderRingStyle(int kw) => kw switch
+    {
+        BorderStyleDashed => RingLineStyle.Dashed,
+        BorderStyleDotted => RingLineStyle.Dotted,
+        BorderStyleDouble => RingLineStyle.Double,
+        _ => RingLineStyle.Solid,
+    };
 
     /// <summary>Each radius component reduced by <paramref name="amount"/> px (clamped ≥ 0) — the
     /// border-box radii minus the full border width give the INNER (padding-box) ring radii (Task 2).</summary>

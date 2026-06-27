@@ -955,6 +955,46 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Phase 4 borders — STROKE a rounded-rectangle path (the same Bézier outline the rounded fill
+    /// / clip use) with line-width <paramref name="lineWidth"/>, colour, optional alpha, and an optional
+    /// <paramref name="dash"/> pattern + cap. Used to paint a <c>dashed</c> / <c>dotted</c> rounded border or
+    /// outline as a stroked centreline (the analogue of <see cref="StrokeLine"/> for a rounded ring). All
+    /// coordinates are PDF points (bottom-left origin); a non-positive size / width no-ops, non-finite throws.</summary>
+    public void StrokeRoundedRectangle(
+        double x, double y, double width, double height, CornerRadii radii, double lineWidth,
+        double r, double g, double b, double alpha = 1.0,
+        double[]? dash = null, double dashPhase = 0.0, int lineCap = 0)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height)
+            || !double.IsFinite(lineWidth) || !double.IsFinite(alpha) || !double.IsFinite(dashPhase))
+        {
+            throw new ArgumentException(
+                $"StrokeRoundedRectangle args must be finite; got ({x},{y},{width},{height}) w={lineWidth} alpha={alpha}.");
+        }
+        if (!(width > 0) || !(height > 0) || !(lineWidth > 0)) return;
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        var nr = radii.NormalizedFor(width, height);
+
+        var sb = new StringBuilder(160);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha, stroke: true).Value).Append(" gs ");
+        AppendNumber(sb, lineWidth); sb.Append(" w ");
+        if (lineCap is 1 or 2) { sb.Append(lineCap); sb.Append(" J "); }
+        if (dash is { Length: > 0 })
+        {
+            sb.Append('[');
+            for (var i = 0; i < dash.Length; i++) { if (i > 0) sb.Append(' '); AppendNumber(sb, Math.Max(0, dash[i])); }
+            sb.Append("] "); AppendNumber(sb, dashPhase); sb.Append(" d ");
+        }
+        AppendNumber(sb, r); sb.Append(' '); AppendNumber(sb, g); sb.Append(' '); AppendNumber(sb, b); sb.Append(" RG ");
+        if (nr.AnyPositive) AppendRoundedRectPath(sb, x, y, width, height, nr);
+        else AppendRectPath(sb, x, y, width, height);
+        sb.Append("S Q\n");
+        AppendContent(sb.ToString());
+    }
+
     private List<PdfObject>? _annotations;
 
     /// <summary>Phase 4 links (PR 4) — add a hyperlink <c>/Link</c> annotation over the page-space

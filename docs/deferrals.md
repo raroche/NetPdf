@@ -2765,9 +2765,14 @@ flags the categories):
      the subtree renderer / SVG); (1c) `mix-blend-mode` blends DECORATION only + sets `/BM` directly (faithful
      isolated-group compositing needs the subtree renderer; `plus-lighter` has no PDF equivalent); (1d) links
      only for anchors with their OWN box fragment (inline-flow line-box link rects + `#fragment` links deferred).
-     (2) ROUNDED non-solid borders are still painted as a
-     solid ring (the uniform-ring path — `PAINT-BORDER-STYLE-APPROXIMATED-001`); per-corner inset-round
-     radii use a single uniform radius; (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
+     (2) **rounded non-solid borders + outlines — dashed/dotted/double SHIPPED** (rounded-nonsolid-borders
+     PR): the uniform ROUNDED border ring + the (sharp AND rounded) outline ring now render `dashed`/`dotted`
+     (a stroked rounded centreline via `PdfPage.StrokeRoundedRectangle` + the per-style dash) and `double`
+     (two concentric rounded rings) faithfully. **Remaining:** the 3D styles (`groove`/`ridge`/`inset`/
+     `outset`) on the rounded-ring + outline paths stay a solid-ring approximation — their per-SIDE bevel
+     shading can't follow a concentric rounded ring (`PAINT-BORDER-STYLE-APPROXIMATED-001` now fires ONLY
+     for 3D); a per-edge-mixed style on a rounded box falls to the per-edge clipped path; per-corner
+     inset-round radii use a single uniform radius. (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
      (`CSS-CLIP-PATH-RASTER-FALLBACK-001` — needs the SVG path parser from PR 6 + a native/raster
      clip); (4) a `clip-path` on an element with CHILDREN clips only its OWN decoration, not the
      descendant subtree (`CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001` — the same Skia SUBTREE RENDERER the

@@ -6580,18 +6580,21 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Background_image_multi_layer_list_is_surfaced_not_misfetched()
+    public void Background_image_multi_layer_list_fetches_each_layer_not_one_bogus_url()
     {
-        // PR #166 review P2 — url(a),url(b) must take the unsupported-multi-layer path, not
-        // parse as the single bogus URL "a),url(b" (which produced misleading fetch failures).
+        // url(a.png),url(b.png) is now a SUPPORTED multi-layer list (Phase 4 multi-layer backgrounds) — each
+        // layer is fetched SEPARATELY (here both relative urls fail to load → one RES-LOAD-FAILED per layer),
+        // not parsed as the single bogus URL "a.png),url(b.png" (PR #166 review P2 regression guard). No
+        // "multi-layer unsupported" diagnostic anymore.
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             "<div style=\"width:32px;height:32px;background-image:url(a.png),url(b.png);" +
             "background-color:#3366cc\"></div>" +
             "</body></html>", new HtmlPdfOptions());
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
-        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.ResLoadFailed001);
-        Assert.Empty(AllImagePlacements(Latin1(result.Pdf)));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.Equal(2, result.Warnings.Count(d => d.Code == DiagnosticCodes.ResLoadFailed001)); // a.png + b.png
+        Assert.Contains("a.png", string.Join(" ", result.Warnings.Select(w => w.Message)));
+        Assert.Contains("b.png", string.Join(" ", result.Warnings.Select(w => w.Message)));
     }
 
     // ---- background-position / -size / -repeat (bg-variants cycle) ----

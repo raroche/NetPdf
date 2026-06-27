@@ -98,11 +98,15 @@ internal static class DiagnosticCodes
     public const string CssHasRenderingNotImplemented001 = "CSS-HAS-RENDERING-NOT-IMPLEMENTED-001";
 
     /// <summary>
-    /// Per the bg-image cycle — a <c>background-image</c> value other than a single
-    /// <c>url(...)</c> / <c>none</c> was declared: a gradient function
-    /// (<c>linear-gradient()</c> etc. — the Phase 4 shading-pattern work), a multi-layer list,
-    /// or an unrecognized form. The declaration is ignored (any <c>background-color</c> still
-    /// paints) — surfaced once per render rather than dropped silently.
+    /// A <c>background-image</c> form (or one of its variant longhands) is outside the engine's
+    /// supported set, so it was ignored (any <c>background-color</c> still paints) — surfaced once
+    /// per render rather than dropped silently. Supported: a single <c>url(...)</c> / <c>none</c>,
+    /// a linear / radial / conic gradient (incl. their <c>repeating-</c> forms), and a multi-layer
+    /// (comma-separated) list of those. Still surfaced here: an unrecognized <c>background-image</c>
+    /// value; a multi-layer list with an unparseable layer; a page-margin-box gradient / multi-layer
+    /// list (margin boxes take a single <c>url(...)</c>); a <c>background-repeat</c>/<c>-size</c>/
+    /// <c>-position</c> value outside the supported set; and <c>background-size</c>/<c>-position</c>/
+    /// <c>-repeat</c> on a gradient layer (a gradient fills its origin box — a documented deferral).
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssBackgroundImageUnsupported001 = "CSS-BACKGROUND-IMAGE-UNSUPPORTED-001";

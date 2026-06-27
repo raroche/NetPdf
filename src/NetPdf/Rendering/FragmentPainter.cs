@@ -327,6 +327,18 @@ internal static class FragmentPainter
                 }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
 
+                // Phase 4 multi-layer backgrounds — a comma-separated background-image list (a box is in this
+                // dict ONLY when there are 2+ layers; single-layer paints above, byte-identical). Layers paint
+                // BACK-TO-FRONT (last first, CSS B&B §3.10), each with its own position/size/repeat/origin/clip.
+                if (imageCache is not null && document is not null
+                    && imageCache.MultiLayerBackgroundBoxes.TryGetValue(fragment.Box, out var bgLayers))
+                {
+                    PaintMultiLayerBackground(page, document, imageCache, bgLayers, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx, diagnostics,
+                        ref variantUnsupportedReported, ref conicGradientRasterReported, ref conicGradientCapReported);
+                }
+
                 // box-shadow INSET (Phase 4 PR 1) paints OVER the background (CSS B&B §7.2 — inset
                 // shadows are drawn on top of the background, clipped to the padding box) but UNDER
                 // the border (which paints next, occluding the band under it).
@@ -584,6 +596,122 @@ internal static class FragmentPainter
     /// one pattern object). At or below the threshold the per-tile loop stays — fewer bytes
     /// than a pattern object for small grids, and every pre-cycle stream is byte-identical.</summary>
     private const int MaxLoopTilesPerFragment = 16;
+
+    /// <summary>Phase 4 multi-layer backgrounds — paint a comma-separated <c>background-image</c> list
+    /// BACK-TO-FRONT (the last source layer is bottom-most, CSS B&amp;B §3.10). Each image layer uses its own
+    /// <c>background-position</c>/<c>-size</c>/<c>-repeat</c>/<c>-origin</c>/<c>-clip</c> (cycled at
+    /// collection). Each gradient layer honours its own <c>background-origin</c> (the shading spans the
+    /// origin box) + <c>background-clip</c> (the shading is clipped, rounded), but NOT
+    /// <c>background-size</c>/<c>-position</c>/<c>-repeat</c> — those are surfaced once
+    /// (<c>CSS-BACKGROUND-IMAGE-UNSUPPORTED-001</c>) and the shading fills the origin box (a documented
+    /// deferral). Mirrors the single-layer geometry so a 1-layer background (which never reaches here)
+    /// stays byte-identical.</summary>
+    private static void PaintMultiLayerBackground(
+        PdfPage page, PdfDocument document, ImageResourceCache imageCache,
+        System.Collections.Generic.List<ImageResourceCache.BgLayer> layers, ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx, uint currentColorArgb,
+        double decorationBlockExtentPx, double decorationBlockOffsetPx, IDiagnosticsSink? diagnostics,
+        ref bool variantUnsupportedReported, ref bool conicRasterReported, ref bool conicCapReported)
+    {
+        var sliced = decorationBlockExtentPx > 0;
+        var (compTopPx, compHeightPx, compRadiiPx) = CompositeRoundedBox(
+            style, topPx, widthPx, heightPx, decorationBlockExtentPx, decorationBlockOffsetPx);
+
+        for (var i = layers.Count - 1; i >= 0; i--)   // back-to-front
+        {
+            var layer = layers[i];
+            if (layer.Kind == ImageResourceCache.BgLayerKind.Url)
+            {
+                if (layer.UriKey is not { } key || !imageCache.TryGet(key, out var entry)) continue;
+                var (oT, oR, oB, oL) = BackgroundAreaInset(style, layer.OriginRaw, defaultArea: 'p');
+                var (cT, cR, cB, cL) = BackgroundAreaInset(style, layer.ClipRaw, defaultArea: 'b');
+                var clipRadiiPx = InsetRadii(compRadiiPx, cT, cR, cB, cL);
+                var bgOriginTopPx = compTopPx + oT;
+                var bgOriginHeightPx = Math.Max(0, compHeightPx - oT - oB);
+                var imageSliceClipped = false;
+                if (sliced)
+                {
+                    ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var scx, out var scy, out var scw, out var sch);
+                    page.BeginRectangleClip(scx, scy, scw, sch);
+                    imageSliceClipped = true;
+                }
+                PaintBackgroundImageTiles(
+                    page, document, entry, pageHeightPt,
+                    leftPx + oL, bgOriginTopPx, Math.Max(0, widthPx - oL - oR), bgOriginHeightPx,
+                    diagnostics, ref variantUnsupportedReported,
+                    layer.RepeatRaw, layer.SizeRaw, layer.PositionRaw,
+                    clipLeftPx: leftPx + cL, clipTopPx: compTopPx + cT,
+                    clipWidthPx: Math.Max(0, widthPx - cL - cR),
+                    clipHeightPx: Math.Max(0, compHeightPx - cT - cB),
+                    clipRadiiPx: clipRadiiPx);
+                if (imageSliceClipped) page.RestoreGraphicsState();
+            }
+            else // a gradient layer
+            {
+                // A gradient layer honours its own background-origin + background-clip (like an image
+                // layer): the shading is computed over the ORIGIN box (default padding-box) and CLIPPED
+                // to the CLIP box (default border-box, rounded). background-size/-position/-repeat are
+                // NOT honoured (the native shading fills the origin box) — surfaced once + ignored.
+                var (goT, goR, goB, goL) = BackgroundAreaInset(style, layer.OriginRaw, defaultArea: 'p');
+                var (gcT, gcR, gcB, gcL) = BackgroundAreaInset(style, layer.ClipRaw, defaultArea: 'b');
+                // The origin box is whole-box (composite) so a sliced gradient stays continuous; the
+                // per-slice outer rect clip below limits the paint to this fragment.
+                var gOriginLeftPx = leftPx + goL;
+                var gOriginWidthPx = Math.Max(0, widthPx - goL - goR);
+                var gOriginTopPx = compTopPx + goT;
+                var gOriginHeightPx = Math.Max(0, compHeightPx - goT - goB);
+                var gClipRadiiPx = InsetRadii(compRadiiPx, gcT, gcR, gcB, gcL);
+                (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii) gClip = (
+                    leftPx + gcL, compTopPx + gcT,
+                    Math.Max(0, widthPx - gcL - gcR), Math.Max(0, compHeightPx - gcT - gcB),
+                    gClipRadiiPx);
+                if (GradientVariantDeferred(layer))
+                    EmitVariantUnsupported(diagnostics, anyVariantUnsupported: true, ref variantUnsupportedReported);
+                var gradientSliceClipped = false;
+                if (sliced)
+                {
+                    ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var gcx, out var gcy, out var gcw, out var gch);
+                    page.BeginRectangleClip(gcx, gcy, gcw, gch);
+                    gradientSliceClipped = true;
+                }
+                if (layer.Linear is { } lin)
+                    PaintLinearGradient(page, document, lin, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, clipOverride: gClip);
+                else if (layer.Radial is { } rad)
+                    PaintRadialGradient(page, document, rad, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, clipOverride: gClip);
+                else if (layer.Conic is { } con)
+                    PaintConicGradient(page, document, con, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, diagnostics, ref conicRasterReported, ref conicCapReported, clipOverride: gClip);
+                if (gradientSliceClipped) page.RestoreGraphicsState();
+            }
+        }
+    }
+
+    /// <summary>A gradient background layer honours <c>background-origin</c>/<c>-clip</c> but NOT
+    /// <c>background-size</c>/<c>-position</c>/<c>-repeat</c> (the native shading fills the origin box).
+    /// True when the layer specifies any of those three as a NON-initial value — so the caller surfaces
+    /// the deferral once. The position initial is <c>0% 0%</c> (the builder injects <c>0%</c> per missing
+    /// axis), repeat <c>repeat</c>, size <c>auto</c>.</summary>
+    private static bool GradientVariantDeferred(ImageResourceCache.BgLayer layer)
+    {
+        // The recomposed -x/-y position can carry stray/double spaces — collapse to single-space lowercase
+        // before matching against the initial forms.
+        static string Norm(string? raw) => raw is null
+            ? string.Empty
+            : string.Join(' ', raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();
+
+        var st = Norm(layer.SizeRaw);
+        if (st.Length > 0 && st is not ("auto" or "auto auto")) return true;
+        var rt = Norm(layer.RepeatRaw);
+        if (rt.Length > 0 && rt is not ("repeat" or "repeat repeat")) return true;
+        // AngleSharp canonicalizes the position zeros to unitless "0" (so "0% 0%" → "0 0").
+        var pt = Norm(layer.PositionRaw);
+        if (pt.Length > 0 && pt is not (
+                "0" or "0 0" or "0% 0%" or "0px 0px" or "0% 0" or "0 0%" or "0px 0" or "0 0px"
+                or "left top" or "top left"))
+        {
+            return true;
+        }
+        return false;
+    }
 
     /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box (bg-image +
     /// bg-variants cycles): the tile size comes from <paramref name="sizeRaw"/>
@@ -2269,7 +2397,12 @@ internal static class FragmentPainter
         // whole-box / composite) block extent instead of the painted slice, so a sliced block's gradient is
         // CONTINUOUS across slices and rounds correctly; the CALLER adds an outer per-slice rect clip to
         // limit the paint to this fragment (PR #223 review [P1]). Null → the box itself (byte-identical).
-        double? axisTopPx = null, double? axisHeightPx = null)
+        double? axisTopPx = null, double? axisHeightPx = null,
+        // Multi-layer backgrounds (PR #235 review [P2]) — when set, the box args are the background-ORIGIN
+        // box (the axis spans it) while the shading is CLIPPED to THIS rect (the background-clip box,
+        // rounded) instead of the axis box + style radii. Null → clip == axis box with the style radii
+        // (the single-layer path, byte-identical).
+        (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride = null)
     {
         // CLIP rect = AXIS rect = the whole (composite) decoration box. The inline axis is shared (slices
         // differ only in the block axis); the radii resolve against the COMPOSITE height.
@@ -2288,6 +2421,13 @@ internal static class FragmentPainter
 
         var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
+        if (clipOverride is { } co)
+        {
+            ToPdfRect(co.LeftPx, co.TopPx, co.WidthPx, co.HeightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+            page.PaintShadingInRect(shadingRef, cx, cy, cw, ch,
+                co.Radii.AnyPositive ? ToPt(co.Radii) : (CornerRadii?)null);
+            return;
+        }
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
         page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
@@ -2506,7 +2646,11 @@ internal static class FragmentPainter
         // computed over this (larger, whole-box / composite) extent instead of the painted slice, so a
         // sliced radial gradient is CONTINUOUS + rounds correctly; the CALLER adds the per-slice rect clip
         // (PR #223 review [P1]). Null → the box itself (byte-identical).
-        double? axisTopPx = null, double? axisHeightPx = null)
+        double? axisTopPx = null, double? axisHeightPx = null,
+        // Multi-layer backgrounds (PR #235 review [P2]) — when set, the box args are the background-ORIGIN
+        // box (center + radius span it) while the shading is CLIPPED to THIS rect (the background-clip box,
+        // rounded). Null → clip == axis box with the style radii (single-layer path, byte-identical).
+        (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride = null)
     {
         // CLIP rect = AXIS rect = the whole (composite) decoration box — the center + radius + radii are
         // measured against it for slice continuity; the radii resolve against the COMPOSITE height.
@@ -2565,7 +2709,6 @@ internal static class FragmentPainter
         if (stops.Count < 2) return;
 
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
-        var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
         (double, double, double, double, double, double)? shadingCtm = null;
         if (rx != ry)
         {
@@ -2573,6 +2716,14 @@ internal static class FragmentPainter
             var sy = ry / baseRadius;
             shadingCtm = (sx, 0.0, 0.0, sy, pcx * (1 - sx), pcy * (1 - sy));
         }
+        if (clipOverride is { } co)
+        {
+            ToPdfRect(co.LeftPx, co.TopPx, co.WidthPx, co.HeightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+            page.PaintShadingInRect(shadingRef, cx, cy, cw, ch,
+                co.Radii.AnyPositive ? ToPt(co.Radii) : (CornerRadii?)null, shadingCtm: shadingCtm);
+            return;
+        }
+        var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
         page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null, shadingCtm: shadingCtm);
     }
@@ -2591,7 +2742,11 @@ internal static class FragmentPainter
         uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported,
         // box-decoration-break: slice — the sweep is rasterized over the WHOLE (composite) box for
         // continuity; the CALLER adds the per-slice rect clip. Null → the box itself (byte-identical).
-        double? axisTopPx = null, double? axisHeightPx = null)
+        double? axisTopPx = null, double? axisHeightPx = null,
+        // Multi-layer backgrounds (PR #235 review [P2]) — when set, the box args are the background-ORIGIN
+        // box (the sweep raster covers it) while the placed image is CLIPPED to THIS rect (the
+        // background-clip box, rounded). Null → clip == the box with the style radii (byte-identical).
+        (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride = null)
     {
         var stops = ResolveConicStops(conic, currentColorArgb, conic.Repeating);
         if (stops.Count < 2) return;
@@ -2627,11 +2782,24 @@ internal static class FragmentPainter
 
         var imageRef = document.RegisterImage(result);
         ToPdfRect(leftPx, boxTopPx, widthPx, boxHeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        var radiiPx = ReadCornerRadii(style, widthPx, boxHeightPx);
-        var rounded = radiiPx.AnyPositive;
-        if (rounded) page.BeginRoundedRectangleClip(x, y, w, h, ToPt(radiiPx));
-        page.PlaceImage(imageRef, x, y, w, h);
-        if (rounded) page.RestoreGraphicsState();
+        if (clipOverride is { } co)
+        {
+            // The raster covers the ORIGIN box (x,y,w,h); clip the placement to the background-clip box
+            // (always clip, even non-rounded, so a tighter content-box clip crops the sweep).
+            ToPdfRect(co.LeftPx, co.TopPx, co.WidthPx, co.HeightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+            if (co.Radii.AnyPositive) page.BeginRoundedRectangleClip(cx, cy, cw, ch, ToPt(co.Radii));
+            else page.BeginRectangleClip(cx, cy, cw, ch);
+            page.PlaceImage(imageRef, x, y, w, h);
+            page.RestoreGraphicsState();
+        }
+        else
+        {
+            var radiiPx = ReadCornerRadii(style, widthPx, boxHeightPx);
+            var rounded = radiiPx.AnyPositive;
+            if (rounded) page.BeginRoundedRectangleClip(x, y, w, h, ToPt(radiiPx));
+            page.PlaceImage(imageRef, x, y, w, h);
+            if (rounded) page.RestoreGraphicsState();
+        }
 
         if (!rasterReported)
         {

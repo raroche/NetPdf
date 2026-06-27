@@ -435,9 +435,11 @@ internal static class FragmentPainter
                 if (clip.Radii is { } rad)
                 {
                     // Per-corner radii (CSS Masking §inset — each corner is a length-percentage; X resolves
-                    // against the inset box width, Y against its height). Was a single uniform radius.
+                    // against the inset box width, Y against its height). The `round X / Y` slash form gives
+                    // separate Y radii (clip.RadiiY); without it, X is used for both axes.
+                    var radY = clip.RadiiY ?? rad;
                     double Rx(int i) => PdfUnits.PxToPt(Math.Min(w, Resolve(rad[i], w)));
-                    double Ry(int i) => PdfUnits.PxToPt(Math.Min(h, Resolve(rad[i], h)));
+                    double Ry(int i) => PdfUnits.PxToPt(Math.Min(h, Resolve(radY[i], h)));
                     page.BeginRoundedRectangleClip(px, py, pw, ph,
                         new CornerRadii(Rx(0), Ry(0), Rx(1), Ry(1), Rx(2), Ry(2), Rx(3), Ry(3)));
                 }
@@ -496,13 +498,19 @@ internal static class FragmentPainter
         }
     }
 
+    // DoS guards (PR-234 review [P3]) — an author-supplied clip path is untrusted; cap the raw path-data
+    // length and the emitted segment count so a giant path can't allocate an unbounded segment list / blow up
+    // the PDF stream. Over-cap → null (the element paints unclipped + the raster-fallback diagnostic fires).
+    private const int MaxClipPathDataLength = 64 * 1024;   // 64 KiB of path text
+    private const int MaxClipPathSegments = 20_000;
+
     /// <summary>Convert a <c>clip-path: path("…")</c> SVG path string into PDF clip segments in the box's
     /// coordinate space (px origin = the box's top-left). Curves are preserved (quad → cubic; conic → cubics);
-    /// the result feeds <see cref="PdfPage.BeginPathClip"/>. Returns <see langword="null"/> on an
-    /// empty / unparseable path.</summary>
+    /// the result feeds <see cref="PdfPage.BeginPathClip"/>. Returns <see langword="null"/> on an empty /
+    /// unparseable / over-cap path.</summary>
     private static List<PdfPathSegment>? BuildPathClipSegments(string? pathData, double leftPx, double topPx, double pageHeightPt)
     {
-        if (string.IsNullOrWhiteSpace(pathData)) return null;
+        if (string.IsNullOrWhiteSpace(pathData) || pathData.Length > MaxClipPathDataLength) return null;
         using var skPath = SKPath.ParseSvgPathData(pathData);
         if (skPath is null) return null;
 
@@ -542,6 +550,7 @@ internal static class FragmentPainter
                 }
                 case SKPathVerb.Close: segs.Add(PdfPathSegment.Close); break;
             }
+            if (segs.Count > MaxClipPathSegments) return null; // over the complexity cap → fall back
         }
         return segs.Count > 0 ? segs : null;
     }

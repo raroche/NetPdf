@@ -149,6 +149,31 @@ public sealed class ClipPathPaintTests
     }
 
     [Fact]
+    public void Inset_round_slash_form_applies_separate_x_and_y_radii()
+    {
+        // inset(... round 20px / 40px) → a rounded clip; it must paint a rounded path (Bézier corners),
+        // proving the slash form is parsed + applied rather than rejected.
+        var result = HtmlPdf.ConvertDetailed(Html("inset(5px round 20px / 40px)"));
+        var text = Latin1(result.Pdf);
+        Assert.Contains("W n", text);
+        Assert.Contains(" c ", text);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathUnsupported001);
+    }
+
+    [Fact]
+    public void Oversized_path_clip_falls_back_with_a_diagnostic()
+    {
+        // PR-234 review [P3] — an author-supplied path over the segment cap (20k) is not applied; it paints
+        // unclipped + the raster-fallback diagnostic fires (no unbounded allocation / PDF blow-up).
+        var sb = new StringBuilder("M0 0");
+        for (var i = 0; i < 30_000; i++) sb.Append(" L").Append(i % 100).Append(' ').Append(i % 50);
+        sb.Append(" Z");
+        var result = HtmlPdf.ConvertDetailed(Html($"path('{sb}')"));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathRasterFallback001);
+        Assert.Contains("1 0 0 rg", Latin1(result.Pdf));   // still painted (unclipped)
+    }
+
+    [Fact]
     public void Clip_path_on_an_element_with_children_warns_about_the_subtree()
     {
         var html = "<!DOCTYPE html><html><body>" +

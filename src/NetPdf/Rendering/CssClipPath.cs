@@ -32,7 +32,8 @@ internal readonly record struct ClipLen(double Px, double Frac);
 internal sealed record CssClipPath(
     ClipShapeKind Kind,
     ClipLen[]? Edges = null,
-    ClipLen[]? Radii = null,           // 4 corners (X==Y), optional for inset round
+    ClipLen[]? Radii = null,           // 4 corner X radii (also Y when RadiiY is null), optional for inset round
+    ClipLen[]? RadiiY = null,          // 4 corner Y radii (the `round X / Y` slash form); null → same as Radii
     ClipLen Radius = default, ClipLen Rx = default, ClipLen Ry = default,
     ClipLen Cx = default, ClipLen Cy = default,
     (ClipLen X, ClipLen Y)[]? Points = null,
@@ -82,15 +83,30 @@ internal static class CssClipPath_Parser
             if (!TryLen(nums[ShorthandIndex(nums.Count, i)], out e[i])) return null;
 
         ClipLen[]? radii = null;
+        ClipLen[]? radiiY = null;
         if (roundPart is not null)
         {
-            var rNums = SplitWs(roundPart);
-            if (rNums.Count is < 1 or > 4) return null;
-            radii = new ClipLen[4];
-            for (var i = 0; i < 4; i++)
-                if (!TryLen(rNums[ShorthandIndex(rNums.Count, i)], out radii[i])) return null;
+            // <border-radius> = <x>{1,4} [ / <y>{1,4} ]? — the optional slash gives separate Y radii.
+            var slash = roundPart.IndexOf('/');
+            var xPart = slash >= 0 ? roundPart[..slash] : roundPart;
+            var yPart = slash >= 0 ? roundPart[(slash + 1)..] : null;
+            if (!TryParseCornerRadii(xPart, out radii)) return null;
+            if (yPart is not null && !TryParseCornerRadii(yPart, out radiiY)) return null;
         }
-        return new CssClipPath(ClipShapeKind.Inset, Edges: e, Radii: radii);
+        return new CssClipPath(ClipShapeKind.Inset, Edges: e, Radii: radii, RadiiY: radiiY);
+    }
+
+    /// <summary>Parse a 1–4 value corner-radius shorthand into four (TL, TR, BR, BL) clip-lengths.</summary>
+    private static bool TryParseCornerRadii(string part, out ClipLen[]? radii)
+    {
+        radii = null;
+        var nums = SplitWs(part);
+        if (nums.Count is < 1 or > 4) return false;
+        var r = new ClipLen[4];
+        for (var i = 0; i < 4; i++)
+            if (!TryLen(nums[ShorthandIndex(nums.Count, i)], out r[i])) return false;
+        radii = r;
+        return true;
     }
 
     // CSS 1-4 value shorthand expansion (top, right, bottom, left).
@@ -189,20 +205,25 @@ internal static class CssClipPath_Parser
 
     private static CssClipPath? ParsePath(string args)
     {
-        // path( [<fill-rule>,]? <string> ) — the SVG path is a string in single OR double quotes. An optional
-        // leading fill-rule (nonzero | evenodd) before the comma selects the clip rule (default nonzero).
+        // path( [<fill-rule> ,]? <string> ) — the SVG path is a string in single OR double quotes. An
+        // optional leading fill-rule (nonzero | evenodd) MUST be followed by a comma; anything after the
+        // closing quote (other than whitespace) is invalid.
         var quote = args.IndexOfAny(['"', '\'']);
         if (quote < 0) return null;
         var evenOdd = false;
-        var prefix = args[..quote].Trim().TrimEnd(',').Trim();
+        var prefix = args[..quote].Trim();
         if (prefix.Length > 0)
         {
-            if (prefix.Equals("evenodd", StringComparison.OrdinalIgnoreCase)) evenOdd = true;
-            else if (!prefix.Equals("nonzero", StringComparison.OrdinalIgnoreCase)) return null; // junk before the string
+            // A fill-rule prefix REQUIRES the comma (CSS Shapes — `path( <fill-rule>? , <string> )`).
+            if (!prefix.EndsWith(',')) return null;
+            var rule = prefix[..^1].Trim();
+            if (rule.Equals("evenodd", StringComparison.OrdinalIgnoreCase)) evenOdd = true;
+            else if (!rule.Equals("nonzero", StringComparison.OrdinalIgnoreCase)) return null; // junk before the comma
         }
         var qch = args[quote];
         var end = args.LastIndexOf(qch);
         if (end <= quote) return null;
+        if (args[(end + 1)..].Trim().Length > 0) return null; // trailing garbage after the closing quote
         var data = args.Substring(quote + 1, end - quote - 1);
         return data.Length > 0 ? new CssClipPath(ClipShapeKind.Path, PathData: data, EvenOdd: evenOdd) : null;
     }

@@ -2713,10 +2713,20 @@ flags the categories):
      saturate/hue-rotate/opacity color matrices, `blur`, alpha-following `drop-shadow` with raster
      bounds-expansion), chained in order. **Filter residuals (Phase 4 follow-ups):** (1) GENERAL
      element-subtree filters (a filter on a `<div>` / text box) are DEFERRED with
-     `CSS-FILTER-ELEMENT-UNSUPPORTED-001` — they need a Skia SUBTREE RENDERER (an `IPaintTarget`
-     abstraction so `FragmentPainter` / `TextPainter` can target an `SKCanvas` instead of a `PdfPage`)
-     that doesn't exist yet; Roland's call (PR #226 follow-up) was "image filters first". This is the
-     enabling capability for general filters AND masks AND complex clip-path. (2) blur / drop-shadow
+     `CSS-FILTER-ELEMENT-UNSUPPORTED-001` — they need a Skia SUBTREE RENDERER. **UPDATE (Phase 4 PR 5):
+     the FOUNDATION of the subtree renderer now EXISTS — `NetPdf.Pdf.Images.SubtreeRasterizer` (SKCanvas →
+     RGBA `RasterImageInfo` → XObject + `/SMask`), first used by the SVG renderer. The remaining work to
+     close the general-element filter/mask/blend deferrals is to drive `FragmentPainter`/`TextPainter`
+     subtree painting onto an `SKCanvas` (the `IPaintTarget` seam) and feed it through `SubtreeRasterizer`
+     — the raster bridge itself is no longer the blocker.** Roland's call (PR #226 follow-up) was "image
+     filters first". This is the enabling capability for general filters AND masks AND complex clip-path.
+     **Phase 4 PR 5 also shipped static SVG part 1** (`NetPdf.Svg.SvgRasterizer` → `SubtreeRasterizer`):
+     `rect`/`circle`/`ellipse`/`line`/`polyline`/`polygon`/`path`/`<g>` with fill/stroke/stroke-width/
+     `transform` + inherited presentation attrs, viewBox xMidYMid-meet, wired through `<img>` SVG sources
+     (`image/svg+xml` re-enabled — the renderer is XXE-safe, no script/external fetch). **SVG residuals
+     (PR 7):** `<text>`, gradients (linear/radial), `<use>`/`<symbol>`/`<defs>`, `<image>`, `%`/`em`
+     lengths, dash arrays (`stroke-dasharray`), opacity/fill-opacity, native vector SVG → PDF operators
+     (raster first cut), inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't
      depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow

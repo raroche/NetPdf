@@ -817,6 +817,20 @@ internal sealed class ImageResourceCache
                 SourceBytes = bytes,
             };
         }
+        // SVG (Phase 4 PR 5) — a text/XML format Skia's codecs don't decode; the first-cut SVG renderer
+        // (NetPdf.Svg) rasterizes the shapes via Skia → an RGBA raster XObject. Sniffed before the raster
+        // fallback (which would reject SVG's text bytes).
+        if (NetPdf.Svg.SvgRasterizer.LooksLikeSvg(bytes)
+            && NetPdf.Svg.SvgRasterizer.TryRender(bytes) is { } svgRaster)
+        {
+            return new Entry
+            {
+                WidthPx = svgRaster.Width,
+                HeightPx = svgRaster.Height,
+                XObject = RasterImageXObject.Build(svgRaster),
+                SourceBytes = bytes,
+            };
+        }
         var raster = RasterImageDecoder.Decode(bytes);
         return new Entry
         {

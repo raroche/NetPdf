@@ -359,12 +359,14 @@ public sealed class SafeResourceLoader
         var bare = (semi < 0 ? mime : mime[..semi]).Trim().ToLowerInvariant();
         return kind switch
         {
-            // Per PR #18 review #2 — image/svg+xml DELIBERATELY OMITTED
-            // until a static-SVG sanitizer/renderer pipeline owns
-            // external SVG. Phase 5 must add explicit SVG handling
-            // (parse + sanitize + safe-rasterize) before re-enabling.
+            // image/svg+xml is now ALLOWED (Phase 4 SVG part 1, PR 5): the static-SVG renderer
+            // (NetPdf.Svg.SvgRasterizer) is the "safe-rasterize" pipeline this gate waited for — it
+            // parses with DTD processing PROHIBITED + no XML resolver (no XXE), executes NO script /
+            // event handlers, and fetches NO external resources (<image>/<use href>/url() are skipped this
+            // cut), then rasterizes shapes to a bitmap. The attack surface PR #18 review #2 worried about
+            // (script, external refs, XXE) is structurally absent from the renderer.
             ResourceKind.Image => bare is "image/png" or "image/jpeg" or "image/gif"
-                or "image/webp" or "image/bmp",
+                or "image/webp" or "image/bmp" or "image/svg+xml",
             // Fonts: standard application/font-* + font/* per RFC 8081 +
             // legacy MIME types still common in the wild.
             ResourceKind.Font => bare is "font/ttf" or "font/otf" or "font/woff"

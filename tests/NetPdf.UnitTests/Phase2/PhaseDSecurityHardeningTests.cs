@@ -578,21 +578,36 @@ public sealed class PhaseDSecurityHardeningTests
         Assert.True(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml; charset=utf-8", ResourceKind.Image));
     }
 
-    [Fact]
-    public void Svg_data_uri_renders_under_safe_default_via_safe_renderer()
+    private static string SvgImgHtml()
     {
-        // SafeDefault allows data: (scheme gate) AND the MIME gate now allows svg → a data: SVG renders.
-        Assert.True(SecurityPolicy.SafeDefault.AllowDataUri);
-        Assert.True(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#3366cc\"/></svg>";
+        var dataUri = "data:image/svg+xml;base64," + System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(svg));
+        return "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{dataUri}\" style=\"width:40px;height:40px\"></body></html>";
     }
 
     [Fact]
-    public void Untrusted_html_still_blocks_data_svg_at_the_scheme_gate()
+    public void Svg_data_uri_renders_end_to_end_under_safe_default()
     {
-        // Even though the image MIME gate now allows svg, UntrustedHtml keeps data: OFF — so a data: SVG
-        // (the polyglot vector) is still rejected at the SCHEME gate for untrusted content (defense in
-        // depth: a fetched http(s) SVG would go through the XXE-safe renderer; a data: one never loads).
+        // SafeDefault allows data: (scheme gate) AND the MIME gate now allows svg → a data: SVG renders.
+        // End-to-end proof (PR-230 review [P3]): the rasterized SVG is placed as an image XObject.
+        Assert.True(SecurityPolicy.SafeDefault.AllowDataUri);
+        var pdf = System.Text.Encoding.Latin1.GetString(
+            NetPdf.HtmlPdf.Convert(SvgImgHtml(), new NetPdf.HtmlPdfOptions { SecurityPolicy = SecurityPolicy.SafeDefault }));
+        Assert.Contains("Do", pdf);
+    }
+
+    [Fact]
+    public void Untrusted_html_blocks_data_svg_end_to_end_at_the_scheme_gate()
+    {
+        // UntrustedHtml keeps data: OFF — so a data: SVG (the polyglot vector) never loads (defense in
+        // depth: a fetched http(s) SVG would go through the XXE-safe renderer; a data: one is rejected at
+        // the SCHEME gate). End-to-end: no image XObject is placed (PR-230 review [P3]).
         Assert.False(SecurityPolicy.UntrustedHtml.AllowDataUri);
+        var pdf = System.Text.Encoding.Latin1.GetString(
+            NetPdf.HtmlPdf.Convert(SvgImgHtml(), new NetPdf.HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml }));
+        Assert.DoesNotContain("/Subtype /Image", pdf);
     }
 
     // P1 #3: @font-face src URL extraction.

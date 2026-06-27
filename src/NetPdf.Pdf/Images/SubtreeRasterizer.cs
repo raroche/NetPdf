@@ -46,4 +46,18 @@ internal static class SubtreeRasterizer
 
         return new RasterImageInfo { Width = width, Height = height, HasAlpha = true, PixelBytes = pixels };
     }
+
+    /// <summary>Encode a rasterized <see cref="RasterImageInfo"/> (RGBA unpremul) to PNG bytes. Used so a
+    /// non-codec source (an SVG render) can store DECODABLE bytes as its <c>Entry.SourceBytes</c> — the
+    /// CSS <c>filter</c> / <c>mask</c> appliers re-decode those bytes via <see cref="SKCodec"/>, which can't
+    /// read SVG XML but can read this PNG (PR-230 review [P2]). Returns <see langword="null"/> on failure.</summary>
+    public static byte[]? EncodePng(RasterImageInfo info)
+    {
+        ArgumentNullException.ThrowIfNull(info);
+        var imageInfo = new SKImageInfo(info.Width, info.Height, SKColorType.Rgba8888, SKAlphaType.Unpremul);
+        using var image = SKImage.FromPixelCopy(imageInfo, info.PixelBytes);
+        if (image is null) return null;
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        return data?.ToArray();
+    }
 }

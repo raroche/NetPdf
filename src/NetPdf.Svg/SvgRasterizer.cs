@@ -34,10 +34,21 @@ internal static class SvgRasterizer
             || t.StartsWith("<!doctype svg", StringComparison.OrdinalIgnoreCase);
     }
 
+    // DoS guards (PR-230 review [P1]): a malicious SVG can nest thousands of <g> to drive a
+    // StackOverflowException (which SubtreeRasterizer's try/catch CANNOT recover) or pile up elements to
+    // burn CPU. Cap the recursion DEPTH (iterative would be safest but a hard depth cap is sufficient + far
+    // below the stack limit), the total ELEMENT count, and the parsed CHARACTER count.
+    private const int MaxDepth = 80;
+    private const int MaxElements = 50_000;
+    private const long MaxCharactersInDocument = 8L * 1024 * 1024; // 8M chars
+
     /// <summary>Parse + rasterize <paramref name="svgBytes"/>. Returns <see langword="null"/> on a parse
-    /// failure or an unsupported / over-cap document (the caller leaves the image unrendered).</summary>
-    public static RasterImageInfo? TryRender(byte[] svgBytes)
+    /// failure or an over-cap document; <paramref name="sawUnsupported"/> is set when the SVG used a feature
+    /// this cut doesn't render (text / image / use / defs / gradients / a paint-server fill, or content
+    /// truncated by the depth / element budget) so the caller can diagnose it.</summary>
+    public static RasterImageInfo? TryRender(byte[] svgBytes, out bool sawUnsupported)
     {
+        sawUnsupported = false;
         ArgumentNullException.ThrowIfNull(svgBytes);
         XDocument doc;
         try
@@ -50,6 +61,7 @@ internal static class SvgRasterizer
                 DtdProcessing = System.Xml.DtdProcessing.Prohibit,
                 XmlResolver = null,
                 MaxCharactersFromEntities = 1024,
+                MaxCharactersInDocument = MaxCharactersInDocument,
             };
             using var ms = new System.IO.MemoryStream(svgBytes);
             using var reader = System.Xml.XmlReader.Create(ms, settings);
@@ -68,7 +80,8 @@ internal static class SvgRasterizer
         var pxH = (int)Math.Ceiling(h);
         if (pxW <= 0 || pxH <= 0) return null;
 
-        return SubtreeRasterizer.Render(pxW, pxH, canvas =>
+        var state = new RenderState();
+        var raster = SubtreeRasterizer.Render(pxW, pxH, canvas =>
         {
             // Map the viewBox onto the raster (preserveAspectRatio xMidYMid meet — the default §8.2).
             if (vbW > 0 && vbH > 0)
@@ -81,15 +94,22 @@ internal static class SvgRasterizer
             }
             var initial = new SvgStyle(Fill: SKColors.Black, Stroke: null, StrokeWidth: 1, HasExplicitFill: false);
             foreach (var child in root.Elements())
-                RenderElement(canvas, child, initial);
+                RenderElement(canvas, child, initial, state, depth: 1);
         });
+        sawUnsupported = state.SawUnsupported;
+        return raster;
     }
 
     private readonly record struct SvgStyle(SKColor Fill, SKColor? Stroke, float StrokeWidth, bool HasExplicitFill);
 
-    private static void RenderElement(SKCanvas canvas, XElement el, SvgStyle inherited)
+    private sealed class RenderState { public int Elements; public bool SawUnsupported; }
+
+    private static void RenderElement(SKCanvas canvas, XElement el, SvgStyle inherited, RenderState state, int depth)
     {
-        var style = ResolveStyle(el, inherited);
+        // DoS guards: stop at the depth / element budget (truncation is flagged unsupported).
+        if (depth > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
+
+        var style = ResolveStyle(el, inherited, state);
         var transform = ParseTransform(Attr(el, "transform"));
         var restore = canvas.Save();
         if (transform is { } m) canvas.Concat(in m);
@@ -97,7 +117,8 @@ internal static class SvgRasterizer
         switch (el.Name.LocalName.ToLowerInvariant())
         {
             case "g":
-                foreach (var child in el.Elements()) RenderElement(canvas, child, style);
+            case "svg": // nested viewports approximated as a group this cut
+                foreach (var child in el.Elements()) RenderElement(canvas, child, style, state, depth + 1);
                 break;
             case "rect": DrawRect(canvas, el, style); break;
             case "circle": DrawCircle(canvas, el, style); break;
@@ -106,7 +127,11 @@ internal static class SvgRasterizer
             case "polyline": DrawPoly(canvas, el, style, close: false); break;
             case "polygon": DrawPoly(canvas, el, style, close: true); break;
             case "path": DrawPath(canvas, el, style); break;
-            default: break; // unsupported element (text/use/defs/…) — skipped this cut
+            // Non-rendering metadata — ignore WITHOUT flagging (legitimately skippable).
+            case "title": case "desc": case "metadata": break;
+            // Everything else (text / image / use / defs / symbol / linear|radialGradient / …) is not
+            // rendered this cut — flag it so the caller surfaces one diagnostic per image (PR-230 [P2]).
+            default: state.SawUnsupported = true; break;
         }
         canvas.RestoreToCount(restore);
     }
@@ -196,7 +221,7 @@ internal static class SvgRasterizer
         canvas.DrawPath(path, stroke);
     }
 
-    private static SvgStyle ResolveStyle(XElement el, SvgStyle inherited)
+    private static SvgStyle ResolveStyle(XElement el, SvgStyle inherited, RenderState state)
     {
         var fill = inherited.Fill;
         var hasFill = inherited.HasExplicitFill;
@@ -204,6 +229,7 @@ internal static class SvgRasterizer
         if (fillRaw is not null)
         {
             if (fillRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) { fill = SKColors.Transparent; hasFill = true; }
+            else if (IsPaintServer(fillRaw)) { fill = SKColors.Transparent; hasFill = true; state.SawUnsupported = true; } // url(#grad) — not the inherited/default black (PR-230 [P2])
             else if (TryColor(fillRaw, out var fc)) { fill = fc; hasFill = true; }
         }
 
@@ -212,6 +238,7 @@ internal static class SvgRasterizer
         if (strokeRaw is not null)
         {
             if (strokeRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) stroke = null;
+            else if (IsPaintServer(strokeRaw)) { stroke = null; state.SawUnsupported = true; } // url() stroke — no paint
             else if (TryColor(strokeRaw, out var stc)) stroke = stc;
         }
 
@@ -222,6 +249,12 @@ internal static class SvgRasterizer
 
         return new SvgStyle(fill, stroke, strokeWidth, hasFill);
     }
+
+    /// <summary>A paint server reference (<c>url(#id)</c> — a gradient / pattern) the renderer can't
+    /// resolve this cut. Treated as no-paint (NOT inherited/default black) so a gradient-filled logo goes
+    /// transparent rather than turning into a black blob.</summary>
+    private static bool IsPaintServer(string raw) =>
+        raw.TrimStart().StartsWith("url(", StringComparison.OrdinalIgnoreCase);
 
     // ---- attribute / value helpers ----
 

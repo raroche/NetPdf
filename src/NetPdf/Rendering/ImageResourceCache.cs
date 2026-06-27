@@ -775,7 +775,7 @@ internal sealed class ImageResourceCache
         var bytes = result.Response.Content.ToArray();
         try
         {
-            return Decode(bytes);
+            return Decode(bytes, diagnostics);
         }
         catch (Exception ex) when (ex is System.IO.InvalidDataException or NotSupportedException
             or ArgumentException or System.IO.EndOfStreamException)
@@ -792,7 +792,7 @@ internal sealed class ImageResourceCache
     /// <summary>Sniff the magic bytes and build the matching XObject. PNG + JPEG take the
     /// dedicated passthrough paths (no decode round-trip); everything else goes through the
     /// SkiaSharp raster fallback (the approved-dependency raster-only role).</summary>
-    private static Entry Decode(byte[] bytes)
+    private static Entry Decode(byte[] bytes, IDiagnosticsSink diagnostics)
     {
         if (bytes.Length > 8 && bytes[0] == 0x89 && bytes[1] == (byte)'P'
             && bytes[2] == (byte)'N' && bytes[3] == (byte)'G')
@@ -821,14 +821,26 @@ internal sealed class ImageResourceCache
         // (NetPdf.Svg) rasterizes the shapes via Skia → an RGBA raster XObject. Sniffed before the raster
         // fallback (which would reject SVG's text bytes).
         if (NetPdf.Svg.SvgRasterizer.LooksLikeSvg(bytes)
-            && NetPdf.Svg.SvgRasterizer.TryRender(bytes) is { } svgRaster)
+            && NetPdf.Svg.SvgRasterizer.TryRender(bytes, out var svgUnsupported) is { } svgRaster)
         {
+            if (svgUnsupported)
+                diagnostics.Emit(new Diagnostic(
+                    DiagnosticCodes.CssSvgUnsupported001,
+                    "An SVG image used a feature the first-cut renderer doesn't support (text / image / use "
+                    + "/ defs / a gradient or pattern paint-server / an unknown element, or content beyond the "
+                    + "depth / element budget); the supported shapes still rendered. A url(#…) paint server "
+                    + "was painted transparent (not black).",
+                    DiagnosticSeverity.Info));
+            // SourceBytes = the RASTERIZED RGBA re-encoded as PNG (NOT the SVG XML), so a CSS filter / mask
+            // on the <img> can re-decode it via SKCodec (PR-230 review [P2]); fall back to the SVG bytes if
+            // the encode fails (the base image still renders; filter/mask just won't apply).
+            var svgSource = SubtreeRasterizer.EncodePng(svgRaster) ?? bytes;
             return new Entry
             {
                 WidthPx = svgRaster.Width,
                 HeightPx = svgRaster.Height,
                 XObject = RasterImageXObject.Build(svgRaster),
-                SourceBytes = bytes,
+                SourceBytes = svgSource,
             };
         }
         var raster = RasterImageDecoder.Decode(bytes);

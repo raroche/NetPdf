@@ -316,9 +316,10 @@ internal sealed class HtmlParsingHost
         // the self-contained embedded-image path). The Phase A strip predated the image
         // pipeline ("inert today — when Phase 5 wires IResourceLoader…"); now that the wireup
         // exists, the data: payload is validated DOWNSTREAM: SafeResourceLoader's MIME
-        // allowlist (text/html + image/svg+xml polyglots rejected) + the decoder's magic-byte
-        // check (a payload claiming image/png but carrying HTML fails to decode). javascript:
-        // / vbscript: / non-image data: still strip.
+        // allowlist (text/html polyglots rejected; image/svg+xml is now ALLOWED — Phase 4 SVG
+        // part 1 added the XXE-safe, no-script, no-external-fetch SvgRasterizer) + the decoder's
+        // magic-byte / sniff check (a payload claiming image/png but carrying HTML fails to
+        // decode). javascript: / vbscript: / non-image data: still strip.
         StripDangerousUrlOnAttribute(document, "img[src]", "src", sink, sourceFile, allowImageDataUri: true);
         StripDangerousUrlOnAttribute(document, "link[href]", "href", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "source[src]", "src", sink, sourceFile);
@@ -566,9 +567,11 @@ internal sealed class HtmlParsingHost
     /// <summary>Whether <paramref name="value"/> is a <c>data:</c> URI whose EXPLICIT mediatype
     /// is on the image decoder's MIME allowlist (img-pipeline cycle —
     /// <see cref="SafeResourceLoader.IsMimeAllowedForKind"/>, the single source of truth:
-    /// png / jpeg / gif / webp / bmp; <c>text/html</c> and <c>image/svg+xml</c> polyglots are
-    /// NOT). A data: URI with no mediatype (<c>data:,…</c> / <c>data:;base64,…</c>) stays
-    /// dangerous — the embedded-image path requires the author to declare what it is.</summary>
+    /// png / jpeg / gif / webp / bmp / <c>image/svg+xml</c> [the last re-enabled in Phase 4 SVG
+    /// part 1 — the renderer is XXE-safe + runs no script + fetches nothing]; <c>text/html</c>
+    /// polyglots are still NOT). A data: URI with no mediatype (<c>data:,…</c> /
+    /// <c>data:;base64,…</c>) stays dangerous — the embedded-image path requires the author to
+    /// declare what it is.</summary>
     private static bool IsAllowedImageDataUri(string? value)
     {
         if (string.IsNullOrEmpty(value)) return false;

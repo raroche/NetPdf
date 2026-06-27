@@ -168,17 +168,21 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Non_solid_ROUNDED_border_style_emits_the_approximation_diagnostic()
     {
-        // Phase 4 PR 3 — dashed/dotted/double/3D borders are now rendered faithfully on the SQUARE
-        // per-edge path, so the approximation diagnostic only fires for a non-solid border on a
-        // ROUNDED box (the uniform-ring path still paints it as a solid ring — a documented residual).
-        const string html =
+        // dashed/dotted/double are now faithful on the rounded uniform-ring path too, so ONLY the 3D
+        // styles (groove/ridge/inset/outset) still approximate as a solid ring on a ROUNDED box (their
+        // per-side bevel can't follow rounded corners — a documented residual). A rounded DASHED border no
+        // longer diagnoses; a rounded GROOVE border does.
+        var dashed = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             "<div style=\"width:80px;height:40px;border:3px dashed #000000;border-radius:8px\"></div>" +
-            "</body></html>";
+            "</body></html>");
+        Assert.DoesNotContain(dashed.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
 
-        var result = HtmlPdf.ConvertDetailed(html);
-
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
+        var groove = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;border:6px groove #000000;border-radius:8px\"></div>" +
+            "</body></html>");
+        Assert.Contains(groove.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
     }
 
     [Fact]
@@ -7097,12 +7101,12 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Outline_and_border_style_approximation_diagnosed_once()
     {
-        // post-PR-#173 Copilot review — PAINT-BORDER-STYLE-APPROXIMATED-001 is once-per-conversion, and
-        // borders + outline SHARE the flag: a document with BOTH a non-solid border and a non-solid
-        // outline surfaces the diagnostic exactly ONCE (not twice).
+        // PAINT-BORDER-STYLE-APPROXIMATED-001 is once-per-conversion, and borders + outline SHARE the flag.
+        // dashed/dotted/double are now faithful everywhere, so only the 3D styles still approximate: a
+        // ROUNDED groove border + an inset outline both approximate → the diagnostic surfaces exactly ONCE.
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
-            "<div style=\"width:100px;height:60px;border:2px dashed #000;outline:2px dotted #f00\"></div>" +
+            "<div style=\"width:100px;height:60px;border-radius:8px;border:6px groove #000;outline:6px inset #f00\"></div>" +
             "</body></html>", new HtmlPdfOptions());
         Assert.Equal(1, result.Warnings.Count(d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001));
     }

@@ -2765,9 +2765,14 @@ flags the categories):
      the subtree renderer / SVG); (1c) `mix-blend-mode` blends DECORATION only + sets `/BM` directly (faithful
      isolated-group compositing needs the subtree renderer; `plus-lighter` has no PDF equivalent); (1d) links
      only for anchors with their OWN box fragment (inline-flow line-box link rects + `#fragment` links deferred).
-     (2) ROUNDED non-solid borders are still painted as a
-     solid ring (the uniform-ring path — `PAINT-BORDER-STYLE-APPROXIMATED-001`); per-corner inset-round
-     radii use a single uniform radius; (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
+     (2) **rounded non-solid borders + outlines — dashed/dotted/double SHIPPED** (rounded-nonsolid-borders
+     PR): the uniform ROUNDED border ring + the (sharp AND rounded) outline ring now render `dashed`/`dotted`
+     (a stroked rounded centreline via `PdfPage.StrokeRoundedRectangle` + the per-style dash) and `double`
+     (two concentric rounded rings) faithfully. **Remaining:** the 3D styles (`groove`/`ridge`/`inset`/
+     `outset`) on the rounded-ring + outline paths stay a solid-ring approximation — their per-SIDE bevel
+     shading can't follow a concentric rounded ring (`PAINT-BORDER-STYLE-APPROXIMATED-001` now fires ONLY
+     for 3D); a per-edge-mixed style on a rounded box falls to the per-edge clipped path; per-corner
+     inset-round radii use a single uniform radius. (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
      (`CSS-CLIP-PATH-RASTER-FALLBACK-001` — needs the SVG path parser from PR 6 + a native/raster
      clip); (4) a `clip-path` on an element with CHILDREN clips only its OWN decoration, not the
      descendant subtree (`CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001` — the same Skia SUBTREE RENDERER the
@@ -3413,9 +3418,11 @@ flags the categories):
          a large negative offset would drive below 0 (matching `ReduceRadii`); **(Copilot)** `outline-width` is a
          non-negative `<line-width>` (`NonNegativeProperties` — a negative value invalidates + falls back to
          `medium`); **(Copilot)** borders + outline SHARE one style-approximation flag so
-         `PAINT-BORDER-STYLE-APPROXIMATED-001` fires once per conversion. STILL DEFERRED: non-solid
-         `outline-style` (dotted/dashed/double/groove/ridge/inset/outset painted SOLID + diagnosed; `auto` paints
-         solid without a diagnostic); `outline-color: auto`'s true UA colour (approximated currentcolor).
+         `PAINT-BORDER-STYLE-APPROXIMATED-001` fires once per conversion. **UPDATE (rounded-non-solid-borders
+         PR):** non-solid OUTLINES now render faithfully — `dotted`/`dashed` stroke the (sharp/rounded) outline
+         ring centreline + `double` = two concentric rings (shared `PaintStyledRing`). STILL DEFERRED: only the
+         3D `outline-style` (groove/ridge/inset/outset) is painted SOLID + diagnosed (per-side bevel can't follow
+         the ring; `auto`/`solid` paint solid without a diagnostic); `outline-color: auto`'s true UA colour.
        - **body `border-radius` COMPLETION (per-corner + `%` band fill, rounded uniform border
          strokes, rounded background-image clip) — DONE (border-radius-completion cycle, 3 tasks):**
          the body border-radius first cut (uniform-circular band fill only) is finished. **(Task 1 —

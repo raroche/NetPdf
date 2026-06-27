@@ -252,6 +252,49 @@ public sealed class PdfPageRoundedFillTests
         Assert.False(CornerRadii.Uniform(8).NormalizedFor(0, 50).AnyPositive);   // degenerate → all 0
     }
 
+    [Fact]
+    public void StrokeRoundedRectangle_strokes_a_bezier_path_with_a_dash()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.StrokeRoundedRectangle(10, 20, 100, 50, CornerRadii.Uniform(8), lineWidth: 4,
+            0.8, 0.2, 0.4, alpha: 1.0, dash: new[] { 12.0, 12.0 }, dashPhase: 0, lineCap: 0);
+
+        var content = ContentOf(page);
+        Assert.Contains("4 w", content);                       // line width
+        Assert.Contains("[12 12] 0 d", content);               // dash array + phase
+        Assert.Contains("0.8 0.2 0.4 RG", content);            // STROKE colour (RG, not rg)
+        Assert.Equal(4, CountOccurrences(content, " c "));     // one Bézier per rounded corner
+        Assert.Contains("S Q", content);                       // stroked + state restored
+        Assert.DoesNotContain(" f ", content);                 // not filled
+    }
+
+    [Fact]
+    public void StrokeRoundedRectangle_with_zero_radius_strokes_the_square_fast_path()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.StrokeRoundedRectangle(10, 20, 100, 50, default, lineWidth: 2, 0, 0, 0, lineCap: 1);
+
+        var content = ContentOf(page);
+        Assert.Contains(" re ", content);                      // square path fast path
+        Assert.Contains("1 J", content);                       // round cap
+        Assert.DoesNotContain(" c ", content);                 // no corner arcs
+        Assert.Contains("S Q", content);
+    }
+
+    [Fact]
+    public void StrokeRoundedRectangle_with_non_positive_size_or_width_no_ops()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.StrokeRoundedRectangle(10, 20, 0, 50, CornerRadii.Uniform(8), lineWidth: 4, 0, 0, 0);
+        page.StrokeRoundedRectangle(10, 20, 100, 50, CornerRadii.Uniform(8), lineWidth: 0, 0, 0, 0);
+        Assert.DoesNotContain("S Q", ContentOf(page));
+    }
+
     private static int CountOccurrences(string haystack, string needle)
     {
         var count = 0;

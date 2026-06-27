@@ -140,13 +140,14 @@ Phase column shows the milestone in which the feature first ships.
 
 | Feature | Status | Phase | Notes |
 |---|---|---|---|
-| Shapes (`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `path`) | ✅ | 4 | |
-| Fills, strokes, dashes | ✅ | 4 | |
-| Linear/radial gradients | ✅ | 4 | |
-| 2D transforms | ✅ | 4 | |
-| `<text>` | ✅ | 4 | |
-| `<image>` (raster) | ✅ | 4 | |
-| `<use>` / `<symbol>` / `<defs>` | ✅ | 4 | |
+| Shapes (`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `path`) | ✅ | 4 | Rasterized via Skia (`<img>`-sourced SVG). |
+| Fills, strokes | ✅ | 4 | `fill`/`stroke`/`stroke-width`/`fill-opacity`/`stroke-opacity`. `stroke-dasharray` deferred. |
+| Linear/radial gradients | ✅ | 4 | `url(#id)` paint servers; objectBoundingBox + userSpaceOnUse, spreadMethod, gradientTransform, href inheritance, radial focal. |
+| 2D transforms | ✅ | 4 | `translate`/`scale`/`rotate`/`matrix`/`skewX`/`skewY`. |
+| `<text>` / `<tspan>` | ✅ | 4 | Skia text shaping; `text-anchor`, dx/dy, font props, gradient fill. `textPath`/complex-script deferred. |
+| `<use>` / `<symbol>` / `<defs>` | ✅ | 4 | `<use>` clones with inherited paint; symbol viewport clip+scale deferred. |
+| `<image>` (raster) | ❌ | post-v1 | Embedded/external raster href not yet rasterized. |
+| `<pattern>` | ❌ | post-v1 | Pattern paint servers not yet resolved. |
 | `<filter>` primitives | ❌ | post-v1 | CSS `filter` covers most needs. |
 | `<animate>`, SMIL | ❌ | — | Static document. |
 | `<foreignObject>` | ❌ | — | No HTML-in-SVG embedding. |

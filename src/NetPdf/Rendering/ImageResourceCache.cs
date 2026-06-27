@@ -826,10 +826,11 @@ internal sealed class ImageResourceCache
             if (svgUnsupported)
                 diagnostics.Emit(new Diagnostic(
                     DiagnosticCodes.CssSvgUnsupported001,
-                    "An SVG image used a feature the first-cut renderer doesn't support (text / image / use "
-                    + "/ defs / a gradient or pattern paint-server / an unknown element, or content beyond the "
-                    + "depth / element budget); the supported shapes still rendered. A url(#…) paint server "
-                    + "was painted transparent (not black).",
+                    "An SVG image used a feature the renderer doesn't support (image / a pattern paint-server "
+                    + "/ an unresolved url(#…) reference / an unknown element such as foreignObject or "
+                    + "textPath, or content beyond the depth / element budget); the supported shapes, text, "
+                    + "gradients, and use/symbol references still rendered. An unresolvable paint server was "
+                    + "painted transparent (not black).",
                     DiagnosticSeverity.Info));
             // SourceBytes = the RASTERIZED RGBA re-encoded as PNG (NOT the SVG XML), so a CSS filter / mask
             // on the <img> can re-decode it via SKCodec (PR-230 review [P2]); fall back to the SVG bytes if

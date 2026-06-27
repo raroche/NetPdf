@@ -10,14 +10,13 @@ using SkiaSharp;
 
 namespace NetPdf.Svg;
 
-/// <summary>Phase 4 SVG part 1 (PR 5) — a FIRST-CUT static SVG renderer: parse an SVG document, draw its
-/// basic shapes (<c>rect</c> / <c>circle</c> / <c>ellipse</c> / <c>line</c> / <c>polyline</c> /
-/// <c>polygon</c> / <c>path</c>) with fills, strokes, stroke-width, and element <c>transform</c>s onto a
-/// Skia canvas via <see cref="SubtreeRasterizer"/>, and return it as a <see cref="RasterImageInfo"/> (an
-/// RGBA raster the image pipeline embeds as an XObject + <c>/SMask</c>). This is a RASTER first cut; native
-/// vector SVG → PDF operators, plus gradients / <c>&lt;text&gt;</c> / <c>&lt;use&gt;</c> / <c>&lt;defs&gt;</c>,
-/// are later refinements. Group nesting (<c>&lt;g&gt;</c>) + inherited presentation attributes are honored
-/// one level via attribute inheritance through the walk.</summary>
+/// <summary>Phase 4 SVG renderer — parse an SVG document and draw its shapes (<c>rect</c> / <c>circle</c> /
+/// <c>ellipse</c> / <c>line</c> / <c>polyline</c> / <c>polygon</c> / <c>path</c>), <c>&lt;text&gt;</c> runs,
+/// and reusable references (<c>&lt;use&gt;</c> / <c>&lt;symbol&gt;</c>) with fills, strokes, gradient paint
+/// servers, and element <c>transform</c>s onto a Skia canvas via <see cref="SubtreeRasterizer"/>, returning an
+/// RGBA <see cref="RasterImageInfo"/> the image pipeline embeds as an XObject + <c>/SMask</c>. This is a
+/// RASTER renderer (part 1 = shapes, PR 5; part 2 = gradients / text / use, PR 7). Native vector SVG → PDF
+/// operators is a later refinement.</summary>
 internal static class SvgRasterizer
 {
     private const int DefaultIntrinsicPx = 150; // SVG default when no width/height/viewBox (CSS Images §4).
@@ -34,18 +33,18 @@ internal static class SvgRasterizer
             || t.StartsWith("<!doctype svg", StringComparison.OrdinalIgnoreCase);
     }
 
-    // DoS guards (PR-230 review [P1]): a malicious SVG can nest thousands of <g> to drive a
+    // DoS guards (PR-230 review [P1]): a malicious SVG can nest thousands of <g>/<use> to drive a
     // StackOverflowException (which SubtreeRasterizer's try/catch CANNOT recover) or pile up elements to
-    // burn CPU. Cap the recursion DEPTH (iterative would be safest but a hard depth cap is sufficient + far
-    // below the stack limit), the total ELEMENT count, and the parsed CHARACTER count.
+    // burn CPU. Cap the recursion DEPTH (a hard depth cap is sufficient + far below the stack limit), the
+    // total ELEMENT count, and the parsed CHARACTER count.
     private const int MaxDepth = 80;
     private const int MaxElements = 50_000;
     private const long MaxCharactersInDocument = 8L * 1024 * 1024; // 8M chars
 
     /// <summary>Parse + rasterize <paramref name="svgBytes"/>. Returns <see langword="null"/> on a parse
     /// failure or an over-cap document; <paramref name="sawUnsupported"/> is set when the SVG used a feature
-    /// this cut doesn't render (text / image / use / defs / gradients / a paint-server fill, or content
-    /// truncated by the depth / element budget) so the caller can diagnose it.</summary>
+    /// this renderer doesn't support (image / a pattern paint-server / an unresolved reference / an unknown
+    /// element, or content truncated by the depth / element budget) so the caller can diagnose it.</summary>
     public static RasterImageInfo? TryRender(byte[] svgBytes, out bool sawUnsupported)
     {
         sawUnsupported = false;
@@ -80,7 +79,18 @@ internal static class SvgRasterizer
         var pxH = (int)Math.Ceiling(h);
         if (pxW <= 0 || pxH <= 0) return null;
 
-        var state = new RenderState();
+        // Index every id'd element once: gradient paint servers (url(#id)) and <use>/<symbol> targets
+        // resolve against this map (SVG §5.3 / §13.2). Budget-aware — definitions (<defs>/<symbol>/gradients)
+        // are skipped by the render walk, so without a cap here a document with hundreds of thousands of
+        // id'd elements inside <defs> would bypass the MaxElements DoS guard (PR-231 review [P1]).
+        var ids = BuildIdMap(root, out var idMapOverBudget);
+        var state = new SvgRenderState
+        {
+            Ids = ids,
+            ViewportW = vbW > 0 ? vbW : pxW,
+            ViewportH = vbH > 0 ? vbH : pxH,
+            SawUnsupported = idMapOverBudget, // an over-cap definition tree is truncated → flag it
+        };
         var raster = SubtreeRasterizer.Render(pxW, pxH, canvas =>
         {
             // Map the viewBox onto the raster (preserveAspectRatio xMidYMid meet — the default §8.2).
@@ -92,51 +102,76 @@ internal static class SvgRasterizer
                 canvas.Translate((float)tx, (float)ty);
                 canvas.Scale((float)scale);
             }
-            var initial = new SvgStyle(Fill: SKColors.Black, Stroke: null, StrokeWidth: 1, HasExplicitFill: false);
+            // The root <svg>'s own presentation attributes (color / fill / stroke / font-*) seed the
+            // inherited context for its children (PR-231 review [P3] — e.g. <svg color="red"> + fill="currentColor").
+            var rootStyle = ResolveStyle(root, SvgStyle.Initial, state);
             foreach (var child in root.Elements())
-                RenderElement(canvas, child, initial, state, depth: 1);
+                RenderElement(canvas, child, rootStyle, state, depth: 1);
         });
         sawUnsupported = state.SawUnsupported;
         return raster;
     }
 
-    private readonly record struct SvgStyle(SKColor Fill, SKColor? Stroke, float StrokeWidth, bool HasExplicitFill);
+    /// <summary>Index every id'd element, counting ALL parsed elements (including skipped definition
+    /// subtrees) against the <see cref="MaxElements"/> DoS budget. <paramref name="overBudget"/> is set when
+    /// the document exceeds the cap; indexing stops there so a giant <c>&lt;defs&gt;</c> can't burn unbounded
+    /// CPU/memory in the id map (PR-231 review [P1]).</summary>
+    private static Dictionary<string, XElement> BuildIdMap(XElement root, out bool overBudget)
+    {
+        var map = new Dictionary<string, XElement>(StringComparer.Ordinal);
+        var count = 0;
+        overBudget = false;
+        foreach (var el in root.DescendantsAndSelf())
+        {
+            if (++count > MaxElements) { overBudget = true; break; }
+            var id = el.Attribute("id")?.Value;
+            if (!string.IsNullOrEmpty(id)) map.TryAdd(id, el); // first definition wins
+        }
+        return map;
+    }
 
-    private sealed class RenderState { public int Elements; public bool SawUnsupported; }
-
-    private static void RenderElement(SKCanvas canvas, XElement el, SvgStyle inherited, RenderState state, int depth)
+    private static void RenderElement(SKCanvas canvas, XElement el, SvgStyle inherited, SvgRenderState state, int depth)
     {
         // DoS guards: stop at the depth / element budget (truncation is flagged unsupported).
         if (depth > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
 
         var style = ResolveStyle(el, inherited, state);
-        var transform = ParseTransform(Attr(el, "transform"));
+        var transform = SvgTransform.Parse(Attr(el, "transform"));
         var restore = canvas.Save();
         if (transform is { } m) canvas.Concat(in m);
 
         switch (el.Name.LocalName.ToLowerInvariant())
         {
             case "g":
+            case "a": // an anchor wraps children for rendering purposes
             case "svg": // nested viewports approximated as a group this cut
                 foreach (var child in el.Elements()) RenderElement(canvas, child, style, state, depth + 1);
                 break;
-            case "rect": DrawRect(canvas, el, style); break;
-            case "circle": DrawCircle(canvas, el, style); break;
-            case "ellipse": DrawEllipse(canvas, el, style); break;
-            case "line": DrawLine(canvas, el, style); break;
-            case "polyline": DrawPoly(canvas, el, style, close: false); break;
-            case "polygon": DrawPoly(canvas, el, style, close: true); break;
-            case "path": DrawPath(canvas, el, style); break;
-            // Non-rendering metadata — ignore WITHOUT flagging (legitimately skippable).
-            case "title": case "desc": case "metadata": break;
-            // Everything else (text / image / use / defs / symbol / linear|radialGradient / …) is not
-            // rendered this cut — flag it so the caller surfaces one diagnostic per image (PR-230 [P2]).
+            case "rect": DrawRect(canvas, el, style, state); break;
+            case "circle": DrawCircle(canvas, el, style, state); break;
+            case "ellipse": DrawEllipse(canvas, el, style, state); break;
+            case "line": DrawLine(canvas, el, style, state); break;
+            case "polyline": DrawPoly(canvas, el, style, state, close: false); break;
+            case "polygon": DrawPoly(canvas, el, style, state, close: true); break;
+            case "path": DrawPath(canvas, el, style, state); break;
+            case "text": SvgText.Draw(canvas, el, style, state); break;
+            case "use": DrawUse(canvas, el, style, state, depth); break;
+            // Definitions / metadata — not rendered in place, NOT flagged by mere presence (a definition is
+            // only "unsupported" when REFERENCED, which the url(#…) resolution flags). A <symbol> renders only
+            // when referenced by <use>; a gradient/pattern/clipPath/etc. defines a resource for a reference.
+            case "defs": case "symbol": case "title": case "desc": case "metadata": case "style":
+            case "lineargradient": case "radialgradient": case "stop":
+            case "pattern": case "clippath": case "mask": case "filter": case "marker": break;
+            // image / foreignObject / switch / textPath / … aren't rendered this cut — flag so the caller
+            // surfaces one diagnostic per image (PR-230 [P2]).
             default: state.SawUnsupported = true; break;
         }
         canvas.RestoreToCount(restore);
     }
 
-    private static void DrawRect(SKCanvas canvas, XElement el, SvgStyle style)
+    // ---- shapes ----
+
+    private static void DrawRect(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         var x = Num(el, "x"); var y = Num(el, "y");
         var w = Num(el, "width"); var h = Num(el, "height");
@@ -145,38 +180,37 @@ internal static class SvgRasterizer
         using var path = new SKPath();
         if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
         else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
-        Paint(canvas, path, style);
+        FillAndStroke(canvas, path, style, state);
     }
 
-    private static void DrawCircle(SKCanvas canvas, XElement el, SvgStyle style)
+    private static void DrawCircle(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         var r = Num(el, "r");
         if (!(r > 0)) return;
         using var path = new SKPath();
         path.AddCircle((float)Num(el, "cx"), (float)Num(el, "cy"), (float)r);
-        Paint(canvas, path, style);
+        FillAndStroke(canvas, path, style, state);
     }
 
-    private static void DrawEllipse(SKCanvas canvas, XElement el, SvgStyle style)
+    private static void DrawEllipse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         var rx = Num(el, "rx"); var ry = Num(el, "ry");
         if (!(rx > 0) || !(ry > 0)) return;
         var cx = Num(el, "cx"); var cy = Num(el, "cy");
         using var path = new SKPath();
         path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
-        Paint(canvas, path, style);
+        FillAndStroke(canvas, path, style, state);
     }
 
-    private static void DrawLine(SKCanvas canvas, XElement el, SvgStyle style)
+    private static void DrawLine(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        if (style.Stroke is null) return;
         using var path = new SKPath();
         path.MoveTo((float)Num(el, "x1"), (float)Num(el, "y1"));
         path.LineTo((float)Num(el, "x2"), (float)Num(el, "y2"));
-        StrokeOnly(canvas, path, style);
+        StrokeOnly(canvas, path, style, state);
     }
 
-    private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, bool close)
+    private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, bool close)
     {
         var pts = ParsePoints(Attr(el, "points"));
         if (pts.Count < 2) return;
@@ -184,99 +218,190 @@ internal static class SvgRasterizer
         path.MoveTo(pts[0]);
         for (var i = 1; i < pts.Count; i++) path.LineTo(pts[i]);
         if (close) path.Close();
-        Paint(canvas, path, style);
+        FillAndStroke(canvas, path, style, state);
     }
 
-    private static void DrawPath(SKCanvas canvas, XElement el, SvgStyle style)
+    private static void DrawPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         var d = Attr(el, "d");
         if (string.IsNullOrWhiteSpace(d)) return;
         using var path = SKPath.ParseSvgPathData(d);
         if (path is null) return; // malformed path data → skip
-        Paint(canvas, path, style);
+        FillAndStroke(canvas, path, style, state);
     }
 
-    /// <summary>Fill then stroke (SVG paint order §13.3): fill with the resolved fill (default black), then
-    /// stroke if a stroke is set.</summary>
-    private static void Paint(SKCanvas canvas, SKPath path, SvgStyle style)
+    /// <summary>Clone a referenced element / symbol at the <c>&lt;use&gt;</c> position (SVG §5.6). A
+    /// <c>&lt;symbol&gt;</c> / nested <c>&lt;svg&gt;</c> target renders its children as a group; any other
+    /// target renders as itself. A symbol/svg target's OWN presentation attributes + transform are resolved
+    /// before its children inherit (PR-231 review [P2]); <c>width</c>/<c>height</c> viewport clip+scale are
+    /// not applied this cut.</summary>
+    private static void DrawUse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, int depth)
     {
-        if (style.Fill.Alpha > 0)
+        if (depth + 1 > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
+        var id = SvgAttr.HrefId(el);
+        if (id is null || !state.Ids.TryGetValue(id, out var target)) { state.SawUnsupported = true; return; }
+        var x = Num(el, "x"); var y = Num(el, "y");
+        var restore = canvas.Save();
+        if (x != 0 || y != 0) canvas.Translate((float)x, (float)y);
+        if (target.Name.LocalName.Equals("symbol", StringComparison.OrdinalIgnoreCase)
+            || target.Name.LocalName.Equals("svg", StringComparison.OrdinalIgnoreCase))
         {
-            using var fill = new SKPaint { Style = SKPaintStyle.Fill, Color = style.Fill, IsAntialias = true };
+            // The symbol/svg establishes its own resolved style + transform for its children.
+            var targetStyle = ResolveStyle(target, style, state);
+            if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) canvas.Concat(in tm);
+            foreach (var child in target.Elements())
+                RenderElement(canvas, child, targetStyle, state, depth + 1);
+        }
+        else
+            RenderElement(canvas, target, style, state, depth + 1);
+        canvas.RestoreToCount(restore);
+    }
+
+    // ---- fill / stroke ----
+
+    /// <summary>Fill then stroke (SVG paint order §13.3): fill with the resolved fill / gradient, then stroke
+    /// if a stroke is set.</summary>
+    private static void FillAndStroke(SKCanvas canvas, SKPath path, SvgStyle style, SvgRenderState state)
+    {
+        if (style.FillRef is { } fref)
+        {
+            if (state.ResolveShader(fref, path.Bounds, style.FillOpacity, style.CurrentColor) is { } shader)
+                using (shader)
+                using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = shader, IsAntialias = true })
+                    canvas.DrawPath(path, p);
+            else state.SawUnsupported = true; // unresolved / non-gradient paint server → no fill
+        }
+        else if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
+        {
+            using var fill = new SKPaint { Style = SKPaintStyle.Fill, Color = WithOpacity(style.Fill, style.FillOpacity), IsAntialias = true };
             canvas.DrawPath(path, fill);
         }
-        StrokeOnly(canvas, path, style);
+        StrokeOnly(canvas, path, style, state);
     }
 
-    private static void StrokeOnly(SKCanvas canvas, SKPath path, SvgStyle style)
+    private static void StrokeOnly(SKCanvas canvas, SKPath path, SvgStyle style, SvgRenderState state)
     {
-        if (style.Stroke is not { } sc || !(style.StrokeWidth > 0)) return;
+        if (!(style.StrokeWidth > 0)) return;
+        if (style.StrokeRef is { } sref)
+        {
+            if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
+                using (shader)
+                using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
+                    canvas.DrawPath(path, p);
+            else state.SawUnsupported = true;
+            return;
+        }
+        if (style.Stroke is not { } sc) return;
         using var stroke = new SKPaint
         {
             Style = SKPaintStyle.Stroke,
-            Color = sc,
+            Color = WithOpacity(sc, style.StrokeOpacity),
             StrokeWidth = style.StrokeWidth,
             IsAntialias = true,
         };
         canvas.DrawPath(path, stroke);
     }
 
-    private static SvgStyle ResolveStyle(XElement el, SvgStyle inherited, RenderState state)
+    private static SKColor WithOpacity(SKColor c, float opacity) =>
+        opacity >= 1f ? c : c.WithAlpha((byte)Math.Clamp((int)Math.Round(c.Alpha * opacity), 0, 255));
+
+    // ---- style cascade ----
+
+    private static SvgStyle ResolveStyle(XElement el, SvgStyle inherited, SvgRenderState state)
     {
+        // The `color` property (inherited) is what `currentColor` resolves to (PR-231 review [P3]).
+        var currentColor = inherited.CurrentColor;
+        var colorRaw = SvgAttr.Presentation(el, "color");
+        if (colorRaw is not null && !colorRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)
+            && SvgColor.TryParse(colorRaw, out var cc)) currentColor = cc;
+
         var fill = inherited.Fill;
+        var fillRef = inherited.FillRef;
         var hasFill = inherited.HasExplicitFill;
-        var fillRaw = PresentationAttr(el, "fill");
+        var fillRaw = SvgAttr.Presentation(el, "fill");
         if (fillRaw is not null)
         {
-            if (fillRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) { fill = SKColors.Transparent; hasFill = true; }
-            else if (IsPaintServer(fillRaw)) { fill = SKColors.Transparent; hasFill = true; state.SawUnsupported = true; } // url(#grad) — not the inherited/default black (PR-230 [P2])
-            else if (TryColor(fillRaw, out var fc)) { fill = fc; hasFill = true; }
+            if (fillRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) { fill = SKColors.Transparent; fillRef = null; hasFill = true; }
+            else if (fillRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) { fill = currentColor; fillRef = null; hasFill = true; }
+            else if (PaintServerId(fillRaw) is { } id) { fillRef = id; fill = SKColors.Transparent; hasFill = true; }
+            else if (SvgColor.TryParse(fillRaw, out var fc)) { fill = fc; fillRef = null; hasFill = true; }
         }
 
         var stroke = inherited.Stroke;
-        var strokeRaw = PresentationAttr(el, "stroke");
+        var strokeRef = inherited.StrokeRef;
+        var strokeRaw = SvgAttr.Presentation(el, "stroke");
         if (strokeRaw is not null)
         {
-            if (strokeRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) stroke = null;
-            else if (IsPaintServer(strokeRaw)) { stroke = null; state.SawUnsupported = true; } // url() stroke — no paint
-            else if (TryColor(strokeRaw, out var stc)) stroke = stc;
+            if (strokeRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) { stroke = null; strokeRef = null; }
+            else if (strokeRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) { stroke = currentColor; strokeRef = null; }
+            else if (PaintServerId(strokeRaw) is { } id) { strokeRef = id; stroke = null; }
+            else if (SvgColor.TryParse(strokeRaw, out var stc)) { stroke = stc; strokeRef = null; }
         }
 
         var strokeWidth = inherited.StrokeWidth;
-        var swRaw = PresentationAttr(el, "stroke-width");
+        var swRaw = SvgAttr.Presentation(el, "stroke-width");
         if (swRaw is not null && double.TryParse(TrimUnit(swRaw), NumberStyles.Float, CultureInfo.InvariantCulture, out var sw))
             strokeWidth = (float)sw;
 
-        return new SvgStyle(fill, stroke, strokeWidth, hasFill);
+        var fillOpacity = ReadOpacity(el, "fill-opacity", inherited.FillOpacity);
+        var strokeOpacity = ReadOpacity(el, "stroke-opacity", inherited.StrokeOpacity);
+
+        // Font properties (inherited) — drive <text> shaping.
+        var fontSize = inherited.FontSizePx;
+        var fsRaw = SvgAttr.Presentation(el, "font-size");
+        if (fsRaw is not null && double.TryParse(TrimUnit(fsRaw), NumberStyles.Float, CultureInfo.InvariantCulture, out var fs) && fs > 0)
+            fontSize = (float)fs;
+        var fontFamily = SvgAttr.Presentation(el, "font-family") ?? inherited.FontFamily;
+        var fontWeight = ParseFontWeight(SvgAttr.Presentation(el, "font-weight"), inherited.FontWeight);
+        var italic = ParseItalic(SvgAttr.Presentation(el, "font-style"), inherited.Italic);
+        var textAnchor = SvgAttr.Presentation(el, "text-anchor") ?? inherited.TextAnchor;
+
+        return new SvgStyle(fill, fillRef, hasFill, stroke, strokeRef, strokeWidth,
+            fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor);
     }
 
-    /// <summary>A paint server reference (<c>url(#id)</c> — a gradient / pattern) the renderer can't
-    /// resolve this cut. Treated as no-paint (NOT inherited/default black) so a gradient-filled logo goes
-    /// transparent rather than turning into a black blob.</summary>
-    private static bool IsPaintServer(string raw) =>
-        raw.TrimStart().StartsWith("url(", StringComparison.OrdinalIgnoreCase);
+    /// <summary>The fragment id of a <c>url(#id)</c> paint server, or <see langword="null"/> when the value
+    /// isn't a local <c>url(#…)</c> reference.</summary>
+    private static string? PaintServerId(string raw)
+    {
+        var s = raw.TrimStart();
+        if (!s.StartsWith("url(", StringComparison.OrdinalIgnoreCase)) return null;
+        var open = s.IndexOf('(');
+        var close = s.IndexOf(')', open + 1);
+        if (close <= open) return null;
+        var inner = s[(open + 1)..close].Trim().Trim('\'', '"');
+        return inner.StartsWith('#') && inner.Length > 1 ? inner[1..] : null;
+    }
+
+    private static float ReadOpacity(XElement el, string name, float inherited)
+    {
+        var raw = SvgAttr.Presentation(el, name);
+        if (raw is null) return inherited;
+        raw = raw.Trim();
+        if (raw.EndsWith('%') && double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+            return (float)Math.Clamp(pct / 100.0, 0, 1);
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+            ? (float)Math.Clamp(v, 0, 1) : inherited;
+    }
+
+    private static int ParseFontWeight(string? raw, int inherited)
+    {
+        if (raw is null) return inherited;
+        raw = raw.Trim();
+        if (raw.Equals("bold", StringComparison.OrdinalIgnoreCase)) return 700;
+        if (raw.Equals("normal", StringComparison.OrdinalIgnoreCase)) return 400;
+        if (raw.Equals("bolder", StringComparison.OrdinalIgnoreCase)) return Math.Min(900, inherited + 300);
+        if (raw.Equals("lighter", StringComparison.OrdinalIgnoreCase)) return Math.Max(100, inherited - 300);
+        return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? Math.Clamp(v, 1, 1000) : inherited;
+    }
+
+    private static bool ParseItalic(string? raw, bool inherited) => raw is null
+        ? inherited
+        : raw.Trim().Equals("italic", StringComparison.OrdinalIgnoreCase) || raw.Trim().Equals("oblique", StringComparison.OrdinalIgnoreCase);
 
     // ---- attribute / value helpers ----
 
     private static string? Attr(XElement el, string name) => el.Attribute(name)?.Value;
-
-    /// <summary>A presentation value from either the attribute or an inline <c>style="…"</c> declaration
-    /// (the style wins, per SVG §6.4). Returns null if unset.</summary>
-    private static string? PresentationAttr(XElement el, string name)
-    {
-        var style = el.Attribute("style")?.Value;
-        if (style is not null)
-        {
-            foreach (var decl in style.Split(';'))
-            {
-                var c = decl.IndexOf(':');
-                if (c <= 0) continue;
-                if (decl.AsSpan(0, c).Trim().Equals(name, StringComparison.OrdinalIgnoreCase))
-                    return decl[(c + 1)..].Trim();
-            }
-        }
-        return el.Attribute(name)?.Value;
-    }
 
     private static double Num(XElement el, string name) =>
         double.TryParse(TrimUnit(Attr(el, name)), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
@@ -315,85 +440,4 @@ internal static class SvgRasterizer
                 list.Add(new SKPoint((float)x, (float)y));
         return list;
     }
-
-    /// <summary>Parse an SVG <c>transform</c> list (translate / scale / rotate / matrix) into a single
-    /// matrix, or null if empty / unparseable.</summary>
-    private static SKMatrix? ParseTransform(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return null;
-        var m = SKMatrix.Identity;
-        var any = false;
-        var i = 0;
-        while (i < raw.Length)
-        {
-            var open = raw.IndexOf('(', i);
-            if (open < 0) break;
-            var name = raw[i..open].Trim().TrimStart(',', ' ').ToLowerInvariant();
-            var close = raw.IndexOf(')', open);
-            if (close < 0) break;
-            var args = raw[(open + 1)..close].Split(new[] { ' ', ',', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-            float A(int k) => k < args.Length && float.TryParse(args[k], NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
-            SKMatrix step = name switch
-            {
-                "translate" => SKMatrix.CreateTranslation(A(0), args.Length > 1 ? A(1) : 0),
-                "scale" => SKMatrix.CreateScale(A(0), args.Length > 1 ? A(1) : A(0)),
-                "rotate" => args.Length >= 3
-                    ? SKMatrix.CreateRotationDegrees(A(0), A(1), A(2))
-                    : SKMatrix.CreateRotationDegrees(A(0)),
-                "matrix" => new SKMatrix { ScaleX = A(0), SkewY = A(1), SkewX = A(2), ScaleY = A(3), TransX = A(4), TransY = A(5), Persp2 = 1 },
-                _ => SKMatrix.Identity,
-            };
-            m = m.PreConcat(step);
-            any = true;
-            i = close + 1;
-        }
-        return any ? m : null;
-    }
-
-    private static bool TryColor(string raw, out SKColor color)
-    {
-        color = SKColors.Black;
-        var s = raw.Trim();
-        if (s.Length == 0) return false;
-        if (s.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) { color = SKColors.Black; return true; }
-        if (s.Equals("transparent", StringComparison.OrdinalIgnoreCase)) { color = SKColors.Transparent; return true; }
-        if (s.StartsWith('#') && SKColor.TryParse(s, out color)) return true;
-        if (s.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)) return TryRgb(s, out color);
-        if (NamedColors.TryGetValue(s, out var named)) { color = named; return true; }
-        return SKColor.TryParse(s, out color); // best-effort (Skia parses some names)
-    }
-
-    private static bool TryRgb(string s, out SKColor color)
-    {
-        color = SKColors.Black;
-        var open = s.IndexOf('(');
-        var close = s.IndexOf(')');
-        if (open < 0 || close <= open) return false;
-        var parts = s[(open + 1)..close].Split(new[] { ',', ' ', '/' }, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 3) return false;
-        byte Ch(string p) => (byte)Math.Clamp(
-            p.EndsWith('%')
-                ? (int)Math.Round(double.Parse(p[..^1], CultureInfo.InvariantCulture) / 100.0 * 255)
-                : (int)Math.Round(double.Parse(p, CultureInfo.InvariantCulture)), 0, 255);
-        try
-        {
-            var a = parts.Length >= 4
-                ? (byte)Math.Clamp((int)Math.Round(double.Parse(parts[3], CultureInfo.InvariantCulture) * 255), 0, 255)
-                : (byte)255;
-            color = new SKColor(Ch(parts[0]), Ch(parts[1]), Ch(parts[2]), a);
-            return true;
-        }
-        catch (Exception) { return false; }
-    }
-
-    private static readonly Dictionary<string, SKColor> NamedColors = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["black"] = SKColors.Black, ["white"] = SKColors.White, ["red"] = SKColors.Red,
-        ["green"] = new SKColor(0, 128, 0), ["blue"] = SKColors.Blue, ["yellow"] = SKColors.Yellow,
-        ["cyan"] = SKColors.Cyan, ["magenta"] = SKColors.Magenta, ["gray"] = SKColors.Gray,
-        ["grey"] = SKColors.Gray, ["orange"] = new SKColor(255, 165, 0), ["purple"] = new SKColor(128, 0, 128),
-        ["silver"] = new SKColor(192, 192, 192), ["maroon"] = new SKColor(128, 0, 0),
-        ["navy"] = new SKColor(0, 0, 128), ["teal"] = new SKColor(0, 128, 128),
-        ["lime"] = SKColors.Lime, ["olive"] = new SKColor(128, 128, 0),
-    };
 }

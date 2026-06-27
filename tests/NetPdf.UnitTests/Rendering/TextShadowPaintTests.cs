@@ -28,6 +28,12 @@ public sealed class TextShadowPaintTests
             => new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
     }
 
+    // The synthetic font's glyphs have EMPTY outlines (Skia reads no contours), so a blurred shadow
+    // rasterizes nothing and falls back to sharp. The blur tests below therefore use the DEFAULT system
+    // font resolver — a real single-face font (the system font index only indexes single-face TTF/OTF,
+    // which both HarfBuzz and the Skia raster parse). They assert only structural presence (an image
+    // XObject + its /SMask), so the chosen system font is immaterial.
+
     // Black text (0 0 0) + a red (1 0 0) text-shadow → unambiguous, distinct glyph-run colors.
     private static string Html(string textShadow) =>
         "<!DOCTYPE html><html><body>" +
@@ -66,6 +72,37 @@ public sealed class TextShadowPaintTests
 
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowUnsupported001);
         Assert.DoesNotContain("1 0 0 rg BT", Latin1(result.Pdf)); // value rejected → no red shadow
+    }
+
+    [Fact]
+    public void Blurred_text_shadow_with_a_real_font_paints_a_rasterized_image_under_the_text()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("3px 3px 4px #ff0000")));
+
+        Assert.Contains(" Do", text);            // the blurred shadow placed as an image XObject
+        Assert.Contains("/SMask", text);         // ... with an alpha soft-mask
+        Assert.Contains("BT", text);             // the main text still shows glyphs
+        Assert.DoesNotContain("1 0 0 rg BT", text); // NOT a sharp red glyph run — the shadow is the image
+    }
+
+    [Fact]
+    public void Sharp_text_shadow_with_a_real_font_uses_glyphs_not_an_image()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("3px 3px #ff0000")));
+
+        Assert.Contains("1 0 0 rg", text);       // the sharp shadow is a red glyph run
+        Assert.DoesNotContain(" Do", text);      // ... no rasterized shadow image
+    }
+
+    [Fact]
+    public void Multiple_text_shadows_mix_a_blurred_image_and_a_sharp_run()
+    {
+        // First layer sharp green (on top), second layer blurred blue (bottom).
+        var text = Latin1(HtmlPdf.Convert(Html("2px 2px #00ff00, 5px 5px 5px #0000ff")));
+
+        Assert.Contains("0 1 0 rg", text);       // the sharp green layer (glyph run)
+        Assert.Contains(" Do", text);            // the blurred blue layer (image)
+        Assert.Contains("/SMask", text);
     }
 
     [Fact]

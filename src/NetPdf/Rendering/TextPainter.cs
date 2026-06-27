@@ -224,7 +224,7 @@ internal static class TextPainter
             foreach (var (page, draws) in _pages)
             {
                 cancellationToken.ThrowIfCancellationRequested();   // before each page's text replay
-                EmitPage(page, draws, built, cancellationToken);
+                EmitPage(page, draws, built, document, cancellationToken);
             }
         }
 
@@ -238,24 +238,40 @@ internal static class TextPainter
         /// the clip's <c>q/Q</c> is balanced.</summary>
         private static void EmitPage(
             PdfPage page, List<DrawCommand> draws, Dictionary<string, BuiltFont> built,
-            CancellationToken cancellationToken)
+            PdfDocument document, CancellationToken cancellationToken)
         {
             if (draws.Count == 0) return;
             var pageNames = new Dictionary<string, PdfName>(StringComparer.Ordinal);   // AddFont once per font per page.
             (double X, double Y, double W, double H)? openClipPt = null;
+            // The fragment clip transition, shared by glyph + shadow-image commands so a shadow and the
+            // glyphs it sits under (same fragment, same clip) open the clip exactly once.
+            void TransitionClip((double X, double Y, double W, double H)? clip)
+            {
+                if (clip == openClipPt) return;
+                if (openClipPt is not null) page.RestoreGraphicsState();
+                openClipPt = clip;
+                if (openClipPt is { } c) page.BeginRectangleClip(c.X, c.Y, c.W, c.H);
+            }
             var drawn = 0;
             foreach (var cmd in draws)
             {
                 if ((drawn++ & 0xFF) == 0) cancellationToken.ThrowIfCancellationRequested();   // every 256 runs
+                // A blurred text-shadow (Phase 4) is a pre-rasterized image, not a glyph-show — it needs
+                // no font but still honors the fragment's clip + transform; handle it first so a missing
+                // font can't suppress the shadow.
+                if (cmd.ShadowImage is { } si)
+                {
+                    TransitionClip(cmd.ClipPt);
+                    if (cmd.Transform is { } sm) page.BeginTransform(sm.A, sm.B, sm.C, sm.D, sm.E, sm.F);
+                    var shadowRef = document.RegisterImage(si.Image);
+                    page.PlaceImage(shadowRef, si.X, si.Y, si.W, si.H);
+                    if (cmd.Transform is not null) page.RestoreGraphicsState();
+                    continue;
+                }
                 if (!built.TryGetValue(cmd.FontKey, out var bf)) continue; // build failed → already diagnosed.
+                TransitionClip(cmd.ClipPt);
                 if (!pageNames.TryGetValue(cmd.FontKey, out var name))
                     pageNames[cmd.FontKey] = name = page.AddFont(bf.FontRef);
-                if (cmd.ClipPt != openClipPt)
-                {
-                    if (openClipPt is not null) page.RestoreGraphicsState();
-                    openClipPt = cmd.ClipPt;
-                    if (openClipPt is { } clip) page.BeginRectangleClip(clip.X, clip.Y, clip.W, clip.H);
-                }
                 var subsetIds = new ushort[cmd.OriginalGlyphIds.Length];
                 for (var g = 0; g < subsetIds.Length; g++)
                     subsetIds[g] = (ushort)bf.OldToNew[cmd.OriginalGlyphIds[g]];
@@ -516,7 +532,7 @@ internal static class TextPainter
                     SizePt: PdfUnits.PxToPt(fontSizePx),
                     ColorArgb: argb,
                     ClipPt: clipPt,
-                    Transform: transformCm), shadows);
+                    Transform: transformCm), shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt);
             }
         }
     }
@@ -622,6 +638,9 @@ internal static class TextPainter
         }
     }
 
+    /// <summary>Device px per CSS px for the blurred text-shadow raster (matches the box-shadow scale).</summary>
+    private const double TextShadowRasterScale = 2.0;
+
     /// <summary>Emit one <see cref="DrawCommand"/> for a contiguous glyph segment
     /// <c>[glyphStart, glyphStart+glyphCount)</c> of <paramref name="run"/> at the (already
     /// content-relative) baseline origin <paramref name="xStartPx"/> / <paramref name="baselineTopPx"/>,
@@ -640,7 +659,7 @@ internal static class TextPainter
             ids[i] = gid;
             fc.Used.Add(gid);
         }
-        AddTextDrawWithShadows(draws, new DrawCommand(
+        var command = new DrawCommand(
             FontKey: fontKey,
             OriginalGlyphIds: ids,
             XPt: PdfUnits.PxToPt(xStartPx),
@@ -648,20 +667,15 @@ internal static class TextPainter
             SizePt: PdfUnits.PxToPt(fontSizePx),
             ColorArgb: argb,
             ClipPt: clipPt,
-            Transform: transformCm), shadows);
+            Transform: transformCm);
+        AddTextDrawWithShadows(draws, command, shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt);
     }
 
-    /// <summary>Phase 4 shadows — record a glyph draw, FIRST prepending one
-    /// <see cref="DrawCommand"/> per <c>text-shadow</c> layer: the same glyphs offset by the
-    /// shadow's (x, y) in the shadow color, so the shadow paints UNDER the text (CSS Text
-    /// Decoration L3 §3). Layers add in REVERSE so the first-listed sits on top. Blur is NOT
-    /// applied here (a sharp offset — the diagnostic was emitted at collection); the glyph-blur
-    /// raster is a documented follow-up.</summary>
     /// <summary>A text-shadow layer with its color resolved ONCE per fragment (Copilot #210 — not
-    /// re-parsed per glyph draw): the offset in PDF points + the packed shadow color, or a null
+    /// re-parsed per glyph draw): the offset + blur in CSS px + the packed shadow color, or a null
     /// <see cref="Argb"/> meaning "use the run's own text color" (the <c>currentColor</c> initial,
     /// resolved per command).</summary>
-    private readonly record struct ResolvedTextShadow(double DxPt, double DyPt, uint? Argb);
+    private readonly record struct ResolvedTextShadow(double DxPx, double DyPx, double BlurPx, uint? Argb);
 
     /// <summary>Resolve a fragment's text-shadow layers' colors + offsets ONCE — the same list is
     /// replayed across every glyph <see cref="DrawCommand"/>, so resolving per draw was an
@@ -686,14 +700,20 @@ internal static class TextPainter
                 }
                 // else: resolved to currentColor → leave Argb null (the run's text color per command)
             }
-            result.Add(new ResolvedTextShadow(
-                PdfUnits.PxToPt(ts.OffsetXPx), PdfUnits.PxToPt(ts.OffsetYPx), argb));
+            result.Add(new ResolvedTextShadow(ts.OffsetXPx, ts.OffsetYPx, ts.BlurPx, argb));
         }
         return result.Count > 0 ? result : null;
     }
 
+    /// <summary>Phase 4 shadows — record a glyph draw, FIRST prepending one <see cref="DrawCommand"/>
+    /// per <c>text-shadow</c> layer so the shadow paints UNDER the text (CSS Text Decoration L3 §3).
+    /// Layers add in REVERSE so the first-listed sits on top. A SHARP layer (blur = 0) is the same
+    /// glyphs offset in the shadow color; a BLURRED layer is rasterized via
+    /// <see cref="NetPdf.Pdf.Images.TextShadowRasterizer"/> and placed as an image. A rasterization
+    /// failure (over-cap / unreadable font) falls back to a sharp offset for that layer.</summary>
     private static void AddTextDrawWithShadows(
-        List<DrawCommand> draws, DrawCommand command, IReadOnlyList<ResolvedTextShadow>? shadows)
+        List<DrawCommand> draws, DrawCommand command, IReadOnlyList<ResolvedTextShadow>? shadows,
+        FontCollect fc, double fontSizePx, double xStartPx, double baselineTopPx, double pageHeightPt)
     {
         if (shadows is { Count: > 0 })
         {
@@ -702,15 +722,54 @@ internal static class TextPainter
                 var s = shadows[i];
                 var argb = s.Argb ?? command.ColorArgb; // null = currentColor = the run's text color
                 if (FragmentPainter.Alpha(argb) == 0) continue;
+                if (s.BlurPx > 0
+                    && TryBuildBlurredTextShadow(command, s, argb, fc, fontSizePx, xStartPx, baselineTopPx,
+                        pageHeightPt, out var shadowCommand))
+                {
+                    draws.Add(shadowCommand);
+                    continue;
+                }
+                // Sharp (or a blurred layer that fell back): the same glyphs offset in the shadow color.
                 draws.Add(command with
                 {
-                    XPt = command.XPt + s.DxPt,
-                    YPt = command.YPt - s.DyPt, // CSS y-down → PDF y-up
+                    XPt = command.XPt + PdfUnits.PxToPt(s.DxPx),
+                    YPt = command.YPt - PdfUnits.PxToPt(s.DyPx), // CSS y-down → PDF y-up
                     ColorArgb = argb,
                 });
             }
         }
         draws.Add(command);
+    }
+
+    /// <summary>Rasterize a BLURRED text-shadow layer for <paramref name="command"/>'s glyphs and wrap
+    /// it as an image <see cref="DrawCommand"/> placed at the shadow offset (under the text). Returns
+    /// <see langword="false"/> when the raster can't be built (over-cap / unreadable font) so the caller
+    /// falls back to a sharp offset.</summary>
+    private static bool TryBuildBlurredTextShadow(
+        DrawCommand command, ResolvedTextShadow s, uint argb, FontCollect fc, double fontSizePx,
+        double xStartPx, double baselineTopPx, double pageHeightPt, out DrawCommand shadowCommand)
+    {
+        shadowCommand = default;
+        FragmentPainter.ColorChannels(argb, out var r, out var g, out var b);
+        var alpha = FragmentPainter.Alpha(argb) / 255.0;
+        var image = NetPdf.Pdf.Images.TextShadowRasterizer.TryRasterizeGlyphRun(
+            fc.Font.FontBytes, command.OriginalGlyphIds, (float)fontSizePx, (float)s.BlurPx,
+            r, g, b, alpha, TextShadowRasterScale,
+            out var offXPx, out var offYPx, out var widthPx, out var heightPx);
+        if (image is null) return false;
+        // The raster's top-left in CSS px (page coords) = the run baseline origin + the shadow offset +
+        // the raster's offset relative to the baseline.
+        var leftPx = xStartPx + s.DxPx + offXPx;
+        var topPx = baselineTopPx + s.DyPx + offYPx;
+        FragmentPainter.ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt,
+            out var ix, out var iy, out var iw, out var ih);
+        shadowCommand = command with
+        {
+            OriginalGlyphIds = System.Array.Empty<ushort>(),
+            ColorArgb = argb,
+            ShadowImage = (image, ix, iy, iw, ih),
+        };
+        return true;
     }
 
     /// <summary>Resolve a run's font program to a parsed-font collector, caching by program
@@ -799,5 +858,11 @@ internal static class TextPainter
         double SizePt,
         uint ColorArgb,
         (double X, double Y, double W, double H)? ClipPt = null,
-        (double A, double B, double C, double D, double E, double F)? Transform = null);
+        (double A, double B, double C, double D, double E, double F)? Transform = null,
+        // Phase 4 text-shadow blur — when set, this command paints a pre-rasterized BLURRED text-shadow
+        // (NetPdf.Pdf.Images.TextShadowRasterizer) as an image XObject at the dest rect (PDF pt,
+        // bottom-origin) instead of showing glyphs; OriginalGlyphIds is empty. Placed UNDER the text
+        // (added before the glyph command, like a sharp shadow). The raster is independent of the font
+        // subset, so it is built at collect time.
+        (NetPdf.Pdf.Images.ImageXObjectResult Image, double X, double Y, double W, double H)? ShadowImage = null);
 }

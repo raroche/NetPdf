@@ -452,19 +452,15 @@ internal sealed class ImageResourceCache
             {
                 var biSlice = rules?.GetWinner("border-image-slice")?.ResolvedValue;
                 var biRepeat = rules?.GetWinner("border-image-repeat")?.ResolvedValue;
-                var biSpec = CssBorderImage_Parser.TryParse(biSource, biSlice, biRepeat);
+                var biWidth = rules?.GetWinner("border-image-width")?.ResolvedValue;
+                var biOutset = rules?.GetWinner("border-image-outset")?.ResolvedValue;
+                // Edge tiling (repeat/round/space) + border-image-width + -outset are now honored by the
+                // painter (border-image completion PR), so the prior "approximated sub-feature" diagnostic
+                // is gone; only a non-url() source stays unsupported (below).
+                var biSpec = CssBorderImage_Parser.TryParse(biSource, biSlice, biRepeat, biWidth, biOutset);
                 if (biSpec is not null)
                 {
                     borderImages.Add((box, biSpec));
-                    // PR-229 review [P3] — diagnose the approximated sub-features (once per render): a
-                    // non-stretch repeat painted STRETCHED, or an ignored border-image-width / -outset.
-                    var biWidth = rules?.GetWinner("border-image-width")?.ResolvedValue;
-                    var biOutset = rules?.GetWinner("border-image-outset")?.ResolvedValue;
-                    if (IsNonStretchRepeat(biRepeat) || IsNonInitial(biWidth, "1") || IsNonInitial(biOutset, "0"))
-                        Report(diagnostics, ref borderImageReported, DiagnosticCodes.CssBorderImageUnsupported001,
-                            "A border-image sub-feature was approximated: a non-stretch border-image-repeat "
-                            + "(repeat / round / space) painted STRETCHED, or border-image-width / -outset were "
-                            + "ignored (the element's border widths + zero outset are used).");
                 }
                 else if (CssBorderImage_Parser.IsUnsupportedSource(biSource))
                 {
@@ -608,23 +604,6 @@ internal sealed class ImageResourceCache
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
                 ref borderImageReported);
     }
-
-    /// <summary>True when a <c>border-image-repeat</c> winner names a non-<c>stretch</c> mode.</summary>
-    private static bool IsNonStretchRepeat(string? repeat)
-    {
-        if (string.IsNullOrWhiteSpace(repeat)) return false;
-        foreach (var t in repeat.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
-            if (t.Equals("repeat", StringComparison.OrdinalIgnoreCase)
-                || t.Equals("round", StringComparison.OrdinalIgnoreCase)
-                || t.Equals("space", StringComparison.OrdinalIgnoreCase))
-                return true;
-        return false;
-    }
-
-    /// <summary>True when a longhand winner is present and differs from its <paramref name="initial"/>
-    /// value (used to flag an ignored border-image-width / -outset).</summary>
-    private static bool IsNonInitial(string? value, string initial) =>
-        !string.IsNullOrWhiteSpace(value) && !value.Trim().Equals(initial, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Extract the first <c>url(...)</c> target from a CSS value (mask-image / mask shorthand),
     /// stripping quotes. Returns <see langword="null"/> when there's no url() (a gradient / <c>none</c> /

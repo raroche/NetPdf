@@ -7,22 +7,35 @@ using System.Globalization;
 
 namespace NetPdf.Rendering;
 
-/// <summary>Phase 4 border-image (PR 4) — a per-axis <c>border-image-repeat</c> mode (CSS Backgrounds
-/// &amp; Borders L3 §6.3). The first cut paints every mode as <c>Stretch</c> (the initial); the
-/// non-stretch modes surface <c>CSS-BORDER-IMAGE-UNSUPPORTED-001</c> until edge tiling lands.</summary>
+/// <summary>Phase 4 border-image — a per-axis <c>border-image-repeat</c> mode (CSS Backgrounds &amp;
+/// Borders L3 §6.3). Edge tiling (<c>repeat</c> / <c>round</c> / <c>space</c>) is honored by the painter
+/// (PR — border-image completion); <c>stretch</c> is the initial.</summary>
 internal enum BorderImageRepeat { Stretch, Repeat, Round, Space }
 
-/// <summary>Phase 4 border-image (PR 4) — a parsed <c>border-image</c> (CSS B&amp;B L3 §6). Resolves the
-/// <c>border-image-source</c> URL, the four <c>border-image-slice</c> offsets (number = image px, % =
-/// fraction; stored fraction-encoded — a negative sentinel for px, resolved against the decoded image), the
-/// optional <c>fill</c> keyword, and the two repeat axes. <c>border-image-width</c> / <c>-outset</c> are a
-/// documented follow-up (the painter uses the element's border widths, outset 0; their presence is
-/// diagnosed at collection).</summary>
+/// <summary>Phase 4 border-image — the kind of a <c>border-image-width</c> / <c>-outset</c> component.
+/// <c>Multiple</c> = a unitless number × the element's border width (the §6.4/§6.5 default unit);
+/// <c>LengthPx</c> = an absolute length; <c>Percent</c> = a fraction of the border-image area (width-only);
+/// <c>Auto</c> = the intrinsic slice size (width-only).</summary>
+internal enum BorderImageLenKind { Multiple, LengthPx, Percent, Auto }
+
+/// <summary>One resolved <c>border-image-width</c>/<c>-outset</c> component (CSS B&amp;B L3 §6.4/§6.5).</summary>
+internal readonly record struct BorderImageLen(BorderImageLenKind Kind, double Value)
+{
+    public static BorderImageLen Multiple(double v) => new(BorderImageLenKind.Multiple, v);
+}
+
+/// <summary>Phase 4 border-image (CSS B&amp;B L3 §6). Resolves the <c>border-image-source</c> URL, the four
+/// <c>border-image-slice</c> offsets (number = image px, % = fraction; stored fraction-encoded — a negative
+/// sentinel for px, resolved against the decoded image), the optional <c>fill</c> keyword, the two repeat
+/// axes, and the four <c>border-image-width</c> / <c>-outset</c> components (T/R/B/L). Width defaults to
+/// <c>1×</c> the border width; outset defaults to <c>0</c>.</summary>
 internal sealed record CssBorderImage(
     string SourceUrl,
     double SliceTopFrac, double SliceRightFrac, double SliceBottomFrac, double SliceLeftFrac,
     bool Fill,
-    BorderImageRepeat RepeatX, BorderImageRepeat RepeatY);
+    BorderImageRepeat RepeatX, BorderImageRepeat RepeatY,
+    BorderImageLen WidthTop, BorderImageLen WidthRight, BorderImageLen WidthBottom, BorderImageLen WidthLeft,
+    BorderImageLen OutsetTop, BorderImageLen OutsetRight, BorderImageLen OutsetBottom, BorderImageLen OutsetLeft);
 
 /// <summary>Phase 4 border-image (PR 4) — a parser for the <c>border-image</c> LONGHANDS
 /// (<c>border-image-source</c> / <c>-slice</c> / <c>-repeat</c>). The <c>border-image</c> SHORTHAND is
@@ -33,7 +46,7 @@ internal sealed record CssBorderImage(
 internal static class CssBorderImage_Parser
 {
     /// <summary>Parse from the resolved longhand winners (any may be null = the longhand's initial).</summary>
-    public static CssBorderImage? TryParse(string? source, string? slice, string? repeat)
+    public static CssBorderImage? TryParse(string? source, string? slice, string? repeat, string? width = null, string? outset = null)
     {
         var url = ExtractUrl(source);
         if (url is null) return null; // none / gradient / unset → no border-image (gradient diagnosed by caller)
@@ -41,7 +54,45 @@ internal static class CssBorderImage_Parser
         var fill = false;
         if (!TryResolveSlices(slice, ref fill, out var st, out var sr, out var sb, out var sl)) return null;
         ParseRepeat(repeat, out var rx, out var ry);
-        return new CssBorderImage(url, st, sr, sb, sl, fill, rx, ry);
+        // width: <length-percentage> | <number> | auto, default 1 (× border width); outset: <length> |
+        // <number>, default 0. 1–4 value top/right/bottom/left shorthand (CSS B&B L3 §6.4/§6.5).
+        var w = ParseSides(width, BorderImageLen.Multiple(1), allowAutoPercent: true);
+        var o = ParseSides(outset, BorderImageLen.Multiple(0), allowAutoPercent: false);
+        return new CssBorderImage(url, st, sr, sb, sl, fill, rx, ry,
+            w[0], w[1], w[2], w[3], o[0], o[1], o[2], o[3]);
+    }
+
+    /// <summary>Parse a 1–4 value <c>border-image-width</c>/<c>-outset</c> into top/right/bottom/left.
+    /// Any unparseable token falls the whole property back to <paramref name="initial"/> (the longhand's
+    /// initial value) so a malformed value never throws.</summary>
+    private static BorderImageLen[] ParseSides(string? raw, BorderImageLen initial, bool allowAutoPercent)
+    {
+        var fallback = new[] { initial, initial, initial, initial };
+        if (string.IsNullOrWhiteSpace(raw)) return fallback;
+        var toks = raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (toks.Length is < 1 or > 4) return fallback;
+        var v = new BorderImageLen[4];
+        for (var i = 0; i < 4; i++)
+            if (!TrySide(toks[ShorthandIndex(toks.Length, i)], allowAutoPercent, out v[i])) return fallback;
+        return v;
+    }
+
+    private static bool TrySide(string token, bool allowAutoPercent, out BorderImageLen len)
+    {
+        len = default;
+        var t = token.Trim();
+        if (t.Length == 0) return false;
+        if (allowAutoPercent && t.Equals("auto", StringComparison.OrdinalIgnoreCase)) { len = new BorderImageLen(BorderImageLenKind.Auto, 0); return true; }
+        if (t.EndsWith("%", StringComparison.Ordinal))
+        {
+            if (!allowAutoPercent) return false; // outset takes no percentage
+            if (!double.TryParse(t.AsSpan(0, t.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) || pct < 0) return false;
+            len = new BorderImageLen(BorderImageLenKind.Percent, pct / 100.0);
+            return true;
+        }
+        if (CssLengthParsing.TryLengthPx(t, out var px)) { if (px < 0) return false; len = new BorderImageLen(BorderImageLenKind.LengthPx, px); return true; }
+        if (double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var n) && n >= 0) { len = BorderImageLen.Multiple(n); return true; }
+        return false;
     }
 
     /// <summary>True when the value is a non-<c>none</c>, non-empty source that is NOT a <c>url(...)</c>

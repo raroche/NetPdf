@@ -39,6 +39,48 @@ public sealed class CssBorderImageParserTests
     }
 
     [Fact]
+    public void Width_components_parse_length_number_auto_percent()
+    {
+        var c = CssBorderImage_Parser.TryParse("url(b.png)", "30", "stretch", "10px 2 auto 50%", null);
+        Assert.NotNull(c);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.LengthPx, 10), c!.WidthTop);
+        Assert.Equal(BorderImageLen.Multiple(2), c.WidthRight);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.Auto, 0), c.WidthBottom);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.Percent, 0.5), c.WidthLeft);
+    }
+
+    [Fact]
+    public void Width_defaults_to_one_multiple_and_outset_to_zero()
+    {
+        var c = CssBorderImage_Parser.TryParse("url(b.png)", "30", "stretch");
+        Assert.Equal(BorderImageLen.Multiple(1), c!.WidthTop);
+        Assert.Equal(BorderImageLen.Multiple(0), c.OutsetTop);
+    }
+
+    [Fact]
+    public void Outset_parses_length_and_number_and_rejects_percent_auto()
+    {
+        var c = CssBorderImage_Parser.TryParse("url(b.png)", "30", "stretch", null, "5px 3");
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.LengthPx, 5), c!.OutsetTop);
+        Assert.Equal(BorderImageLen.Multiple(3), c.OutsetRight);
+        // % / auto are invalid for outset → the whole property falls back to its initial (0).
+        var bad = CssBorderImage_Parser.TryParse("url(b.png)", "30", "stretch", null, "50%");
+        Assert.Equal(BorderImageLen.Multiple(0), bad!.OutsetTop);
+        var bad2 = CssBorderImage_Parser.TryParse("url(b.png)", "30", "stretch", null, "auto");
+        Assert.Equal(BorderImageLen.Multiple(0), bad2!.OutsetTop);
+    }
+
+    [Fact]
+    public void Width_two_value_shorthand_expands_top_bottom_and_left_right()
+    {
+        var c = CssBorderImage_Parser.TryParse("url(b.png)", "30", "stretch", "4px 8px", null);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.LengthPx, 4), c!.WidthTop);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.LengthPx, 4), c.WidthBottom);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.LengthPx, 8), c.WidthRight);
+        Assert.Equal(new BorderImageLen(BorderImageLenKind.LengthPx, 8), c.WidthLeft);
+    }
+
+    [Fact]
     public void No_url_source_returns_null()
     {
         Assert.Null(CssBorderImage_Parser.TryParse("none", null, null));

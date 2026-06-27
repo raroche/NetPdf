@@ -91,11 +91,86 @@ public sealed class ClipPathPaintTests
     }
 
     [Fact]
-    public void Path_clip_is_deferred_with_a_diagnostic_and_paints_unclipped()
+    public void Path_clip_is_now_applied_natively()
     {
+        // clip-path: path("…") now clips natively (an SVG-path → PDF path + W n), no raster-fallback diagnostic.
         var result = HtmlPdf.ConvertDetailed(Html("path('M0 0 L100 0 L50 100 Z')"));
+        var text = Latin1(result.Pdf);
+        Assert.Contains("W n", text);                 // the path clip
+        Assert.Contains("1 0 0 rg", text);            // the clipped red background still fills
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathRasterFallback001);
+    }
+
+    [Fact]
+    public void Path_clip_with_curves_emits_bezier_segments()
+    {
+        // A cubic in the path data → a `c` operator in the clip path (curves are preserved, not flattened).
+        var text = Latin1(HtmlPdf.Convert(Html("path('M10 10 C 10 50 90 50 90 10 Z')")));
+        Assert.Contains(" c ", text);                 // cubic clip segment
+        Assert.Contains("W n", text);
+    }
+
+    [Fact]
+    public void Path_clip_evenodd_uses_the_even_odd_operator()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("path(evenodd, 'M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z')")));
+        Assert.Contains("W* n", text);                // even-odd clip rule (a hole)
+    }
+
+    [Fact]
+    public void Path_clip_nonzero_is_the_default()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("path('M0 0 L100 0 L50 100 Z')")));
+        Assert.Contains("W n", text);
+        Assert.DoesNotContain("W* n", text);
+    }
+
+    [Fact]
+    public void Path_clip_on_an_img_clips_the_image()
+    {
+        var dataUri = "data:image/png;base64," + Convert.ToBase64String(SyntheticRasterImage.BuildOpaquePng(16, 16));
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{dataUri}\" style=\"width:64px;height:64px;clip-path:path('M0 0 L64 0 L32 64 Z')\">" +
+            "</body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.Contains("W n", text);                 // the path clip wraps the image
+        Assert.Contains("Do", text);                  // the image draws inside the clip
+    }
+
+    [Fact]
+    public void Inset_round_uses_per_corner_radii()
+    {
+        // inset() with 4 distinct corner radii → a rounded clip whose corners differ (not a single uniform
+        // radius). The rounded clip emits four Bézier corner arcs.
+        var text = Latin1(HtmlPdf.Convert(Html("inset(10px round 4px 8px 12px 16px)")));
+        Assert.Contains("W n", text);
+        Assert.Contains(" c ", text);                 // rounded corners (Bézier arcs)
+        Assert.Contains("1 0 0 rg", text);
+    }
+
+    [Fact]
+    public void Inset_round_slash_form_applies_separate_x_and_y_radii()
+    {
+        // inset(... round 20px / 40px) → a rounded clip; it must paint a rounded path (Bézier corners),
+        // proving the slash form is parsed + applied rather than rejected.
+        var result = HtmlPdf.ConvertDetailed(Html("inset(5px round 20px / 40px)"));
+        var text = Latin1(result.Pdf);
+        Assert.Contains("W n", text);
+        Assert.Contains(" c ", text);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathUnsupported001);
+    }
+
+    [Fact]
+    public void Oversized_path_clip_falls_back_with_a_diagnostic()
+    {
+        // PR-234 review [P3] — an author-supplied path over the segment cap (20k) is not applied; it paints
+        // unclipped + the raster-fallback diagnostic fires (no unbounded allocation / PDF blow-up).
+        var sb = new StringBuilder("M0 0");
+        for (var i = 0; i < 30_000; i++) sb.Append(" L").Append(i % 100).Append(' ').Append(i % 50);
+        sb.Append(" Z");
+        var result = HtmlPdf.ConvertDetailed(Html($"path('{sb}')"));
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathRasterFallback001);
-        Assert.Contains("1 0 0 rg", Latin1(result.Pdf)); // still painted (unclipped)
+        Assert.Contains("1 0 0 rg", Latin1(result.Pdf));   // still painted (unclipped)
     }
 
     [Fact]

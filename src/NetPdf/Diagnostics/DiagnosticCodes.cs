@@ -162,10 +162,11 @@ internal static class DiagnosticCodes
     public const string CssFilterUnsupported001 = "CSS-FILTER-UNSUPPORTED-001";
 
     /// <summary>
-    /// Phase 4 — a <c>clip-path: path("…")</c> (an arbitrary SVG path) on an element was not applied:
-    /// native path-clip emission is a tracked follow-up (the basic shapes <c>inset</c> / <c>circle</c>
-    /// / <c>ellipse</c> / <c>polygon</c> ARE clipped natively). The element painted UNCLIPPED. Surfaced
-    /// once per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// Phase 4 — a <c>clip-path: path("…")</c> string could not be PARSED (or exceeded the path-complexity
+    /// cap), so it was not applied and the element painted UNCLIPPED. A parseable, in-budget <c>path()</c> is
+    /// now clipped NATIVELY (the SVG path → PDF path operators + <c>W n</c> / <c>W* n</c>, curves preserved),
+    /// as are the basic shapes <c>inset</c> / <c>circle</c> / <c>ellipse</c> / <c>polygon</c>. Surfaced once
+    /// per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssClipPathRasterFallback001 = "CSS-CLIP-PATH-RASTER-FALLBACK-001";
 

@@ -129,6 +129,52 @@ public sealed class CssClipPathParserTests
         var c = CssClipPath_Parser.TryParse("path(\"M0 0 L10 10 Z\")");
         Assert.Equal(ClipShapeKind.Path, c!.Kind);
         Assert.Equal("M0 0 L10 10 Z", c.PathData);
+        Assert.False(c.EvenOdd);                    // default fill-rule is nonzero
+    }
+
+    [Fact]
+    public void Path_parses_the_optional_fill_rule()
+    {
+        var eo = CssClipPath_Parser.TryParse("path(evenodd, \"M0 0 L10 10 Z\")");
+        Assert.Equal("M0 0 L10 10 Z", eo!.PathData);
+        Assert.True(eo.EvenOdd);
+
+        var nz = CssClipPath_Parser.TryParse("path(nonzero, 'M0 0 L10 10 Z')");
+        Assert.False(nz!.EvenOdd);
+
+        Assert.Null(CssClipPath_Parser.TryParse("path(junk, 'M0 0 Z')"));   // unknown fill-rule → invalid
+    }
+
+    [Fact]
+    public void Path_rejects_a_missing_comma_and_trailing_garbage()
+    {
+        // PR-234 review [P3] — a fill-rule REQUIRES the comma; nothing may follow the closing quote.
+        Assert.Null(CssClipPath_Parser.TryParse("path(evenodd \"M0 0 Z\")"));   // no comma after the fill-rule
+        Assert.Null(CssClipPath_Parser.TryParse("path('M0 0 Z' extra)"));      // trailing garbage
+        Assert.NotNull(CssClipPath_Parser.TryParse("path('M0 0 Z'  )"));       // trailing whitespace is OK
+    }
+
+    [Fact]
+    public void Inset_round_parses_the_slash_form_into_separate_x_and_y_radii()
+    {
+        // PR-234 review [P2] — inset(... round <x>{1,4} / <y>{1,4}) gives separate corner X / Y radii.
+        var c = CssClipPath_Parser.TryParse("inset(10px round 20px / 40px)");
+        Assert.NotNull(c);
+        Assert.Equal(ClipShapeKind.Inset, c!.Kind);
+        Assert.NotNull(c.Radii);
+        Assert.NotNull(c.RadiiY);
+        Assert.Equal(20.0, c.Radii![0].Px, precision: 3);   // X radius
+        Assert.Equal(40.0, c.RadiiY![0].Px, precision: 3);  // Y radius
+        Assert.Equal(20.0, c.Radii![2].Px, precision: 3);   // 1-value shorthand → all corners
+        Assert.Equal(40.0, c.RadiiY![2].Px, precision: 3);
+    }
+
+    [Fact]
+    public void Inset_round_without_slash_leaves_radii_y_null()
+    {
+        var c = CssClipPath_Parser.TryParse("inset(10px round 8px)");
+        Assert.NotNull(c!.Radii);
+        Assert.Null(c.RadiiY);                              // X used for both axes
     }
 
     [Theory]

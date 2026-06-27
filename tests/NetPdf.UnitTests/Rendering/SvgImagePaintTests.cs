@@ -78,10 +78,11 @@ public sealed class SvgImagePaintTests
     [Fact]
     public void Unsupported_svg_feature_is_diagnosed_once()
     {
-        // PR-230 review [P3] — <text> (+ other unsupported content) surfaces CSS-SVG-UNSUPPORTED-001.
+        // <image> (and other still-unsupported content) surfaces CSS-SVG-UNSUPPORTED-001. (<text> is now
+        // supported — PR 7 — so it no longer triggers this.)
         var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
             "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\"/>" +
-            "<text x=\"5\" y=\"20\">hi</text></svg>";
+            "<image x=\"5\" y=\"5\" width=\"10\" height=\"10\" href=\"x.png\"/></svg>";
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><body>" +
             $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px\">" +
@@ -100,5 +101,48 @@ public sealed class SvgImagePaintTests
             $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px\">" +
             "</body></html>");
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssSvgUnsupported001);
+    }
+
+    [Fact]
+    public void Svg_gradient_renders_through_the_pipeline_without_diagnostic()
+    {
+        // Phase 4 PR 7 — a gradient-filled SVG <img> now rasterizes natively (no unsupported diagnostic).
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            "<defs><linearGradient id=\"g\">" +
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient></defs>" +
+            "<rect x=\"0\" y=\"0\" width=\"60\" height=\"20\" fill=\"url(#g)\"/></svg>";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:60px;height:20px\">" +
+            "</body></html>");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssSvgUnsupported001);
+        Assert.Contains("Do", Latin1(result.Pdf));
+    }
+
+    [Fact]
+    public void Svg_text_renders_through_the_pipeline_without_diagnostic()
+    {
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"40\">" +
+            "<text x=\"5\" y=\"28\" font-size=\"24\" fill=\"black\">Hello</text></svg>";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:120px;height:40px\">" +
+            "</body></html>");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssSvgUnsupported001);
+        Assert.Contains("Do", Latin1(result.Pdf));
+    }
+
+    [Fact]
+    public void Svg_use_of_a_symbol_renders_through_the_pipeline_without_diagnostic()
+    {
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<symbol id=\"s\"><circle cx=\"10\" cy=\"10\" r=\"8\" fill=\"blue\"/></symbol>" +
+            "<use href=\"#s\" x=\"5\" y=\"5\"/></svg>";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px\">" +
+            "</body></html>");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssSvgUnsupported001);
+        Assert.Contains("Do", Latin1(result.Pdf));
     }
 }

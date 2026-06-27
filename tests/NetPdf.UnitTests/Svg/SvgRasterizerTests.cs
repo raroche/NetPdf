@@ -95,9 +95,11 @@ public sealed class SvgRasterizerTests
     [Fact]
     public void Unsupported_element_sets_the_flag()
     {
+        // <image> (an external/embedded raster reference) is still out of scope for the renderer; <text> is
+        // now supported (PR 7) so it no longer flags.
         var info = SvgRasterizer.TryRender(Svg(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
-            "<text x=\"0\" y=\"10\">hi</text></svg>"), out var unsupported);
+            "<image x=\"0\" y=\"0\" width=\"20\" height=\"20\" href=\"x.png\"/></svg>"), out var unsupported);
         Assert.NotNull(info);
         Assert.True(unsupported);
     }

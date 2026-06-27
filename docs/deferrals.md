@@ -2720,13 +2720,23 @@ flags the categories):
      subtree painting onto an `SKCanvas` (the `IPaintTarget` seam) and feed it through `SubtreeRasterizer`
      — the raster bridge itself is no longer the blocker.** Roland's call (PR #226 follow-up) was "image
      filters first". This is the enabling capability for general filters AND masks AND complex clip-path.
-     **Phase 4 PR 5 also shipped static SVG part 1** (`NetPdf.Svg.SvgRasterizer` → `SubtreeRasterizer`):
+     **Phase 4 PR 5 shipped static SVG part 1** (`NetPdf.Svg.SvgRasterizer` → `SubtreeRasterizer`):
      `rect`/`circle`/`ellipse`/`line`/`polyline`/`polygon`/`path`/`<g>` with fill/stroke/stroke-width/
      `transform` + inherited presentation attrs, viewBox xMidYMid-meet, wired through `<img>` SVG sources
-     (`image/svg+xml` re-enabled — the renderer is XXE-safe, no script/external fetch). **SVG residuals
-     (PR 7):** `<text>`, gradients (linear/radial), `<use>`/`<symbol>`/`<defs>`, `<image>`, `%`/`em`
-     lengths, dash arrays (`stroke-dasharray`), opacity/fill-opacity, native vector SVG → PDF operators
-     (raster first cut), inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
+     (`image/svg+xml` re-enabled — the renderer is XXE-safe, no script/external fetch). **Phase 4 PR 7
+     shipped SVG part 2:** (a) gradient paint servers — `<linearGradient>`/`<radialGradient>` referenced by
+     `fill`/`stroke="url(#id)"` → Skia shaders, honoring `gradientUnits` (objectBoundingBox + userSpaceOnUse),
+     `spreadMethod`, `gradientTransform`, the `<stop>` list (offset/stop-color/stop-opacity), a radial focal
+     point (`fx`/`fy`), and stop/attribute inheritance through an `href` chain; (b) `<text>`/`<tspan>` via
+     Skia text shaping — `x`/`y`, per-run `dx`/`dy` + absolute `x`/`y`, `text-anchor`, the inherited font
+     properties (family/size/weight/style), and fill/stroke incl. a gradient fill; (c) `<use>`/`<symbol>`/
+     `<defs>` — `<use href="#id" x= y=>` clones a referenced shape/group/symbol with inherited paint, bare
+     `<defs>`/`<symbol>` render nothing; plus `fill-opacity`/`stroke-opacity` and `skewX`/`skewY` transforms.
+     **SVG residuals (later):** `<image>` (embedded/external raster href), `<pattern>` paint servers, `%`/`em`
+     lengths, `stroke-dasharray`, `clip-path`/`mask`/`filter` element refs, `textPath`/`rotate`/`textLength`,
+     bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration), nested-viewport
+     `<symbol>` width/height clip+scale, native vector SVG → PDF operators (raster first cut), inline
+     `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't
      depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow

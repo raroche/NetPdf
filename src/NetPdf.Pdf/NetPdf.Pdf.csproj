@@ -28,6 +28,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />
+    <InternalsVisibleTo Include="NetPdf.Svg" />
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
     <InternalsVisibleTo Include="NetPdf.PdfValidation" />
     <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />

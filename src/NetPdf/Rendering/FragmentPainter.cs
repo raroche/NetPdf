@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Collections.Generic;
+using SkiaSharp;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Parser.Preprocessing;
@@ -396,23 +397,26 @@ internal static class FragmentPainter
     {
         if (clip.Kind == ClipShapeKind.Path)
         {
-            if (!rasterReported)
+            // Native path clip: parse the SVG path (Skia) → PDF path operators in the box's coordinate space
+            // (px origin = the box's top-left), then `W n` / `W* n`. The path's own fill-rule
+            // (path(evenodd, …)) selects the clip rule.
+            var segs = BuildPathClipSegments(clip.PathData, leftPx, topPx, pageHeightPt);
+            if (segs is null || segs.Count == 0)
             {
-                diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathRasterFallback001,
-                    "A clip-path: path(\"…\") (an arbitrary SVG path) was not applied — native path-clip "
-                    + "emission is a tracked follow-up; the element painted unclipped.", DiagnosticSeverity.Warning));
-                rasterReported = true;
+                if (!rasterReported)
+                {
+                    diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathRasterFallback001,
+                        "A clip-path: path(\"…\") could not be parsed and was not applied; the element painted "
+                        + "unclipped.", DiagnosticSeverity.Warning));
+                    rasterReported = true;
+                }
+                return false;
             }
-            return false;
+            page.BeginPathClip(segs, clip.EvenOdd);
+            EmitClipSubtreeResidual(box, diagnostics, ref subtreeReported);
+            return true;
         }
-        if (box.Children.Count > 0 && !subtreeReported)
-        {
-            diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathSubtreeUnsupported001,
-                "A clip-path on an element with children clipped only the element's own decoration "
-                + "(background / border / image), not its descendant content (a subtree clip needs the "
-                + "Skia subtree renderer NetPdf lacks).", DiagnosticSeverity.Warning));
-            subtreeReported = true;
-        }
+        EmitClipSubtreeResidual(box, diagnostics, ref subtreeReported);
 
         static double Resolve(ClipLen len, double extent) =>
             len.Px + (double.IsNaN(len.Frac) ? 0.0 : len.Frac) * extent;
@@ -430,9 +434,12 @@ internal static class FragmentPainter
                 ToPdfRect(leftPx + l, topPx + t, w, h, pageHeightPt, out var px, out var py, out var pw, out var ph);
                 if (clip.Radii is { } rad)
                 {
-                    var rPx = Resolve(rad[0], Math.Min(widthPx, heightPx)); // uniform (per-corner = a refinement)
-                    var rPt = PdfUnits.PxToPt(rPx);
-                    page.BeginRoundedRectangleClip(px, py, pw, ph, new CornerRadii(rPt, rPt, rPt, rPt, rPt, rPt, rPt, rPt));
+                    // Per-corner radii (CSS Masking §inset — each corner is a length-percentage; X resolves
+                    // against the inset box width, Y against its height). Was a single uniform radius.
+                    double Rx(int i) => PdfUnits.PxToPt(Math.Min(w, Resolve(rad[i], w)));
+                    double Ry(int i) => PdfUnits.PxToPt(Math.Min(h, Resolve(rad[i], h)));
+                    page.BeginRoundedRectangleClip(px, py, pw, ph,
+                        new CornerRadii(Rx(0), Ry(0), Rx(1), Ry(1), Rx(2), Ry(2), Rx(3), Ry(3)));
                 }
                 else page.BeginRectangleClip(px, py, pw, ph);
                 return true;
@@ -472,6 +479,71 @@ internal static class FragmentPainter
             default:
                 return false;
         }
+    }
+
+    /// <summary>A <c>clip-path</c> on an element with CHILDREN clips only the element's OWN decoration
+    /// (background / border / image), not its descendant subtree — diagnosed once (the subtree clip needs the
+    /// Skia subtree renderer).</summary>
+    private static void EmitClipSubtreeResidual(NetPdf.Layout.Boxes.Box box, IDiagnosticsSink? diagnostics, ref bool subtreeReported)
+    {
+        if (box.Children.Count > 0 && !subtreeReported)
+        {
+            diagnostics?.Emit(new Diagnostic(DiagnosticCodes.CssClipPathSubtreeUnsupported001,
+                "A clip-path on an element with children clipped only the element's own decoration "
+                + "(background / border / image), not its descendant content (a subtree clip needs the "
+                + "Skia subtree renderer NetPdf lacks).", DiagnosticSeverity.Warning));
+            subtreeReported = true;
+        }
+    }
+
+    /// <summary>Convert a <c>clip-path: path("…")</c> SVG path string into PDF clip segments in the box's
+    /// coordinate space (px origin = the box's top-left). Curves are preserved (quad → cubic; conic → cubics);
+    /// the result feeds <see cref="PdfPage.BeginPathClip"/>. Returns <see langword="null"/> on an
+    /// empty / unparseable path.</summary>
+    private static List<PdfPathSegment>? BuildPathClipSegments(string? pathData, double leftPx, double topPx, double pageHeightPt)
+    {
+        if (string.IsNullOrWhiteSpace(pathData)) return null;
+        using var skPath = SKPath.ParseSvgPathData(pathData);
+        if (skPath is null) return null;
+
+        double Xp(float px) => PdfUnits.PxToPt(leftPx + px);
+        double Yp(float py) => pageHeightPt - PdfUnits.PxToPt(topPx + py);
+
+        var segs = new List<PdfPathSegment>();
+        void Quad(SKPoint p0, SKPoint p1, SKPoint p2)
+        {
+            // Quadratic → cubic: the two cubic controls are p0/p2 raised 2/3 toward the quad control.
+            var c1 = new SKPoint(p0.X + 2f / 3f * (p1.X - p0.X), p0.Y + 2f / 3f * (p1.Y - p0.Y));
+            var c2 = new SKPoint(p2.X + 2f / 3f * (p1.X - p2.X), p2.Y + 2f / 3f * (p1.Y - p2.Y));
+            segs.Add(PdfPathSegment.Curve(Xp(c1.X), Yp(c1.Y), Xp(c2.X), Yp(c2.Y), Xp(p2.X), Yp(p2.Y)));
+        }
+
+        using var it = skPath.CreateRawIterator();
+        var pts = new SKPoint[4];
+        SKPathVerb verb;
+        while ((verb = it.Next(pts)) != SKPathVerb.Done)
+        {
+            switch (verb)
+            {
+                case SKPathVerb.Move: segs.Add(PdfPathSegment.Move(Xp(pts[0].X), Yp(pts[0].Y))); break;
+                case SKPathVerb.Line: segs.Add(PdfPathSegment.Line(Xp(pts[1].X), Yp(pts[1].Y))); break;
+                case SKPathVerb.Quad: Quad(pts[0], pts[1], pts[2]); break;
+                case SKPathVerb.Cubic:
+                    segs.Add(PdfPathSegment.Curve(Xp(pts[1].X), Yp(pts[1].Y), Xp(pts[2].X), Yp(pts[2].Y), Xp(pts[3].X), Yp(pts[3].Y)));
+                    break;
+                case SKPathVerb.Conic:
+                {
+                    // Conic (rational quad, from an arc) → 2 quads → 2 cubics (a faithful native approximation).
+                    var quads = new SKPoint[5];
+                    SKPath.ConvertConicToQuads(pts[0], pts[1], pts[2], it.ConicWeight(), quads, 1);
+                    Quad(quads[0], quads[1], quads[2]);
+                    Quad(quads[2], quads[3], quads[4]);
+                    break;
+                }
+                case SKPathVerb.Close: segs.Add(PdfPathSegment.Close); break;
+            }
+        }
+        return segs.Count > 0 ? segs : null;
     }
 
     /// <summary>The circle() radius in px: <c>closest-side</c> = the min distance to the four edges,

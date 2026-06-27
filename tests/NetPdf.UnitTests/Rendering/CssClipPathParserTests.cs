@@ -129,6 +129,20 @@ public sealed class CssClipPathParserTests
         var c = CssClipPath_Parser.TryParse("path(\"M0 0 L10 10 Z\")");
         Assert.Equal(ClipShapeKind.Path, c!.Kind);
         Assert.Equal("M0 0 L10 10 Z", c.PathData);
+        Assert.False(c.EvenOdd);                    // default fill-rule is nonzero
+    }
+
+    [Fact]
+    public void Path_parses_the_optional_fill_rule()
+    {
+        var eo = CssClipPath_Parser.TryParse("path(evenodd, \"M0 0 L10 10 Z\")");
+        Assert.Equal("M0 0 L10 10 Z", eo!.PathData);
+        Assert.True(eo.EvenOdd);
+
+        var nz = CssClipPath_Parser.TryParse("path(nonzero, 'M0 0 L10 10 Z')");
+        Assert.False(nz!.EvenOdd);
+
+        Assert.Null(CssClipPath_Parser.TryParse("path(junk, 'M0 0 Z')"));   // unknown fill-rule → invalid
     }
 
     [Theory]

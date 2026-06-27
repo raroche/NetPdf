@@ -91,11 +91,61 @@ public sealed class ClipPathPaintTests
     }
 
     [Fact]
-    public void Path_clip_is_deferred_with_a_diagnostic_and_paints_unclipped()
+    public void Path_clip_is_now_applied_natively()
     {
+        // clip-path: path("…") now clips natively (an SVG-path → PDF path + W n), no raster-fallback diagnostic.
         var result = HtmlPdf.ConvertDetailed(Html("path('M0 0 L100 0 L50 100 Z')"));
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathRasterFallback001);
-        Assert.Contains("1 0 0 rg", Latin1(result.Pdf)); // still painted (unclipped)
+        var text = Latin1(result.Pdf);
+        Assert.Contains("W n", text);                 // the path clip
+        Assert.Contains("1 0 0 rg", text);            // the clipped red background still fills
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssClipPathRasterFallback001);
+    }
+
+    [Fact]
+    public void Path_clip_with_curves_emits_bezier_segments()
+    {
+        // A cubic in the path data → a `c` operator in the clip path (curves are preserved, not flattened).
+        var text = Latin1(HtmlPdf.Convert(Html("path('M10 10 C 10 50 90 50 90 10 Z')")));
+        Assert.Contains(" c ", text);                 // cubic clip segment
+        Assert.Contains("W n", text);
+    }
+
+    [Fact]
+    public void Path_clip_evenodd_uses_the_even_odd_operator()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("path(evenodd, 'M0 0 L100 0 L100 100 L0 100 Z M25 25 L75 25 L75 75 L25 75 Z')")));
+        Assert.Contains("W* n", text);                // even-odd clip rule (a hole)
+    }
+
+    [Fact]
+    public void Path_clip_nonzero_is_the_default()
+    {
+        var text = Latin1(HtmlPdf.Convert(Html("path('M0 0 L100 0 L50 100 Z')")));
+        Assert.Contains("W n", text);
+        Assert.DoesNotContain("W* n", text);
+    }
+
+    [Fact]
+    public void Path_clip_on_an_img_clips_the_image()
+    {
+        var dataUri = "data:image/png;base64," + Convert.ToBase64String(SyntheticRasterImage.BuildOpaquePng(16, 16));
+        var html = "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{dataUri}\" style=\"width:64px;height:64px;clip-path:path('M0 0 L64 0 L32 64 Z')\">" +
+            "</body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.Contains("W n", text);                 // the path clip wraps the image
+        Assert.Contains("Do", text);                  // the image draws inside the clip
+    }
+
+    [Fact]
+    public void Inset_round_uses_per_corner_radii()
+    {
+        // inset() with 4 distinct corner radii → a rounded clip whose corners differ (not a single uniform
+        // radius). The rounded clip emits four Bézier corner arcs.
+        var text = Latin1(HtmlPdf.Convert(Html("inset(10px round 4px 8px 12px 16px)")));
+        Assert.Contains("W n", text);
+        Assert.Contains(" c ", text);                 // rounded corners (Bézier arcs)
+        Assert.Contains("1 0 0 rg", text);
     }
 
     [Fact]

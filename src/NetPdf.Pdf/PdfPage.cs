@@ -675,6 +675,40 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Phase 4 clip-path — push the graphics state and intersect the clip with an ARBITRARY path
+    /// (multiple subpaths, straight + cubic-Bézier segments) — for <c>clip-path: path("…")</c>. Segments are
+    /// in PDF points (bottom-left origin); a <see cref="PdfPathVerb.MoveTo"/> starts a new subpath.
+    /// <paramref name="evenOdd"/> selects the clip rule (<c>W* n</c> vs <c>W n</c> — <c>path()</c> defaults to
+    /// nonzero). An empty list opens the <c>q</c> with no clip. Callers MUST balance with
+    /// <see cref="RestoreGraphicsState"/>.</summary>
+    public void BeginPathClip(IReadOnlyList<PdfPathSegment> segments, bool evenOdd = false)
+    {
+        ThrowIfFinalized();
+        ArgumentNullException.ThrowIfNull(segments);
+        var sb = new StringBuilder(16 + segments.Count * 24);
+        sb.Append("q ");
+        var any = false;
+        foreach (var s in segments)
+        {
+            switch (s.Verb)
+            {
+                case PdfPathVerb.MoveTo:
+                    AppendNumber(sb, s.X1); sb.Append(' '); AppendNumber(sb, s.Y1); sb.Append(" m "); any = true; break;
+                case PdfPathVerb.LineTo:
+                    AppendNumber(sb, s.X1); sb.Append(' '); AppendNumber(sb, s.Y1); sb.Append(" l "); break;
+                case PdfPathVerb.CurveTo:
+                    AppendNumber(sb, s.X1); sb.Append(' '); AppendNumber(sb, s.Y1); sb.Append(' ');
+                    AppendNumber(sb, s.X2); sb.Append(' '); AppendNumber(sb, s.Y2); sb.Append(' ');
+                    AppendNumber(sb, s.X3); sb.Append(' '); AppendNumber(sb, s.Y3); sb.Append(" c "); break;
+                case PdfPathVerb.Close:
+                    sb.Append("h "); break;
+            }
+        }
+        if (any) sb.Append(evenOdd ? "W* n" : "W n");
+        sb.Append('\n');
+        AppendContent(sb.ToString());
+    }
+
     /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with an
     /// ELLIPSE centered (<paramref name="cx"/>, <paramref name="cy"/>) with radii
     /// (<paramref name="rx"/>, <paramref name="ry"/>) via four cubic-Bézier quadrants (k ≈ 0.5523) —

@@ -77,4 +77,51 @@ public sealed class PdfPageClipTests
         Assert.Contains("W* n", content);              // even-odd clip
         Assert.Contains("Q", content);
     }
+
+    [Fact]
+    public void BeginPathClip_emits_move_line_curve_close_and_the_clip_rule()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+
+        page.BeginPathClip(new[]
+        {
+            PdfPathSegment.Move(0, 0),
+            PdfPathSegment.Line(100, 0),
+            PdfPathSegment.Curve(100, 50, 50, 100, 0, 100),
+            PdfPathSegment.Close,
+        }, evenOdd: false);
+        page.RestoreGraphicsState();
+
+        var content = ContentOf(page);
+        Assert.Contains("0 0 m", content);
+        Assert.Contains("100 0 l", content);
+        Assert.Contains("100 50 50 100 0 100 c", content);
+        Assert.Contains("h ", content);
+        Assert.Contains("W n", content);
+        Assert.DoesNotContain("W* n", content);
+        Assert.Contains("Q", content);
+    }
+
+    [Fact]
+    public void BeginPathClip_evenodd_emits_the_even_odd_rule()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.BeginPathClip(new[] { PdfPathSegment.Move(0, 0), PdfPathSegment.Line(10, 0), PdfPathSegment.Line(0, 10) }, evenOdd: true);
+        Assert.Contains("W* n", ContentOf(page));
+    }
+
+    [Fact]
+    public void BeginPathClip_empty_opens_the_q_with_no_clip()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.BeginPathClip(Array.Empty<PdfPathSegment>());
+        page.RestoreGraphicsState();
+        var content = ContentOf(page);
+        Assert.DoesNotContain("W n", content);         // no path → no clip change
+        Assert.Contains("q", content);
+        Assert.Contains("Q", content);
+    }
 }

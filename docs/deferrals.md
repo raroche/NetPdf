@@ -2771,10 +2771,13 @@ flags the categories):
      (two concentric rounded rings) faithfully. **Remaining:** the 3D styles (`groove`/`ridge`/`inset`/
      `outset`) on the rounded-ring + outline paths stay a solid-ring approximation — their per-SIDE bevel
      shading can't follow a concentric rounded ring (`PAINT-BORDER-STYLE-APPROXIMATED-001` now fires ONLY
-     for 3D); a per-edge-mixed style on a rounded box falls to the per-edge clipped path; per-corner
-     inset-round radii use a single uniform radius. (3) `clip-path: path("…")` (arbitrary SVG path) is deferred
-     (`CSS-CLIP-PATH-RASTER-FALLBACK-001` — needs the SVG path parser from PR 6 + a native/raster
-     clip); (4) a `clip-path` on an element with CHILDREN clips only its OWN decoration, not the
+     for 3D); a per-edge-mixed style on a rounded box falls to the per-edge clipped path. (3) **`clip-path:
+     path("…")` SHIPPED (clip-path-completion PR)** — the SVG path is parsed (Skia `SKPath.ParseSvgPathData`),
+     converted to PDF path operators in the box's coordinate space (curves preserved: quad → cubic, conic →
+     cubics), and applied as a NATIVE `W n` / `W* n` clip on the decoration AND the `<img>` image; the
+     `path([<fill-rule>,]? …)` fill-rule selects the clip rule; `inset()` round now uses PER-CORNER radii (was
+     a single uniform radius). `CSS-CLIP-PATH-RASTER-FALLBACK-001` now fires ONLY when the path string can't be
+     parsed. (4) a `clip-path` on an element with CHILDREN clips only its OWN decoration, not the
      descendant subtree (`CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001` — the same Skia SUBTREE RENDERER the
      general element filters / masks need); (5) clip-path dash/3D-border metrics are browser-tunable
      approximations the visual-regression harness (PR 8) will refine.

@@ -189,14 +189,22 @@ internal static class CssClipPath_Parser
 
     private static CssClipPath? ParsePath(string args)
     {
-        // path( [<fill-rule>,]? <string> ) — the SVG path is a string in single OR double quotes.
+        // path( [<fill-rule>,]? <string> ) — the SVG path is a string in single OR double quotes. An optional
+        // leading fill-rule (nonzero | evenodd) before the comma selects the clip rule (default nonzero).
         var quote = args.IndexOfAny(['"', '\'']);
         if (quote < 0) return null;
+        var evenOdd = false;
+        var prefix = args[..quote].Trim().TrimEnd(',').Trim();
+        if (prefix.Length > 0)
+        {
+            if (prefix.Equals("evenodd", StringComparison.OrdinalIgnoreCase)) evenOdd = true;
+            else if (!prefix.Equals("nonzero", StringComparison.OrdinalIgnoreCase)) return null; // junk before the string
+        }
         var qch = args[quote];
         var end = args.LastIndexOf(qch);
         if (end <= quote) return null;
         var data = args.Substring(quote + 1, end - quote - 1);
-        return data.Length > 0 ? new CssClipPath(ClipShapeKind.Path, PathData: data) : null;
+        return data.Length > 0 ? new CssClipPath(ClipShapeKind.Path, PathData: data, EvenOdd: evenOdd) : null;
     }
 
     /// <summary>Split a shape's args at a leading <c>at &lt;position&gt;</c> clause.</summary>

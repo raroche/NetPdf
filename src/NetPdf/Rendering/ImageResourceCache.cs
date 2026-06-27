@@ -108,6 +108,34 @@ internal sealed class ImageResourceCache
     /// XObject with an alpha <c>/SMask</c> — emitting <c>CSS-CONIC-GRADIENT-RASTER-001</c>.</summary>
     public Dictionary<Box, CssConicGradient> BackgroundConicGradientBoxes { get; } = new();
 
+    /// <summary>Phase 4 multi-layer backgrounds — element-backed box → its ORDERED list of background
+    /// layers (comma-separated <c>background-image</c>), present ONLY when there are 2+ layers. A
+    /// single-layer background uses the per-type dicts above (byte-identical). Layers are stored in SOURCE
+    /// order (layer 0 = topmost); the painter draws them BACK-TO-FRONT (last first, CSS B&amp;B §3.10). A box
+    /// in this dict is NOT in the single-layer dicts.</summary>
+    public Dictionary<Box, List<BgLayer>> MultiLayerBackgroundBoxes { get; } = new();
+
+    internal enum BgLayerKind { Url, Linear, Radial, Conic }
+
+    /// <summary>One resolved background layer (multi-layer path): the kind + the resolved content (a fetched
+    /// image <see cref="UriKey"/>, or a parsed gradient) + this layer's OWN position/size/repeat/origin/clip
+    /// (cycled from the comma-separated longhand lists). A class so the async fetch can fill in
+    /// <see cref="UriKey"/> after collection.</summary>
+    internal sealed class BgLayer
+    {
+        public BgLayerKind Kind;
+        public string? RawUrl;      // a Url layer's unresolved url(...) target, fetched after collection
+        public string? UriKey;
+        public CssLinearGradient? Linear;
+        public CssRadialGradient? Radial;
+        public CssConicGradient? Conic;
+        public string? RepeatRaw;
+        public string? SizeRaw;
+        public string? PositionRaw;
+        public string? OriginRaw;
+        public string? ClipRaw;
+    }
+
     /// <summary>Phase 4 shadows — element-backed box → its parsed <c>box-shadow</c> layers
     /// (computed, not fetched). The painter emits each OUTSET layer UNDER the background — sharp
     /// as a native filled (rounded) rect, blurred via the Skia raster bridge.</summary>
@@ -234,6 +262,7 @@ internal sealed class ImageResourceCache
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
+            cache.MultiLayerBackgroundBoxes,
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes, cache.ClipPathBoxes,
             collectBackgrounds: options.PrintBackgrounds,
@@ -322,6 +351,15 @@ internal sealed class ImageResourceCache
             if (key is not null) cache.BorderImageBoxes[box] = (spec, key);
         }
 
+        // Phase 4 multi-layer backgrounds — fetch each url() layer's image (gradient layers need no fetch).
+        // A failed fetch leaves UriKey null → the painter skips that layer (its diagnostic already fired).
+        foreach (var (_, list) in cache.MultiLayerBackgroundBoxes)
+            foreach (var layer in list)
+                if (layer is { Kind: BgLayerKind.Url, RawUrl: { } layerUrl })
+                    layer.UriKey = await ResolveAndFetchAsync(
+                        cache, loader, layerUrl, options.BaseUri, diagnostics, cancellationToken)
+                        .ConfigureAwait(false);
+
         if (extraImageUrls is not null)
         {
             foreach (var rawUrl in extraImageUrls)
@@ -372,6 +410,7 @@ internal sealed class ImageResourceCache
         Dictionary<Box, CssLinearGradient> gradientBoxes,
         Dictionary<Box, CssRadialGradient> radialGradientBoxes,
         Dictionary<Box, CssConicGradient> conicGradientBoxes,
+        Dictionary<Box, List<BgLayer>> multiLayerBoxes,
         Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
         Dictionary<Box, IReadOnlyList<CssTextShadow>> textShadowBoxes,
         Dictionary<Box, BoxTransform> transformBoxes,
@@ -561,7 +600,30 @@ internal sealed class ImageResourceCache
             if (!string.IsNullOrWhiteSpace(bgRaw)
                 && !bgRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
-                if (TryParseCssUrl(bgRaw, out var bgUrl))
+                // Multi-layer: a comma-separated background-image list (paren-aware, so a gradient's own
+                // commas don't split it). A SINGLE layer goes through the existing single-layer dispatch
+                // below — byte-identical. 2+ layers build an ordered BgLayer list (painted back-to-front).
+                var layers = CssLinearGradient_Parser.SplitTopLevelCommas(bgRaw);
+                if (layers.Count > 1
+                    && BuildMultiLayerBackground(layers, rules) is { } multi)
+                {
+                    multiLayerBoxes[box] = multi;
+                }
+                else if (layers.Count > 1)
+                {
+                    // A multi-layer list with an unparseable layer → unsupported (background-color paints).
+                    if (!unsupportedBackgroundReported)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.CssBackgroundImageUnsupported001,
+                            "A multi-layer background-image list contained a layer outside the supported set "
+                            + "(url(...) / linear / radial / conic gradient); the list was ignored "
+                            + "(background-color still paints).",
+                            DiagnosticSeverity.Warning));
+                        unsupportedBackgroundReported = true;
+                    }
+                }
+                else if (TryParseCssUrl(bgRaw, out var bgUrl))
                 {
                     references.Add((box, bgUrl, true));
                 }
@@ -587,7 +649,7 @@ internal sealed class ImageResourceCache
                         DiagnosticCodes.CssBackgroundImageUnsupported001,
                         "background-image supports a single url(...), linear-gradient(...), "
                         + "radial-gradient(...), or conic-gradient(...) (incl. repeating-linear / "
-                        + "repeating-radial / repeating-conic) this cycle; a multi-layer list or an "
+                        + "repeating-radial / repeating-conic) this cycle; an "
                         + "unrecognized form was ignored (background-color still paints).",
                         DiagnosticSeverity.Warning));
                     unsupportedBackgroundReported = true;
@@ -597,6 +659,7 @@ internal sealed class ImageResourceCache
         foreach (var child in box.Children)
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
+                multiLayerBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
                 borderImages, blendModeBoxes,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
@@ -730,6 +793,81 @@ internal sealed class ImageResourceCache
         var y = rules.GetWinner(property + "-y")?.ResolvedValue;
         if (string.IsNullOrWhiteSpace(x) && string.IsNullOrWhiteSpace(y)) return null;
         return $"{(string.IsNullOrWhiteSpace(x) ? axisInitial : x)} {(string.IsNullOrWhiteSpace(y) ? axisInitial : y)}";
+    }
+
+    /// <summary>Build the ordered <see cref="BgLayer"/> list for a multi-layer <c>background-image</c>
+    /// (2+ comma-separated layers, source order = topmost first). Each layer is parsed as
+    /// url / linear / radial / conic (a <c>none</c> layer is a no-op slot, preserving longhand alignment);
+    /// the per-layer <c>background-position</c>/<c>-size</c>/<c>-repeat</c>/<c>-origin</c>/<c>-clip</c> are
+    /// taken from the comma-separated longhand lists (cycled — CSS B&amp;B §3.10). Returns
+    /// <see langword="null"/> when any layer is outside the supported set.</summary>
+    private static List<BgLayer>? BuildMultiLayerBackground(List<string> layers, ResolvedRuleSet? rules)
+    {
+        var n = layers.Count;
+        var positions = LayerAxisLonghand(rules, "background-position", n, "0%");
+        var repeats = LayerAxisLonghand(rules, "background-repeat", n, "repeat");
+        var sizes = LayerLonghand(rules, "background-size", n);
+        var origins = LayerLonghand(rules, "background-origin", n);
+        var clips = LayerLonghand(rules, "background-clip", n);
+
+        var list = new List<BgLayer>(n);
+        for (var i = 0; i < n; i++)
+        {
+            var raw = layers[i];
+            var layer = new BgLayer
+            {
+                PositionRaw = positions[i], SizeRaw = sizes[i], RepeatRaw = repeats[i],
+                OriginRaw = origins[i], ClipRaw = clips[i],
+            };
+            if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) { layer.Kind = BgLayerKind.Url; } // no-op slot
+            else if (TryParseCssUrl(raw, out var url)) { layer.Kind = BgLayerKind.Url; layer.RawUrl = url; }
+            else if (CssLinearGradient_Parser.TryParse(raw) is { } lin) { layer.Kind = BgLayerKind.Linear; layer.Linear = lin; }
+            else if (CssRadialGradient_Parser.TryParse(raw) is { } rad) { layer.Kind = BgLayerKind.Radial; layer.Radial = rad; }
+            else if (CssConicGradient_Parser.TryParse(raw) is { } con) { layer.Kind = BgLayerKind.Conic; layer.Conic = con; }
+            else return null; // an unsupported layer fails the whole list
+            list.Add(layer);
+        }
+        return list;
+    }
+
+    /// <summary>Per-layer values of a non-axis longhand (<c>background-size</c>/<c>-origin</c>/<c>-clip</c>):
+    /// split the winner on top-level commas + cycle to <paramref name="count"/> (null when unset).</summary>
+    private static string?[] LayerLonghand(ResolvedRuleSet? rules, string property, int count)
+    {
+        var result = new string?[count];
+        var whole = rules?.GetWinner(property)?.ResolvedValue;
+        if (string.IsNullOrWhiteSpace(whole)) return result;
+        var parts = CssLinearGradient_Parser.SplitTopLevelCommas(whole);
+        for (var i = 0; i < count; i++) result[i] = parts[i % parts.Count];
+        return result;
+    }
+
+    /// <summary>Per-layer values of an axis longhand (<c>background-position</c>/<c>-repeat</c>, which
+    /// AngleSharp may expand to <c>-x</c>/<c>-y</c> comma lists): recompose each layer's
+    /// <c>"&lt;x&gt; &lt;y&gt;"</c> from the cycled lists (a missing axis takes
+    /// <paramref name="axisInitial"/>). Falls back to the un-expanded whole winner when present.</summary>
+    private static string?[] LayerAxisLonghand(ResolvedRuleSet? rules, string property, int count, string axisInitial)
+    {
+        var result = new string?[count];
+        var whole = rules?.GetWinner(property)?.ResolvedValue;
+        if (!string.IsNullOrWhiteSpace(whole))
+        {
+            var parts = CssLinearGradient_Parser.SplitTopLevelCommas(whole);
+            for (var i = 0; i < count; i++) result[i] = parts[i % parts.Count];
+            return result;
+        }
+        var xRaw = rules?.GetWinner(property + "-x")?.ResolvedValue;
+        var yRaw = rules?.GetWinner(property + "-y")?.ResolvedValue;
+        if (string.IsNullOrWhiteSpace(xRaw) && string.IsNullOrWhiteSpace(yRaw)) return result;
+        var xs = string.IsNullOrWhiteSpace(xRaw) ? null : CssLinearGradient_Parser.SplitTopLevelCommas(xRaw);
+        var ys = string.IsNullOrWhiteSpace(yRaw) ? null : CssLinearGradient_Parser.SplitTopLevelCommas(yRaw);
+        for (var i = 0; i < count; i++)
+        {
+            var x = xs is { Count: > 0 } ? xs[i % xs.Count] : axisInitial;
+            var y = ys is { Count: > 0 } ? ys[i % ys.Count] : axisInitial;
+            result[i] = $"{x} {y}";
+        }
+        return result;
     }
 
     private static bool TryResolveUri(string rawUrl, Uri? baseUri, out Uri uri, out string failure)

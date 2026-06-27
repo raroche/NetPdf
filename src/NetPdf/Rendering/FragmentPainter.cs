@@ -327,6 +327,18 @@ internal static class FragmentPainter
                 }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
 
+                // Phase 4 multi-layer backgrounds — a comma-separated background-image list (a box is in this
+                // dict ONLY when there are 2+ layers; single-layer paints above, byte-identical). Layers paint
+                // BACK-TO-FRONT (last first, CSS B&B §3.10), each with its own position/size/repeat/origin/clip.
+                if (imageCache is not null && document is not null
+                    && imageCache.MultiLayerBackgroundBoxes.TryGetValue(fragment.Box, out var bgLayers))
+                {
+                    PaintMultiLayerBackground(page, document, imageCache, bgLayers, style, pageHeightPt,
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx, diagnostics,
+                        ref variantUnsupportedReported, ref conicGradientRasterReported, ref conicGradientCapReported);
+                }
+
                 // box-shadow INSET (Phase 4 PR 1) paints OVER the background (CSS B&B §7.2 — inset
                 // shadows are drawn on top of the background, clipped to the padding box) but UNDER
                 // the border (which paints next, occluding the band under it).
@@ -584,6 +596,74 @@ internal static class FragmentPainter
     /// one pattern object). At or below the threshold the per-tile loop stays — fewer bytes
     /// than a pattern object for small grids, and every pre-cycle stream is byte-identical.</summary>
     private const int MaxLoopTilesPerFragment = 16;
+
+    /// <summary>Phase 4 multi-layer backgrounds — paint a comma-separated <c>background-image</c> list
+    /// BACK-TO-FRONT (the last source layer is bottom-most, CSS B&amp;B §3.10). Each image layer uses its own
+    /// <c>background-position</c>/<c>-size</c>/<c>-repeat</c>/<c>-origin</c>/<c>-clip</c> (cycled at
+    /// collection); each gradient layer paints over the (rounded) border box like the single-layer path.
+    /// Mirrors the single-layer geometry so a 1-layer background (which never reaches here) stays
+    /// byte-identical.</summary>
+    private static void PaintMultiLayerBackground(
+        PdfPage page, PdfDocument document, ImageResourceCache imageCache,
+        System.Collections.Generic.List<ImageResourceCache.BgLayer> layers, ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx, uint currentColorArgb,
+        double decorationBlockExtentPx, double decorationBlockOffsetPx, IDiagnosticsSink? diagnostics,
+        ref bool variantUnsupportedReported, ref bool conicRasterReported, ref bool conicCapReported)
+    {
+        var sliced = decorationBlockExtentPx > 0;
+        double? axisTopPx = sliced ? topPx - decorationBlockOffsetPx : null;
+        double? axisHeightPx = sliced ? decorationBlockExtentPx : null;
+        var (compTopPx, compHeightPx, compRadiiPx) = CompositeRoundedBox(
+            style, topPx, widthPx, heightPx, decorationBlockExtentPx, decorationBlockOffsetPx);
+
+        for (var i = layers.Count - 1; i >= 0; i--)   // back-to-front
+        {
+            var layer = layers[i];
+            if (layer.Kind == ImageResourceCache.BgLayerKind.Url)
+            {
+                if (layer.UriKey is not { } key || !imageCache.TryGet(key, out var entry)) continue;
+                var (oT, oR, oB, oL) = BackgroundAreaInset(style, layer.OriginRaw, defaultArea: 'p');
+                var (cT, cR, cB, cL) = BackgroundAreaInset(style, layer.ClipRaw, defaultArea: 'b');
+                var clipRadiiPx = InsetRadii(compRadiiPx, cT, cR, cB, cL);
+                var bgOriginTopPx = compTopPx + oT;
+                var bgOriginHeightPx = Math.Max(0, compHeightPx - oT - oB);
+                var imageSliceClipped = false;
+                if (sliced)
+                {
+                    ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var scx, out var scy, out var scw, out var sch);
+                    page.BeginRectangleClip(scx, scy, scw, sch);
+                    imageSliceClipped = true;
+                }
+                PaintBackgroundImageTiles(
+                    page, document, entry, pageHeightPt,
+                    leftPx + oL, bgOriginTopPx, Math.Max(0, widthPx - oL - oR), bgOriginHeightPx,
+                    diagnostics, ref variantUnsupportedReported,
+                    layer.RepeatRaw, layer.SizeRaw, layer.PositionRaw,
+                    clipLeftPx: leftPx + cL, clipTopPx: compTopPx + cT,
+                    clipWidthPx: Math.Max(0, widthPx - cL - cR),
+                    clipHeightPx: Math.Max(0, compHeightPx - cT - cB),
+                    clipRadiiPx: clipRadiiPx);
+                if (imageSliceClipped) page.RestoreGraphicsState();
+            }
+            else // a gradient layer
+            {
+                var gradientSliceClipped = false;
+                if (sliced)
+                {
+                    ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var gcx, out var gcy, out var gcw, out var gch);
+                    page.BeginRectangleClip(gcx, gcy, gcw, gch);
+                    gradientSliceClipped = true;
+                }
+                if (layer.Linear is { } lin)
+                    PaintLinearGradient(page, document, lin, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
+                else if (layer.Radial is { } rad)
+                    PaintRadialGradient(page, document, rad, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
+                else if (layer.Conic is { } con)
+                    PaintConicGradient(page, document, con, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics, ref conicRasterReported, ref conicCapReported, axisTopPx, axisHeightPx);
+                if (gradientSliceClipped) page.RestoreGraphicsState();
+            }
+        }
+    }
 
     /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box (bg-image +
     /// bg-variants cycles): the tile size comes from <paramref name="sizeRaw"/>

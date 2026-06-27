@@ -2691,7 +2691,7 @@ flags the categories):
      shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
      raster for blur). **Remaining gradient residuals (Phase 4 follow-ups):** color-interpolation
      hints, per-stop alpha on the NATIVE linear/radial shadings (a soft-mask alpha shading — the
-     conic raster path already preserves it), multi-layer background-image lists, **gradient
+     conic raster path already preserves it), **gradient
      `background-clip` / `background-origin` insets** (PR #209 Copilot — gradients paint/clip against
      the border box; the `url()` image path already honors origin/clip + inset radii), and a
      repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default

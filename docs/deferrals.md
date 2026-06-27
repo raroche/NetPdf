@@ -2753,8 +2753,14 @@ flags the categories):
      shipped — 5 tasks:** `border-image` 9-slice (stretch), `mask`/`mask-image` on `<img>` (Skia alpha →
      `/SMask`), `mix-blend-mode` (native `/BM` ExtGState), hyperlink `/Link` annotations (`<a href>` → `/URI`
      behind the preflight's narrow opt-in), document outline (`<h1>`–`<h6>` → `/Outlines`). **PR-4 residuals:**
-     (1a) border-image edge TILING (`repeat`/`round`/`space` paint STRETCHED, `CSS-BORDER-IMAGE-UNSUPPORTED-001`),
-     `border-image-width`/`-outset` ignored, gradient source unsupported (only `url()`); (1b) `mask` only on
+     (1a) **border-image completion shipped (border-image-completion PR):** edge TILING (`repeat`/`round`/
+     `space`) now tiles the edges (`repeat` = whole tiles centered + clipped; `round` = exact-fit scaling;
+     `space` = whole tiles with equal gaps, or paint-nothing when not one fits), and `border-image-width`
+     (length / number / `%` / `auto`) + `border-image-outset` (length / number) are honored — the
+     "approximated sub-feature" diagnostic is GONE. **Remaining border-image residuals:** the `fill` keyword
+     CENTER is still STRETCHED (not tiled); a non-`url()` (gradient) source stays unsupported
+     (`CSS-BORDER-IMAGE-UNSUPPORTED-001`, only `url()`); per-corner border-image-width clamping is a simple
+     per-axis proportional reduce. (1b) `mask` only on
      `<img>` (general elements → `CSS-MASK-ELEMENT-UNSUPPORTED-001`; luminance masks + filter+mask combined need
      the subtree renderer / SVG); (1c) `mix-blend-mode` blends DECORATION only + sets `/BM` directly (faithful
      isolated-group compositing needs the subtree renderer; `plus-lighter` has no PDF equivalent); (1d) links

@@ -1265,8 +1265,29 @@ internal static class FragmentPainter
         var sb = SliceFrac(spec.SliceBottomFrac, entry.HeightPx);
 
         var imageRef = ImageResourceCache.GetOrRegister(document, entry);
-        var innerW = widthPx - bl - br;
-        var innerH = heightPx - bt - bb;
+
+        // border-image-outset (§6.5) grows the border-image AREA outward from the border box; the 9-grid is
+        // laid out in this area. border-image-width (§6.4) sets the DEST thickness of each edge/corner band
+        // (default = the element's border width).
+        var ot = ResolveOutset(spec.OutsetTop, bt);
+        var or = ResolveOutset(spec.OutsetRight, br);
+        var ob = ResolveOutset(spec.OutsetBottom, bb);
+        var ol = ResolveOutset(spec.OutsetLeft, bl);
+        var areaLeft = leftPx - ol; var areaTop = topPx - ot;
+        var areaW = widthPx + ol + or; var areaH = heightPx + ot + ob;
+
+        // Intrinsic slice sizes (px) for border-image-width: auto.
+        var wt = ResolveWidth(spec.WidthTop, bt, areaH, st * entry.HeightPx);
+        var wr = ResolveWidth(spec.WidthRight, br, areaW, sr * entry.WidthPx);
+        var wb = ResolveWidth(spec.WidthBottom, bb, areaH, sb * entry.HeightPx);
+        var wl = ResolveWidth(spec.WidthLeft, bl, areaW, sl * entry.WidthPx);
+        // The dest border widths may not exceed the area (CSS B&B §6.4: reduce proportionally if they
+        // would overlap); a simple per-axis clamp keeps the inner band non-negative.
+        if (wl + wr > areaW && wl + wr > 0) { var k = areaW / (wl + wr); wl *= k; wr *= k; }
+        if (wt + wb > areaH && wt + wb > 0) { var k = areaH / (wt + wb); wt *= k; wb *= k; }
+
+        var innerW = areaW - wl - wr;
+        var innerH = areaH - wt - wb;
         var ix0 = sl; var ix1 = 1 - sr;   // inner source x band (between the left + right slices)
         var iy0 = st; var iy1 = 1 - sb;   // inner source y band (between the top + bottom slices)
 
@@ -1278,22 +1299,112 @@ internal static class FragmentPainter
             page.PlaceImageSlice(imageRef, x, y, w, h, sx0, sy0, sx1, sy1);
         }
 
-        var rightDx = leftPx + widthPx - br;
-        var bottomDy = topPx + heightPx - bb;
-        // Corners (source corner → dest corner, scaled).
-        Region(leftPx, topPx, bl, bt, 0, 0, sl, st);                 // top-left
-        Region(rightDx, topPx, br, bt, 1 - sr, 0, 1, st);           // top-right
-        Region(leftPx, bottomDy, bl, bb, 0, 1 - sb, sl, 1);         // bottom-left
-        Region(rightDx, bottomDy, br, bb, 1 - sr, 1 - sb, 1, 1);    // bottom-right
-        // Edges (stretch).
-        Region(leftPx + bl, topPx, innerW, bt, ix0, 0, ix1, st);            // top
-        Region(leftPx + bl, bottomDy, innerW, bb, ix0, 1 - sb, ix1, 1);    // bottom
-        Region(leftPx, topPx + bt, bl, innerH, 0, iy0, sl, iy1);            // left
-        Region(rightDx, topPx + bt, br, innerH, 1 - sr, iy0, 1, iy1);      // right
-        // Center (only with the `fill` keyword).
+        var rightDx = areaLeft + areaW - wr;
+        var bottomDy = areaTop + areaH - wb;
+        // Corners (source corner → dest corner, scaled — always "stretch").
+        Region(areaLeft, areaTop, wl, wt, 0, 0, sl, st);                 // top-left
+        Region(rightDx, areaTop, wr, wt, 1 - sr, 0, 1, st);            // top-right
+        Region(areaLeft, bottomDy, wl, wb, 0, 1 - sb, sl, 1);          // bottom-left
+        Region(rightDx, bottomDy, wr, wb, 1 - sr, 1 - sb, 1, 1);       // bottom-right
+
+        // Edges — tiled per border-image-repeat (repeat / round / space; stretch = one tile filling the edge).
+        // Each tile reuses the full edge SOURCE band; only the dest position/size along the edge changes.
+        var srcTopH = st * entry.HeightPx; var srcBotH = sb * entry.HeightPx;     // source slice thickness, px
+        var srcLeftW = sl * entry.WidthPx; var srcRightW = sr * entry.WidthPx;
+        var srcMidW = (ix1 - ix0) * entry.WidthPx;                                // source center-band length, px
+        var srcMidH = (iy1 - iy0) * entry.HeightPx;
+        // Top / bottom edges tile along X (RepeatX); their natural tile length scales the center-band width
+        // so the slice thickness fits the dest edge thickness.
+        TileEdge(Region, horizontal: true, areaLeft + wl, innerW, areaTop, wt, ix0, 0, ix1, st,
+            NaturalTile(srcMidW, srcTopH, wt), spec.RepeatX, page, pageHeightPt);
+        TileEdge(Region, horizontal: true, areaLeft + wl, innerW, bottomDy, wb, ix0, 1 - sb, ix1, 1,
+            NaturalTile(srcMidW, srcBotH, wb), spec.RepeatX, page, pageHeightPt);
+        // Left / right edges tile along Y (RepeatY).
+        TileEdge(Region, horizontal: false, areaTop + wt, innerH, areaLeft, wl, 0, iy0, sl, iy1,
+            NaturalTile(srcMidH, srcLeftW, wl), spec.RepeatY, page, pageHeightPt);
+        TileEdge(Region, horizontal: false, areaTop + wt, innerH, rightDx, wr, 1 - sr, iy0, 1, iy1,
+            NaturalTile(srcMidH, srcRightW, wr), spec.RepeatY, page, pageHeightPt);
+
+        // Center (only with the `fill` keyword) — stretched (center tiling is a minor residual).
         if (spec.Fill)
-            Region(leftPx + bl, topPx + bt, innerW, innerH, ix0, iy0, ix1, iy1);
+            Region(areaLeft + wl, areaTop + wt, innerW, innerH, ix0, iy0, ix1, iy1);
     }
+
+    /// <summary>The natural dest length of one edge tile: the source band's parallel extent scaled so its
+    /// perpendicular extent matches the dest edge thickness (CSS B&amp;B §6.3). Returns 0 when the source
+    /// band is degenerate (→ the caller stretches instead of tiling).</summary>
+    private static double NaturalTile(double srcParallelPx, double srcPerpPx, double destPerpPx) =>
+        srcPerpPx > 0 && srcParallelPx > 0 && destPerpPx > 0 ? srcParallelPx * (destPerpPx / srcPerpPx) : 0;
+
+    /// <summary>Lay one border-image edge: tile the source band along the edge per <paramref name="mode"/>.
+    /// <c>stretch</c> = one tile filling the edge; <c>repeat</c> = whole tiles at natural size, centered and
+    /// clipped to the edge; <c>round</c> = the tile is scaled so a whole number fit exactly; <c>space</c> =
+    /// whole tiles at natural size with equal gaps. <paramref name="horizontal"/> selects the parallel axis
+    /// (X for top/bottom, Y for left/right).</summary>
+    private static void TileEdge(
+        Action<double, double, double, double, double, double, double, double> region,
+        bool horizontal, double edgeStart, double edgeLen, double perpStart, double perpThick,
+        double sx0, double sy0, double sx1, double sy1, double naturalTile, BorderImageRepeat mode,
+        PdfPage page, double pageHeightPt)
+    {
+        if (!(edgeLen > 0) || !(perpThick > 0)) return;
+
+        void Place(double pos, double len)
+        {
+            if (horizontal) region(pos, perpStart, len, perpThick, sx0, sy0, sx1, sy1);
+            else region(perpStart, pos, perpThick, len, sx0, sy0, sx1, sy1);
+        }
+
+        // Stretch (or a degenerate natural size) → a single tile filling the whole edge.
+        if (mode == BorderImageRepeat.Stretch || !(naturalTile > 0)) { Place(edgeStart, edgeLen); return; }
+
+        switch (mode)
+        {
+            case BorderImageRepeat.Round:
+            {
+                var n = Math.Max(1, (int)Math.Round(edgeLen / naturalTile));
+                var tile = edgeLen / n;
+                for (var i = 0; i < n; i++) Place(edgeStart + i * tile, tile);
+                break;
+            }
+            case BorderImageRepeat.Space:
+            {
+                var n = (int)Math.Floor(edgeLen / naturalTile);
+                if (n < 1) return; // not even one whole tile fits → paint nothing (§6.3)
+                var gap = (edgeLen - n * naturalTile) / (n + 1);
+                for (var i = 0; i < n; i++) Place(edgeStart + gap * (i + 1) + naturalTile * i, naturalTile);
+                break;
+            }
+            default: // Repeat — whole tiles at natural size, centered, overflow clipped to the edge.
+            {
+                var n = Math.Max(1, (int)Math.Ceiling(edgeLen / naturalTile));
+                var start = edgeStart + (edgeLen - n * naturalTile) / 2.0; // centered (may overhang both ends)
+                ToPdfRect(horizontal ? edgeStart : perpStart, horizontal ? perpStart : edgeStart,
+                    horizontal ? edgeLen : perpThick, horizontal ? perpThick : edgeLen, pageHeightPt,
+                    out var cx, out var cy, out var cw, out var ch);
+                page.BeginRectangleClip(cx, cy, cw, ch);
+                for (var i = 0; i < n; i++) Place(start + i * naturalTile, naturalTile);
+                page.RestoreGraphicsState();
+                break;
+            }
+        }
+    }
+
+    /// <summary>Resolve a <c>border-image-width</c> component to a dest px thickness.</summary>
+    private static double ResolveWidth(BorderImageLen w, double borderWidthPx, double areaSizePx, double intrinsicSlicePx) => w.Kind switch
+    {
+        BorderImageLenKind.Auto => intrinsicSlicePx,
+        BorderImageLenKind.LengthPx => w.Value,
+        BorderImageLenKind.Percent => w.Value * areaSizePx,
+        _ => w.Value * borderWidthPx, // Multiple
+    };
+
+    /// <summary>Resolve a <c>border-image-outset</c> component to a dest px length.</summary>
+    private static double ResolveOutset(BorderImageLen o, double borderWidthPx) => o.Kind switch
+    {
+        BorderImageLenKind.LengthPx => o.Value,
+        _ => o.Value * borderWidthPx, // Multiple (auto/percent are invalid for outset → parsed as the default)
+    };
 
     /// <summary>Resolve a border-image-slice offset (CssBorderImage's encoding) to an image fraction in
     /// [0, 1]: a non-negative value is already a fraction (a <c>%</c> slice); a negative sentinel

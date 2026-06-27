@@ -35,11 +35,12 @@ public sealed class BorderImagePaintTests
     }
 
     [Fact]
-    public void Non_stretch_repeat_is_approximated_with_a_diagnostic()
+    public void Non_stretch_repeat_now_tiles_without_a_diagnostic()
     {
+        // border-image completion — round/repeat/space now tile the edges; no approximation diagnostic.
         var result = HtmlPdf.ConvertDetailed(Html($"url({DataUri()}) 30 round"));
-        Assert.Contains("Do", Latin1(result.Pdf));            // still paints (stretched)
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBorderImageUnsupported001);
+        Assert.True(Count(Latin1(result.Pdf), " Do ") > 8);   // edges tiled (more than the 8 stretch slices)
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBorderImageUnsupported001);
     }
 
     [Fact]
@@ -93,11 +94,94 @@ public sealed class BorderImagePaintTests
     }
 
     [Fact]
-    public void Width_or_outset_is_diagnosed()
+    public void Width_and_outset_are_now_honored_without_a_diagnostic()
     {
-        // [P3] an ignored border-image-width / -outset is diagnosed (not just non-stretch repeat).
+        // border-image completion — border-image-width / -outset are applied, not diagnosed as ignored.
         var result = HtmlPdf.ConvertDetailed(Html($"url({DataUri()}) 30 / 10px / 5px"));
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBorderImageUnsupported001);
+        Assert.Contains("Do", Latin1(result.Pdf));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBorderImageUnsupported001);
+    }
+
+    // ---- border-image completion: edge tiling + width + outset ----
+
+    private static int Count(string haystack, string needle)
+    {
+        var n = 0;
+        for (var i = haystack.IndexOf(needle, StringComparison.Ordinal); i >= 0;
+             i = haystack.IndexOf(needle, i + needle.Length, StringComparison.Ordinal)) n++;
+        return n;
+    }
+
+    /// <summary>Render a 120×120 box with a 30px border + border-image longhands (90×90 source). With the
+    /// default slice 30 (→ ⅓) the stretch baseline is exactly 8 placements (4 corners + 4 edges).</summary>
+    private static string RenderLong(string slice, string repeat, string extra = "") =>
+        Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:120px;height:120px;border:30px solid #000;" +
+            $"border-image-source:url({DataUri()});border-image-slice:{slice};" +
+            $"border-image-repeat:{repeat};{extra}\"></div></body></html>"));
+
+    [Fact]
+    public void Stretch_places_exactly_eight_slices()
+    {
+        Assert.Equal(8, Count(RenderLong("30", "stretch"), " Do "));   // 4 corners + 4 stretched edges
+    }
+
+    [Fact]
+    public void Repeat_tiles_the_edges_and_adds_centering_clips()
+    {
+        var repeat = RenderLong("30", "repeat");
+        var round = RenderLong("30", "round");
+        Assert.True(Count(repeat, " Do ") > 8);                        // edges tiled
+        // repeat centers + clips each tiled edge → extra "re W n" beyond its own per-slice clips; round
+        // fits exactly and adds none. Compare the clip-minus-placement delta (robust to other page clips).
+        Assert.True(Count(repeat, "re W n") - Count(repeat, " Do ")
+                  > Count(round, "re W n") - Count(round, " Do "));
+    }
+
+    [Fact]
+    public void Round_tiles_the_edges_with_no_centering_clip()
+    {
+        var round = RenderLong("30", "round");
+        var stretch = RenderLong("30", "stretch");
+        Assert.True(Count(round, " Do ") > 8);                         // edges tiled
+        // round fits an exact whole number of tiles → no extra clip beyond the per-slice ones (same delta
+        // as stretch, which also adds none).
+        Assert.Equal(Count(stretch, "re W n") - Count(stretch, " Do "),
+                     Count(round, "re W n") - Count(round, " Do "));
+    }
+
+    [Fact]
+    public void Space_tiles_and_drops_edges_when_no_whole_tile_fits()
+    {
+        Assert.True(Count(RenderLong("30", "space"), " Do ") > 8);     // normal: edges tiled with gaps
+        // A 10px slice makes the natural tile larger than the 120px edge → not one whole tile fits → the
+        // edges paint nothing (CSS B&B §6.3), leaving only the 4 corners.
+        Assert.Equal(4, Count(RenderLong("10", "space"), " Do "));
+    }
+
+    [Fact]
+    public void Border_image_width_zero_collapses_the_border_image()
+    {
+        Assert.Equal(0, Count(RenderLong("30", "stretch", "border-image-width:0;"), " Do "));
+    }
+
+    [Fact]
+    public void Border_image_width_changes_the_geometry()
+    {
+        var def = RenderLong("30", "stretch");
+        var wide = RenderLong("30", "stretch", "border-image-width:50px;");
+        Assert.Equal(8, Count(wide, " Do "));                          // still 8 stretched slices…
+        Assert.NotEqual(def, wide);                                    // …with different dest thicknesses
+    }
+
+    [Fact]
+    public void Border_image_outset_extends_the_area()
+    {
+        var def = RenderLong("30", "stretch");
+        var outset = RenderLong("30", "stretch", "border-image-outset:20px;");
+        Assert.Equal(8, Count(outset, " Do "));                        // same 8 slices, shifted outward
+        Assert.NotEqual(def, outset);                                  // grown area moves the placements
     }
 
     [Fact]

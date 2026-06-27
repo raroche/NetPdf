@@ -56,13 +56,25 @@ public sealed class TextShadowPaintTests
     }
 
     [Fact]
-    public void Blurred_text_shadow_paints_a_sharp_offset_and_emits_the_diagnostic()
+    public void Blurred_text_shadow_emits_the_blur_raster_info_not_the_unsupported_warning()
     {
+        // The synthetic font's glyphs have empty outlines, so the raster yields nothing and falls back
+        // to a sharp offset — but the collect-time diagnostic is the Info (blur is a supported,
+        // rastered feature now), NOT the unsupported Warning.
         var result = HtmlPdf.ConvertDetailed(Html("3px 3px 4px #ff0000"), Opts());
         var text = Latin1(result.Pdf);
 
-        Assert.Contains("1 0 0 rg BT", text);   // still painted (blur approximated as a sharp offset)
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowUnsupported001);
+        Assert.Contains("1 0 0 rg BT", text);    // sharp fallback (synthetic empty glyphs)
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowBlurRaster001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowUnsupported001);
+    }
+
+    [Fact]
+    public void Blurred_text_shadow_with_a_real_font_emits_the_blur_raster_info()
+    {
+        var result = HtmlPdf.ConvertDetailed(Html("3px 3px 4px #ff0000"));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowBlurRaster001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowUnsupported001);
     }
 
     [Fact]

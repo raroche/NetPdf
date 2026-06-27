@@ -248,14 +248,23 @@ internal static class DiagnosticCodes
     public const string CssBoxShadowUnsupported001 = "CSS-BOXSHADOW-UNSUPPORTED-001";
 
     /// <summary>
-    /// Phase 4 — a <c>text-shadow</c> form NetPdf does not paint exactly yet was approximated or
-    /// ignored: a non-zero BLUR was painted as a SHARP offset (the Gaussian blur is not yet applied
-    /// to glyph runs — the offset shadow still shows), or an offset/blur used a unit the parser
-    /// can't resolve (px + absolute units supported; <c>em</c>/<c>rem</c>/<c>%</c> not — the whole
-    /// value is dropped). Surfaced once per render.
-    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// Phase 4 — a <c>text-shadow</c> form NetPdf does not paint exactly yet was ignored: an
+    /// offset/blur used a unit the parser can't resolve (px + absolute units supported;
+    /// <c>em</c>/<c>rem</c>/<c>%</c> not — the whole value is dropped). A non-zero blur is now
+    /// RENDERED (see <see cref="CssTextShadowBlurRaster001"/>), not flagged here. Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssTextShadowUnsupported001 = "CSS-TEXTSHADOW-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Phase 4 — a <c>text-shadow</c> with a non-zero blur radius was painted via the Skia raster
+    /// fallback (the run's glyph outlines are rasterized at <c>2×</c> resolution, Gaussian-blurred
+    /// with σ = blur/2, and placed as an image XObject with an alpha <c>/SMask</c>) because PDF has
+    /// no native Gaussian-blur primitive. Sharp (blur = 0) shadows stay glyph-shows in the shadow
+    /// color. An over-cap run (or a font Skia can't read) falls back to a sharp offset. Surfaced once
+    /// per render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssTextShadowBlurRaster001 = "CSS-TEXTSHADOW-BLUR-RASTER-001";
 
     /// <summary>
     /// Phase 4 — a CSS <c>transform</c> contained a 3D function (<c>rotateX</c>/<c>rotateY</c>,

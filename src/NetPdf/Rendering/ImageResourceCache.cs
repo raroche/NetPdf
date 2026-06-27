@@ -255,6 +255,7 @@ internal sealed class ImageResourceCache
         var borderImages = new List<(Box Box, CssBorderImage Spec)>(); // Phase 4 border-image (PR 4)
         var boxShadowUnsupportedReported = false;
         var textShadowUnsupportedReported = false;
+        var textShadowBlurRasterReported = false;
         var transform3DReported = false;
         var transformUnsupportedReported = false;
         var filterElementReported = false;
@@ -270,7 +271,8 @@ internal sealed class ImageResourceCache
             collectBackgrounds: options.PrintBackgrounds,
             diagnostics, borderImages, cache.BlendModeBoxes,
             ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-            ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
+            ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
+            ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
             ref borderImageReported);
 
@@ -424,6 +426,7 @@ internal sealed class ImageResourceCache
         ref bool unsupportedBackgroundReported,
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
+        ref bool textShadowBlurRasterReported,
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
         ref bool filterElementReported,
@@ -545,9 +548,9 @@ internal sealed class ImageResourceCache
             if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
                 blendModeBoxes[box] = bmName;
             // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
-            // (text paints regardless of PrintBackgrounds). A non-zero blur is approximated as a
-            // sharp offset (CSS-TEXTSHADOW-UNSUPPORTED-001); an unparseable value surfaces the same
-            // code. Inheritance to descendant text is a documented first-cut residual.
+            // (text paints regardless of PrintBackgrounds). A non-zero blur is now RENDERED via the Skia
+            // glyph-blur raster (CSS-TEXTSHADOW-BLUR-RASTER-001, Info); an unparseable value surfaces
+            // CSS-TEXTSHADOW-UNSUPPORTED-001. Inheritance to descendant text is a documented residual.
             var textShadowRaw = rules?.GetWinner("text-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
             if (!string.IsNullOrWhiteSpace(textShadowRaw)
                 && !textShadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
@@ -558,7 +561,7 @@ internal sealed class ImageResourceCache
                     textShadowBoxes[box] = textShadows;
                     var hasBlur = false;
                     foreach (var s in textShadows) if (s.BlurPx > 0) { hasBlur = true; break; }
-                    if (hasBlur) ReportTextShadowUnsupported(diagnostics, ref textShadowUnsupportedReported);
+                    if (hasBlur) ReportTextShadowBlurRaster(diagnostics, ref textShadowBlurRasterReported);
                 }
                 else
                 {
@@ -665,7 +668,8 @@ internal sealed class ImageResourceCache
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
                 borderImages, blendModeBoxes,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
-                ref textShadowUnsupportedReported, ref transform3DReported, ref transformUnsupportedReported,
+                ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
+                ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
                 ref borderImageReported);
     }
@@ -734,10 +738,21 @@ internal sealed class ImageResourceCache
         if (reported) return;
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.CssTextShadowUnsupported001,
-            "A text-shadow was approximated or ignored — a non-zero blur was painted as a sharp "
-            + "offset (glyph blur is a tracked follow-up) or an offset/blur used a unit the parser "
-            + "can't resolve (px + absolute units supported; em/rem/% not).",
+            "A text-shadow was ignored — an offset/blur used a unit the parser can't resolve "
+            + "(px + absolute units supported; em/rem/% not), so the whole value was dropped.",
             DiagnosticSeverity.Warning));
+        reported = true;
+    }
+
+    private static void ReportTextShadowBlurRaster(IDiagnosticsSink diagnostics, ref bool reported)
+    {
+        if (reported) return;
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssTextShadowBlurRaster001,
+            "A blurred text-shadow was painted via the Skia raster fallback (PDF has no native "
+            + "Gaussian blur); the run's glyph outlines were rasterized at 2× and placed as an image "
+            + "XObject with an alpha /SMask. An over-cap run falls back to a sharp offset.",
+            DiagnosticSeverity.Info));
         reported = true;
     }
 

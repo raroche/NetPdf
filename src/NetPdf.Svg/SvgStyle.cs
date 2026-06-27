@@ -12,12 +12,12 @@ namespace NetPdf.Svg;
 internal readonly record struct SvgStyle(
     SKColor Fill, string? FillRef, bool HasExplicitFill,
     SKColor? Stroke, string? StrokeRef, float StrokeWidth,
-    float FillOpacity, float StrokeOpacity,
+    float FillOpacity, float StrokeOpacity, SKColor CurrentColor,
     float FontSizePx, string? FontFamily, int FontWeight, bool Italic, string? TextAnchor)
 {
     public static SvgStyle Initial => new(
         Fill: SKColors.Black, FillRef: null, HasExplicitFill: false,
         Stroke: null, StrokeRef: null, StrokeWidth: 1,
-        FillOpacity: 1, StrokeOpacity: 1,
+        FillOpacity: 1, StrokeOpacity: 1, CurrentColor: SKColors.Black,
         FontSizePx: 16, FontFamily: null, FontWeight: 400, Italic: false, TextAnchor: null);
 }

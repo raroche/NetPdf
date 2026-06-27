@@ -111,4 +111,91 @@ public sealed class SvgGradientRasterizerTests
         Assert.True(unsupported);
         Assert.Equal(0, Px(info!, 10, 10).A);      // transparent, not black
     }
+
+    [Fact]
+    public void Stroke_gradient_paints_the_stroke()
+    {
+        // PR-231 review — pin stroke gradients: a thick gradient stroke around a rect paints non-default ink.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"none\" stroke=\"url(#g)\" stroke-width=\"6\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 5, 20).A > 150);     // left edge of the stroke is painted
+        Assert.Equal(0, Px(info!, 20, 20).A);      // interior (fill:none) is empty
+    }
+
+    [Fact]
+    public void Repeat_spread_method_tiles_the_gradient()
+    {
+        // spreadMethod=repeat over a userSpaceOnUse vector covering only the left quarter → the red→blue
+        // ramp repeats, so red recurs near x=0 and near x=25 (the start of the second tile).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\">" +
+            "<linearGradient id=\"g\" gradientUnits=\"userSpaceOnUse\" spreadMethod=\"repeat\" x1=\"0\" y1=\"0\" x2=\"25\" y2=\"0\">" +
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<rect x=\"0\" y=\"0\" width=\"100\" height=\"20\" fill=\"url(#g)\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 1, 10).R > Px(info!, 1, 10).B);     // red at tile 0 start
+        Assert.True(Px(info!, 26, 10).R > Px(info!, 26, 10).B);   // red again at tile 1 start (repeat)
+    }
+
+    [Fact]
+    public void Gradient_transform_rotates_the_gradient_axis()
+    {
+        // A horizontal userSpaceOnUse gradient rotated 90° becomes vertical → top redder than bottom.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<linearGradient id=\"g\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"40\" y2=\"0\" gradientTransform=\"rotate(90, 20, 20)\">" +
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"url(#g)\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 20, 3).R > Px(info!, 20, 3).B);     // top → red end
+        Assert.True(Px(info!, 20, 37).B > Px(info!, 20, 37).R);   // bottom → blue end
+    }
+
+    [Fact]
+    public void Radial_focal_point_offsets_the_bright_center()
+    {
+        // A focal point in the top-left pushes the white core toward (cx≈0.2,cy≈0.2) — that quadrant is
+        // brighter than the bottom-right.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<radialGradient id=\"r\" cx=\"0.5\" cy=\"0.5\" r=\"0.5\" fx=\"0.2\" fy=\"0.2\">" +
+            "<stop offset=\"0\" stop-color=\"white\"/><stop offset=\"1\" stop-color=\"black\"/></radialGradient>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"url(#r)\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 8, 8).R > Px(info!, 32, 32).R);     // focal quadrant brighter
+    }
+
+    [Fact]
+    public void Gradient_geometry_attributes_inherit_through_href()
+    {
+        // The referencing gradient borrows the base's userSpaceOnUse + x1/x2 geometry AND stops via href.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\">" +
+            "<defs>" +
+            "<linearGradient id=\"base\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"100\" y2=\"0\">" +
+            "<stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<linearGradient id=\"g\" href=\"#base\"/></defs>" +
+            "<rect x=\"0\" y=\"0\" width=\"100\" height=\"20\" fill=\"url(#g)\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 4, 10).R > Px(info!, 4, 10).B);
+        Assert.True(Px(info!, 95, 10).B > Px(info!, 95, 10).R);
+    }
+
+    [Fact]
+    public void Stop_color_currentColor_resolves_to_the_color_property()
+    {
+        // stop-color="currentColor" must resolve to the element's `color`, not silently paint black.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\">" +
+            "<linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"currentColor\"/><stop offset=\"1\" stop-color=\"currentColor\"/></linearGradient>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"20\" fill=\"url(#g)\" color=\"#00ff00\"/></svg>"), out _);
+        Assert.NotNull(info);
+        var p = Px(info!, 20, 10);
+        Assert.True(p.G > 200 && p.R < 80 && p.B < 80);    // green, not black
+    }
 }

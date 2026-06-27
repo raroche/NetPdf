@@ -29,14 +29,14 @@ internal static class SvgPaintServers
     /// degenerate.</summary>
     public static SKShader? BuildShader(
         XElement grad, SKRect bbox, IReadOnlyDictionary<string, XElement> ids,
-        double viewportW, double viewportH, float opacityMult)
+        double viewportW, double viewportH, float opacityMult, SKColor currentColor)
     {
         var name = grad.Name.LocalName;
         var linear = name.Equals("linearGradient", StringComparison.OrdinalIgnoreCase);
         var radial = name.Equals("radialGradient", StringComparison.OrdinalIgnoreCase);
         if (!linear && !radial) return null;
 
-        var stops = CollectStops(grad, ids, opacityMult);
+        var stops = CollectStops(grad, ids, opacityMult, currentColor);
         if (stops.Count == 0) return null;
         if (stops.Count == 1) stops.Add(new GradStop(1f, stops[0].Color)); // single stop = a flat fill
 
@@ -98,7 +98,7 @@ internal static class SvgPaintServers
     /// nearest <c>href</c>-referenced gradient that does (SVG §13.2.4). Offsets are clamped to [0,1] and made
     /// non-decreasing; <paramref name="opacityMult"/> folds into each stop's alpha.</summary>
     private static List<GradStop> CollectStops(
-        XElement grad, IReadOnlyDictionary<string, XElement> ids, float opacityMult)
+        XElement grad, IReadOnlyDictionary<string, XElement> ids, float opacityMult, SKColor currentColor)
     {
         var result = new List<GradStop>();
         var src = grad;
@@ -117,8 +117,11 @@ internal static class SvgPaintServers
 
                 var color = SKColors.Black;
                 var colorRaw = SvgAttr.Presentation(stop, "stop-color");
-                if (colorRaw is not null && !colorRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase))
-                    SvgColor.TryParse(colorRaw, out color);
+                if (colorRaw is not null)
+                {
+                    if (colorRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) color = currentColor;
+                    else SvgColor.TryParse(colorRaw, out color);
+                }
                 var alpha = color.Alpha / 255f * ParseOpacity(SvgAttr.Presentation(stop, "stop-opacity")) * opacityMult;
                 result.Add(new GradStop(offset, color.WithAlpha((byte)Math.Clamp((int)Math.Round(alpha * 255f), 0, 255))));
             }

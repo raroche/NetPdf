@@ -85,4 +85,46 @@ public sealed class SvgUseRasterizerTests
         var p = Px(info!, 10, 10);
         Assert.True(p.G > 200 && p.R < 80 && p.B < 80);
     }
+
+    [Fact]
+    public void Symbol_own_presentation_attributes_apply_to_its_children()
+    {
+        // PR-231 review [P2] — the symbol's own fill must reach a child that has no fill of its own (the
+        // symbol style sits between the <use> and the children). The child should be blue, not default black.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<symbol id=\"s\" fill=\"#0000ff\"><rect x=\"0\" y=\"0\" width=\"20\" height=\"20\"/></symbol>" +
+            "<use href=\"#s\" x=\"5\" y=\"5\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var p = Px(info!, 12, 12);
+        Assert.True(p.B > 200 && p.R < 80 && p.G < 80);
+    }
+
+    [Fact]
+    public void Use_on_the_use_element_overrides_a_symbols_default_but_symbol_fill_wins_where_set()
+    {
+        // The <use> fill is the inherited context; the symbol sets its own fill, which wins for its children.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<symbol id=\"s\" fill=\"#0000ff\"><rect x=\"0\" y=\"0\" width=\"20\" height=\"20\"/></symbol>" +
+            "<use href=\"#s\" x=\"5\" y=\"5\" fill=\"#ff0000\"/></svg>"), out _);
+        Assert.NotNull(info);
+        var p = Px(info!, 12, 12);
+        Assert.True(p.B > 200 && p.R < 80);    // the symbol's explicit fill beats the use's
+    }
+
+    [Fact]
+    public void Oversized_definition_only_svg_is_truncated_and_flagged()
+    {
+        // PR-231 review [P1] — a <defs> with more than the element budget (50,000) must NOT bypass the DoS
+        // guard via the id-map walk; it returns (no crash) and is flagged unsupported.
+        var sb = new StringBuilder("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\"><defs>");
+        for (var i = 0; i < 51000; i++) sb.Append("<rect id=\"r").Append(i).Append("\"/>");
+        sb.Append("</defs><rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" fill=\"red\"/></svg>");
+        var info = SvgRasterizer.TryRender(Svg(sb.ToString()), out var unsupported);
+        Assert.NotNull(info);          // no crash / hang
+        Assert.True(unsupported);      // budget exceeded → flagged
+        Assert.True(Px(info!, 10, 10).R > 200);   // the in-budget visible rect still rendered
+    }
 }

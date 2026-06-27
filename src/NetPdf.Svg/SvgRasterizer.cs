@@ -80,13 +80,16 @@ internal static class SvgRasterizer
         if (pxW <= 0 || pxH <= 0) return null;
 
         // Index every id'd element once: gradient paint servers (url(#id)) and <use>/<symbol> targets
-        // resolve against this map (SVG §5.3 / §13.2).
-        var ids = BuildIdMap(root);
+        // resolve against this map (SVG §5.3 / §13.2). Budget-aware — definitions (<defs>/<symbol>/gradients)
+        // are skipped by the render walk, so without a cap here a document with hundreds of thousands of
+        // id'd elements inside <defs> would bypass the MaxElements DoS guard (PR-231 review [P1]).
+        var ids = BuildIdMap(root, out var idMapOverBudget);
         var state = new SvgRenderState
         {
             Ids = ids,
             ViewportW = vbW > 0 ? vbW : pxW,
             ViewportH = vbH > 0 ? vbH : pxH,
+            SawUnsupported = idMapOverBudget, // an over-cap definition tree is truncated → flag it
         };
         var raster = SubtreeRasterizer.Render(pxW, pxH, canvas =>
         {
@@ -99,19 +102,28 @@ internal static class SvgRasterizer
                 canvas.Translate((float)tx, (float)ty);
                 canvas.Scale((float)scale);
             }
-            var initial = SvgStyle.Initial;
+            // The root <svg>'s own presentation attributes (color / fill / stroke / font-*) seed the
+            // inherited context for its children (PR-231 review [P3] — e.g. <svg color="red"> + fill="currentColor").
+            var rootStyle = ResolveStyle(root, SvgStyle.Initial, state);
             foreach (var child in root.Elements())
-                RenderElement(canvas, child, initial, state, depth: 1);
+                RenderElement(canvas, child, rootStyle, state, depth: 1);
         });
         sawUnsupported = state.SawUnsupported;
         return raster;
     }
 
-    private static Dictionary<string, XElement> BuildIdMap(XElement root)
+    /// <summary>Index every id'd element, counting ALL parsed elements (including skipped definition
+    /// subtrees) against the <see cref="MaxElements"/> DoS budget. <paramref name="overBudget"/> is set when
+    /// the document exceeds the cap; indexing stops there so a giant <c>&lt;defs&gt;</c> can't burn unbounded
+    /// CPU/memory in the id map (PR-231 review [P1]).</summary>
+    private static Dictionary<string, XElement> BuildIdMap(XElement root, out bool overBudget)
     {
         var map = new Dictionary<string, XElement>(StringComparer.Ordinal);
+        var count = 0;
+        overBudget = false;
         foreach (var el in root.DescendantsAndSelf())
         {
+            if (++count > MaxElements) { overBudget = true; break; }
             var id = el.Attribute("id")?.Value;
             if (!string.IsNullOrEmpty(id)) map.TryAdd(id, el); // first definition wins
         }
@@ -219,10 +231,13 @@ internal static class SvgRasterizer
     }
 
     /// <summary>Clone a referenced element / symbol at the <c>&lt;use&gt;</c> position (SVG §5.6). A
-    /// <c>&lt;symbol&gt;</c> target renders its children as a group; any other target renders as itself.
-    /// <c>width</c>/<c>height</c> on the use (or symbol viewport) are not applied this cut (no clip/scale).</summary>
+    /// <c>&lt;symbol&gt;</c> / nested <c>&lt;svg&gt;</c> target renders its children as a group; any other
+    /// target renders as itself. A symbol/svg target's OWN presentation attributes + transform are resolved
+    /// before its children inherit (PR-231 review [P2]); <c>width</c>/<c>height</c> viewport clip+scale are
+    /// not applied this cut.</summary>
     private static void DrawUse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, int depth)
     {
+        if (depth + 1 > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
         var id = SvgAttr.HrefId(el);
         if (id is null || !state.Ids.TryGetValue(id, out var target)) { state.SawUnsupported = true; return; }
         var x = Num(el, "x"); var y = Num(el, "y");
@@ -230,8 +245,13 @@ internal static class SvgRasterizer
         if (x != 0 || y != 0) canvas.Translate((float)x, (float)y);
         if (target.Name.LocalName.Equals("symbol", StringComparison.OrdinalIgnoreCase)
             || target.Name.LocalName.Equals("svg", StringComparison.OrdinalIgnoreCase))
+        {
+            // The symbol/svg establishes its own resolved style + transform for its children.
+            var targetStyle = ResolveStyle(target, style, state);
+            if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) canvas.Concat(in tm);
             foreach (var child in target.Elements())
-                RenderElement(canvas, child, style, state, depth + 1);
+                RenderElement(canvas, child, targetStyle, state, depth + 1);
+        }
         else
             RenderElement(canvas, target, style, state, depth + 1);
         canvas.RestoreToCount(restore);
@@ -245,7 +265,7 @@ internal static class SvgRasterizer
     {
         if (style.FillRef is { } fref)
         {
-            if (state.ResolveShader(fref, path.Bounds, style.FillOpacity) is { } shader)
+            if (state.ResolveShader(fref, path.Bounds, style.FillOpacity, style.CurrentColor) is { } shader)
                 using (shader)
                 using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = shader, IsAntialias = true })
                     canvas.DrawPath(path, p);
@@ -264,7 +284,7 @@ internal static class SvgRasterizer
         if (!(style.StrokeWidth > 0)) return;
         if (style.StrokeRef is { } sref)
         {
-            if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity) is { } shader)
+            if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
                 using (shader)
                 using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
                     canvas.DrawPath(path, p);
@@ -289,6 +309,12 @@ internal static class SvgRasterizer
 
     private static SvgStyle ResolveStyle(XElement el, SvgStyle inherited, SvgRenderState state)
     {
+        // The `color` property (inherited) is what `currentColor` resolves to (PR-231 review [P3]).
+        var currentColor = inherited.CurrentColor;
+        var colorRaw = SvgAttr.Presentation(el, "color");
+        if (colorRaw is not null && !colorRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)
+            && SvgColor.TryParse(colorRaw, out var cc)) currentColor = cc;
+
         var fill = inherited.Fill;
         var fillRef = inherited.FillRef;
         var hasFill = inherited.HasExplicitFill;
@@ -296,6 +322,7 @@ internal static class SvgRasterizer
         if (fillRaw is not null)
         {
             if (fillRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) { fill = SKColors.Transparent; fillRef = null; hasFill = true; }
+            else if (fillRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) { fill = currentColor; fillRef = null; hasFill = true; }
             else if (PaintServerId(fillRaw) is { } id) { fillRef = id; fill = SKColors.Transparent; hasFill = true; }
             else if (SvgColor.TryParse(fillRaw, out var fc)) { fill = fc; fillRef = null; hasFill = true; }
         }
@@ -306,6 +333,7 @@ internal static class SvgRasterizer
         if (strokeRaw is not null)
         {
             if (strokeRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) { stroke = null; strokeRef = null; }
+            else if (strokeRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) { stroke = currentColor; strokeRef = null; }
             else if (PaintServerId(strokeRaw) is { } id) { strokeRef = id; stroke = null; }
             else if (SvgColor.TryParse(strokeRaw, out var stc)) { stroke = stc; strokeRef = null; }
         }
@@ -329,7 +357,7 @@ internal static class SvgRasterizer
         var textAnchor = SvgAttr.Presentation(el, "text-anchor") ?? inherited.TextAnchor;
 
         return new SvgStyle(fill, fillRef, hasFill, stroke, strokeRef, strokeWidth,
-            fillOpacity, strokeOpacity, fontSize, fontFamily, fontWeight, italic, textAnchor);
+            fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor);
     }
 
     /// <summary>The fragment id of a <c>url(#id)</c> paint server, or <see langword="null"/> when the value

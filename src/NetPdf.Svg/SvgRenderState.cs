@@ -18,11 +18,12 @@ internal sealed class SvgRenderState
     public double ViewportW;
     public double ViewportH;
 
-    /// <summary>Resolve a <c>url(#id)</c> gradient paint server against a shape's bounding box. Returns
+    /// <summary>Resolve a <c>url(#id)</c> gradient paint server against a shape's bounding box.
+    /// <paramref name="currentColor"/> resolves a <c>stop-color="currentColor"</c>. Returns
     /// <see langword="null"/> when the id is missing or doesn't name a gradient (e.g. a pattern) — the
     /// caller flags it unsupported and skips the paint.</summary>
-    public SKShader? ResolveShader(string id, SKRect bounds, float opacity) =>
+    public SKShader? ResolveShader(string id, SKRect bounds, float opacity, SKColor currentColor) =>
         Ids.TryGetValue(id, out var el)
-            ? SvgPaintServers.BuildShader(el, bounds, Ids, ViewportW, ViewportH, opacity)
+            ? SvgPaintServers.BuildShader(el, bounds, Ids, ViewportW, ViewportH, opacity, currentColor)
             : null;
 }

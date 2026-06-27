@@ -105,4 +105,66 @@ public sealed class SvgTextRasterizerTests
         Assert.True(PaintedPixels(info!) > 60);
         Assert.True(PaintedInBand(info!, 60, 200) > 0);    // the second run extends to the right
     }
+
+    private static bool HasColored(NetPdf.Pdf.Images.RasterImageInfo info, System.Func<byte, byte, byte, bool> pred)
+    {
+        for (var i = 0; i < info.PixelBytes.Length; i += 4)
+            if (info.PixelBytes[i + 3] > 120 && pred(info.PixelBytes[i], info.PixelBytes[i + 1], info.PixelBytes[i + 2])) return true;
+        return false;
+    }
+
+    [Fact]
+    public void Tspan_stroke_only_run_is_painted()
+    {
+        // PR-231 review [P2] — a fill:none + stroke:red tspan must still paint (stroke was unimplemented).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"40\">" +
+            "<text x=\"5\" y=\"30\" font-size=\"30\">" +
+            "<tspan fill=\"none\" stroke=\"red\" stroke-width=\"2\">OOO</tspan></text></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(PaintedPixels(info!) > 20);
+        Assert.True(HasColored(info!, (r, g, b) => r > 150 && g < 90 && b < 90));   // red stroke ink
+    }
+
+    [Fact]
+    public void Tspan_gradient_stroke_is_painted()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"40\">" +
+            "<linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<text x=\"5\" y=\"30\" font-size=\"30\">" +
+            "<tspan fill=\"none\" stroke=\"url(#g)\" stroke-width=\"2\">OOO</tspan></text></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(PaintedPixels(info!) > 20);
+    }
+
+    [Fact]
+    public void Currentcolor_fill_resolves_to_the_color_property()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"40\">" +
+            "<text x=\"5\" y=\"30\" font-size=\"30\" color=\"#00ff00\" fill=\"currentColor\">Hi</text></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(HasColored(info!, (r, g, b) => g > 150 && r < 90 && b < 90));   // green, not black
+    }
+
+    [Fact]
+    public void Text_anchor_is_resolved_per_absolute_positioned_chunk()
+    {
+        // PR-231 review [P2/P3] — two centered tspans with their own x each center on THAT x, not on the
+        // flattened sequence. With per-chunk middle anchoring there is ink on BOTH sides of each center
+        // (30 and 90); the old single-sequence behavior left-aligned each tspan at its x (no ink to the left).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"130\" height=\"30\">" +
+            "<text y=\"22\" font-size=\"16\" text-anchor=\"middle\" fill=\"black\">" +
+            "<tspan x=\"30\">AA</tspan><tspan x=\"90\">BB</tspan></text></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(PaintedInBand(info!, 10, 30) > 0);    // left half of the first centered label
+        Assert.True(PaintedInBand(info!, 30, 50) > 0);    // right half of the first centered label
+        Assert.True(PaintedInBand(info!, 70, 90) > 0);    // left half of the second centered label
+        Assert.True(PaintedInBand(info!, 90, 110) > 0);   // right half of the second centered label
+    }
 }

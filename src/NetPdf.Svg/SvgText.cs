@@ -29,32 +29,43 @@ internal static class SvgText
         var startX = (float)NumOr(text, "x", 0);
         var startY = (float)NumOr(text, "y", 0);
 
-        // text-anchor shifts the whole run sequence relative to (x, y): start = 0, middle = −w/2, end = −w.
-        var totalWidth = 0f;
-        foreach (var run in runs)
-        {
-            using var font = BuildFont(run.Style);
-            totalWidth += run.Dx + font.MeasureText(run.Text);
-        }
-        var anchorFactor = (style.TextAnchor?.Trim().ToLowerInvariant()) switch
-        {
-            "middle" => 0.5f,
-            "end" => 1f,
-            _ => 0f,
-        };
-
-        var penX = startX - anchorFactor * totalWidth;
+        // A run with an absolute x establishes a new "text chunk" (SVG §10.5); text-anchor is resolved
+        // independently PER chunk (PR-231 review [P2/P3]) — so multiple centered <tspan x=…> labels inside
+        // one <text> each center on their own x, not on the flattened sequence.
         var penY = startY;
-        foreach (var run in runs)
+        var i = 0;
+        while (i < runs.Count)
         {
-            using var font = BuildFont(run.Style);
-            if (run.AbsX is { } ax) penX = ax;
-            if (run.AbsY is { } ay) penY = ay;
-            penX += run.Dx;
-            penY += run.Dy;
-            var width = font.MeasureText(run.Text);
-            DrawRun(canvas, run.Text, penX, penY, width, font, run.Style, state);
-            penX += width;
+            var j = i + 1;
+            while (j < runs.Count && runs[j].AbsX is null) j++; // chunk = runs[i..j)
+
+            var chunkWidth = 0f;
+            for (var k = i; k < j; k++)
+            {
+                using var f = BuildFont(runs[k].Style);
+                chunkWidth += runs[k].Dx + f.MeasureText(runs[k].Text);
+            }
+            var anchorFactor = (runs[i].Style.TextAnchor?.Trim().ToLowerInvariant()) switch
+            {
+                "middle" => 0.5f,
+                "end" => 1f,
+                _ => 0f,
+            };
+            var chunkStartX = runs[i].AbsX ?? startX; // only the first chunk lacks an absolute x
+            var penX = chunkStartX - anchorFactor * chunkWidth;
+
+            for (var k = i; k < j; k++)
+            {
+                var run = runs[k];
+                using var font = BuildFont(run.Style);
+                if (run.AbsY is { } ay) penY = ay;
+                penX += run.Dx;
+                penY += run.Dy;
+                var width = font.MeasureText(run.Text);
+                DrawRun(canvas, run.Text, penX, penY, width, font, run.Style, state);
+                penX += width;
+            }
+            i = j;
         }
     }
 
@@ -68,7 +79,7 @@ internal static class SvgText
 
         if (style.FillRef is { } fref)
         {
-            if (state.ResolveShader(fref, bounds, style.FillOpacity) is { } shader)
+            if (state.ResolveShader(fref, bounds, style.FillOpacity, style.CurrentColor) is { } shader)
                 using (shader)
                 using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = shader, IsAntialias = true })
                     canvas.DrawText(textRun, x, baseline, font, p);
@@ -80,10 +91,21 @@ internal static class SvgText
             canvas.DrawText(textRun, x, baseline, font, p);
         }
 
-        if (style.StrokeWidth > 0 && style.Stroke is { } sc)
+        if (style.StrokeWidth > 0)
         {
-            using var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Color = WithOpacity(sc, style.StrokeOpacity), IsAntialias = true };
-            canvas.DrawText(textRun, x, baseline, font, p);
+            if (style.StrokeRef is { } sref)
+            {
+                if (state.ResolveShader(sref, bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
+                    using (shader)
+                    using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
+                        canvas.DrawText(textRun, x, baseline, font, p);
+                else state.SawUnsupported = true;
+            }
+            else if (style.Stroke is { } sc)
+            {
+                using var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Color = WithOpacity(sc, style.StrokeOpacity), IsAntialias = true };
+                canvas.DrawText(textRun, x, baseline, font, p);
+            }
         }
     }
 
@@ -117,20 +139,40 @@ internal static class SvgText
         }
     }
 
-    /// <summary>Resolve a <c>&lt;tspan&gt;</c>'s presentation overrides (fill / fill-opacity / stroke /
-    /// font-size / font-weight / font-style) over the inherited text style.</summary>
+    /// <summary>Resolve a <c>&lt;tspan&gt;</c>'s presentation overrides (color / fill / fill-opacity / stroke
+    /// / stroke-width / stroke-opacity / font-size / font-weight / font-style) over the inherited text
+    /// style.</summary>
     private static SvgStyle ResolveRunStyle(XElement el, SvgStyle inherited)
     {
         var s = inherited;
+        var colorRaw = SvgAttr.Presentation(el, "color");
+        if (colorRaw is not null && !colorRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)
+            && SvgColor.TryParse(colorRaw, out var cc)) s = s with { CurrentColor = cc };
+
         var fillRaw = SvgAttr.Presentation(el, "fill");
         if (fillRaw is not null)
         {
             if (fillRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) s = s with { Fill = SKColors.Transparent, FillRef = null };
+            else if (fillRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) s = s with { Fill = s.CurrentColor, FillRef = null };
             else if (PaintServerId(fillRaw) is { } id) s = s with { FillRef = id };
             else if (SvgColor.TryParse(fillRaw, out var fc)) s = s with { Fill = fc, FillRef = null };
         }
         var foRaw = SvgAttr.Presentation(el, "fill-opacity");
         if (foRaw is not null && TryUnit(foRaw, out var fo)) s = s with { FillOpacity = Math.Clamp(fo, 0, 1) };
+
+        var strokeRaw = SvgAttr.Presentation(el, "stroke");
+        if (strokeRaw is not null)
+        {
+            if (strokeRaw.Equals("none", StringComparison.OrdinalIgnoreCase)) s = s with { Stroke = null, StrokeRef = null };
+            else if (strokeRaw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) s = s with { Stroke = s.CurrentColor, StrokeRef = null };
+            else if (PaintServerId(strokeRaw) is { } id) s = s with { StrokeRef = id, Stroke = null };
+            else if (SvgColor.TryParse(strokeRaw, out var stc)) s = s with { Stroke = stc, StrokeRef = null };
+        }
+        var swRaw = SvgAttr.Presentation(el, "stroke-width");
+        if (swRaw is not null && TryUnit(swRaw, out var sw)) s = s with { StrokeWidth = sw };
+        var soRaw = SvgAttr.Presentation(el, "stroke-opacity");
+        if (soRaw is not null && TryUnit(soRaw, out var so)) s = s with { StrokeOpacity = Math.Clamp(so, 0, 1) };
+
         var fsRaw = SvgAttr.Presentation(el, "font-size");
         if (fsRaw is not null && TryUnit(fsRaw, out var fs) && fs > 0) s = s with { FontSizePx = fs };
         var fwRaw = SvgAttr.Presentation(el, "font-weight");

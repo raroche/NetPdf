@@ -10,8 +10,10 @@ namespace NetPdf.Svg;
 
 /// <summary>SVG/CSS color parsing shared by the shape renderer (<see cref="SvgRasterizer"/>) and the
 /// paint-server resolver (<see cref="SvgPaintServers"/>): hex, <c>rgb()</c>/<c>rgba()</c>, the SVG named
-/// colors, plus the <c>currentColor</c> / <c>transparent</c> keywords. A best-effort Skia parse catches the
-/// long tail of named colors this table doesn't list.</summary>
+/// colors, plus the <c>transparent</c> keyword. A best-effort Skia parse catches the long tail of named
+/// colors this table doesn't list. <c>currentColor</c> is NOT resolved here — it needs the inherited
+/// <c>color</c> from the style context, so callers handle it before calling this (PR-231 review [P3]); this
+/// method returns <see langword="false"/> for it rather than silently painting black.</summary>
 internal static class SvgColor
 {
     public static bool TryParse(string raw, out SKColor color)
@@ -19,7 +21,7 @@ internal static class SvgColor
         color = SKColors.Black;
         var s = raw.Trim();
         if (s.Length == 0) return false;
-        if (s.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) { color = SKColors.Black; return true; }
+        if (s.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) return false; // resolved by the caller
         if (s.Equals("transparent", StringComparison.OrdinalIgnoreCase)) { color = SKColors.Transparent; return true; }
         if (s.StartsWith('#') && SKColor.TryParse(s, out color)) return true;
         if (s.StartsWith("rgb", StringComparison.OrdinalIgnoreCase)) return TryRgb(s, out color);

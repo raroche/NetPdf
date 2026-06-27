@@ -1,0 +1,104 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System;
+using System.Text;
+using NetPdf;
+using NetPdf.Diagnostics;
+using NetPdf.UnitTests.Pdf.Images;
+using Xunit;
+
+namespace NetPdf.UnitTests.Rendering;
+
+/// <summary>Phase 4 SVG part 1 (PR 5) — end-to-end: an <c>&lt;img&gt;</c> whose source is an SVG document
+/// (data: URI) is rasterized by NetPdf.Svg and placed as an image XObject (<c>Do</c>) through the existing
+/// image pipeline. Page content is uncompressed.</summary>
+public sealed class SvgImagePaintTests
+{
+    private static string Latin1(byte[] bytes) => Encoding.Latin1.GetString(bytes);
+
+    private static string SvgDataUri(string svg) =>
+        "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(svg));
+
+    [Fact]
+    public void Svg_image_is_rasterized_and_placed()
+    {
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#3366cc\"/>" +
+            "<circle cx=\"20\" cy=\"20\" r=\"10\" fill=\"red\"/></svg>";
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:80px;height:80px\">" +
+            "</body></html>"));
+        Assert.Contains("Do", pdf);                 // the rasterized SVG is placed as an XObject
+        Assert.Contains("/Subtype /Image", pdf);    // it embedded as an image
+    }
+
+    [Fact]
+    public void Svg_with_path_and_transform_renders()
+    {
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"50\" height=\"50\">" +
+            "<g transform=\"translate(10,10)\"><path d=\"M0 0 L30 0 L15 30 Z\" fill=\"green\"/></g></svg>";
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:50px;height:50px\">" +
+            "</body></html>"));
+        Assert.Contains("Do", pdf);
+    }
+
+    [Fact]
+    public void Svg_image_composes_with_a_css_filter()
+    {
+        // PR-230 review [P2] — an SVG <img>'s rasterized output is stored as PNG SourceBytes, so a CSS
+        // filter re-decodes + applies it (was silently dropped when SourceBytes was the SVG XML).
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#3366cc\"/></svg>";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px;filter:grayscale(1)\">" +
+            "</body></html>");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssFilterRasterFallback001);
+        Assert.Contains("Do", Latin1(result.Pdf));
+    }
+
+    [Fact]
+    public void Svg_image_composes_with_a_mask()
+    {
+        // PR-230 review [P2] — same for mask-image on an SVG <img>.
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#3366cc\"/></svg>";
+        var maskPng = "data:image/png;base64," + Convert.ToBase64String(SyntheticRasterImage.BuildOpaquePng(16, 16));
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px;mask-image:url({maskPng})\">" +
+            "</body></html>");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssMaskRasterFallback001);
+    }
+
+    [Fact]
+    public void Unsupported_svg_feature_is_diagnosed_once()
+    {
+        // PR-230 review [P3] — <text> (+ other unsupported content) surfaces CSS-SVG-UNSUPPORTED-001.
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\"/>" +
+            "<text x=\"5\" y=\"20\">hi</text></svg>";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px\">" +
+            "</body></html>");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssSvgUnsupported001);
+        Assert.Contains("Do", Latin1(result.Pdf)); // the supported rect still renders
+    }
+
+    [Fact]
+    public void Supported_only_svg_emits_no_unsupported_diagnostic()
+    {
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<circle cx=\"20\" cy=\"20\" r=\"15\" fill=\"green\"/></svg>";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{SvgDataUri(svg)}\" style=\"width:40px;height:40px\">" +
+            "</body></html>");
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssSvgUnsupported001);
+    }
+}

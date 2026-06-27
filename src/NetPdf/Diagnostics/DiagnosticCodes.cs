@@ -222,6 +222,16 @@ internal static class DiagnosticCodes
     public const string LinkUriUnsupported001 = "LINK-URI-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a rendered SVG image used a feature the first-cut renderer doesn't support, so part of it
+    /// did not draw: <c>&lt;text&gt;</c>, <c>&lt;image&gt;</c>, <c>&lt;use&gt;</c> / <c>&lt;defs&gt;</c> /
+    /// <c>&lt;symbol&gt;</c>, a gradient / pattern paint server (<c>fill="url(#…)"</c> → painted
+    /// transparent, NOT black), an unknown element, or content truncated by the depth / element budget. The
+    /// supported shapes still render. Surfaced once per SVG image. Severity:
+    /// <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssSvgUnsupported001 = "CSS-SVG-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

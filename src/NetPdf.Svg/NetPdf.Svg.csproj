@@ -12,6 +12,14 @@
     <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
     <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" />
     <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+    <!-- Phase 4 SVG part 1 (PR 5): the first-cut SVG renderer rasterizes via Skia onto the reusable
+         SubtreeRasterizer (NetPdf.Pdf.Images) → a RasterImageInfo → an image XObject. Native vector
+         SVG → PDF operators is a later refinement. -->
+    <ProjectReference Include="..\NetPdf.Pdf\NetPdf.Pdf.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" />
   </ItemGroup>
 
   <ItemGroup>

@@ -566,37 +566,48 @@ public sealed class PhaseDSecurityHardeningTests
 
     // --- PR #18 review follow-up tests --------------------------------------
 
-    // P1 #2: SVG removed from image MIME allowlist.
+    // P1 #2 (UPDATED — Phase 4 SVG part 1, PR 5): image/svg+xml is now ALLOWED for the image kind,
+    // because the static-SVG renderer (NetPdf.Svg.SvgRasterizer) is the safe-rasterize pipeline this gate
+    // waited for — XXE-hardened (DTD prohibited, no XML resolver), no script / event handlers, no external
+    // resource fetch. The attack surface PR #18 review #2 cited is structurally absent.
     [Fact]
-    public void DReview_svg_mime_rejected_for_image_kind()
+    public void Svg_mime_is_now_allowed_for_image_kind_via_safe_renderer()
     {
-        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
-        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("IMAGE/SVG+XML", ResourceKind.Image));
-        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml; charset=utf-8", ResourceKind.Image));
+        Assert.True(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+        Assert.True(SafeResourceLoader.IsMimeAllowedForKind("IMAGE/SVG+XML", ResourceKind.Image));
+        Assert.True(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml; charset=utf-8", ResourceKind.Image));
+    }
+
+    private static string SvgImgHtml()
+    {
+        var svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#3366cc\"/></svg>";
+        var dataUri = "data:image/svg+xml;base64," + System.Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(svg));
+        return "<!DOCTYPE html><html><body>" +
+            $"<img src=\"{dataUri}\" style=\"width:40px;height:40px\"></body></html>";
     }
 
     [Fact]
-    public void DReview_data_svg_uri_blocked_under_safe_default()
+    public void Svg_data_uri_renders_end_to_end_under_safe_default()
     {
-        // SafeDefault has AllowDataUri=true, so data: passes the scheme
-        // check. The image-kind MIME allowlist (separate gate) is what
-        // rejects SVG. Confirm the layered defense holds.
-        var ctx = new ResourceFetchContext(SecurityPolicy.SafeDefault, baseUri: null, CancellationToken.None);
-        var loader = new SafeResourceLoader(inner: null, ctx);
-        // No way to test end-to-end without a loader; the MIME allowlist
-        // check is the contract.
-        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+        // SafeDefault allows data: (scheme gate) AND the MIME gate now allows svg → a data: SVG renders.
+        // End-to-end proof (PR-230 review [P3]): the rasterized SVG is placed as an image XObject.
+        Assert.True(SecurityPolicy.SafeDefault.AllowDataUri);
+        var pdf = System.Text.Encoding.Latin1.GetString(
+            NetPdf.HtmlPdf.Convert(SvgImgHtml(), new NetPdf.HtmlPdfOptions { SecurityPolicy = SecurityPolicy.SafeDefault }));
+        Assert.Contains("Do", pdf);
     }
 
     [Fact]
-    public void DReview_svg_mime_rejected_under_untrusted_html()
+    public void Untrusted_html_blocks_data_svg_end_to_end_at_the_scheme_gate()
     {
-        // UntrustedHtml has AllowDataUri=false, so data: URIs are
-        // already rejected at the scheme gate. The MIME allowlist
-        // adds depth — even if Phase 5 added a trusted profile that
-        // re-enabled data: + http(s), SVG would still be rejected
-        // for the image kind.
-        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+        // UntrustedHtml keeps data: OFF — so a data: SVG (the polyglot vector) never loads (defense in
+        // depth: a fetched http(s) SVG would go through the XXE-safe renderer; a data: one is rejected at
+        // the SCHEME gate). End-to-end: no image XObject is placed (PR-230 review [P3]).
+        Assert.False(SecurityPolicy.UntrustedHtml.AllowDataUri);
+        var pdf = System.Text.Encoding.Latin1.GetString(
+            NetPdf.HtmlPdf.Convert(SvgImgHtml(), new NetPdf.HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml }));
+        Assert.DoesNotContain("/Subtype /Image", pdf);
     }
 
     // P1 #3: @font-face src URL extraction.

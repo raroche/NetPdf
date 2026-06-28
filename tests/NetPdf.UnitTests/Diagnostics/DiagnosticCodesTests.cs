@@ -1105,6 +1105,7 @@ public sealed class DiagnosticCodesTests
     [InlineData(nameof(DiagnosticCodes.CssBoxShadowBlurRaster001), "CSS-BOXSHADOW-BLUR-RASTER-001", "Info")]
     [InlineData(nameof(DiagnosticCodes.CssBoxShadowUnsupported001), "CSS-BOXSHADOW-UNSUPPORTED-001", "Warning")]
     [InlineData(nameof(DiagnosticCodes.CssTextShadowUnsupported001), "CSS-TEXTSHADOW-UNSUPPORTED-001", "Warning")]
+    [InlineData(nameof(DiagnosticCodes.CssTextShadowBlurRaster001), "CSS-TEXTSHADOW-BLUR-RASTER-001", "Info")]
     [InlineData(nameof(DiagnosticCodes.CssTransform3DUnsupported001), "CSS-TRANSFORM-3D-UNSUPPORTED-001", "Warning")]
     [InlineData(nameof(DiagnosticCodes.CssTransformUnsupported001), "CSS-TRANSFORM-UNSUPPORTED-001", "Warning")]
     public void Phase4_shadow_and_transform_codes_match_registry(string fieldName, string code, string severity)

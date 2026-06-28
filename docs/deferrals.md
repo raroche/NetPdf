@@ -2701,9 +2701,12 @@ flags the categories):
      all three), and a repeating-radial under a `closest-*` extent clamps beyond the ending shape
      (the default farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
      box-shadow per-corner blur radii (the blur raster uses one representative radius) + inset under
-     box-decoration-break:slice (painted per-slice); `text-shadow` INHERITANCE to descendant text (only the
-     box's own declared value is read today) + true GLYPH BLUR (the blurred case paints a sharp
-     offset, `CSS-TEXTSHADOW-UNSUPPORTED-001`); `transform` faithful 3D PROJECTION (genuinely-3D
+     box-decoration-break:slice (painted per-slice); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
+     (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`,
+     `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residuals are an
+     over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset, and PER-SEGMENT
+     rasterization (a justified line's blurred words don't bleed across the inter-word gaps, since each
+     glyph segment rasters independently); `transform` faithful 3D PROJECTION (genuinely-3D
      functions flatten to identity, not an orthographic projection) + the transformed-element
      STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
      composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element

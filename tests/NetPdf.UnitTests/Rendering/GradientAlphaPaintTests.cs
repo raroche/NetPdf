@@ -45,4 +45,21 @@ public sealed class GradientAlphaPaintTests
         Assert.Contains(" Do", t);
         Assert.Contains("/SMask", t);
     }
+
+    [Fact]
+    public void Translucent_radial_gradient_falls_back_to_a_raster_with_an_smask()
+    {
+        var t = Latin1(HtmlPdf.Convert(Html("radial-gradient(rgba(0,255,0,0.4), blue)")));
+        Assert.Contains(" Do", t);
+        Assert.Contains("/SMask", t);
+        Assert.DoesNotContain("/ShadingType 3", t); // NOT a native radial shading
+    }
+
+    [Fact]
+    public void Opaque_radial_gradient_stays_a_native_shading()
+    {
+        var t = Latin1(HtmlPdf.Convert(Html("radial-gradient(red, blue)")));
+        Assert.Contains("/ShadingType 3", t);       // native radial shading (byte-identical path)
+        Assert.DoesNotContain(" Do", t);
+    }
 }

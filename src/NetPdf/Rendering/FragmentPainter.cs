@@ -2477,6 +2477,36 @@ internal static class FragmentPainter
         return true;
     }
 
+    /// <summary>Paint a translucent radial gradient via the Skia raster (image + alpha <c>/SMask</c>),
+    /// clipped to the (rounded) box. The center fractions + per-axis CSS-px radii come from the
+    /// caller's geometry. Returns <see langword="false"/> for an over-cap bitmap (the caller falls back
+    /// to the native opaque shading).</summary>
+    private static bool TryPaintAlphaRadialGradientRaster(
+        PdfPage page, PdfDocument document, List<ResolvedGradientStop> normalized, CssRadialGradient radial,
+        double pageHeightPt, double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx,
+        double rxCssPx, double ryCssPx, ComputedStyle style,
+        (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride)
+    {
+        if (boxWidthPx <= 0 || boxHeightPx <= 0) return false;
+        var deviceW = (int)Math.Ceiling(boxWidthPx * ConicGradientRasterScale);
+        var deviceH = (int)Math.Ceiling(boxHeightPx * ConicGradientRasterScale);
+        var rstops = new List<NetPdf.Pdf.Images.RadialGradientRasterizer.Stop>(normalized.Count);
+        foreach (var s in normalized)
+            rstops.Add(new NetPdf.Pdf.Images.RadialGradientRasterizer.Stop(s.Offset, s.R, s.G, s.B, s.A));
+        var result = NetPdf.Pdf.Images.RadialGradientRasterizer.TryRasterize(
+            deviceW, deviceH,
+            centerX: (float)(radial.CenterXFraction * boxWidthPx * ConicGradientRasterScale),
+            centerY: (float)(radial.CenterYFraction * boxHeightPx * ConicGradientRasterScale),
+            radiusX: (float)(rxCssPx * ConicGradientRasterScale),
+            radiusY: (float)(ryCssPx * ConicGradientRasterScale),
+            rstops);
+        if (result is null) return false;
+        var imageRef = document.RegisterImage(result);
+        PlaceGradientRasterClipped(page, document, imageRef, pageHeightPt,
+            boxLeftPx, boxTopPx, boxWidthPx, boxHeightPx, style, clipOverride);
+        return true;
+    }
+
     /// <summary>Place a gradient raster image over its box, clipped to the (rounded) clip box — the
     /// background-clip <paramref name="clipOverride"/> when present (multi-layer layer), else the box's
     /// own border-radius. Shared by the translucent linear + radial raster paths.</summary>
@@ -2836,10 +2866,23 @@ internal static class FragmentPainter
         // it intersects the ending shape (CSS Images §3.2; PR 226 review [P2] — NOT max(rx, ry), which
         // placed stops too early on tall/narrow ellipses). rx is in pt, homogeneous degree 1, so
         // rxCssPx = rx / PointsPerPixel.
-        var stops = ResolveGradientStops(
-            radial.Stops, currentColorArgb, rx / PdfUnits.PointsPerPixel, radial.Repeating);
-        if (stops.Count < 2) return;
+        var rxCssPx = rx / PdfUnits.PointsPerPixel;
+        var normalized = ResolveAndNormalizeStops(
+            radial.Stops, currentColorArgb, rxCssPx, radial.Repeating);
+        if (normalized.Count < 2) return;
 
+        // Per-stop alpha (gradient refinements) — a translucent stop falls back to a Skia raster (the
+        // native radial shading is DeviceRGB); a fully-opaque gradient stays native (byte-identical).
+        if (AnyTranslucent(normalized)
+            && TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
+                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
+                style, clipOverride))
+        {
+            return;
+        }
+
+        var stops = new List<PdfGradientStop>(normalized.Count);
+        foreach (var s in normalized) stops.Add(new PdfGradientStop(s.Offset, s.R, s.G, s.B)); // native drops alpha
         var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
         (double, double, double, double, double, double)? shadingCtm = null;
         if (rx != ry)

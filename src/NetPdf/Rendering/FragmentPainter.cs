@@ -2416,9 +2416,21 @@ internal static class FragmentPainter
         // its fraction against this (PR 1 refinements).
         var theta = angleDeg * Math.PI / 180.0;
         var lineLengthCssPx = Math.Abs(widthPx * Math.Sin(theta)) + Math.Abs(clipHeightPx * Math.Cos(theta));
-        var stops = ResolveGradientStops(gradient.Stops, currentColorArgb, lineLengthCssPx, gradient.Repeating);
-        if (stops.Count < 2) return;
+        var normalized = ResolveAndNormalizeStops(gradient.Stops, currentColorArgb, lineLengthCssPx, gradient.Repeating);
+        if (normalized.Count < 2) return;
 
+        // Per-stop alpha (gradient refinements): a native axial shading is DeviceRGB (no alpha), so a
+        // translucent stop falls back to a Skia raster (image + /SMask, like conic). A fully-opaque
+        // gradient stays the native shading (byte-identical).
+        if (AnyTranslucent(normalized)
+            && TryPaintAlphaLinearGradientRaster(page, document, normalized, angleDeg, pageHeightPt,
+                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, style, clipOverride))
+        {
+            return;
+        }
+
+        var stops = new List<PdfGradientStop>(normalized.Count);
+        foreach (var s in normalized) stops.Add(new PdfGradientStop(s.Offset, s.R, s.G, s.B)); // native drops alpha
         var (x0, y0, x1, y1) = LinearGradientAxis(angleDeg, ax, ay, aw, ah);
         var shadingRef = document.RegisterAxialShading(x0, y0, x1, y1, stops);
         if (clipOverride is { } co)
@@ -2431,6 +2443,71 @@ internal static class FragmentPainter
         var radiiPx = ReadCornerRadii(style, widthPx, clipHeightPx);
         page.PaintShadingInRect(shadingRef, ax, ay, aw, ah,
             radiiPx.AnyPositive ? ToPt(radiiPx) : (CornerRadii?)null);
+    }
+
+    /// <summary>True when any resolved stop is translucent (alpha &lt; 1) — the native DeviceRGB
+    /// shading can't represent it, so the caller rasters.</summary>
+    private static bool AnyTranslucent(List<ResolvedGradientStop> stops)
+    {
+        foreach (var s in stops) if (s.A < 1.0 - 1e-9) return true;
+        return false;
+    }
+
+    /// <summary>Paint a translucent linear gradient via the Skia raster (image + alpha <c>/SMask</c>),
+    /// clipped to the (rounded) box — the <paramref name="clipOverride"/> background-clip box for a
+    /// multi-layer gradient layer, else the style border-radius box. Returns <see langword="false"/>
+    /// for an over-cap bitmap (the caller falls back to the native opaque shading).</summary>
+    private static bool TryPaintAlphaLinearGradientRaster(
+        PdfPage page, PdfDocument document, List<ResolvedGradientStop> normalized, double angleDeg,
+        double pageHeightPt, double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx,
+        ComputedStyle style,
+        (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride)
+    {
+        if (boxWidthPx <= 0 || boxHeightPx <= 0) return false;
+        var deviceW = (int)Math.Ceiling(boxWidthPx * ConicGradientRasterScale);
+        var deviceH = (int)Math.Ceiling(boxHeightPx * ConicGradientRasterScale);
+        var rstops = new List<NetPdf.Pdf.Images.LinearGradientRasterizer.Stop>(normalized.Count);
+        foreach (var s in normalized)
+            rstops.Add(new NetPdf.Pdf.Images.LinearGradientRasterizer.Stop(s.Offset, s.R, s.G, s.B, s.A));
+        var result = NetPdf.Pdf.Images.LinearGradientRasterizer.TryRasterize(deviceW, deviceH, angleDeg, rstops);
+        if (result is null) return false;
+        var imageRef = document.RegisterImage(result);
+        PlaceGradientRasterClipped(page, document, imageRef, pageHeightPt,
+            boxLeftPx, boxTopPx, boxWidthPx, boxHeightPx, style, clipOverride);
+        return true;
+    }
+
+    /// <summary>Place a gradient raster image over its box, clipped to the (rounded) clip box — the
+    /// background-clip <paramref name="clipOverride"/> when present (multi-layer layer), else the box's
+    /// own border-radius. Shared by the translucent linear + radial raster paths.</summary>
+    private static void PlaceGradientRasterClipped(
+        PdfPage page, PdfDocument document, NetPdf.Pdf.Objects.PdfIndirectRef imageRef, double pageHeightPt,
+        double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx, ComputedStyle style,
+        (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride)
+    {
+        ToPdfRect(boxLeftPx, boxTopPx, boxWidthPx, boxHeightPx, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
+        if (clipOverride is { } co)
+        {
+            ToPdfRect(co.LeftPx, co.TopPx, co.WidthPx, co.HeightPx, pageHeightPt, out var cx, out var cy, out var cw, out var ch);
+            if (co.Radii.AnyPositive) page.BeginRoundedRectangleClip(cx, cy, cw, ch, ToPt(co.Radii));
+            else page.BeginRectangleClip(cx, cy, cw, ch);
+            page.PlaceImage(imageRef, ix, iy, iw, ih);
+            page.RestoreGraphicsState();
+            return;
+        }
+        var radiiPx = ReadCornerRadii(style, boxWidthPx, boxHeightPx);
+        if (radiiPx.AnyPositive)
+        {
+            page.BeginRoundedRectangleClip(ix, iy, iw, ih, ToPt(radiiPx));
+            page.PlaceImage(imageRef, ix, iy, iw, ih);
+            page.RestoreGraphicsState();
+        }
+        else
+        {
+            page.BeginRectangleClip(ix, iy, iw, ih);
+            page.PlaceImage(imageRef, ix, iy, iw, ih);
+            page.RestoreGraphicsState();
+        }
     }
 
     /// <summary>Phase 4 gradients — resolve a gradient's stops to <see cref="PdfGradientStop"/>

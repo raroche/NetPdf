@@ -2456,6 +2456,54 @@ internal static class FragmentPainter
     /// gradient line) + a premultiply-free DeviceRGB color with per-stop alpha.</summary>
     private readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
 
+    /// <summary>Color-interpolation hints (CSS Images §3.4.2) — replace each HINT (a
+    /// <see cref="CssGradientStop.IsHint"/> entry: a bare position between two color stops) with a
+    /// synthetic color stop at the hint position whose color is the 50% blend of the bracketing color
+    /// stops. Returns the input unchanged when there are no hints (so a hint-free gradient stays
+    /// byte-identical). A hint at the first/last index, or one whose neighbors don't resolve, is dropped.</summary>
+    private static IReadOnlyList<CssGradientStop> ExpandColorHints(
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb)
+    {
+        var hasHint = false;
+        for (var i = 0; i < gradientStops.Count; i++)
+            if (gradientStops[i].IsHint) { hasHint = true; break; }
+        if (!hasHint) return gradientStops;
+
+        var result = new List<CssGradientStop>(gradientStops.Count);
+        for (var i = 0; i < gradientStops.Count; i++)
+        {
+            var s = gradientStops[i];
+            if (!s.IsHint) { result.Add(s); continue; }
+            // A hint needs a color stop on each side; resolve both colors to blend the midpoint.
+            if (i == 0 || i == gradientStops.Count - 1) continue;
+            if (!TryResolveStopArgb(gradientStops[i - 1].ColorRaw, currentColorArgb, out var a)
+                || !TryResolveStopArgb(gradientStops[i + 1].ColorRaw, currentColorArgb, out var b))
+            {
+                continue; // can't blend → drop the hint (the plain gradient still renders)
+            }
+            var mid = Blend50(a, b);
+            var midRaw = $"rgba({(mid >> 16) & 0xFF},{(mid >> 8) & 0xFF},{mid & 0xFF},{(Alpha(mid) / 255.0).ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)})";
+            result.Add(new CssGradientStop(midRaw, s.Position, s.PositionPx));
+        }
+        return result;
+    }
+
+    private static bool TryResolveStopArgb(string colorRaw, uint currentColorArgb, out uint argb)
+    {
+        var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+            colorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+        return TryResolveColor(resolved.Slot, currentColorArgb, out argb);
+    }
+
+    /// <summary>The 50% blend of two ARGB colors (per-channel average, including alpha) — the hint's
+    /// midpoint color (CSS Images §3.4.2). Premultiplication is skipped (a coarse approximation; exact
+    /// for equal alphas, which is the common case).</summary>
+    private static uint Blend50(uint x, uint y)
+    {
+        static uint Avg(uint a, uint b, int shift) => (uint)((((a >> shift) & 0xFF) + ((b >> shift) & 0xFF)) / 2) << shift;
+        return Avg(x, y, 24) | Avg(x, y, 16) | Avg(x, y, 8) | Avg(x, y, 0);
+    }
+
     /// <summary>Phase 4 gradients (PR 1 review) — the SHARED stop pipeline for linear / radial / conic.
     /// Resolves each stop's color + position (a length resolves against <paramref name="lineLengthCssPx"/>),
     /// applies the CSS Images §3.4 defaults (missing first → 0, last → 1, interior spread evenly) and the
@@ -2468,6 +2516,13 @@ internal static class FragmentPainter
     private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
         IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
     {
+        // Color-interpolation hints (CSS Images §3.4.2) — replace each hint (a bare position between two
+        // color stops) with a synthetic stop at the hint position whose color is the 50% blend of the
+        // bracketing stops. A coarse approximation of the exact exponential easing (two linear segments
+        // meeting at the hint's midpoint color), but it puts the right color at the right place; a hint
+        // at the first/last position (invalid) is dropped. No hints → the same list (byte-identical).
+        gradientStops = ExpandColorHints(gradientStops, currentColorArgb);
+
         var n = gradientStops.Count;
         var col = new (double R, double G, double B, double A)[n];
         var pos = new double?[n];

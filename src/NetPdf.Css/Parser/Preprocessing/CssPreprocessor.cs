@@ -810,6 +810,11 @@ internal static class CssPreprocessor
                   // gated like the intrinsic `flex-basis` / recto-verso `break-*` precedents; if
                   // AngleSharp also kept a copy the duplicate is benign under last-decl-wins).
                   || (lowerName == "background-image" && ContainsDroppedGradientFunction(rawValue))
+                  // Phase 4 gradient refinements — AngleSharp.Css ALSO drops a linear-/radial-/conic-
+                  // gradient that carries a color-interpolation HINT (a bare position between two color
+                  // stops, §3.4.2) or a DOUBLE-POSITION stop (`<color> <pos> <pos>`, §3.4); recover the
+                  // raw value so the painter's parser sees them (last-wins; benign if AngleSharp kept a copy).
+                  || (lowerName == "background-image" && ContainsDroppedStopSyntax(rawValue))
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
@@ -1297,6 +1302,101 @@ internal static class CssPreprocessor
             tok.ReadChar();
         }
         return false;
+    }
+
+    /// <summary>Phase 4 gradient refinements — <see langword="true"/> when <paramref name="value"/>
+    /// contains a <c>linear-/radial-/conic-gradient</c> (or <c>repeating-*</c>) whose stop list has a
+    /// color-interpolation HINT (a top-level arg that is a single bare position) or a DOUBLE-POSITION
+    /// stop (an arg whose last two whitespace tokens are both positions) — forms AngleSharp.Css drops.
+    /// Each gradient block's body is split on TOP-LEVEL commas (parens balanced so a function color's
+    /// own commas don't split).</summary>
+    private static bool ContainsDroppedStopSyntax(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier().ToString();
+                if (tok.PeekChar() == '(')
+                {
+                    var block = tok.ReadParenthesizedBlock().ToString(); // includes the surrounding ( )
+                    if (ident.EndsWith("gradient", StringComparison.OrdinalIgnoreCase)
+                        && BodyHasHintOrDoublePosition(block))
+                    {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>A gradient block's body (with its outer parens) has a hint or double-position stop:
+    /// split on top-level commas, then for each arg test whether it is a single bare position (hint) or
+    /// ends with two position tokens (double-position).</summary>
+    private static bool BodyHasHintOrDoublePosition(string block)
+    {
+        var inner = block;
+        var open = inner.IndexOf('(');
+        var close = inner.LastIndexOf(')');
+        if (open >= 0 && close > open) inner = inner.Substring(open + 1, close - open - 1);
+
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i <= inner.Length; i++)
+        {
+            var atEnd = i == inner.Length;
+            var ch = atEnd ? ',' : inner[i];
+            if (!atEnd && ch == '(') depth++;
+            else if (!atEnd && ch == ')') { if (depth > 0) depth--; }
+            else if ((atEnd || ch == ',') && depth == 0)
+            {
+                var arg = inner.Substring(start, i - start).Trim();
+                if (ArgIsHintOrDoublePosition(arg)) return true;
+                start = i + 1;
+            }
+        }
+        return false;
+    }
+
+    private static bool ArgIsHintOrDoublePosition(string arg)
+    {
+        if (arg.Length == 0 || arg.Contains(')')) return false; // skip args with a function tail (its own parens)
+        var toks = arg.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (toks.Length == 1 && IsGradientPositionToken(toks[0])) return true;          // a hint
+        if (toks.Length >= 3 && IsGradientPositionToken(toks[^1]) && IsGradientPositionToken(toks[^2]))
+            return true;                                                                 // double-position
+        return false;
+    }
+
+    /// <summary>A gradient-stop position token: a number with a <c>%</c>, a length unit, or an angle
+    /// unit (conic). A bare number / color keyword is not a position.</summary>
+    private static bool IsGradientPositionToken(string token)
+    {
+        var t = token.Trim();
+        if (t.Length == 0) return false;
+        var i = 0;
+        if (i < t.Length && (t[i] == '+' || t[i] == '-')) i++;
+        var digits = 0;
+        while (i < t.Length && (char.IsDigit(t[i]) || t[i] == '.')) { i++; digits++; }
+        if (digits == 0) return false;
+        var unit = t.Substring(i).Trim();
+        if (unit == "%") return true;
+        switch (unit.ToLowerInvariant())
+        {
+            case "px": case "pt": case "pc": case "in": case "cm": case "mm": case "q":
+            case "deg": case "grad": case "rad": case "turn":
+                return true;
+            default:
+                return false;
+        }
     }
 
     /// <summary>The CSS Values 4 §10 math-function names the body-calc cycle recovers (the same set

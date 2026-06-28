@@ -31,7 +31,11 @@ internal sealed record CssLinearGradient(
 /// <see cref="PositionPx"/> length in CSS px (from <c>px</c> + the absolute units — PR 1 refinements);
 /// the painter resolves a length to a fraction against the gradient-line length. Both null =
 /// unpositioned (spread evenly per CSS Images §3.4). At most one is set.</summary>
-internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null);
+/// <summary>One parsed gradient color stop, or — when <paramref name="IsHint"/> is true — a
+/// color-interpolation HINT (CSS Images §3.4.2: a bare position between two color stops marking where
+/// the 50% color falls). A hint carries only a position (<see cref="Position"/> / <see cref="PositionPx"/>);
+/// its <see cref="ColorRaw"/> is empty and the resolver replaces it with a synthetic midpoint stop.</summary>
+internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null, bool IsHint = false);
 
 /// <summary>Phase 4 gradients — a minimal, allocation-light parser for the
 /// <c>linear-gradient()</c> background-image form. Supports the common authored shapes:
@@ -39,8 +43,9 @@ internal readonly record struct CssGradientStop(string ColorRaw, double? Positio
 /// <c>to &lt;side&gt;</c> / <c>to &lt;corner&gt;</c>) followed by 2+ comma-separated color
 /// stops (each <c>&lt;color&gt; [ &lt;percentage&gt; | &lt;length&gt; ]?</c>). The
 /// <c>repeating-linear-gradient</c> form sets <see cref="CssLinearGradient.Repeating"/> (the painter
-/// tiles the stop period). Color-interpolation hints are still out of this cut and make the whole
-/// value unsupported (the caller falls back to the background-color). Returns
+/// tiles the stop period). Double-position stops (<c>§3.4</c>) + color-interpolation hints
+/// (<c>§3.4.2</c>, a bare position between two color stops — approximated by a synthetic midpoint stop
+/// at resolve time) are supported. Returns
 /// <see langword="null"/> for any value that isn't a single supported (repeating-)<c>linear-gradient()</c>.</summary>
 internal static class CssLinearGradient_Parser
 {
@@ -163,6 +168,23 @@ internal static class CssLinearGradient_Parser
         stop = default;
         var t = arg.Trim();
         if (t.Length == 0) return false;
+
+        // A color-interpolation HINT (CSS Images §3.4.2) — the WHOLE arg is a bare position (no color):
+        // a % or absolute length here, marking where the 50% color falls between the bracketing stops.
+        if (IsPositionToken(t) && !t.Contains(')'))
+        {
+            if (t.EndsWith("%", StringComparison.Ordinal)
+                && double.TryParse(t.AsSpan(0, t.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var hintPct))
+            {
+                stop = new CssGradientStop(string.Empty, Math.Clamp(hintPct / 100.0, 0.0, 1.0), null, IsHint: true);
+                return true;
+            }
+            if (CssLengthParsing.TryLengthPx(t, out var hintPx))
+            {
+                stop = new CssGradientStop(string.Empty, null, hintPx, IsHint: true);
+                return true;
+            }
+        }
 
         // The position, if present, is the LAST whitespace-separated token. A function color
         // (rgb()/hsl()/etc.) contains spaces but no top-level position split is needed: we only

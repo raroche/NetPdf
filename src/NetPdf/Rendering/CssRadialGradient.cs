@@ -75,8 +75,11 @@ internal static class CssRadialGradient_Parser
         var stops = new List<CssGradientStop>(args.Count - stopStart);
         for (var i = stopStart; i < args.Count; i++)
         {
-            if (!CssLinearGradient_Parser.TryParseStop(args[i], out var stop)) return null;
-            stops.Add(stop);
+            foreach (var part in CssLinearGradient_Parser.ExpandDoublePositionStop(args[i]))   // §3.4 double-position
+            {
+                if (!CssLinearGradient_Parser.TryParseStop(part, out var stop)) return null;
+                stops.Add(stop);
+            }
         }
         return new CssRadialGradient(isCircle, extent, cx, cy, stops, repeating);
     }

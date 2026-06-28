@@ -68,8 +68,11 @@ internal static class CssConicGradient_Parser
         var stops = new List<CssGradientStop>(args.Count - stopStart);
         for (var i = stopStart; i < args.Count; i++)
         {
-            if (!TryParseConicStop(args[i], out var stop)) return null;
-            stops.Add(stop);
+            foreach (var part in CssLinearGradient_Parser.ExpandDoublePositionStop(args[i]))   // §3.4 double-position
+            {
+                if (!TryParseConicStop(part, out var stop)) return null;
+                stops.Add(stop);
+            }
         }
         return new CssConicGradient(fromAngleDeg, cx, cy, repeating, stops);
     }

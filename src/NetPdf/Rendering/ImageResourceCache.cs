@@ -556,19 +556,31 @@ internal sealed class ImageResourceCache
             if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
                 blendModeBoxes[box] = bmName;
             // text-shadow (Phase 4 shadows) — an INHERITED property (CSS Text Decoration L3 §3): a box's
-            // OWN declared value REPLACES the inherited one (`none` resets to no shadow), else it inherits
-            // the ancestor's. The effective list is collected for this box's text + threaded to children.
-            // Always collected (text paints regardless of PrintBackgrounds). A non-zero blur is RENDERED
-            // via the Skia glyph-blur raster (CSS-TEXTSHADOW-BLUR-RASTER-001, Info); an unparseable own
-            // value surfaces CSS-TEXTSHADOW-UNSUPPORTED-001 (once) and the property keeps the inherited
-            // value. Diagnostics fire only for a box's OWN value (an inherited value was diagnosed at the
-            // ancestor).
+            // OWN declared value REPLACES the inherited one, else it inherits the ancestor's. The CSS-wide
+            // keywords resolve explicitly (the cascade leaves them as the literal token here): `none` /
+            // `initial` → no shadow (the initial value is none); `inherit` / `unset` → the inherited value
+            // (text-shadow is inherited, so `unset` = inherit); `revert` / `revert-layer` → also the
+            // inherited value (NetPdf has no UA text-shadow rule, so reverting an inherited property yields
+            // the parent's value). The effective list is collected for this box's text + threaded to
+            // children. Always collected (text paints regardless of PrintBackgrounds). A non-zero blur is
+            // RENDERED via the Skia glyph-blur raster (CSS-TEXTSHADOW-BLUR-RASTER-001, Info); an unparseable
+            // own value surfaces CSS-TEXTSHADOW-UNSUPPORTED-001 (once) and keeps the inherited value.
+            // Diagnostics fire only for a box's OWN value (an inherited value was diagnosed at the ancestor).
             var textShadowRaw = rules?.GetWinner("text-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
             if (!string.IsNullOrWhiteSpace(textShadowRaw))
             {
-                if (textShadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                var trimmed = textShadowRaw.Trim();
+                if (trimmed.Equals("none", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.Equals("initial", StringComparison.OrdinalIgnoreCase))
                 {
-                    effectiveTextShadow = null; // own `none` resets (children inherit no shadow)
+                    effectiveTextShadow = null; // own `none` / `initial` → no shadow (children inherit none)
+                }
+                else if (trimmed.Equals("inherit", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.Equals("unset", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.Equals("revert", StringComparison.OrdinalIgnoreCase)
+                    || trimmed.Equals("revert-layer", StringComparison.OrdinalIgnoreCase))
+                {
+                    effectiveTextShadow = inheritedTextShadow; // explicit inherit (no warning)
                 }
                 else if (CssTextShadow_Parser.TryParse(textShadowRaw) is { } own)
                 {
@@ -766,9 +778,10 @@ internal sealed class ImageResourceCache
         if (reported) return;
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.CssTextShadowBlurRaster001,
-            "A blurred text-shadow was painted via the Skia raster fallback (PDF has no native "
-            + "Gaussian blur); the run's glyph outlines were rasterized at 2× and placed as an image "
-            + "XObject with an alpha /SMask. An over-cap run falls back to a sharp offset.",
+            "A blurred text-shadow was routed to the Skia raster fallback (PDF has no native Gaussian "
+            + "blur); the run's glyph outlines are rasterized at 2× and placed as an image XObject with "
+            + "an alpha /SMask. An over-cap run (or a font Skia can't read) falls back to a sharp offset; "
+            + "a fully transparent layer is skipped.",
             DiagnosticSeverity.Info));
         reported = true;
     }

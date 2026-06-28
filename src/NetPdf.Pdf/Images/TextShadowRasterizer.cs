@@ -22,6 +22,10 @@ namespace NetPdf.Pdf.Images;
 /// than emit a huge stream.</remarks>
 internal static class TextShadowRasterizer
 {
+    /// <summary>Preflight cap on glyphs per shadow run — beyond this the run falls back to a sharp
+    /// offset rather than build a huge union path (a single line segment is far under this).</summary>
+    internal const int MaxGlyphsPerRun = 4096;
+
     /// <summary>Rasterize a blurred text-shadow for the glyph run <paramref name="glyphIds"/> of the
     /// font <paramref name="fontBytes"/> at <paramref name="fontSizePx"/> (CSS px). The geometry is
     /// rastered at <paramref name="scale"/>× device resolution; <paramref name="blurPx"/> is the CSS
@@ -37,6 +41,10 @@ internal static class TextShadowRasterizer
     {
         destOffsetXPx = destOffsetYPx = destWidthPx = destHeightPx = 0;
         if (glyphIds.Length == 0 || fontSizePx <= 0 || scale <= 0 || a <= 0) return null;
+        // Preflight glyph-count guard (PR #236 review [P2]) — bail before building paths for a pathological
+        // run so an over-long shadow can't drive unbounded path/union work (the device-px caps below still
+        // bound the surface). A real line segment is far under this.
+        if (glyphIds.Length > MaxGlyphsPerRun) return null;
 
         using var data = SKData.CreateCopy(fontBytes.ToArray());
         using var typeface = SKTypeface.FromData(data);

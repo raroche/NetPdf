@@ -135,6 +135,12 @@ internal static class TextPainter
         private readonly HashSet<string> _failed = new(StringComparer.Ordinal);    // font keys that couldn't resolve/parse/build.
         private readonly HashSet<string> _diagnosed = new(StringComparer.Ordinal); // dedup of emitted skip messages.
         private readonly List<(PdfPage Page, List<DrawCommand> Draws)> _pages = [];
+        // Phase 4 text-shadow blur (PR #236 review [P2]) — a PER-RENDER cache of rasterized blurred
+        // shadows, keyed by font/size/color/blur/scale/glyph-ids. Building a blurred shadow copies the
+        // font bytes, builds a Skia typeface + glyph paths, and rasters a surface — expensive to repeat
+        // for every identical run (e.g. a repeated word). null value = a known failure (fall back to
+        // sharp without re-attempting). Spans pages (the multi-page driver reuses one session).
+        private readonly Dictionary<string, BlurredShadowRaster?> _textShadowRasterCache = new(StringComparer.Ordinal);
 
         /// <summary>Pass 1 for one page: collect its used glyphs into the SHARED per-font sets (so the
         /// subset is built from the cross-page union) and record its draw commands for replay in
@@ -177,7 +183,7 @@ internal static class TextPainter
                     fragment, inline, blockStyle,
                     originLeftPx, originTopPx, pageHeightPtForPage,
                     shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics,
-                    fragmentTextShadows, fragmentTransformCm);
+                    fragmentTextShadows, fragmentTransformCm, _textShadowRasterCache);
             }
             // Skip a page with no draws (a background/image-only, transparent-text, or font-size:0 page) —
             // it has no text to replay, so storing it would just no-op in Finish (Copilot — avoid retaining
@@ -301,7 +307,8 @@ internal static class TextPainter
         HashSet<string> failed, HashSet<string> diagnosed, List<DrawCommand> draws,
         IDiagnosticsSink? diagnostics,
         IReadOnlyList<CssTextShadow>? textShadows = null,
-        (double, double, double, double, double, double)? transformCm = null)
+        (double, double, double, double, double, double)? transformCm = null,
+        Dictionary<string, BlurredShadowRaster?>? shadowCache = null)
     {
         // transformCm (Phase 4, review [P1]) — the box's EFFECTIVE cm (ancestor-composed), the SAME
         // matrix the decoration pass uses, rides onto each glyph DrawCommand so transformed text
@@ -454,7 +461,7 @@ internal static class TextPainter
                 EmitJustifiedLine(
                     line, shapedRuns, preRuns, blockStyle, concatText!, justifyGapCount, justifyExtraPerGapPx,
                     insetLeftPx, contentLeftPx, lineTopPx, thisLineHeightPx, explicitBaselineTopPx, pageHeightPt, clipPt,
-                    shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws, shadows, transformCm);
+                    shaper, collects, fontOrder, failed, diagnosed, diagnostics, draws, shadows, transformCm, shadowCache);
                 continue;
             }
 
@@ -532,7 +539,7 @@ internal static class TextPainter
                     SizePt: PdfUnits.PxToPt(fontSizePx),
                     ColorArgb: argb,
                     ClipPt: clipPt,
-                    Transform: transformCm), shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt);
+                    Transform: transformCm), shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt, shadowCache);
             }
         }
     }
@@ -561,7 +568,8 @@ internal static class TextPainter
         HarfBuzzShaperResolver shaper, Dictionary<string, FontCollect> collects, List<string> fontOrder,
         HashSet<string> failed, HashSet<string> diagnosed, IDiagnosticsSink? diagnostics,
         List<DrawCommand> draws, IReadOnlyList<ResolvedTextShadow>? shadows,
-        (double, double, double, double, double, double)? transformCm)
+        (double, double, double, double, double, double)? transformCm,
+        Dictionary<string, BlurredShadowRaster?>? shadowCache)
     {
         var penXPx = insetLeftPx;         // painted x cursor (natural advances + gaps added so far).
         var opportunitiesUsed = 0;
@@ -625,7 +633,7 @@ internal static class TextPainter
                 if (fc is not null)
                     EmitGlyphSegment(run, slice.GlyphStart + segStartG, g - segStartG + 1, fc, key!,
                         fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                        baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm);
+                        baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache);
                 penXPx += extraPerGapPx;
                 segStartG = g + 1;
                 segPenXPx = penXPx;
@@ -634,7 +642,7 @@ internal static class TextPainter
             if (fc is not null && segStartG < slice.GlyphLength)
                 EmitGlyphSegment(run, slice.GlyphStart + segStartG, slice.GlyphLength - segStartG, fc, key!,
                     fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                    baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm);
+                    baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache);
         }
     }
 
@@ -650,7 +658,8 @@ internal static class TextPainter
         double fontSizePx, double xStartPx, double baselineTopPx, uint argb, double pageHeightPt,
         (double X, double Y, double W, double H)? clipPt, List<DrawCommand> draws,
         IReadOnlyList<ResolvedTextShadow>? shadows,
-        (double, double, double, double, double, double)? transformCm)
+        (double, double, double, double, double, double)? transformCm,
+        Dictionary<string, BlurredShadowRaster?>? shadowCache)
     {
         var ids = new ushort[glyphCount];
         for (var i = 0; i < glyphCount; i++)
@@ -668,8 +677,14 @@ internal static class TextPainter
             ColorArgb: argb,
             ClipPt: clipPt,
             Transform: transformCm);
-        AddTextDrawWithShadows(draws, command, shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt);
+        AddTextDrawWithShadows(draws, command, shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt, shadowCache);
     }
+
+    /// <summary>A cached rasterized blurred text-shadow (PR #236 review [P2]): the image + its top-left
+    /// offset relative to the run baseline + its size, all in CSS px.</summary>
+    private sealed record BlurredShadowRaster(
+        NetPdf.Pdf.Images.ImageXObjectResult Image, double OffsetXPx, double OffsetYPx,
+        double WidthPx, double HeightPx);
 
     /// <summary>A text-shadow layer with its color resolved ONCE per fragment (Copilot #210 — not
     /// re-parsed per glyph draw): the offset + blur in CSS px + the packed shadow color, or a null
@@ -713,7 +728,8 @@ internal static class TextPainter
     /// failure (over-cap / unreadable font) falls back to a sharp offset for that layer.</summary>
     private static void AddTextDrawWithShadows(
         List<DrawCommand> draws, DrawCommand command, IReadOnlyList<ResolvedTextShadow>? shadows,
-        FontCollect fc, double fontSizePx, double xStartPx, double baselineTopPx, double pageHeightPt)
+        FontCollect fc, double fontSizePx, double xStartPx, double baselineTopPx, double pageHeightPt,
+        Dictionary<string, BlurredShadowRaster?>? shadowCache)
     {
         if (shadows is { Count: > 0 })
         {
@@ -724,7 +740,7 @@ internal static class TextPainter
                 if (FragmentPainter.Alpha(argb) == 0) continue;
                 if (s.BlurPx > 0
                     && TryBuildBlurredTextShadow(command, s, argb, fc, fontSizePx, xStartPx, baselineTopPx,
-                        pageHeightPt, out var shadowCommand))
+                        pageHeightPt, shadowCache, out var shadowCommand))
                 {
                     draws.Add(shadowCommand);
                     continue;
@@ -747,29 +763,70 @@ internal static class TextPainter
     /// falls back to a sharp offset.</summary>
     private static bool TryBuildBlurredTextShadow(
         DrawCommand command, ResolvedTextShadow s, uint argb, FontCollect fc, double fontSizePx,
-        double xStartPx, double baselineTopPx, double pageHeightPt, out DrawCommand shadowCommand)
+        double xStartPx, double baselineTopPx, double pageHeightPt,
+        Dictionary<string, BlurredShadowRaster?>? shadowCache, out DrawCommand shadowCommand)
     {
         shadowCommand = default;
+
+        // Per-render cache (review [P2]): the raster depends only on the font program + size + glyph ids
+        // + color + blur (+ the fixed scale), NOT the placement — so an identical run (a repeated word)
+        // reuses the same pixels instead of rebuilding the typeface / glyph paths / surface. A cached
+        // null = a known failure → fall back to sharp without re-attempting.
+        BlurredShadowRaster? cached;
+        string? key = null;
+        if (shadowCache is not null)
+        {
+            key = ShadowCacheKey(command.FontKey, fontSizePx, s.BlurPx, argb, command.OriginalGlyphIds);
+            if (shadowCache.TryGetValue(key, out cached))
+            {
+                if (cached is null) return false; // known failure → sharp fallback
+                return BuildShadowImageCommand(command, s, argb, cached, xStartPx, baselineTopPx, pageHeightPt, out shadowCommand);
+            }
+        }
+
         FragmentPainter.ColorChannels(argb, out var r, out var g, out var b);
         var alpha = FragmentPainter.Alpha(argb) / 255.0;
         var image = NetPdf.Pdf.Images.TextShadowRasterizer.TryRasterizeGlyphRun(
             fc.Font.FontBytes, command.OriginalGlyphIds, (float)fontSizePx, (float)s.BlurPx,
             r, g, b, alpha, TextShadowRasterScale,
             out var offXPx, out var offYPx, out var widthPx, out var heightPx);
-        if (image is null) return false;
+        cached = image is null ? null : new BlurredShadowRaster(image, offXPx, offYPx, widthPx, heightPx);
+        if (key is not null) shadowCache![key] = cached;
+        if (cached is null) return false;
+        return BuildShadowImageCommand(command, s, argb, cached, xStartPx, baselineTopPx, pageHeightPt, out shadowCommand);
+    }
+
+    /// <summary>Place a (possibly cached) blurred-shadow raster at the shadow offset under the text.</summary>
+    private static bool BuildShadowImageCommand(
+        DrawCommand command, ResolvedTextShadow s, uint argb, BlurredShadowRaster raster,
+        double xStartPx, double baselineTopPx, double pageHeightPt, out DrawCommand shadowCommand)
+    {
         // The raster's top-left in CSS px (page coords) = the run baseline origin + the shadow offset +
         // the raster's offset relative to the baseline.
-        var leftPx = xStartPx + s.DxPx + offXPx;
-        var topPx = baselineTopPx + s.DyPx + offYPx;
-        FragmentPainter.ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt,
+        var leftPx = xStartPx + s.DxPx + raster.OffsetXPx;
+        var topPx = baselineTopPx + s.DyPx + raster.OffsetYPx;
+        FragmentPainter.ToPdfRect(leftPx, topPx, raster.WidthPx, raster.HeightPx, pageHeightPt,
             out var ix, out var iy, out var iw, out var ih);
         shadowCommand = command with
         {
             OriginalGlyphIds = System.Array.Empty<ushort>(),
             ColorArgb = argb,
-            ShadowImage = (image, ix, iy, iw, ih),
+            ShadowImage = (raster.Image, ix, iy, iw, ih),
         };
         return true;
+    }
+
+    /// <summary>The per-render blurred-shadow cache key — font program + size + blur + color + glyph ids
+    /// (the inputs the raster pixels depend on; placement is applied separately).</summary>
+    private static string ShadowCacheKey(string fontKey, double fontSizePx, double blurPx, uint argb, ushort[] ids)
+    {
+        var sb = new System.Text.StringBuilder(fontKey.Length + 24 + ids.Length * 4);
+        sb.Append(fontKey).Append('|')
+          .Append(fontSizePx.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+          .Append(blurPx.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+          .Append(argb).Append('|');
+        foreach (var id in ids) sb.Append(id).Append(',');
+        return sb.ToString();
     }
 
     /// <summary>Resolve a run's font program to a parsed-font collector, caching by program

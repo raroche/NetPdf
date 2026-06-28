@@ -257,12 +257,14 @@ internal static class DiagnosticCodes
     public const string CssTextShadowUnsupported001 = "CSS-TEXTSHADOW-UNSUPPORTED-001";
 
     /// <summary>
-    /// Phase 4 — a <c>text-shadow</c> with a non-zero blur radius was painted via the Skia raster
+    /// Phase 4 — a <c>text-shadow</c> with a non-zero blur radius was ROUTED to the Skia raster
     /// fallback (the run's glyph outlines are rasterized at <c>2×</c> resolution, Gaussian-blurred
-    /// with σ = blur/2, and placed as an image XObject with an alpha <c>/SMask</c>) because PDF has
-    /// no native Gaussian-blur primitive. Sharp (blur = 0) shadows stay glyph-shows in the shadow
-    /// color. An over-cap run (or a font Skia can't read) falls back to a sharp offset. Surfaced once
-    /// per render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// with σ = blur/2, and placed as an image XObject with an alpha <c>/SMask</c>) because PDF has no
+    /// native Gaussian-blur primitive. Emitted at resource collection when a blur is present (the
+    /// "raster path requested" signal), so it surfaces even if a particular run then falls back: an
+    /// over-cap run (or a font Skia can't read) paints a sharp offset, and a fully transparent layer is
+    /// skipped. Sharp (blur = 0) shadows stay glyph-shows in the shadow color. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
     /// </summary>
     public const string CssTextShadowBlurRaster001 = "CSS-TEXTSHADOW-BLUR-RASTER-001";
 

@@ -13,9 +13,12 @@ using Xunit;
 namespace NetPdf.UnitTests.Rendering;
 
 /// <summary>Phase 4 shadows — end-to-end <c>text-shadow</c> painting. A sharp shadow draws the
-/// glyph run offset in the shadow color UNDER the main text; a blurred shadow paints a sharp
-/// offset (a documented approximation) + a diagnostic; unsupported forms surface a diagnostic.
-/// Deterministic text via a synthetic font.</summary>
+/// glyph run offset in the shadow color UNDER the main text; a BLURRED shadow (with a real font)
+/// rasterizes the run's glyph outlines into an image XObject + <c>/SMask</c> under the text
+/// (<c>CSS-TEXTSHADOW-BLUR-RASTER-001</c>); an unresolvable-unit value surfaces
+/// <c>CSS-TEXTSHADOW-UNSUPPORTED-001</c>; <c>text-shadow</c> inherits to descendant text. The
+/// synthetic test font has empty glyph outlines, so a blurred shadow falls back to sharp there — the
+/// blur tests use the default (real) system font.</summary>
 public sealed class TextShadowPaintTests
 {
     private static string Latin1(byte[] bytes) => Encoding.Latin1.GetString(bytes);
@@ -154,6 +157,53 @@ public sealed class TextShadowPaintTests
 
         Assert.Contains("0 0 0 rg BT", text);       // the text still paints
         Assert.DoesNotContain("1 0 0 rg BT", text); // `none` reset the inherited shadow
+    }
+
+    [Fact]
+    public void Child_text_shadow_initial_resets_the_inherited_shadow()
+    {
+        // CSS-wide `initial` → the initial value (none), NOT an unsupported value that keeps the inherited.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"text-shadow:3px 3px #ff0000\">"
+            + "<p style=\"color:#000000;text-shadow:initial\">A</p></div>"
+            + "</body></html>", Opts());
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("0 0 0 rg BT", text);       // the text still paints
+        Assert.DoesNotContain("1 0 0 rg BT", text); // `initial` reset the inherited red shadow
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowUnsupported001);
+    }
+
+    [Theory]
+    [InlineData("inherit")]
+    [InlineData("unset")]   // text-shadow is inherited, so unset = inherit
+    public void Child_text_shadow_inherit_or_unset_keeps_the_inherited_shadow(string keyword)
+    {
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"color:#000000;text-shadow:3px 3px #ff0000\">"
+            + $"<p style=\"text-shadow:{keyword}\">A</p></div>"
+            + "</body></html>", Opts());
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("1 0 0 rg BT", text);       // the inherited red shadow is kept
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssTextShadowUnsupported001);
+    }
+
+    [Fact]
+    public void Repeated_blurred_text_reuses_the_raster_cache_without_breaking()
+    {
+        // Two identical paragraphs → the second identical blurred run hits the per-render cache; the
+        // output still contains the blurred image (cache hit produces a valid placement).
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<p style=\"text-shadow:3px 3px 4px #ff0000\">Ag</p>"
+            + "<p style=\"text-shadow:3px 3px 4px #ff0000\">Ag</p>"
+            + "</body></html>"));
+
+        Assert.Contains(" Do", text);
+        Assert.Contains("/SMask", text);
     }
 
     [Fact]

@@ -2689,14 +2689,20 @@ flags the categories):
      preserved); `repeating-linear` / `repeating-radial` (native stop tiling); length-positioned
      color stops (px + absolute units; resolve against the gradient-line length); elliptical radial
      shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
-     raster for blur). **Remaining gradient residuals (Phase 4 follow-ups):** color-interpolation
-     hints, per-stop alpha on the NATIVE linear/radial shadings (a soft-mask alpha shading — the
-     conic raster path already preserves it), **gradient `background-clip` / `background-origin`
-     insets on a SINGLE-layer gradient** (a single-layer gradient still paints/clips against the
-     border box; the `url()` image path already honors origin/clip + inset radii — and as of
-     PR #235 a MULTI-LAYER gradient LAYER honors `-origin`/`-clip` too), **gradient
-     `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin box; a
-     multi-layer gradient layer that specifies any of these surfaces
+     raster for blur). **Gradient refinements SHIPPED (PR — gradient-refinements):** double-position
+     stops (§3.4), color-interpolation HINTS (§3.4.2 — approximated by a synthetic midpoint stop, NOT
+     the exact exponential easing), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
+     to a Skia raster — `LinearGradientRasterizer`/`RadialGradientRasterizer` → image + `/SMask`;
+     opaque stays the native shading). AngleSharp.Css drops a gradient carrying a hint or
+     double-position, so `CssPreprocessor.ContainsDroppedStopSyntax` recovers the raw value.
+     **Remaining gradient residuals (Phase 4 follow-ups):** the hint's exact exponential easing (only
+     the midpoint color is exact; the two surrounding segments are linear); per-stop alpha on a NATIVE
+     shading (a soft-mask alpha shading) so a translucent gradient need not raster; **gradient
+     `background-clip` / `background-origin` insets on a SINGLE-layer gradient** (a single-layer
+     gradient still paints/clips against the border box; the `url()` image path already honors
+     origin/clip + inset radii — and as of PR #235 a MULTI-LAYER gradient LAYER honors `-origin`/`-clip`
+     too), **gradient `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin
+     box; a multi-layer gradient layer that specifies any of these surfaces
      `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` and falls back to the default — the `url()` path honors
      all three), and a repeating-radial under a `closest-*` extent clamps beyond the ending shape
      (the default farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**

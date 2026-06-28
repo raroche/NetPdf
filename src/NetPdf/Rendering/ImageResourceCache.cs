@@ -272,6 +272,7 @@ internal sealed class ImageResourceCache
             diagnostics, borderImages, cache.BlendModeBoxes,
             ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
+            inheritedTextShadow: null,
             ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
             ref borderImageReported);
@@ -427,6 +428,10 @@ internal sealed class ImageResourceCache
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
         ref bool textShadowBlurRasterReported,
+        // text-shadow is inherited — the nearest ancestor's effective list (null = none), threaded down
+        // the recursion so a descendant box without its own value inherits it. Passed explicitly at both
+        // call sites (root = null; children = the box's effective list).
+        IReadOnlyList<CssTextShadow>? inheritedTextShadow,
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
         ref bool filterElementReported,
@@ -434,6 +439,9 @@ internal sealed class ImageResourceCache
         ref bool maskElementReported,
         ref bool borderImageReported)
     {
+        // text-shadow inherits through this box (incl. anonymous boxes with no SourceElement) — default to
+        // the ancestor's value; an element-backed box may REPLACE it below before passing it to children.
+        var effectiveTextShadow = inheritedTextShadow;
         if (box.SourceElement is { } element)
         {
             // transform (Phase 4) — the box's OWN declared value (transform doesn't inherit),
@@ -547,27 +555,35 @@ internal sealed class ImageResourceCache
             // initial) + an unrecognized keyword → no entry (composite normally).
             if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
                 blendModeBoxes[box] = bmName;
-            // text-shadow (Phase 4 shadows) — the box's OWN declared value, ALWAYS collected
-            // (text paints regardless of PrintBackgrounds). A non-zero blur is now RENDERED via the Skia
-            // glyph-blur raster (CSS-TEXTSHADOW-BLUR-RASTER-001, Info); an unparseable value surfaces
-            // CSS-TEXTSHADOW-UNSUPPORTED-001. Inheritance to descendant text is a documented residual.
+            // text-shadow (Phase 4 shadows) — an INHERITED property (CSS Text Decoration L3 §3): a box's
+            // OWN declared value REPLACES the inherited one (`none` resets to no shadow), else it inherits
+            // the ancestor's. The effective list is collected for this box's text + threaded to children.
+            // Always collected (text paints regardless of PrintBackgrounds). A non-zero blur is RENDERED
+            // via the Skia glyph-blur raster (CSS-TEXTSHADOW-BLUR-RASTER-001, Info); an unparseable own
+            // value surfaces CSS-TEXTSHADOW-UNSUPPORTED-001 (once) and the property keeps the inherited
+            // value. Diagnostics fire only for a box's OWN value (an inherited value was diagnosed at the
+            // ancestor).
             var textShadowRaw = rules?.GetWinner("text-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
-            if (!string.IsNullOrWhiteSpace(textShadowRaw)
-                && !textShadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrWhiteSpace(textShadowRaw))
             {
-                var textShadows = CssTextShadow_Parser.TryParse(textShadowRaw);
-                if (textShadows is not null)
+                if (textShadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
                 {
-                    textShadowBoxes[box] = textShadows;
+                    effectiveTextShadow = null; // own `none` resets (children inherit no shadow)
+                }
+                else if (CssTextShadow_Parser.TryParse(textShadowRaw) is { } own)
+                {
+                    effectiveTextShadow = own;
                     var hasBlur = false;
-                    foreach (var s in textShadows) if (s.BlurPx > 0) { hasBlur = true; break; }
+                    foreach (var s in own) if (s.BlurPx > 0) { hasBlur = true; break; }
                     if (hasBlur) ReportTextShadowBlurRaster(diagnostics, ref textShadowBlurRasterReported);
                 }
                 else
                 {
+                    // An invalid own value is ignored → the property keeps the inherited value.
                     ReportTextShadowUnsupported(diagnostics, ref textShadowUnsupportedReported);
                 }
             }
+            if (effectiveTextShadow is not null) textShadowBoxes[box] = effectiveTextShadow;
             // box-shadow (Phase 4 shadows) — the raw cascade winner, parsed into layers. Gated by
             // PrintBackgrounds like the other decoration. OUTSET + INSET layers (PR 1 refinements)
             // both store + paint; an unparseable value (e.g. an em/rem/% offset the parser can't
@@ -669,6 +685,7 @@ internal sealed class ImageResourceCache
                 borderImages, blendModeBoxes,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
+                effectiveTextShadow,
                 ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
                 ref borderImageReported);

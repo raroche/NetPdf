@@ -118,6 +118,45 @@ public sealed class TextShadowPaintTests
     }
 
     [Fact]
+    public void Text_shadow_inherits_to_descendant_text()
+    {
+        // The <div> declares a red shadow; the <p> has none of its own → its text inherits it.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"color:#000000;text-shadow:3px 3px #ff0000\"><p>A</p></div>"
+            + "</body></html>", Opts()));
+
+        Assert.Contains("1 0 0 rg BT", text);   // the inherited red shadow on the <p>'s text
+        Assert.Contains("0 0 0 rg BT", text);   // the black main text
+    }
+
+    [Fact]
+    public void A_childs_own_text_shadow_overrides_the_inherited_one()
+    {
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"text-shadow:3px 3px #ff0000\">"
+            + "<p style=\"color:#000000;text-shadow:1px 1px #00ff00\">A</p></div>"
+            + "</body></html>", Opts()));
+
+        Assert.Contains("0 1 0 rg BT", text);       // the child's own green shadow
+        Assert.DoesNotContain("1 0 0 rg BT", text); // NOT the inherited red one
+    }
+
+    [Fact]
+    public void A_child_text_shadow_none_resets_the_inherited_shadow()
+    {
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"text-shadow:3px 3px #ff0000\">"
+            + "<p style=\"color:#000000;text-shadow:none\">A</p></div>"
+            + "</body></html>", Opts()));
+
+        Assert.Contains("0 0 0 rg BT", text);       // the text still paints
+        Assert.DoesNotContain("1 0 0 rg BT", text); // `none` reset the inherited shadow
+    }
+
+    [Fact]
     public void None_paints_only_the_text_with_no_diagnostic()
     {
         var result = HtmlPdf.ConvertDetailed(Html("none"), Opts());

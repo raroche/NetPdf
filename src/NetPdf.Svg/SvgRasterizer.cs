@@ -355,14 +355,27 @@ internal static class SvgRasterizer
 
         var save = canvas.Save();
         canvas.Translate((float)x, (float)y);
-        canvas.ClipRect(new SKRect(0, 0, (float)w, (float)h));
-        var vb = ParseViewBox(Attr(el, "viewBox"));
-        var newVpW = w;
-        var newVpH = h;
+        RenderViewport(canvas, el, el.Elements(), style, state, depth, w, h);
+        canvas.RestoreToCount(save);
+    }
+
+    /// <summary>Establish an SVG viewport at the current canvas origin (SVG §7.2): CLIP to
+    /// <paramref name="vpW"/> × <paramref name="vpH"/>, and — when <paramref name="viewportEl"/> carries a
+    /// <c>viewBox</c> — SCALE its content to fit (<c>xMidYMid meet</c>, centered), making the viewBox extent
+    /// the new <c>%</c> reference for descendants. Shared by a nested <c>&lt;svg&gt;</c> and a
+    /// <c>&lt;use&gt;</c> → <c>&lt;symbol&gt;</c>/<c>&lt;svg&gt;</c> reference (both set up the same viewport).</summary>
+    private static void RenderViewport(
+        SKCanvas canvas, XElement viewportEl, IEnumerable<XElement> children, SvgStyle childStyle,
+        SvgRenderState state, int depth, double vpW, double vpH)
+    {
+        canvas.ClipRect(new SKRect(0, 0, (float)vpW, (float)vpH));
+        var vb = ParseViewBox(Attr(viewportEl, "viewBox"));
+        var newVpW = vpW;
+        var newVpH = vpH;
         if (vb.W > 0 && vb.H > 0)
         {
-            var scale = Math.Min(w / vb.W, h / vb.H); // meet
-            canvas.Translate((float)((w - vb.W * scale) / 2.0), (float)((h - vb.H * scale) / 2.0)); // xMidYMid
+            var scale = Math.Min(vpW / vb.W, vpH / vb.H); // meet
+            canvas.Translate((float)((vpW - vb.W * scale) / 2.0), (float)((vpH - vb.H * scale) / 2.0)); // xMidYMid
             canvas.Scale((float)scale);
             canvas.Translate((float)-vb.X, (float)-vb.Y);
             newVpW = vb.W;   // descendants resolve % against the viewBox extent
@@ -372,17 +385,17 @@ internal static class SvgRasterizer
         var prevH = state.ViewportH;
         state.ViewportW = newVpW;
         state.ViewportH = newVpH;
-        foreach (var child in el.Elements()) RenderElement(canvas, child, style, state, depth + 1);
+        foreach (var child in children) RenderElement(canvas, child, childStyle, state, depth + 1);
         state.ViewportW = prevW;
         state.ViewportH = prevH;
-        canvas.RestoreToCount(save);
     }
 
     /// <summary>Clone a referenced element / symbol at the <c>&lt;use&gt;</c> position (SVG §5.6). A
-    /// <c>&lt;symbol&gt;</c> / nested <c>&lt;svg&gt;</c> target renders its children as a group; any other
-    /// target renders as itself. A symbol/svg target's OWN presentation attributes + transform are resolved
-    /// before its children inherit (PR-231 review [P2]); <c>width</c>/<c>height</c> viewport clip+scale are
-    /// not applied this cut.</summary>
+    /// <c>&lt;symbol&gt;</c> / nested <c>&lt;svg&gt;</c> target establishes a VIEWPORT — its
+    /// <c>width</c>/<c>height</c> (from the <c>&lt;use&gt;</c> if set, else the target, else 100% of the
+    /// current viewport) clip the content and a <c>viewBox</c> scales to fit (§7.2 / §5.6) — and renders its
+    /// children as a group; any other target renders as itself. A symbol/svg target's OWN presentation
+    /// attributes + transform are resolved before its children inherit (PR-231 review [P2]).</summary>
     private static void DrawUse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, int depth)
     {
         if (depth + 1 > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
@@ -397,8 +410,20 @@ internal static class SvgRasterizer
             // The symbol/svg establishes its own resolved style + transform for its children.
             var targetStyle = ResolveStyle(target, style, state);
             if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) canvas.Concat(in tm);
-            foreach (var child in target.Elements())
-                RenderElement(canvas, child, targetStyle, state, depth + 1);
+            // Viewport size: the <use> width/height override the target's; an omitted dimension is 100% of
+            // the current viewport (§5.6 — the symbol is instanced as a viewport). A non-positive explicit
+            // size renders nothing.
+            var w = el.Attribute("width") is not null ? Len(el, "width", state, style, LenAxis.X)
+                  : target.Attribute("width") is not null ? Len(target, "width", state, targetStyle, LenAxis.X)
+                  : state.ViewportW;
+            var h = el.Attribute("height") is not null ? Len(el, "height", state, style, LenAxis.Y)
+                  : target.Attribute("height") is not null ? Len(target, "height", state, targetStyle, LenAxis.Y)
+                  : state.ViewportH;
+            if (w > 0 && h > 0)
+            {
+                if (!IsSupportedPreserveAspectRatio(Attr(target, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
+                RenderViewport(canvas, target, target.Elements(), targetStyle, state, depth, w, h);
+            }
         }
         else
             RenderElement(canvas, target, style, state, depth + 1);

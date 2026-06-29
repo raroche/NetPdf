@@ -115,6 +115,47 @@ public sealed class SvgUseRasterizerTests
     }
 
     [Fact]
+    public void Use_of_a_symbol_with_a_viewbox_scales_content_to_the_use_viewport()
+    {
+        // SVG §5.6 / §7.2 — a <use> referencing a <symbol> establishes a viewport from the use width/height;
+        // the symbol's viewBox scales to fit. viewBox 0 0 10 10 instanced at 20×20 → 2× scale, so a circle at
+        // (5,5) r=4 in viewBox space maps to center (10,10) r≈8 in the 20×20 viewport.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
+            "<symbol id=\"s\" viewBox=\"0 0 10 10\"><circle cx=\"5\" cy=\"5\" r=\"4\" fill=\"red\"/></symbol>" +
+            "<use href=\"#s\" width=\"20\" height=\"20\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 10, 10).R > 200);    // center of the scaled circle filled
+        Assert.Equal(0, Px(info!, 1, 1).A);        // a corner is outside the radius-8 circle → empty
+    }
+
+    [Fact]
+    public void Use_of_a_symbol_clips_content_to_the_use_viewport()
+    {
+        // The symbol's content extends well beyond the 10×10 use viewport; the overflow is clipped (§7.2).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<symbol id=\"s\"><rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"red\"/></symbol>" +
+            "<use href=\"#s\" x=\"5\" y=\"5\" width=\"10\" height=\"10\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 10, 10).R > 200);    // inside the viewport (5..15)
+        Assert.Equal(0, Px(info!, 20, 20).A);      // beyond the 10×10 clip → empty
+    }
+
+    [Fact]
+    public void Use_explicit_zero_viewport_renders_nothing()
+    {
+        // An explicit zero width on the <use> collapses the viewport → nothing renders (§7.2).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
+            "<symbol id=\"s\"><rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" fill=\"red\"/></symbol>" +
+            "<use href=\"#s\" width=\"0\" height=\"20\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, Px(info!, 10, 10).A);
+    }
+
+    [Fact]
     public void Oversized_definition_only_svg_is_truncated_and_flagged()
     {
         // PR-231 review [P1] — a <defs> with more than the element budget (50,000) must NOT bypass the DoS

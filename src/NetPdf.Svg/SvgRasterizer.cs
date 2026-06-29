@@ -192,7 +192,7 @@ internal static class SvgRasterizer
             default: state.SawUnsupported = true; break;
         }
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
-        if (mask is not null) ApplyMask(canvas, mask, el, state, depth); // multiply the mask luminance in
+        if (mask is not null) ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
         canvas.RestoreToCount(restore);
     }
 
@@ -522,7 +522,9 @@ internal static class SvgRasterizer
 
     /// <summary>Union the geometry of a <c>&lt;clipPath&gt;</c>'s child shapes (each honoring its own
     /// <c>transform</c>) into a single fill path. A child <c>&lt;use&gt;</c> resolving to a basic shape is
-    /// followed. Returns <see langword="null"/> when no child contributes geometry.</summary>
+    /// followed, applying the use's <c>transform</c> AND <c>x</c>/<c>y</c> (the effective CTM is
+    /// <c>use.transform · translate(x,y) · target.transform</c>, SVG §5.6). Returns <see langword="null"/>
+    /// when no child contributes geometry.</summary>
     private static SKPath? BuildClipPathGeometry(XElement clip, SvgStyle style, SvgRenderState state)
     {
         SKPath? acc = null;
@@ -530,16 +532,20 @@ internal static class SvgRasterizer
         {
             var target = child;
             SKMatrix? useOffset = null;
+            SKMatrix? useTransform = null;
             if (child.Name.LocalName.Equals("use", StringComparison.OrdinalIgnoreCase))
             {
                 if (SvgAttr.HrefId(child) is not { } uid || !state.Ids.TryGetValue(uid, out var ut)) continue;
                 target = ut;
                 useOffset = SKMatrix.CreateTranslation((float)Len(child, "x", state, style, LenAxis.X), (float)Len(child, "y", state, style, LenAxis.Y));
+                useTransform = SvgTransform.Parse(Attr(child, "transform")); // the use's OWN transform
             }
             using var sp = BuildShapePath(target, style, state);
             if (sp is null || sp.IsEmpty) continue;
+            // Apply innermost-first: the target's own transform, then translate(x,y), then the use's transform.
             if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) sp.Transform(tm);
             if (useOffset is { } uo) sp.Transform(uo);
+            if (useTransform is { } ut2) sp.Transform(ut2);
             if (acc is null) acc = new SKPath(sp);
             else acc.AddPath(sp);
         }
@@ -548,7 +554,10 @@ internal static class SvgRasterizer
 
     /// <summary>The geometry bounding box of an element in its OWN coordinate space (its own
     /// <c>transform</c> excluded, descendant transforms included) — the reference box for an
-    /// <c>objectBoundingBox</c> clip / paint server. Unions the bounds of every descendant basic shape.</summary>
+    /// <c>objectBoundingBox</c> clip / paint server. Unions the bounds of every descendant basic shape,
+    /// SKIPPING non-rendered definition subtrees (<c>&lt;defs&gt;</c>/<c>&lt;clipPath&gt;</c>/<c>&lt;mask&gt;</c>
+    /// /<c>&lt;pattern&gt;</c>/gradients/<c>&lt;symbol&gt;</c>/…) so the box reflects PAINTED geometry, not
+    /// hidden definitions (PR-241 review [P2]).</summary>
     private static SKRect? ComputeBBox(XElement el, SvgStyle inherited, SvgRenderState state, int depth, SKMatrix ctm, bool isRoot)
     {
         if (depth > MaxDepth) return null;
@@ -559,9 +568,23 @@ internal static class SvgRasterizer
         using (var sp = BuildShapePath(el, style, state))
             if (sp is not null && !sp.IsEmpty) acc = local.MapRect(sp.Bounds);
         foreach (var child in el.Elements())
+        {
+            if (IsNonRenderedDefinition(child.Name.LocalName)) continue; // hidden definition → not in the bbox
             acc = UnionRect(acc, ComputeBBox(child, style, state, depth + 1, local, isRoot: false));
+        }
         return acc;
     }
+
+    /// <summary>Element local-names that define a resource / metadata and are NOT painted in place (they
+    /// render only when REFERENCED), so they're excluded from a geometry bounding box. Mirrors the
+    /// non-rendering cases of the <see cref="RenderElement"/> switch.</summary>
+    private static bool IsNonRenderedDefinition(string localName) => localName.ToLowerInvariant() switch
+    {
+        "defs" or "symbol" or "title" or "desc" or "metadata" or "style"
+            or "lineargradient" or "radialgradient" or "stop"
+            or "pattern" or "clippath" or "mask" or "filter" or "marker" => true,
+        _ => false,
+    };
 
     private static SKRect? UnionRect(SKRect? a, SKRect? b)
     {
@@ -594,16 +617,29 @@ internal static class SvgRasterizer
     /// rendered content (SVG §14.4 default <c>mask-type: luminance</c>): render the mask content into a layer
     /// whose composite applies a luminance→alpha color filter and the <c>DstIn</c> blend, then composite the
     /// element layer. <c>maskContentUnits="objectBoundingBox"</c> maps the mask content's unit coordinates
-    /// onto the masked element's bounding box. Closes BOTH the mask layer and the element-content layer the
-    /// caller opened.</summary>
-    private static void ApplyMask(SKCanvas canvas, XElement mask, XElement el, SvgRenderState state, int depth)
+    /// onto the masked element's bounding box — computed with the element's RESOLVED <paramref name="style"/>
+    /// so inherited <c>em</c>/<c>rem</c> geometry resolves against the right font-size (PR-241 review [P2]); an
+    /// unavailable bbox (e.g. a text / image target with no basic-shape geometry) is flagged and the element
+    /// renders UNMASKED rather than silently masked in user space. Closes BOTH the mask layer and the
+    /// element-content layer the caller opened.</summary>
+    private static void ApplyMask(SKCanvas canvas, XElement mask, XElement el, SvgStyle style, SvgRenderState state, int depth)
     {
+        SKMatrix? contentMatrix = null;
+        if ((Attr(mask, "maskContentUnits") ?? "userSpaceOnUse").Trim().Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase))
+        {
+            if (ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
+                contentMatrix = new SKMatrix { ScaleX = b.Width, ScaleY = b.Height, TransX = b.Left, TransY = b.Top, Persp2 = 1 };
+            else
+            {
+                state.SawUnsupported = true; // no bbox for objectBoundingBox content → leave the element unmasked
+                canvas.Restore();            // composite the element-content layer unmodified
+                return;
+            }
+        }
         using var luma = SKColorFilter.CreateLumaColor();
         using var maskPaint = new SKPaint { BlendMode = SKBlendMode.DstIn, ColorFilter = luma };
         canvas.SaveLayer(maskPaint);
-        if ((Attr(mask, "maskContentUnits") ?? "userSpaceOnUse").Trim().Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase)
-            && ComputeBBox(el, SvgStyle.Initial, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
-            canvas.Concat(new SKMatrix { ScaleX = b.Width, ScaleY = b.Height, TransX = b.Left, TransY = b.Top, Persp2 = 1 });
+        if (contentMatrix is { } cm) canvas.Concat(cm);
         // Mask content renders in a fresh presentation context (its own attributes over the initial style).
         var maskStyle = ResolveStyle(mask, SvgStyle.Initial, state);
         foreach (var child in mask.Elements()) RenderElement(canvas, child, maskStyle, state, depth + 1);

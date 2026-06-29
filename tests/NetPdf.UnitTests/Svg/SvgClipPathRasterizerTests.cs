@@ -74,6 +74,40 @@ public sealed class SvgClipPathRasterizerTests
     }
 
     [Fact]
+    public void Clip_path_use_applies_its_own_transform()
+    {
+        // PR-241 review [P2] — a <use> inside a <clipPath> must honor its OWN transform (not just x/y).
+        // The 10×10 unit rect, under translate(10,10) scale(2), clips the region (10,10)-(30,30).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<defs><rect id=\"r\" x=\"0\" y=\"0\" width=\"10\" height=\"10\"/></defs>" +
+            "<clipPath id=\"c\"><use href=\"#r\" transform=\"translate(10,10) scale(2)\"/></clipPath>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" clip-path=\"url(#c)\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).R > 200);    // inside the transformed clip rect (10..30)
+        Assert.Equal(0, Px(info!, 5, 5).A);        // top-left, outside the transformed clip
+        Assert.Equal(0, Px(info!, 35, 35).A);      // bottom-right, outside
+    }
+
+    [Fact]
+    public void Object_bounding_box_clip_ignores_hidden_definition_geometry()
+    {
+        // PR-241 review [P2] — a <defs> inside the clipped group must NOT enlarge the objectBoundingBox
+        // reference. The bbox is the visible 20×20 rect, so a 1×0.5 clip reveals only its top half.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<clipPath id=\"c\" clipPathUnits=\"objectBoundingBox\"><rect x=\"0\" y=\"0\" width=\"1\" height=\"0.5\"/></clipPath>" +
+            "<g clip-path=\"url(#c)\">" +
+            "<defs><rect x=\"0\" y=\"0\" width=\"1000\" height=\"1000\"/></defs>" +
+            "<rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" fill=\"red\"/></g></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 10, 5).R > 200);     // top half of the 20×20 visible rect
+        Assert.Equal(0, Px(info!, 10, 15).A);      // bottom half clipped (bbox = 20, not 1000)
+    }
+
+    [Fact]
     public void Clip_path_on_a_group_clips_all_children()
     {
         var info = SvgRasterizer.TryRender(Svg(

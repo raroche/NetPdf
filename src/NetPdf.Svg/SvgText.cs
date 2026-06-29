@@ -18,7 +18,7 @@ namespace NetPdf.Svg;
 /// reordering, and per-glyph positioning lists.</summary>
 internal static class SvgText
 {
-    private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy);
+    private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy, float[]? Rotate);
 
     public static void Draw(SKCanvas canvas, XElement text, SvgStyle style, SvgRenderState state)
     {
@@ -31,7 +31,7 @@ internal static class SvgText
             }
 
         var runs = new List<Run>();
-        CollectRuns(text, style, runs, state, topLevel: true);
+        CollectRuns(text, style, runs, state, topLevel: true, ParseRotate(SvgAttr.Get(text, "rotate")));
         if (runs.Count == 0) return;
 
         var startX = HasLen(text, "x", state, style, LenAxis.X, out var sx) ? sx : 0f;
@@ -70,7 +70,9 @@ internal static class SvgText
                 penX += run.Dx;
                 penY += run.Dy;
                 var width = MeasureRun(font, run.Text, run.Style);
-                DrawSpacedOrWhole(canvas, run.Text, penX, penY, font, run.Style, state);
+                // dominant-baseline shifts the drawn baseline relative to the pen Y (not accumulated).
+                var baseline = penY + DominantBaselineOffset(run.Style.DominantBaseline, font.Metrics);
+                DrawSpacedOrWhole(canvas, run.Text, penX, baseline, font, run.Style, run.Rotate, state);
                 penX += width;
             }
             i = j;
@@ -89,12 +91,14 @@ internal static class SvgText
         return w;
     }
 
-    /// <summary>Draw a run honoring letter-/word-spacing. With no spacing it's a single whole-string draw
-    /// (byte-identical default); otherwise each glyph is drawn at its own pen position, letter-spacing added
-    /// only in the gaps (not after the final glyph) so the run advance matches <see cref="MeasureRun"/>.</summary>
-    private static void DrawSpacedOrWhole(SKCanvas canvas, string text, float x, float baseline, SKFont font, SvgStyle style, SvgRenderState state)
+    /// <summary>Draw a run honoring letter-/word-spacing and the per-glyph <c>rotate</c> list. With no spacing
+    /// AND no rotation it's a single whole-string draw (byte-identical default); otherwise each glyph is drawn
+    /// at its own pen position (letter-spacing added only in the gaps, so the advance matches
+    /// <see cref="MeasureRun"/>) and rotated by <paramref name="rotate"/>[min(i, last)] about its baseline
+    /// origin (SVG §10.5 — the rotate index is run-local this cut).</summary>
+    private static void DrawSpacedOrWhole(SKCanvas canvas, string text, float x, float baseline, SKFont font, SvgStyle style, float[]? rotate, SvgRenderState state)
     {
-        if (style.LetterSpacing == 0 && style.WordSpacing == 0)
+        if (style.LetterSpacing == 0 && style.WordSpacing == 0 && rotate is null)
         {
             DrawRun(canvas, text, x, baseline, font.MeasureText(text), font, style, state);
             return;
@@ -104,9 +108,44 @@ internal static class SvgText
         {
             var glyph = text[i].ToString();
             var gw = font.MeasureText(glyph);
-            DrawRun(canvas, glyph, gx, baseline, gw, font, style, state);
+            if (rotate is { Length: > 0 } && rotate[Math.Min(i, rotate.Length - 1)] is var deg and not 0f)
+            {
+                var save = canvas.Save();
+                canvas.Translate(gx, baseline);
+                canvas.RotateDegrees(deg);
+                DrawRun(canvas, glyph, 0, 0, gw, font, style, state);
+                canvas.RestoreToCount(save);
+            }
+            else
+                DrawRun(canvas, glyph, gx, baseline, gw, font, style, state);
             gx += gw + (i < text.Length - 1 ? style.LetterSpacing : 0) + (text[i] == ' ' ? style.WordSpacing : 0);
         }
+    }
+
+    /// <summary>The vertical baseline shift for a <c>dominant-baseline</c> value, from the font metrics
+    /// (ascent is negative, descent positive). <c>auto</c>/<c>alphabetic</c> = no shift; <c>hanging</c> /
+    /// <c>text-before-edge</c> put the top at the pen Y; <c>text-after-edge</c> the bottom; <c>middle</c> /
+    /// <c>central</c> center the text on the pen Y. Other values fall back to alphabetic.</summary>
+    private static float DominantBaselineOffset(string? value, SKFontMetrics metrics) =>
+        (value?.Trim().ToLowerInvariant()) switch
+        {
+            "hanging" or "text-before-edge" => -metrics.Ascent,
+            "text-after-edge" => -metrics.Descent,
+            "middle" or "central" => -(metrics.Ascent + metrics.Descent) / 2f,
+            _ => 0f, // auto / alphabetic / unknown
+        };
+
+    /// <summary>Parse a <c>rotate</c> attribute (space/comma-separated angles in degrees) into an array, or
+    /// <see langword="null"/> when absent / empty. A single value rotates all glyphs; a list rotates each
+    /// glyph by its entry (the last repeats for the remainder).</summary>
+    private static float[]? ParseRotate(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var toks = raw.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        var list = new List<float>(toks.Length);
+        foreach (var t in toks)
+            if (float.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) list.Add(v);
+        return list.Count > 0 ? list.ToArray() : null;
     }
 
     /// <summary>Lay the text of a <c>&lt;textPath&gt;</c> along its referenced <c>&lt;path&gt;</c> (SVG §10.13):
@@ -117,19 +156,18 @@ internal static class SvgText
     private static void DrawTextPath(SKCanvas canvas, XElement textPath, SvgStyle parentStyle, SvgRenderState state)
     {
         var id = SvgAttr.HrefId(textPath);
-        if (id is null || !state.Ids.TryGetValue(id, out var pathEl)
-            || !pathEl.Name.LocalName.Equals("path", StringComparison.OrdinalIgnoreCase)
-            || pathEl.Attribute("d")?.Value is not { } d || string.IsNullOrWhiteSpace(d))
+        if (id is null || !state.Ids.TryGetValue(id, out var pathEl))
         {
             state.SawUnsupported = true;
             return;
         }
-        using var path = SKPath.ParseSvgPathData(d);
-        if (path is null) { state.SawUnsupported = true; return; }
-        // The referenced path's own transform applies relative to the text coordinate system (SVG 1.1 §10.13).
+        var style = ResolveRunStyle(textPath, parentStyle);
+        // Any basic shape (path / line / rect / circle / ellipse / poly*) can be a textPath geometry.
+        using var path = SvgRasterizer.BuildShapePath(pathEl, style, state);
+        if (path is null || path.IsEmpty) { state.SawUnsupported = true; return; }
+        // The referenced shape's own transform applies relative to the text coordinate system (SVG 1.1 §10.13).
         if (SvgTransform.Parse(pathEl.Attribute("transform")?.Value) is { } pm) path.Transform(pm);
 
-        var style = ResolveRunStyle(textPath, parentStyle);
         var content = Collapse(AllText(textPath));
         if (content.Length == 0) return;
         using var font = BuildFont(style);
@@ -243,7 +281,7 @@ internal static class SvgText
     /// <summary>Flatten the text content into drawable runs: direct text nodes plus one level of
     /// <c>&lt;tspan&gt;</c> (each with its own overrides + dx/dy/x/y). Whitespace is collapsed (the SVG
     /// default).</summary>
-    private static void CollectRuns(XElement el, SvgStyle inherited, List<Run> runs, SvgRenderState state, bool topLevel)
+    private static void CollectRuns(XElement el, SvgStyle inherited, List<Run> runs, SvgRenderState state, bool topLevel, float[]? rotate)
     {
         foreach (var node in el.Nodes())
         {
@@ -251,7 +289,7 @@ internal static class SvgText
             {
                 case XText t:
                     var s = Collapse(t.Value);
-                    if (s.Length > 0) runs.Add(new Run(s, inherited, AbsX: null, AbsY: null, Dx: 0, Dy: 0));
+                    if (s.Length > 0) runs.Add(new Run(s, inherited, AbsX: null, AbsY: null, Dx: 0, Dy: 0, Rotate: rotate));
                     break;
                 case XElement child when child.Name.LocalName.Equals("tspan", StringComparison.OrdinalIgnoreCase):
                     var childStyle = ResolveRunStyle(child, inherited);
@@ -261,9 +299,10 @@ internal static class SvgText
                     var ay = HasLen(child, "y", state, childStyle, LenAxis.Y, out var yv) ? (float?)yv : null;
                     var dx = HasLen(child, "dx", state, childStyle, LenAxis.X, out var dxv) ? dxv : 0f;
                     var dy = HasLen(child, "dy", state, childStyle, LenAxis.Y, out var dyv) ? dyv : 0f;
+                    var childRotate = ParseRotate(SvgAttr.Get(child, "rotate")) ?? rotate; // own rotate else inherited
                     // A tspan can hold its own text + nested tspans; flatten the text, apply the offset to the first run.
                     var before = runs.Count;
-                    CollectRuns(child, childStyle, runs, state, topLevel: false);
+                    CollectRuns(child, childStyle, runs, state, topLevel: false, childRotate);
                     if (runs.Count > before && (ax is not null || ay is not null || dx != 0 || dy != 0))
                         runs[before] = runs[before] with { AbsX = ax, AbsY = ay, Dx = dx, Dy = dy };
                     break;
@@ -322,6 +361,8 @@ internal static class SvgText
         if (lsRaw is not null) s = s with { LetterSpacing = ParseSpacing(lsRaw) };
         var wsRaw = SvgAttr.Presentation(el, "word-spacing");
         if (wsRaw is not null) s = s with { WordSpacing = ParseSpacing(wsRaw) };
+        var dbRaw = SvgAttr.Presentation(el, "dominant-baseline");
+        if (dbRaw is not null) s = s with { DominantBaseline = dbRaw };
         return s;
     }
 

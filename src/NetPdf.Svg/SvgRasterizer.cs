@@ -217,9 +217,10 @@ internal static class SvgRasterizer
 
     /// <summary>Build the geometry <see cref="SKPath"/> for a basic shape element (rect / circle / ellipse /
     /// line / polyline / polygon / path) in the element's user space, or <see langword="null"/> when the
-    /// element isn't a basic shape or is geometrically empty. Shared by the draw walk and the
-    /// <c>clip-path</c> resolver (a <c>&lt;clipPath&gt;</c> unions its children's geometry).</summary>
-    private static SKPath? BuildShapePath(XElement el, SvgStyle style, SvgRenderState state)
+    /// element isn't a basic shape or is geometrically empty. Shared by the draw walk, the <c>clip-path</c>
+    /// resolver (a <c>&lt;clipPath&gt;</c> unions its children's geometry), and <c>&lt;textPath&gt;</c>
+    /// (glyphs along any basic shape).</summary>
+    internal static SKPath? BuildShapePath(XElement el, SvgStyle style, SvgRenderState state)
     {
         switch (el.Name.LocalName.ToLowerInvariant())
         {
@@ -668,9 +669,9 @@ internal static class SvgRasterizer
     /// inheritance is a residual); path tangents use chord directions (curve tangents approximated).</summary>
     private static void DrawMarkers(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var startRef = MarkerRef(el, "marker-start");
-        var midRef = MarkerRef(el, "marker-mid");
-        var endRef = MarkerRef(el, "marker-end");
+        var startRef = style.MarkerStart;
+        var midRef = style.MarkerMid;
+        var endRef = style.MarkerEnd;
         if (startRef is null && midRef is null && endRef is null) return;
         var verts = ExtractVertices(el, style, state);
         if (verts.Count == 0) return;
@@ -688,16 +689,6 @@ internal static class SvgRasterizer
             var orientDeg = i == 0 ? v.OutDeg : i == verts.Count - 1 ? v.InDeg : Bisector(v.InDeg, v.OutDeg);
             DrawOneMarker(canvas, marker, v.P, orientDeg, style.StrokeWidth, isStart: i == 0, state, style);
         }
-    }
-
-    /// <summary>The <c>url(#id)</c> for a marker property — the specific <c>marker-start/-mid/-end</c> wins,
-    /// else the <c>marker</c> shorthand (which sets all three).</summary>
-    private static string? MarkerRef(XElement el, string which)
-    {
-        var raw = SvgAttr.Presentation(el, which) ?? SvgAttr.Presentation(el, "marker");
-        if (raw is null) return null;
-        raw = raw.Trim();
-        return raw.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : PaintServerId(raw);
     }
 
     private static void DrawOneMarker(
@@ -867,6 +858,20 @@ internal static class SvgRasterizer
                 case "feoffset":
                     current = SKImageFilter.CreateOffset((float)Num(prim, "dx"), (float)Num(prim, "dy"), current);
                     break;
+                case "fedropshadow":
+                {
+                    // A self-contained drop shadow: blur + offset + flood, with the source drawn on top.
+                    var (bx, by) = ParseStdDeviation(Attr(prim, "stdDeviation"));
+                    if (bx == 0 && prim.Attribute("stdDeviation") is null) { bx = 2; by = 2; } // default σ=2
+                    var dx = prim.Attribute("dx") is not null ? (float)Num(prim, "dx") : 2f;
+                    var dy = prim.Attribute("dy") is not null ? (float)Num(prim, "dy") : 2f;
+                    var color = SKColors.Black;
+                    if (SvgAttr.Presentation(prim, "flood-color") is { } fc) SvgColor.TryParse(fc, out color);
+                    var floodOpacity = ParseFloodOpacity(SvgAttr.Presentation(prim, "flood-opacity"));
+                    color = color.WithAlpha((byte)Math.Clamp((int)Math.Round(color.Alpha / 255f * floodOpacity * 255f), 0, 255));
+                    current = SKImageFilter.CreateDropShadow(dx, dy, bx, by, color, current);
+                    break;
+                }
                 case "fecolormatrix":
                 {
                     var matrix = BuildColorMatrix(prim);
@@ -884,6 +889,16 @@ internal static class SvgRasterizer
         }
         if (sawUnsupported) state.SawUnsupported = true;
         return current;
+    }
+
+    /// <summary><c>flood-opacity</c> (0..1, or a percentage) — default 1.</summary>
+    private static float ParseFloodOpacity(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return 1f;
+        raw = raw.Trim();
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+            return double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? (float)Math.Clamp(pct / 100.0, 0, 1) : 1f;
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? (float)Math.Clamp(v, 0, 1) : 1f;
     }
 
     /// <summary><c>feGaussianBlur stdDeviation</c> — one value (isotropic) or two (x then y). The SVG std
@@ -1215,10 +1230,27 @@ internal static class SvgRasterizer
         var textAnchor = SvgAttr.Presentation(el, "text-anchor") ?? inherited.TextAnchor;
         var letterSpacing = ParseSpacing(SvgAttr.Presentation(el, "letter-spacing"), inherited.LetterSpacing);
         var wordSpacing = ParseSpacing(SvgAttr.Presentation(el, "word-spacing"), inherited.WordSpacing);
+        // Marker properties inherit (the `marker` shorthand sets all three).
+        var markerStart = ResolveMarkerProp(el, "marker-start", inherited.MarkerStart);
+        var markerMid = ResolveMarkerProp(el, "marker-mid", inherited.MarkerMid);
+        var markerEnd = ResolveMarkerProp(el, "marker-end", inherited.MarkerEnd);
+        var dominantBaseline = SvgAttr.Presentation(el, "dominant-baseline") ?? inherited.DominantBaseline;
 
         return new SvgStyle(fill, fillRef, hasFill, stroke, strokeRef, strokeWidth,
             fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor,
-            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter, letterSpacing, wordSpacing);
+            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter, letterSpacing, wordSpacing,
+            markerStart, markerMid, markerEnd, dominantBaseline);
+    }
+
+    /// <summary>Resolve a marker property (<c>marker-start/-mid/-end</c>) — the specific property wins, else
+    /// the <c>marker</c> shorthand; <c>none</c> → null, <c>url(#id)</c> → the id, absent → inherited.</summary>
+    private static string? ResolveMarkerProp(XElement el, string which, string? inherited)
+    {
+        var raw = SvgAttr.Presentation(el, which) ?? SvgAttr.Presentation(el, "marker");
+        if (raw is null) return inherited;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        return PaintServerId(raw) ?? inherited;
     }
 
     /// <summary>Parse a <c>stroke-dasharray</c> value (comma/space-separated lengths). Returns

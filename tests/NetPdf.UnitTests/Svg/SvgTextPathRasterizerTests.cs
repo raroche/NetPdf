@@ -93,12 +93,28 @@ public sealed class SvgTextPathRasterizerTests
     }
 
     [Fact]
-    public void Textpath_referencing_a_non_path_is_flagged()
+    public void Textpath_along_a_basic_shape_renders()
+    {
+        // SVG part 6 — textPath geometry can be any basic shape (here a horizontal line), not just <path>.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"140\" height=\"50\">" +
+            "<defs><line id=\"l\" x1=\"10\" y1=\"30\" x2=\"130\" y2=\"30\"/></defs>" +
+            "<text font-size=\"20\" fill=\"black\"><textPath href=\"#l\">Hello</textPath></text></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var box = InkBox(info!);
+        Assert.True(box.Count > 30);
+        Assert.True(box.MaxX - box.MinX > box.MaxY - box.MinY);   // runs horizontally along the line
+    }
+
+    [Fact]
+    public void Textpath_referencing_a_non_shape_is_flagged()
     {
         var info = SvgRasterizer.TryRender(Svg(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"40\">" +
-            "<defs><rect id=\"r\" x=\"0\" y=\"0\" width=\"50\" height=\"10\"/></defs>" +
-            "<text><textPath href=\"#r\">Hi</textPath></text></svg>"), out var unsupported);
+            "<defs><g id=\"g\"/></defs>" +
+            "<text><textPath href=\"#g\">Hi</textPath></text></svg>"), out var unsupported);
         Assert.NotNull(info);
         Assert.True(unsupported);
     }

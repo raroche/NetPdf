@@ -30,8 +30,12 @@ internal sealed record CssLinearGradient(
 /// The position is EITHER a <see cref="Position"/> fraction in [0, 1] (from a <c>%</c>) OR a
 /// <see cref="PositionPx"/> length in CSS px (from <c>px</c> + the absolute units — PR 1 refinements);
 /// the painter resolves a length to a fraction against the gradient-line length. Both null =
-/// unpositioned (spread evenly per CSS Images §3.4). At most one is set.</summary>
-internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null);
+/// unpositioned (spread evenly per CSS Images §3.4). At most one is set.
+/// <para>When <see cref="IsHint"/> is true the entry is instead a color-interpolation HINT (CSS Images
+/// §3.4.2: a bare position between two color stops marking where the 50% color falls): it carries only
+/// a position, its <see cref="ColorRaw"/> is empty, and the resolver replaces it with a synthetic
+/// midpoint stop.</para></summary>
+internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null, bool IsHint = false);
 
 /// <summary>Phase 4 gradients — a minimal, allocation-light parser for the
 /// <c>linear-gradient()</c> background-image form. Supports the common authored shapes:
@@ -39,8 +43,9 @@ internal readonly record struct CssGradientStop(string ColorRaw, double? Positio
 /// <c>to &lt;side&gt;</c> / <c>to &lt;corner&gt;</c>) followed by 2+ comma-separated color
 /// stops (each <c>&lt;color&gt; [ &lt;percentage&gt; | &lt;length&gt; ]?</c>). The
 /// <c>repeating-linear-gradient</c> form sets <see cref="CssLinearGradient.Repeating"/> (the painter
-/// tiles the stop period). Color-interpolation hints are still out of this cut and make the whole
-/// value unsupported (the caller falls back to the background-color). Returns
+/// tiles the stop period). Double-position stops (<c>§3.4</c>) + color-interpolation hints
+/// (<c>§3.4.2</c>, a bare position between two color stops — approximated by a synthetic midpoint stop
+/// at resolve time) are supported. Returns
 /// <see langword="null"/> for any value that isn't a single supported (repeating-)<c>linear-gradient()</c>.</summary>
 internal static class CssLinearGradient_Parser
 {
@@ -76,8 +81,11 @@ internal static class CssLinearGradient_Parser
         var stops = new List<CssGradientStop>(args.Count - stopStart);
         for (var i = stopStart; i < args.Count; i++)
         {
-            if (!TryParseStop(args[i], out var stop)) return null; // any unparseable stop → unsupported
-            stops.Add(stop);
+            foreach (var part in ExpandDoublePositionStop(args[i]))   // §3.4 double-position → two stops
+            {
+                if (!TryParseStop(part, out var stop)) return null; // any unparseable stop → unsupported
+                stops.Add(stop);
+            }
         }
         return new CssLinearGradient(angleDeg, corner, stops, repeating);
     }
@@ -161,6 +169,23 @@ internal static class CssLinearGradient_Parser
         var t = arg.Trim();
         if (t.Length == 0) return false;
 
+        // A color-interpolation HINT (CSS Images §3.4.2) — the WHOLE arg is a bare position (no color):
+        // a % or absolute length here, marking where the 50% color falls between the bracketing stops.
+        if (IsPositionToken(t) && !t.Contains(')'))
+        {
+            if (t.EndsWith("%", StringComparison.Ordinal)
+                && double.TryParse(t.AsSpan(0, t.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var hintPct))
+            {
+                stop = new CssGradientStop(string.Empty, Math.Clamp(hintPct / 100.0, 0.0, 1.0), null, IsHint: true);
+                return true;
+            }
+            if (CssLengthParsing.TryLengthPx(t, out var hintPx))
+            {
+                stop = new CssGradientStop(string.Empty, null, hintPx, IsHint: true);
+                return true;
+            }
+        }
+
         // The position, if present, is the LAST whitespace-separated token. A function color
         // (rgb()/hsl()/etc.) contains spaces but no top-level position split is needed: we only
         // peel a trailing token when it's a bare percentage or length (not part of a function tail).
@@ -190,6 +215,45 @@ internal static class CssLinearGradient_Parser
         }
         stop = new CssGradientStop(t, null);
         return true;
+    }
+
+    /// <summary>CSS Images §3.4 — a DOUBLE-POSITION stop (<c>&lt;color&gt; &lt;pos&gt; &lt;pos&gt;</c>)
+    /// is shorthand for two consecutive stops of the same color at each position. Returns the 1 or 2
+    /// stop-arg strings to parse (a single-position or bare-color arg is returned unchanged). A position
+    /// token is a <c>%</c>, an absolute length, or an angle (for conic) — never a function tail. Shared
+    /// by the linear / radial / conic stop builders.</summary>
+    internal static IReadOnlyList<string> ExpandDoublePositionStop(string arg)
+    {
+        var single = new[] { arg };
+        var t = arg.Trim();
+        var lastSpace = t.LastIndexOf(' ');
+        if (lastSpace <= 0) return single;
+        var lastTok = t.Substring(lastSpace + 1);
+        if (lastTok.Contains(')') || !IsPositionToken(lastTok)) return single;
+        var head = t.Substring(0, lastSpace).TrimEnd();
+        var prevSpace = head.LastIndexOf(' ');
+        if (prevSpace <= 0) return single; // only one position — the head is the color
+        var prevTok = head.Substring(prevSpace + 1);
+        if (prevTok.Contains(')') || !IsPositionToken(prevTok)) return single;
+        var color = head.Substring(0, prevSpace).Trim();
+        if (color.Length == 0) return single;
+        return new[] { color + " " + prevTok, color + " " + lastTok };
+    }
+
+    /// <summary>True when <paramref name="token"/> is a gradient-stop POSITION: a <c>%</c>, an absolute
+    /// length (px/pt/…), or an angle (deg/grad/rad/turn — conic). Not a bare number / color.</summary>
+    private static bool IsPositionToken(string token)
+    {
+        var t = token.Trim();
+        if (t.Length == 0) return false;
+        if (t.EndsWith("%", StringComparison.Ordinal))
+            return double.TryParse(t.AsSpan(0, t.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+        if (CssLengthParsing.TryLengthPx(t, out _)) return true;
+        foreach (var unit in new[] { "deg", "grad", "rad", "turn" })
+            if (t.EndsWith(unit, StringComparison.OrdinalIgnoreCase)
+                && double.TryParse(t.AsSpan(0, t.Length - unit.Length), NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                return true;
+        return false;
     }
 
     private static bool EndsWithLengthUnit(string token)

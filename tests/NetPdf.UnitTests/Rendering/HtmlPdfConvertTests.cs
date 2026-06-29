@@ -97,6 +97,43 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_inserts_a_midpoint_stop_for_a_color_interpolation_hint()
+    {
+        // CSS Images §3.4.2 — `red, 50%, blue` puts the 50% color (a red/blue blend, 127,0,127 →
+        // ~0.498 DeviceRGB) at the hint position. The hint is approximated by a synthetic midpoint
+        // stop, so the shading function carries that blended color + renders (not unsupported).
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(to right, red, 50%, blue)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+        var text = Latin1(result.Pdf);
+        Assert.Contains("/ShadingType 2", text);
+        Assert.Contains("0.498", text);             // the synthetic midpoint blend (127/255)
+        Assert.DoesNotContain(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Convert_renders_a_double_position_stop_gradient_recovered_from_anglesharp()
+    {
+        // AngleSharp.Css drops a gradient with a double-position stop; the preprocessor recovers the
+        // raw value so the painter renders it (§3.4 → two stops of the same color → a hard band).
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(to right, red 0% 50%, blue 50% 100%)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains("/ShadingType 2", Latin1(result.Pdf));
+        Assert.DoesNotContain(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
     public void Convert_handles_terminal_hard_stop_gradients_without_malformed_bounds()
     {
         // Phase 4 gradients (PR #209 review [P1]) — repeated TERMINAL stops at 100% used to

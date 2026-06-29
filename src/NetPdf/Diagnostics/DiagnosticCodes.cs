@@ -139,6 +139,16 @@ internal static class DiagnosticCodes
     public const string CssConicGradientUnsupported001 = "CSS-CONIC-GRADIENT-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — a TRANSLUCENT <c>linear-gradient</c> / <c>radial-gradient</c> (a stop with alpha
+    /// &lt; 1) could NOT be rasterized because the alpha bitmap would exceed the 4096 px (or 4 Mpx
+    /// total) cap. A native PDF axial / radial shading is DeviceRGB (no alpha), so rather than DROP
+    /// the transparency by painting an opaque approximation, the gradient is SKIPPED (the
+    /// background-color shows). Opaque linear / radial gradients always stay native shadings and are
+    /// never affected. Once per render. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssGradientAlphaUnsupported001 = "CSS-GRADIENT-ALPHA-UNSUPPORTED-001";
+
+    /// <summary>
     /// Phase 4 — a CSS <c>filter</c> on an image was applied via the Skia raster fallback (the
     /// decoded image is run through the filter chain — color matrices for grayscale / sepia / invert
     /// / brightness / contrast / saturate / hue-rotate / opacity, plus blur / drop-shadow — and

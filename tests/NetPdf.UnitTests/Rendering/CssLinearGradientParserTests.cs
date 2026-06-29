@@ -150,4 +150,65 @@ public sealed class CssLinearGradientParserTests
     {
         Assert.Null(CssLinearGradient_Parser.TryParse(value));
     }
+
+    [Fact]
+    public void Double_position_stop_expands_to_two_stops_same_color()
+    {
+        // CSS Images §3.4 — `red 0% 50%` is shorthand for `red 0%, red 50%`.
+        var g = CssLinearGradient_Parser.TryParse("linear-gradient(red 0% 50%, blue 50% 100%)");
+        Assert.NotNull(g);
+        Assert.Equal(4, g!.Stops.Count);
+        Assert.Equal("red", g.Stops[0].ColorRaw);
+        Assert.Equal(0.0, g.Stops[0].Position!.Value, precision: 4);
+        Assert.Equal("red", g.Stops[1].ColorRaw);
+        Assert.Equal(0.5, g.Stops[1].Position!.Value, precision: 4);
+        Assert.Equal("blue", g.Stops[2].ColorRaw);
+        Assert.Equal(0.5, g.Stops[2].Position!.Value, precision: 4);
+        Assert.Equal("blue", g.Stops[3].ColorRaw);
+        Assert.Equal(1.0, g.Stops[3].Position!.Value, precision: 4);
+    }
+
+    [Fact]
+    public void A_single_position_stop_is_unchanged()
+    {
+        var g = CssLinearGradient_Parser.TryParse("linear-gradient(red 25%, blue)");
+        Assert.NotNull(g);
+        Assert.Equal(2, g!.Stops.Count);
+        Assert.Equal(0.25, g.Stops[0].Position!.Value, precision: 4);
+    }
+
+    [Fact]
+    public void A_color_interpolation_hint_parses_as_a_hint_stop()
+    {
+        // CSS Images §3.4.2 — a bare position between two color stops is a hint (no longer rejected).
+        var g = CssLinearGradient_Parser.TryParse("linear-gradient(red, 30%, blue)");
+        Assert.NotNull(g);
+        Assert.Equal(3, g!.Stops.Count);
+        Assert.False(g.Stops[0].IsHint);
+        Assert.True(g.Stops[1].IsHint);                    // the hint
+        Assert.Equal(0.30, g.Stops[1].Position!.Value, precision: 4);
+        Assert.Equal(string.Empty, g.Stops[1].ColorRaw);
+        Assert.False(g.Stops[2].IsHint);
+    }
+
+    [Fact]
+    public void A_length_hint_carries_a_px_position()
+    {
+        var g = CssLinearGradient_Parser.TryParse("linear-gradient(red, 40px, blue)");
+        Assert.NotNull(g);
+        Assert.True(g!.Stops[1].IsHint);
+        Assert.Equal(40.0, g.Stops[1].PositionPx!.Value, precision: 4);
+    }
+
+    [Fact]
+    public void Double_position_stop_supports_lengths_and_a_function_color()
+    {
+        var g = CssLinearGradient_Parser.TryParse("linear-gradient(rgb(1,2,3) 10px 20px, blue)");
+        Assert.NotNull(g);
+        Assert.Equal(3, g!.Stops.Count);
+        Assert.Equal("rgb(1,2,3)", g.Stops[0].ColorRaw);
+        Assert.Equal(10.0, g.Stops[0].PositionPx!.Value, precision: 4);
+        Assert.Equal("rgb(1,2,3)", g.Stops[1].ColorRaw);
+        Assert.Equal(20.0, g.Stops[1].PositionPx!.Value, precision: 4);
+    }
 }

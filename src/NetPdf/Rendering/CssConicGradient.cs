@@ -68,8 +68,11 @@ internal static class CssConicGradient_Parser
         var stops = new List<CssGradientStop>(args.Count - stopStart);
         for (var i = stopStart; i < args.Count; i++)
         {
-            if (!TryParseConicStop(args[i], out var stop)) return null;
-            stops.Add(stop);
+            foreach (var part in CssLinearGradient_Parser.ExpandDoublePositionStop(args[i]))   // §3.4 double-position
+            {
+                if (!TryParseConicStop(part, out var stop)) return null;
+                stops.Add(stop);
+            }
         }
         return new CssConicGradient(fromAngleDeg, cx, cy, repeating, stops);
     }
@@ -118,6 +121,23 @@ internal static class CssConicGradient_Parser
         stop = default;
         var t = arg.Trim();
         if (t.Length == 0) return false;
+
+        // A color-interpolation HINT (CSS Images §3.4.2) — the WHOLE arg is a bare angular position
+        // (a % or an angle, no color), marking where the 50% color falls between the bracketing stops.
+        if (!t.Contains(')'))
+        {
+            if (t.EndsWith("%", StringComparison.Ordinal)
+                && double.TryParse(t.AsSpan(0, t.Length - 1), NumberStyles.Float, CultureInfo.InvariantCulture, out var hintPct))
+            {
+                stop = new CssGradientStop(string.Empty, hintPct / 100.0, null, IsHint: true);
+                return true;
+            }
+            if (TryAngleDeg(t, out var hintDeg))
+            {
+                stop = new CssGradientStop(string.Empty, hintDeg / 360.0, null, IsHint: true);
+                return true;
+            }
+        }
 
         var lastSpace = t.LastIndexOf(' ');
         if (lastSpace > 0)

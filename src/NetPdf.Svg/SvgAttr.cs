@@ -42,4 +42,9 @@ internal static class SvgAttr
         raw = raw.Trim();
         return raw.StartsWith('#') && raw.Length > 1 ? raw[1..] : null;
     }
+
+    /// <summary>The RAW (trimmed) <c>href</c> / <c>xlink:href</c> value (e.g. a <c>data:</c> URI for
+    /// <c>&lt;image&gt;</c>), or <see langword="null"/> when absent.</summary>
+    public static string? HrefRaw(XElement el) =>
+        (el.Attribute("href")?.Value ?? el.Attribute(Xlink + "href")?.Value)?.Trim();
 }

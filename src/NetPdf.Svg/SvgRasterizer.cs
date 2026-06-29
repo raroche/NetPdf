@@ -155,6 +155,7 @@ internal static class SvgRasterizer
             case "polygon": DrawPoly(canvas, el, style, state, close: true); break;
             case "path": DrawPath(canvas, el, style, state); break;
             case "text": SvgText.Draw(canvas, el, style, state); break;
+            case "image": DrawImage(canvas, el, state); break;
             case "use": DrawUse(canvas, el, style, state, depth); break;
             // Definitions / metadata — not rendered in place, NOT flagged by mere presence (a definition is
             // only "unsupported" when REFERENCED, which the url(#…) resolution flags). A <symbol> renders only
@@ -228,6 +229,61 @@ internal static class SvgRasterizer
         using var path = SKPath.ParseSvgPathData(d);
         if (path is null) return; // malformed path data → skip
         FillAndStroke(canvas, path, style, state);
+    }
+
+    /// <summary>Draw an <c>&lt;image&gt;</c> from a SELF-CONTAINED <c>data:</c> URI (no external fetch —
+    /// the renderer never follows network hrefs). The raster is decoded via Skia and drawn into the
+    /// element's <c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> rect, preserving aspect ratio
+    /// (<c>xMidYMid meet</c> — the default; an explicit <c>preserveAspectRatio="none"</c> stretches to
+    /// fill). A non-<c>data:</c> href, a missing/zero rect, or undecodable bytes → unsupported flag.</summary>
+    private static void DrawImage(SKCanvas canvas, XElement el, SvgRenderState state)
+    {
+        var w = Num(el, "width");
+        var h = Num(el, "height");
+        var href = SvgAttr.HrefRaw(el);
+        if (!(w > 0) || !(h > 0) || href is null
+            || !href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+            || DecodeDataUriImage(href) is not { } image)
+        {
+            state.SawUnsupported = true; // external href / malformed / undecodable → not rendered
+            return;
+        }
+        using (image)
+        {
+            var x = (float)Num(el, "x");
+            var y = (float)Num(el, "y");
+            var dest = new SKRect(x, y, x + (float)w, y + (float)h);
+            var stretch = string.Equals(Attr(el, "preserveAspectRatio")?.Trim(), "none", StringComparison.OrdinalIgnoreCase);
+            if (stretch || image.Width <= 0 || image.Height <= 0)
+            {
+                canvas.DrawImage(image, dest);
+                return;
+            }
+            // xMidYMid meet — scale to fit, centered.
+            var scale = Math.Min((float)w / image.Width, (float)h / image.Height);
+            var dw = image.Width * scale;
+            var dh = image.Height * scale;
+            var fitted = new SKRect(
+                x + ((float)w - dw) / 2f, y + ((float)h - dh) / 2f,
+                x + ((float)w + dw) / 2f, y + ((float)h + dh) / 2f);
+            canvas.DrawImage(image, fitted);
+        }
+    }
+
+    /// <summary>Decode a <c>data:[mime][;base64],payload</c> image URI to an <see cref="SKImage"/>, or
+    /// <see langword="null"/> if it isn't base64 / doesn't decode. Self-contained — no I/O.</summary>
+    private static SKImage? DecodeDataUriImage(string dataUri)
+    {
+        var comma = dataUri.IndexOf(',');
+        if (comma < 0) return null;
+        var meta = dataUri.AsSpan(5, comma - 5);
+        if (!meta.Contains("base64", StringComparison.OrdinalIgnoreCase)) return null; // only base64 payloads
+        byte[] bytes;
+        try { bytes = Convert.FromBase64String(dataUri[(comma + 1)..].Trim()); }
+        catch (FormatException) { return null; }
+        if (bytes.Length == 0) return null;
+        using var data = SKData.CreateCopy(bytes);
+        return SKImage.FromEncodedData(data);
     }
 
     /// <summary>Clone a referenced element / symbol at the <c>&lt;use&gt;</c> position (SVG §5.6). A

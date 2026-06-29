@@ -1,8 +1,10 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Text;
 using NetPdf.Svg;
+using NetPdf.UnitTests.Pdf.Images;
 using Xunit;
 
 namespace NetPdf.UnitTests.Svg;
@@ -154,6 +156,49 @@ public sealed class SvgRasterizerTests
             out _);
         Assert.NotNull(info);
         Assert.Equal(0, ScanLineAlpha(info!, 10).Gaps);
+    }
+
+    // ---- SVG part 3 task 2: <image> (data: URI) ----
+
+    private static string PngDataUri(int w, int h) =>
+        "data:image/png;base64," + Convert.ToBase64String(SyntheticRasterImage.BuildOpaquePng(w, h));
+
+    [Fact]
+    public void Image_with_a_data_uri_renders()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" preserveAspectRatio=\"none\" href=\"{PngDataUri(16, 16)}\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);                       // a data: image is now supported
+        Assert.True(info!.PixelBytes[(20 * info.Width + 20) * 4 + 3] > 200); // the image painted (opaque)
+    }
+
+    [Fact]
+    public void Image_preserves_aspect_ratio_by_default_letterboxing()
+    {
+        // A 16×16 image into a 40×20 box (meet) fits to height 20, width 20, centered at x∈[10,30) →
+        // the left/right strips stay transparent (letterbox), the center is painted.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"20\">" +
+            $"<image x=\"0\" y=\"0\" width=\"40\" height=\"20\" href=\"{PngDataUri(16, 16)}\"/></svg>"),
+            out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, info!.PixelBytes[(10 * info.Width + 2) * 4 + 3]);   // left letterbox: transparent
+        Assert.True(info.PixelBytes[(10 * info.Width + 20) * 4 + 3] > 200); // center: painted
+    }
+
+    [Fact]
+    public void Image_with_an_external_href_is_unsupported()
+    {
+        // The renderer never fetches — an http/relative href is not rendered (flagged).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
+            "<image x=\"0\" y=\"0\" width=\"20\" height=\"20\" href=\"https://example.com/x.png\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.True(unsupported);
     }
 
     [Fact]

@@ -767,6 +767,80 @@ internal static class FragmentPainter
             System.Globalization.CultureInfo.InvariantCulture, out var v) && v == 0.0;
     }
 
+    internal const int MaxGradientTiles = 256; // safety cap on the gradient tile loop (each tile re-paints the shading)
+
+    /// <summary>Phase 4 gradients — a single-layer / layer gradient's resolved tile grid for
+    /// <c>background-size</c>/<c>-position</c>/<c>-repeat</c>: the tile size (px) + each axis's first
+    /// tile offset (positioning-area-relative), tile count, and origin step (tile size, or tile + gap
+    /// for <c>space</c>). The shading is painted once per tile (clipped to it).</summary>
+    internal readonly record struct GradientTileGrid(
+        double TileWidthPx, double TileHeightPx,
+        double FirstXPx, long CountX, double StepXPx,
+        double FirstYPx, long CountY, double StepYPx);
+
+    /// <summary>Resolve a gradient's <c>background-size</c> to a concrete tile size. A gradient has NO
+    /// intrinsic size or ratio (CSS Images §4.3), so <c>auto</c>/<c>contain</c>/<c>cover</c> all = the
+    /// positioning area; an explicit <c>&lt;length|%&gt;</c> sets that axis and an <c>auto</c>/missing
+    /// axis takes the area dimension (NO ratio completion — unlike an image). Returns
+    /// <see langword="false"/> for a non-absolute unit / junk (the caller diagnoses + uses the area).</summary>
+    internal static bool TryResolveGradientTileSize(
+        string? raw, double areaW, double areaH, out double tileW, out double tileH)
+    {
+        tileW = areaW;
+        tileH = areaH;
+        if (string.IsNullOrWhiteSpace(raw)) return true;
+        var v = raw.Trim().ToLowerInvariant();
+        if (v is "auto" or "auto auto" or "contain" or "cover") return true; // no intrinsic size → the area
+        var parts = v.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 2) return false;
+        if (!TryParseSizeComponent(parts[0], areaW, out var wAuto, out var w)) return false;
+        var hAuto = true;
+        var h = 0.0;
+        if (parts.Length == 2 && !TryParseSizeComponent(parts[1], areaH, out hAuto, out h)) return false;
+        tileW = wAuto ? areaW : w;   // an auto axis = the area dimension (no aspect completion)
+        tileH = hAuto ? areaH : h;
+        return true;
+    }
+
+    /// <summary>Resolve a gradient's tile grid (<c>background-size</c>/<c>-position</c>/<c>-repeat</c>)
+    /// over the positioning AREA (<paramref name="areaW"/> × <paramref name="areaH"/>, the background-
+    /// origin box) covering the CLIP window (area-relative <c>[clipLeft, clipRight] × [clipTop,
+    /// clipBottom]</c>, the background-clip box). Mirrors the <c>url()</c> image tiler: <c>round</c>
+    /// rescales the tile so a whole number fills the axis BEFORE the position resolves, then
+    /// <see cref="AxisTilingPlan"/> gives each axis's first/count/step. <paramref name="unsupportedValue"/>
+    /// is set when a longhand value is outside the supported set (the caller diagnoses + uses the
+    /// initial for that longhand).</summary>
+    internal static GradientTileGrid ResolveGradientTileGrid(
+        ImageResourceCache.GradientBgGeometry geom, double areaW, double areaH,
+        double clipLeftPx, double clipRightPx, double clipTopPx, double clipBottomPx,
+        out bool unsupportedValue)
+    {
+        unsupportedValue = false;
+        if (!TryParseBackgroundRepeat(geom.RepeatRaw, out var modeX, out var modeY))
+        {
+            unsupportedValue = true;
+            modeX = modeY = BackgroundRepeatMode.Repeat;
+        }
+        if (!TryResolveGradientTileSize(geom.SizeRaw, areaW, areaH, out var tileW, out var tileH))
+        {
+            unsupportedValue = true;
+            tileW = areaW;
+            tileH = areaH;
+        }
+        if (modeX == BackgroundRepeatMode.Round && tileW > 0)
+            tileW = areaW / Math.Max(1, Math.Round(areaW / tileW));
+        if (modeY == BackgroundRepeatMode.Round && tileH > 0)
+            tileH = areaH / Math.Max(1, Math.Round(areaH / tileH));
+        if (!TryParseBackgroundPosition(geom.PositionRaw, areaW, areaH, tileW, tileH, out var posX, out var posY))
+        {
+            unsupportedValue = true;
+            posX = posY = 0;
+        }
+        var (firstX, nx, stepX) = AxisTilingPlan(modeX, areaW, tileW, posX, clipLeftPx, clipRightPx);
+        var (firstY, ny, stepY) = AxisTilingPlan(modeY, areaH, tileH, posY, clipTopPx, clipBottomPx);
+        return new GradientTileGrid(tileW, tileH, firstX, nx, stepX, firstY, ny, stepY);
+    }
+
     /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box (bg-image +
     /// bg-variants cycles): the tile size comes from <paramref name="sizeRaw"/>
     /// (<c>auto</c> = intrinsic px — the initial; <c>contain</c> / <c>cover</c>;

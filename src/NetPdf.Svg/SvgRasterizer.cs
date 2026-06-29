@@ -144,10 +144,18 @@ internal static class SvgRasterizer
         var restore = canvas.Save();
         if (transform is { } m) canvas.Concat(in m);
         // clip-path="url(#id)" intersects the element (and its subtree) with the union of the referenced
-        // <clipPath>'s child geometry (§14.3). Applied in the element's local space, before the opacity
-        // layer so the group is clipped.
+        // <clipPath>'s child geometry (§14.3). Applied in the element's local space, before the opacity /
+        // mask layers so the group is clipped.
         ApplyClipPath(canvas, el, style, state);
-        if (opacity < 1f)
+
+        // mask="url(#id)" composites the element's subtree against the LUMINANCE of a <mask>'s content
+        // (§14.4). Open an element-content layer; after the content + opacity are drawn, the mask's luminance
+        // is multiplied into its alpha (DstIn).
+        var mask = ResolveMask(el, state);
+        var maskLayer = mask is not null;
+        if (maskLayer) canvas.SaveLayer(null);
+        var opacityLayer = opacity < 1f;
+        if (opacityLayer)
         {
             using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha((byte)Math.Round(opacity * 255f)) };
             canvas.SaveLayer(layerPaint);
@@ -182,6 +190,8 @@ internal static class SvgRasterizer
             // diagnostic per image (PR-230 [P2]).
             default: state.SawUnsupported = true; break;
         }
+        if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
+        if (mask is not null) ApplyMask(canvas, mask, el, state, depth); // multiply the mask luminance in
         canvas.RestoreToCount(restore);
     }
 
@@ -559,6 +569,45 @@ internal static class SvgRasterizer
         var r = a.Value;
         r.Union(b.Value);
         return r;
+    }
+
+    // ---- mask ----
+
+    /// <summary>Resolve a <c>mask="url(#id)"</c> reference to its <c>&lt;mask&gt;</c> element (SVG §14.4), or
+    /// <see langword="null"/> for <c>none</c> / an absent value. A url() that doesn't resolve to a
+    /// <c>&lt;mask&gt;</c> is flagged unsupported (and the element renders unmasked).</summary>
+    private static XElement? ResolveMask(XElement el, SvgRenderState state)
+    {
+        var raw = SvgAttr.Presentation(el, "mask");
+        if (raw is null) return null;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (PaintServerId(raw) is { } id && state.Ids.TryGetValue(id, out var m)
+            && m.Name.LocalName.Equals("mask", StringComparison.OrdinalIgnoreCase))
+            return m;
+        state.SawUnsupported = true;
+        return null;
+    }
+
+    /// <summary>Multiply the element-content layer's alpha by the LUMINANCE of the <c>&lt;mask&gt;</c>'s
+    /// rendered content (SVG §14.4 default <c>mask-type: luminance</c>): render the mask content into a layer
+    /// whose composite applies a luminance→alpha color filter and the <c>DstIn</c> blend, then composite the
+    /// element layer. <c>maskContentUnits="objectBoundingBox"</c> maps the mask content's unit coordinates
+    /// onto the masked element's bounding box. Closes BOTH the mask layer and the element-content layer the
+    /// caller opened.</summary>
+    private static void ApplyMask(SKCanvas canvas, XElement mask, XElement el, SvgRenderState state, int depth)
+    {
+        using var luma = SKColorFilter.CreateLumaColor();
+        using var maskPaint = new SKPaint { BlendMode = SKBlendMode.DstIn, ColorFilter = luma };
+        canvas.SaveLayer(maskPaint);
+        if ((Attr(mask, "maskContentUnits") ?? "userSpaceOnUse").Trim().Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase)
+            && ComputeBBox(el, SvgStyle.Initial, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
+            canvas.Concat(new SKMatrix { ScaleX = b.Width, ScaleY = b.Height, TransX = b.Left, TransY = b.Top, Persp2 = 1 });
+        // Mask content renders in a fresh presentation context (its own attributes over the initial style).
+        var maskStyle = ResolveStyle(mask, SvgStyle.Initial, state);
+        foreach (var child in mask.Elements()) RenderElement(canvas, child, maskStyle, state, depth + 1);
+        canvas.Restore(); // composite the mask (luma → DstIn) into the element layer
+        canvas.Restore(); // composite the element-content layer onto the canvas
     }
 
     // ---- fill / stroke ----

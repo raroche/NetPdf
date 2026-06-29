@@ -329,6 +329,27 @@ public sealed class SingleLayerGradientGeometryTests
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
     }
 
+    [Theory]
+    [InlineData("background-size:0;")]                          // PR #239 [P1] — zero width
+    [InlineData("background-size:10px 0;")]                     // zero height
+    [InlineData("background-size:0%;")]                         // zero percentage
+    [InlineData("background-size:0;background-repeat:round;")]  // round must not divide by the zero tile
+    public void Zero_sized_tile_paints_nothing_without_a_warning(string style)
+    {
+        // A valid zero-sized gradient tile paints NOTHING (CSS B&B — like the url() path), NOT a full
+        // single gradient, and is not an "unsupported" value.
+        var result = HtmlPdf.ConvertDetailed(Html(style));
+        Assert.Equal(0, Count(Latin1(result.Pdf), "/ShadingType 2"));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Round_repeat_with_auto_size_still_renders()
+    {
+        // round with the default (auto) size = the area → 1 tile (no division by a zero tile).
+        Assert.Equal(1, Count(Latin1(HtmlPdf.Convert(Html("background-repeat:round;"))), "/ShadingType 2"));
+    }
+
     [Fact]
     public void Position_phases_the_tile_grid_adding_partial_edge_tiles()
     {

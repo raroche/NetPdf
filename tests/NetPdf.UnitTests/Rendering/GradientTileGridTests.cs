@@ -124,4 +124,20 @@ public sealed class GradientTileGridTests
         FragmentPainter.ResolveGradientTileGrid(Geom(size: "3em 2em"), 100, 60, 0, 100, 0, 60, out var bad);
         Assert.True(bad);
     }
+
+    [Theory]
+    [InlineData("0", 0.0, 60.0)]      // zero width, height = area (single value → auto)
+    [InlineData("10px 0", 10.0, 0.0)] // zero height
+    [InlineData("0%", 0.0, 60.0)]     // zero percentage
+    public void Zero_size_yields_a_no_tile_grid_without_dividing_by_zero(string size, double w, double h)
+    {
+        // A valid zero-sized tile → count 0 on both axes (no AxisTilingPlan, no NaN/Infinity), NOT flagged
+        // unsupported (the value parsed fine — it just paints nothing).
+        var g = FragmentPainter.ResolveGradientTileGrid(Geom(size: size, repeat: "round"), 100, 60, 0, 100, 0, 60, out var bad);
+        Assert.False(bad);
+        Assert.Equal(w, g.TileWidthPx, 6);
+        Assert.Equal(h, g.TileHeightPx, 6);
+        Assert.Equal(0, g.CountX);
+        Assert.Equal(0, g.CountY);
+    }
 }

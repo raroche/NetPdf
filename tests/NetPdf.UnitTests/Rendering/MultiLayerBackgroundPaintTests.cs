@@ -198,6 +198,18 @@ public sealed class MultiLayerBackgroundPaintTests
     }
 
     [Fact]
+    public void Gradient_layer_zero_size_paints_nothing_without_a_warning()
+    {
+        // PR #239 [P1] — a zero-sized LAYER tile paints nothing (not a full gradient), no diagnostic; the
+        // other (auto) layer still paints.
+        var r = HtmlPdf.ConvertDetailed(Html(
+            "linear-gradient(red,blue), radial-gradient(lime,yellow)", "background-size:0,auto"));
+        Assert.Equal(0, Count(Latin1(r.Pdf), "/ShadingType 2"));  // zero-size linear layer painted nothing
+        Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 3"));  // the auto radial layer still paints
+        Assert.DoesNotContain(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
     public void Default_variants_on_gradient_layers_emit_no_deferral_diagnostic()
     {
         // Initial size/position/repeat (auto / 0% 0% / repeat) are no-ops for a gradient layer.

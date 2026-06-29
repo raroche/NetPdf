@@ -136,9 +136,18 @@ internal static class SvgRasterizer
         if (depth > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
 
         var style = ResolveStyle(el, inherited, state);
+        // Group `opacity` (NOT inherited; default 1) composites the element's WHOLE subtree at once — a
+        // transparency layer (SaveLayer), distinct from fill-/stroke-opacity. 0 → nothing renders.
+        var opacity = ReadOpacity(el, "opacity", 1f);
+        if (opacity <= 0f) return;
         var transform = SvgTransform.Parse(Attr(el, "transform"));
         var restore = canvas.Save();
         if (transform is { } m) canvas.Concat(in m);
+        if (opacity < 1f)
+        {
+            using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha((byte)Math.Round(opacity * 255f)) };
+            canvas.SaveLayer(layerPaint);
+        }
 
         switch (el.Name.LocalName.ToLowerInvariant())
         {

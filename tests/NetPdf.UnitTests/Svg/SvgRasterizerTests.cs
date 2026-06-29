@@ -227,6 +227,45 @@ public sealed class SvgRasterizerTests
         Assert.Equal(0, info.PixelBytes[(20 * info.Width + 35) * 4 + 3]);    // past 30px → transparent
     }
 
+    // ---- SVG part 3 task 4: element / group opacity ----
+
+    [Fact]
+    public void Element_opacity_makes_the_fill_semi_transparent()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" opacity=\"0.5\"/></svg>"), out _);
+        Assert.NotNull(info);
+        var a = info!.PixelBytes[(20 * info.Width + 20) * 4 + 3];
+        Assert.InRange(a, 110, 145); // ~50% alpha
+    }
+
+    [Fact]
+    public void Opacity_zero_renders_nothing()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" opacity=\"0\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, info!.PixelBytes[(20 * info.Width + 20) * 4 + 3]);
+    }
+
+    [Fact]
+    public void Group_opacity_composites_the_subtree_once_not_per_element()
+    {
+        // Two opaque overlapping rects inside a group at 0.5: the OVERLAP is ~50% (the group composites as
+        // one layer), NOT ~75% (which per-element opacity would give). Proves the SaveLayer group.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<g opacity=\"0.5\">" +
+            "<rect x=\"0\" y=\"0\" width=\"30\" height=\"30\" fill=\"red\"/>" +
+            "<rect x=\"10\" y=\"10\" width=\"30\" height=\"30\" fill=\"red\"/>" +
+            "</g></svg>"), out _);
+        Assert.NotNull(info);
+        var a = info!.PixelBytes[(20 * info.Width + 20) * 4 + 3]; // (20,20) is in BOTH rects
+        Assert.InRange(a, 110, 145); // ~50%, not ~75% (≈191)
+    }
+
     [Fact]
     public void Title_desc_metadata_are_not_flagged()
     {

@@ -301,18 +301,21 @@ internal static class SvgRasterizer
     {
         using var path = BuildShapePath(el, style, state);
         if (path is not null) StrokeOnly(canvas, path, style, state);
+        DrawMarkers(canvas, el, style, state);
     }
 
     private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         using var path = BuildShapePath(el, style, state);
         if (path is not null) FillAndStroke(canvas, path, style, state);
+        DrawMarkers(canvas, el, style, state);
     }
 
     private static void DrawPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         using var path = BuildShapePath(el, style, state);
         if (path is not null) FillAndStroke(canvas, path, style, state);
+        DrawMarkers(canvas, el, style, state);
     }
 
     /// <summary>Draw an <c>&lt;image&gt;</c> from a SELF-CONTAINED <c>data:</c> URI (no external fetch —
@@ -651,6 +654,164 @@ internal static class SvgRasterizer
         canvas.Restore(); // composite the mask (luma → DstIn) into the element layer
         canvas.Restore(); // composite the element-content layer onto the canvas
     }
+
+    // ---- markers ----
+
+    private readonly record struct MarkerVertex(SKPoint P, double InDeg, double OutDeg);
+
+    /// <summary>Paint <c>marker-start</c> / <c>marker-mid</c> / <c>marker-end</c> (and the <c>marker</c>
+    /// shorthand) at a shape's vertices (SVG §11.6): start at the first vertex (oriented along the outgoing
+    /// segment), end at the last (incoming), mid at the interior vertices (bisector). Honors
+    /// <c>markerWidth</c>/<c>Height</c>, <c>refX</c>/<c>refY</c>, <c>markerUnits</c> (strokeWidth default /
+    /// userSpaceOnUse), <c>orient</c> (auto / auto-start-reverse / angle), and the marker's
+    /// <c>viewBox</c>/<c>preserveAspectRatio</c>. Marker refs are read off the element itself (group
+    /// inheritance is a residual); path tangents use chord directions (curve tangents approximated).</summary>
+    private static void DrawMarkers(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var startRef = MarkerRef(el, "marker-start");
+        var midRef = MarkerRef(el, "marker-mid");
+        var endRef = MarkerRef(el, "marker-end");
+        if (startRef is null && midRef is null && endRef is null) return;
+        var verts = ExtractVertices(el, style, state);
+        if (verts.Count == 0) return;
+
+        for (var i = 0; i < verts.Count; i++)
+        {
+            var refId = i == 0 ? startRef : i == verts.Count - 1 ? endRef : midRef;
+            if (refId is null || !state.Ids.TryGetValue(refId, out var marker)
+                || !marker.Name.LocalName.Equals("marker", StringComparison.OrdinalIgnoreCase))
+            {
+                if (refId is not null) state.SawUnsupported = true;
+                continue;
+            }
+            var v = verts[i];
+            var orientDeg = i == 0 ? v.OutDeg : i == verts.Count - 1 ? v.InDeg : Bisector(v.InDeg, v.OutDeg);
+            DrawOneMarker(canvas, marker, v.P, orientDeg, style.StrokeWidth, isStart: i == 0, state, style);
+        }
+    }
+
+    /// <summary>The <c>url(#id)</c> for a marker property — the specific <c>marker-start/-mid/-end</c> wins,
+    /// else the <c>marker</c> shorthand (which sets all three).</summary>
+    private static string? MarkerRef(XElement el, string which)
+    {
+        var raw = SvgAttr.Presentation(el, which) ?? SvgAttr.Presentation(el, "marker");
+        if (raw is null) return null;
+        raw = raw.Trim();
+        return raw.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : PaintServerId(raw);
+    }
+
+    private static void DrawOneMarker(
+        SKCanvas canvas, XElement marker, SKPoint at, double orientDeg, float strokeWidth, bool isStart,
+        SvgRenderState state, SvgStyle inherited)
+    {
+        var mw = Attr(marker, "markerWidth") is { } mws && double.TryParse(mws, NumberStyles.Float, CultureInfo.InvariantCulture, out var mwv) ? mwv : 3;
+        var mh = Attr(marker, "markerHeight") is { } mhs && double.TryParse(mhs, NumberStyles.Float, CultureInfo.InvariantCulture, out var mhv) ? mhv : 3;
+        if (!(mw > 0) || !(mh > 0)) return;
+        var refX = Num(marker, "refX");
+        var refY = Num(marker, "refY");
+        var unitsStroke = !(Attr(marker, "markerUnits") ?? "strokeWidth").Trim().Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+
+        // orient: auto follows the path; auto-start-reverse reverses the START marker; a number is fixed.
+        var orient = (Attr(marker, "orient") ?? "0").Trim();
+        double angle;
+        if (orient.Equals("auto", StringComparison.OrdinalIgnoreCase)) angle = orientDeg;
+        else if (orient.Equals("auto-start-reverse", StringComparison.OrdinalIgnoreCase)) angle = orientDeg + (isStart ? 180 : 0);
+        else angle = double.TryParse(orient.TrimEnd('d', 'e', 'g', 'D', 'E', 'G', ' '), NumberStyles.Float, CultureInfo.InvariantCulture, out var a) ? a : 0;
+
+        var vb = ParseViewBox(Attr(marker, "viewBox"));
+        var par = vb.W > 0 && vb.H > 0
+            ? SvgPreserveAspectRatio.Compute(Attr(marker, "preserveAspectRatio"), vb.W, vb.H, mw, mh)
+            : new SvgPar(1, 1, 0, 0, false);
+        // The reference point (in content coords) mapped into the marker viewport, aligned to the vertex.
+        var refVx = vb.W > 0 ? par.Tx + (refX - vb.X) * par.ScaleX : refX;
+        var refVy = vb.H > 0 ? par.Ty + (refY - vb.Y) * par.ScaleY : refY;
+
+        var save = canvas.Save();
+        canvas.Translate(at.X, at.Y);
+        canvas.RotateDegrees((float)angle);
+        if (unitsStroke && strokeWidth > 0) canvas.Scale(strokeWidth);
+        canvas.Translate((float)-refVx, (float)-refVy);
+        canvas.ClipRect(new SKRect(0, 0, (float)mw, (float)mh)); // overflow hidden (the default)
+        if (vb.W > 0 && vb.H > 0)
+        {
+            canvas.Translate(par.Tx, par.Ty);
+            canvas.Scale(par.ScaleX, par.ScaleY);
+            canvas.Translate((float)-vb.X, (float)-vb.Y);
+        }
+        // Marker content renders in a fresh context seeded by the marker's own presentation attributes.
+        var markerStyle = ResolveStyle(marker, SvgStyle.Initial, state);
+        foreach (var child in marker.Elements()) RenderElement(canvas, child, markerStyle, state, depth: 1);
+        canvas.RestoreToCount(save);
+    }
+
+    /// <summary>The bisector orientation (degrees) for a mid marker, averaging the incoming + outgoing
+    /// directions as unit vectors (handles the angle wraparound).</summary>
+    private static double Bisector(double inDeg, double outDeg)
+    {
+        var ir = inDeg * Math.PI / 180.0;
+        var or = outDeg * Math.PI / 180.0;
+        var x = Math.Cos(ir) + Math.Cos(or);
+        var y = Math.Sin(ir) + Math.Sin(or);
+        return x == 0 && y == 0 ? inDeg : Math.Atan2(y, x) * 180.0 / Math.PI;
+    }
+
+    /// <summary>The shape's vertices in order, each with the incoming + outgoing segment direction (degrees).
+    /// line / polyline / polygon use their points; a path uses its on-path verb endpoints (chord tangents).</summary>
+    private static List<MarkerVertex> ExtractVertices(XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var pts = new List<SKPoint>();
+        switch (el.Name.LocalName.ToLowerInvariant())
+        {
+            case "line":
+                pts.Add(new SKPoint((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y)));
+                pts.Add(new SKPoint((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y)));
+                break;
+            case "polyline":
+            case "polygon":
+                pts.AddRange(ParsePoints(Attr(el, "points")));
+                if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase) && pts.Count > 0) pts.Add(pts[0]);
+                break;
+            case "path":
+                using (var p = BuildShapePath(el, style, state))
+                    if (p is not null) pts.AddRange(PathVertices(p));
+                break;
+        }
+        return ToVertices(pts);
+    }
+
+    private static List<SKPoint> PathVertices(SKPath path)
+    {
+        var pts = new List<SKPoint>();
+        using var it = path.CreateRawIterator();
+        var buf = new SKPoint[4];
+        SKPathVerb verb;
+        while ((verb = it.Next(buf)) != SKPathVerb.Done)
+        {
+            switch (verb)
+            {
+                case SKPathVerb.Move: pts.Add(buf[0]); break;
+                case SKPathVerb.Line: pts.Add(buf[1]); break;
+                case SKPathVerb.Quad:
+                case SKPathVerb.Conic: pts.Add(buf[2]); break;
+                case SKPathVerb.Cubic: pts.Add(buf[3]); break;
+            }
+        }
+        return pts;
+    }
+
+    private static List<MarkerVertex> ToVertices(List<SKPoint> pts)
+    {
+        var result = new List<MarkerVertex>(pts.Count);
+        for (var i = 0; i < pts.Count; i++)
+        {
+            var inDeg = i > 0 ? Dir(pts[i - 1], pts[i]) : (i + 1 < pts.Count ? Dir(pts[i], pts[i + 1]) : 0);
+            var outDeg = i + 1 < pts.Count ? Dir(pts[i], pts[i + 1]) : inDeg;
+            result.Add(new MarkerVertex(pts[i], inDeg, outDeg));
+        }
+        return result;
+    }
+
+    private static double Dir(SKPoint a, SKPoint b) => Math.Atan2(b.Y - a.Y, b.X - a.X) * 180.0 / Math.PI;
 
     // ---- filter ----
 

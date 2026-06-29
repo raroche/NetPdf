@@ -12,9 +12,26 @@ the maintainer steps below are done.
 |---|---|
 | `PixelDiff` — per-pixel RGBA Δ + mean SSIM, tolerance `Δ < 4`, `SSIM ≥ 0.98` | `../Visual/PixelDiff.cs` (+ tests) |
 | `IPdfRasterizer` seam + `PdfRasterizers.TryCreateDefault` (reports unavailable today) | `../Visual/IPdfRasterizer.cs` (+ tests) |
-| `CorpusVisualRegressionTests` — diffs, or SKIPS with a logged reason when refs / PDFium absent | `../Visual/CorpusVisualRegressionTests.cs` |
-| `VisualHarness` — paths, `Dpi = 300`, diffable vs excluded invoice lists, PNG loader | `../Visual/VisualHarness.cs` |
-| Reference PNGs land here | `../references/` |
+| `VisualGatePolicy` — inert until a reference exists / the gate is forced; then a missing rasterizer FAILS | `../Visual/VisualGatePolicy.cs` (+ tests) |
+| `CorpusVisualRegressionTests` — per-page diff, or skip/FAIL per the policy | `../Visual/CorpusVisualRegressionTests.cs` |
+| `VisualHarness` — paths, `Dpi = 300`, self-contained corpus, diffable/excluded lists, remote-resource guard, PNG loader | `../Visual/VisualHarness.cs` (+ tests) |
+| Self-contained corpus (remote assets vendored as data: URIs) | `../corpus/` |
+| Reference PNGs land here, named `<stem>-page-NNN.png` (per page) | `../references/` |
+
+## Activation policy (PR-242 review [P1])
+
+The gate is **inert** only while there are zero committed references AND it isn't forced. Once a reference
+PNG exists for an invoice — OR `NETPDF_VISUAL_REGRESSION_REQUIRED=1` is set — a missing / unwired PDFium
+backend (or a missing per-invoice reference under the forced flag) is a **hard FAIL**. So CI cannot go green
+after references are committed if the native backend was never installed.
+
+## Self-contained corpus (PR-242 review [P1])
+
+Diffable invoices live in `../corpus/` and MUST be **self-contained** — no remote `http(s)` resources (a
+guard test enforces this). A remote asset is blocked by NetPdf's `SafeDefault` yet fetched by Chrome, which
+makes the diff nondeterministic; vendor such assets as inline `data:` URIs (see the vendored
+`01-classic-pure-css.html`). The upstream Anvil invoice (`04`) still carries remote images and is excluded
+until vendored.
 
 ## Step 1 — install PDFium (NetPdf-side PDF → raster)
 
@@ -22,9 +39,11 @@ SkiaSharp can **write** PDF but cannot **read** it, so the NetPdf-side rasteriza
 
 1. Add a PDFium package to `NetPdf.RenderingCorpus.csproj` (e.g. `PDFiumCore` or `bblanchon.PDFium`), or use
    `pdftoppm` (poppler) / Ghostscript as a CLI fallback.
-2. Implement `IPdfRasterizer` against it (render page 1 at `VisualHarness.Dpi` → RGBA `RasterImage`) and
-   return it from `PdfRasterizers.TryCreateDefault` instead of the current `false`.
-3. The runner stops skipping on the "no PDF rasterizer configured" reason and starts rasterizing NetPdf output.
+2. Implement `IPdfRasterizer.RasterizeAllPages` against it (render EVERY page at `VisualHarness.Dpi` → one
+   RGBA `RasterImage` per page) and return it from `PdfRasterizers.TryCreateDefault` instead of the current
+   `false`.
+3. The runner stops skipping on the "no PDF rasterizer configured" reason and starts rasterizing NetPdf output
+   page-for-page.
 
 ## Step 2 — generate + commit references (pinned Chrome, Linux/Docker)
 

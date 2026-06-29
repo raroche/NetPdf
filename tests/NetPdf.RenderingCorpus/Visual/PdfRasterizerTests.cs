@@ -26,22 +26,27 @@ public sealed class PdfRasterizerTests
     public void NotConfigured_rasterizer_throws_a_clear_message()
     {
         var ex = Assert.Throws<PdfRasterizationUnavailableException>(
-            () => PdfRasterizers.NotConfigured.Rasterize([1, 2, 3], 300));
+            () => PdfRasterizers.NotConfigured.RasterizeAllPages([1, 2, 3], 300));
         Assert.Contains("PDFium", ex.Message);
     }
 
     [Fact]
-    public void A_fake_rasterizer_satisfies_the_interface()
+    public void A_fake_multi_page_rasterizer_satisfies_the_interface()
     {
         IPdfRasterizer fake = new FakeRasterizer();
-        var img = fake.Rasterize([0x25, 0x50, 0x44, 0x46], dpi: 300); // "%PDF"
-        Assert.Equal(2, img.Width);
-        Assert.Equal(2, img.Height);
-        Assert.Equal(img.ExpectedLength, img.Rgba.Length);
+        var pages = fake.RasterizeAllPages([0x25, 0x50, 0x44, 0x46], dpi: 300); // "%PDF"
+        Assert.Equal(2, pages.Count);                 // a multi-page seam, not first-page-only
+        foreach (var page in pages)
+        {
+            Assert.Equal(2, page.Width);
+            Assert.Equal(2, page.Height);
+            page.EnsureValid();
+        }
     }
 
     private sealed class FakeRasterizer : IPdfRasterizer
     {
-        public RasterImage Rasterize(byte[] pdf, int dpi) => new(2, 2, new byte[2 * 2 * 4]);
+        public System.Collections.Generic.IReadOnlyList<RasterImage> RasterizeAllPages(byte[] pdf, int dpi) =>
+            [new(2, 2, new byte[2 * 2 * 4]), new(2, 2, new byte[2 * 2 * 4])];
     }
 }

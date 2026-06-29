@@ -16,14 +16,15 @@ import pathlib
 import sys
 
 # Keep in sync with VisualHarness.Dpi and VisualHarness.DiffableInvoices (the C# runner reads the same set).
+# The harness corpus holds SELF-CONTAINED invoices (remote assets vendored as data: URIs) so Chrome fetches
+# nothing the NetPdf side blocks — a hard requirement for a deterministic diff.
 DPI = 300
 DIFFABLE_INVOICES = [
     "01-classic-pure-css.html",
-    "04-anvil-running-elements.html",
 ]
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-CORPUS_DIR = REPO_ROOT / "tests" / "NetPdf.RealDocuments" / "Corpus" / "Invoices"
+CORPUS_DIR = REPO_ROOT / "tests" / "NetPdf.RenderingCorpus" / "corpus"
 REFERENCE_DIR = REPO_ROOT / "tests" / "NetPdf.RenderingCorpus" / "references"
 
 
@@ -46,12 +47,16 @@ def main() -> int:
                 pdf_bytes = page.pdf(print_background=True, prefer_css_page_size=True)
                 page.close()
 
+                # Rasterize EVERY page (page counters / running headers / fragmentation regress on later
+                # pages, so the gate diffs page-for-page) → references/<stem>-page-NNN.png (1-based).
                 doc = pdfium.PdfDocument(pdf_bytes)
-                bitmap = doc[0].render(scale=DPI / 72.0)
-                image = bitmap.to_pil()
-                out = REFERENCE_DIR / (pathlib.Path(invoice).stem + ".png")
-                image.save(out)
-                print(f"wrote {out.relative_to(REPO_ROOT)} ({image.width}x{image.height} @ {DPI} dpi)")
+                stem = pathlib.Path(invoice).stem
+                for page_index in range(len(doc)):
+                    bitmap = doc[page_index].render(scale=DPI / 72.0)
+                    image = bitmap.to_pil()
+                    out = REFERENCE_DIR / f"{stem}-page-{page_index + 1:03d}.png"
+                    image.save(out)
+                    print(f"wrote {out.relative_to(REPO_ROOT)} ({image.width}x{image.height} @ {DPI} dpi)")
         finally:
             browser.close()
     return 0

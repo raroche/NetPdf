@@ -1,8 +1,9 @@
 # Visual-regression reference PNGs
 
 This directory holds the **committed Chrome reference renders** the visual-regression gate
-(`CorpusVisualRegressionTests`) diffs the NetPdf output against — one `<invoice-stem>.png` per
-diffable corpus invoice (e.g. `01-classic-pure-css.png`, `04-anvil-running-elements.png`).
+(`CorpusVisualRegressionTests`) diffs the NetPdf output against — one PNG **per page**, named
+`<invoice-stem>-page-NNN.png` (1-based, zero-padded), e.g. `01-classic-pure-css-page-001.png`. The gate
+diffs page-for-page and asserts the page count matches.
 
 **The directory is intentionally empty of PNGs until a maintainer generates them.** While a
 reference is absent the diff runner SKIPS that invoice (it still asserts NetPdf produced a PDF),

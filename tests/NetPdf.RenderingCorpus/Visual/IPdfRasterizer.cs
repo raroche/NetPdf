@@ -2,17 +2,21 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 
 namespace NetPdf.RenderingCorpus.Visual;
 
-/// <summary>Rasterizes a PDF byte stream to an RGBA <see cref="RasterImage"/> at a target DPI. The
+/// <summary>Rasterizes a PDF byte stream to one RGBA <see cref="RasterImage"/> PER PAGE at a target DPI. The
 /// visual-regression harness rasterizes BOTH the NetPdf output and (for the reference path) the Chrome
-/// print-to-PDF this way. <b>SkiaSharp cannot read PDF</b> — only write it — so the concrete implementation
-/// is a PDFium adapter the maintainer installs (see <see cref="PdfRasterizers"/>).</summary>
+/// print-to-PDF this way and diffs page-for-page — so regressions on LATER pages (page counters, running
+/// headers/footers, fragmentation) are caught, not just the first page. <b>SkiaSharp cannot read PDF</b> —
+/// only write it — so the concrete implementation is a PDFium adapter the maintainer installs (see
+/// <see cref="PdfRasterizers"/>).</summary>
 public interface IPdfRasterizer
 {
-    /// <summary>Render <paramref name="pdf"/>'s first page to an RGBA raster at <paramref name="dpi"/>.</summary>
-    RasterImage Rasterize(byte[] pdf, int dpi);
+    /// <summary>Render every page of <paramref name="pdf"/> to an RGBA raster at <paramref name="dpi"/>, in
+    /// document order (index 0 = page 1).</summary>
+    IReadOnlyList<RasterImage> RasterizeAllPages(byte[] pdf, int dpi);
 }
 
 /// <summary>Thrown when a PDF rasterizer is invoked but the native backend (PDFium) is not available. The
@@ -47,7 +51,7 @@ public static class PdfRasterizers
 
     private sealed class NotConfiguredRasterizer : IPdfRasterizer
     {
-        public RasterImage Rasterize(byte[] pdf, int dpi) =>
+        public System.Collections.Generic.IReadOnlyList<RasterImage> RasterizeAllPages(byte[] pdf, int dpi) =>
             throw new PdfRasterizationUnavailableException(
                 "PDFium is not available — install the PDFium backend and wire it into PdfRasterizers "
                 + "(SkiaSharp cannot read PDF). See tests/NetPdf.RenderingCorpus/docker/README.md.");

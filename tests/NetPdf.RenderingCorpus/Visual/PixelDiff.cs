@@ -44,13 +44,17 @@ public static class PixelDiff
     {
         ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(actual);
+        // Validate buffer lengths up front so a malformed rasterizer fails with a clear message rather than
+        // silently truncating (min-length) or crashing in the luma indexing.
+        expected.EnsureValid();
+        actual.EnsureValid();
         if (!expected.SameSizeAs(actual))
             throw new ArgumentException(
                 $"raster size mismatch: {expected.Width}x{expected.Height} vs {actual.Width}x{actual.Height}");
 
         var ea = expected.Rgba;
         var ab = actual.Rgba;
-        var n = Math.Min(ea.Length, ab.Length);
+        var n = ea.Length; // equal length guaranteed by EnsureValid + SameSizeAs
         var maxDelta = 0;
         for (var i = 0; i < n; i++)
         {

@@ -96,4 +96,23 @@ public sealed class PixelDiffTests
         var b = Solid(8, 9, 0, 0, 0);
         Assert.Throws<ArgumentException>(() => PixelDiff.Compare(a, b));
     }
+
+    [Fact]
+    public void A_short_pixel_buffer_throws_a_clear_error_not_index_out_of_range()
+    {
+        // PR-242 review [P3] — a malformed rasterizer (buffer shorter than W·H·4) must fail with a clear
+        // harness error at Compare entry, not crash in the luma indexing.
+        var ok = Solid(8, 8, 10, 20, 30);
+        var shortBuf = new RasterImage(8, 8, new byte[8 * 8 * 4 - 10]);
+        Assert.Throws<ArgumentException>(() => PixelDiff.Compare(shortBuf, ok));
+        Assert.Throws<ArgumentException>(() => PixelDiff.Compare(ok, shortBuf));
+    }
+
+    [Fact]
+    public void A_long_pixel_buffer_throws()
+    {
+        var ok = Solid(4, 4, 0, 0, 0);
+        var longBuf = new RasterImage(4, 4, new byte[4 * 4 * 4 + 16]);
+        Assert.Throws<ArgumentException>(() => PixelDiff.Compare(longBuf, ok));
+    }
 }

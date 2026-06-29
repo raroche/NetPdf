@@ -281,19 +281,12 @@ internal static class FragmentPainter
 
                 // Phase 4 gradients — a linear-gradient(...) background-image layer paints
                 // over the background-color, under the borders (same z-order as an image
-                // layer), as a PDF native axial shading clipped to the (rounded) border box.
+                // layer), as a PDF native axial shading clipped to the (rounded) clip box.
                 // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is one
-                // block-axis slice of a larger box (DecorationBlockExtentPx > 0), paint the gradient's AXIS
-                // over the WHOLE box (virtual top = this slice's top − its offset within the box, height =
-                // the full box extent) so it's CONTINUOUS across slices, while the shading is CLIPPED to the
-                // slice's own box. Null → the slice's own box (every non-sliced fragment byte-identical).
-                double? axisTopPx = null, axisHeightPx = null;
+                // block-axis slice of a larger box (DecorationBlockExtentPx > 0), the gradient's AXIS / center
+                // / sweep spans the WHOLE composite box (so it's CONTINUOUS across slices) via the origin/clip
+                // geometry below; an outer per-slice rect clip limits the paint to this fragment.
                 var gradientSliced = fragment.DecorationBlockExtentPx > 0;
-                if (gradientSliced)
-                {
-                    axisTopPx = topPx - fragment.DecorationBlockOffsetPx;
-                    axisHeightPx = fragment.DecorationBlockExtentPx;
-                }
                 // box-decoration-break: slice — the shading + its rounded clip span the WHOLE composite box;
                 // an outer per-slice rect clip limits the paint to this fragment (no-op for a non-slice).
                 var gradientSliceClipped = false;
@@ -352,8 +345,9 @@ internal static class FragmentPainter
                     && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))
                 {
                     PaintConicGradient(page, document, conic, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
-                        ref conicGradientRasterReported, ref conicGradientCapReported, axisTopPx, axisHeightPx);
+                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
+                        currentColorArgb, diagnostics,
+                        ref conicGradientRasterReported, ref conicGradientCapReported, clipOverride: gradClip);
                 }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
 

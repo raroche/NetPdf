@@ -154,4 +154,63 @@ public sealed class SingleLayerGradientGeometryTests
         var t = Latin1(HtmlPdf.Convert(RadialHtml("")));
         Assert.Contains("/ShadingType 3", t);
     }
+
+    // ---- conic (task 3) ----
+
+    // The conic raster image placement size (w, h in pt): `q w 0 0 h x y cm /Im<n> Do`.
+    private static (double W, double H) ConicPlacement(string pdf)
+    {
+        var m = Regex.Match(pdf, @"q ([\d.]+) 0 0 ([\d.]+) [\d.]+ [\d.]+ cm /Im\d+ Do");
+        Assert.True(m.Success, "no conic image placement found");
+        return (double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture),
+                double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture));
+    }
+
+    // The clip rect (w, h in pt) wrapping the conic image: `cx cy cw ch re W n q <w> 0 0 ...`.
+    private static (double W, double H) ConicClip(string pdf)
+    {
+        var m = Regex.Match(pdf, @"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re W n\s+q [\d.]+ 0 0");
+        Assert.True(m.Success, "no conic clip rect found");
+        return (double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture),
+                double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
+    }
+
+    private static string ConicHtml(string extraStyle) =>
+        "<!DOCTYPE html><html><body>" +
+        $"<div style=\"width:100px;height:60px;{extraStyle}background-image:conic-gradient(red, blue)\"></div>" +
+        "</body></html>";
+
+    [Fact]
+    public void Conic_origin_content_box_rasters_over_the_content_box()
+    {
+        var (w, h) = ConicPlacement(Latin1(HtmlPdf.Convert(ConicHtml(
+            "border:10px solid black;padding:5px;background-origin:content-box;"))));
+        Assert.Equal(100 * PtPerPx, w, 2); // content box 100×60
+        Assert.Equal(60 * PtPerPx, h, 2);
+    }
+
+    [Fact]
+    public void Conic_origin_defaults_to_padding_box()
+    {
+        var (w, h) = ConicPlacement(Latin1(HtmlPdf.Convert(ConicHtml("border:10px solid black;padding:5px;"))));
+        Assert.Equal(110 * PtPerPx, w, 2); // padding box = content 100 + padding 10
+        Assert.Equal(70 * PtPerPx, h, 2);
+    }
+
+    [Fact]
+    public void Conic_clip_content_box_clips_the_sweep_to_the_content_box()
+    {
+        var (w, h) = ConicClip(Latin1(HtmlPdf.Convert(ConicHtml(
+            "border:10px solid black;padding:5px;background-clip:content-box;"))));
+        Assert.Equal(100 * PtPerPx, w, 2);
+        Assert.Equal(60 * PtPerPx, h, 2);
+    }
+
+    [Fact]
+    public void Conic_no_border_rasters_with_an_smask()
+    {
+        var t = Latin1(HtmlPdf.Convert(ConicHtml("")));
+        Assert.Contains(" Do", t);
+        Assert.Contains("/SMask", t);
+    }
 }

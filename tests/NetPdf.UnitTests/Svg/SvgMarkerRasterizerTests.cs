@@ -83,6 +83,36 @@ public sealed class SvgMarkerRasterizerTests
     }
 
     [Fact]
+    public void Marker_dimensions_accept_length_units()
+    {
+        // PR-243 review [P2] — markerWidth/Height="10px" must parse as 10, not fall back to the default 3
+        // (which would clip the 10×10 content to a 3×3 viewport, hiding most of it).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            "<marker id=\"m\" markerWidth=\"10px\" markerHeight=\"10px\" markerUnits=\"userSpaceOnUse\" refX=\"0\" refY=\"5\">" +
+            "<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"red\"/></marker>" +
+            "<line x1=\"5\" y1=\"10\" x2=\"40\" y2=\"10\" stroke=\"black\" stroke-width=\"1\" marker-end=\"url(#m)\"/></svg>"),
+            out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 48, 10).R > 200);    // the 10px-wide square reaches x≈48 (40..50)
+    }
+
+    [Fact]
+    public void Marker_end_on_a_closed_path_lands_at_the_close_vertex()
+    {
+        // PR-243 review [P2] — a Z close adds the segment back to the subpath start, so marker-end is at the
+        // START point (10,10), not the last drawn vertex (40,40).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            RedSquareMarker +
+            "<path d=\"M 10 10 L 40 10 L 40 40 Z\" fill=\"none\" stroke=\"black\" stroke-width=\"1\" marker-end=\"url(#m)\"/></svg>"),
+            out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 15, 10).R > 200);    // marker at the close vertex (10,10) → square spans 10..20
+        Assert.Equal(0, Px(info!, 50, 40).A);      // NOT at the last drawn corner (40,40)
+    }
+
+    [Fact]
     public void Marker_referencing_a_non_marker_is_flagged()
     {
         var info = SvgRasterizer.TryRender(Svg(

@@ -77,19 +77,21 @@ internal static class SvgText
         }
     }
 
-    /// <summary>The run's total advance including letter-spacing (after each glyph) + word-spacing (after
-    /// each space). With both zero this is exactly <c>SKFont.MeasureText</c> → the default stays unchanged.</summary>
+    /// <summary>The run's total advance: letter-spacing applies BETWEEN glyphs (n−1 gaps, NOT after the
+    /// trailing glyph — PR-243 review [P2]) and word-spacing is added to each space's advance. With both zero
+    /// this is exactly <c>SKFont.MeasureText</c> → the default stays unchanged.</summary>
     private static float MeasureRun(SKFont font, string text, SvgStyle style)
     {
         var w = font.MeasureText(text);
         if (style.LetterSpacing == 0 && style.WordSpacing == 0) return w;
-        w += style.LetterSpacing * text.Length;
+        if (text.Length > 1) w += style.LetterSpacing * (text.Length - 1);
         foreach (var ch in text) if (ch == ' ') w += style.WordSpacing;
         return w;
     }
 
     /// <summary>Draw a run honoring letter-/word-spacing. With no spacing it's a single whole-string draw
-    /// (byte-identical default); otherwise each glyph is drawn at its own pen position.</summary>
+    /// (byte-identical default); otherwise each glyph is drawn at its own pen position, letter-spacing added
+    /// only in the gaps (not after the final glyph) so the run advance matches <see cref="MeasureRun"/>.</summary>
     private static void DrawSpacedOrWhole(SKCanvas canvas, string text, float x, float baseline, SKFont font, SvgStyle style, SvgRenderState state)
     {
         if (style.LetterSpacing == 0 && style.WordSpacing == 0)
@@ -98,12 +100,12 @@ internal static class SvgText
             return;
         }
         var gx = x;
-        foreach (var ch in text)
+        for (var i = 0; i < text.Length; i++)
         {
-            var glyph = ch.ToString();
+            var glyph = text[i].ToString();
             var gw = font.MeasureText(glyph);
             DrawRun(canvas, glyph, gx, baseline, gw, font, style, state);
-            gx += gw + style.LetterSpacing + (ch == ' ' ? style.WordSpacing : 0);
+            gx += gw + (i < text.Length - 1 ? style.LetterSpacing : 0) + (text[i] == ' ' ? style.WordSpacing : 0);
         }
     }
 
@@ -124,6 +126,8 @@ internal static class SvgText
         }
         using var path = SKPath.ParseSvgPathData(d);
         if (path is null) { state.SawUnsupported = true; return; }
+        // The referenced path's own transform applies relative to the text coordinate system (SVG 1.1 §10.13).
+        if (SvgTransform.Parse(pathEl.Attribute("transform")?.Value) is { } pm) path.Transform(pm);
 
         var style = ResolveRunStyle(textPath, parentStyle);
         var content = Collapse(AllText(textPath));
@@ -152,7 +156,7 @@ internal static class SvgText
                 DrawPathGlyph(canvas, glyph, -adv / 2f, font, style, fillShader?.Shader, state);
                 canvas.RestoreToCount(save);
             }
-            distance += adv + style.LetterSpacing + (content[i] == ' ' ? style.WordSpacing : 0);
+            distance += adv + (i < content.Length - 1 ? style.LetterSpacing : 0) + (content[i] == ' ' ? style.WordSpacing : 0);
         }
     }
 

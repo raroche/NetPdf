@@ -28,21 +28,38 @@ internal static class SvgPreserveAspectRatio
         return new SvgPar((float)s, (float)s, (float)tx, (float)ty, slice);
     }
 
+    private static readonly (double AlignX, double AlignY, bool None, bool Slice) Default = (0.5, 0.5, false, false);
+
     /// <summary>Parse to (alignX, alignY) factors (0 = MIN, 0.5 = MID, 1 = MAX), plus the <c>none</c> /
-    /// <c>slice</c> flags. An empty / unrecognized value is the default <c>xMidYMid meet</c>.</summary>
+    /// <c>slice</c> flags. The align keyword and meet|slice are EXACT-matched; any malformed / unrecognized
+    /// value falls back to the §8.8 lacuna default <c>xMidYMid meet</c> (no error — per the SVG grammar).</summary>
     public static (double AlignX, double AlignY, bool None, bool Slice) Parse(string? raw)
     {
         var v = (raw ?? string.Empty).Trim().ToLowerInvariant();
-        if (v.StartsWith("defer", StringComparison.Ordinal)) v = v[5..].Trim();
-        if (v.Length == 0) return (0.5, 0.5, false, false);
+        if (v.StartsWith("defer ", StringComparison.Ordinal)) v = v[6..].Trim();
+        if (v.Length == 0) return Default;
         var parts = v.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        var align = parts.Length > 0 ? parts[0] : "xmidymid";
-        var slice = parts.Length > 1 && parts[1] == "slice";
-        if (align == "none") return (0, 0, true, false);
-        var ax = align.Contains("xmin", StringComparison.Ordinal) ? 0.0
-               : align.Contains("xmax", StringComparison.Ordinal) ? 1.0 : 0.5;
-        var ay = align.Contains("ymin", StringComparison.Ordinal) ? 0.0
-               : align.Contains("ymax", StringComparison.Ordinal) ? 1.0 : 0.5;
-        return (ax, ay, false, slice);
+        if (parts.Length is < 1 or > 2) return Default; // only "<align> [<meetOrSlice>]"
+
+        bool slice;
+        if (parts.Length == 1) slice = false;
+        else if (parts[1] == "meet") slice = false;
+        else if (parts[1] == "slice") slice = true;
+        else return Default; // invalid meetOrSlice token
+
+        if (parts[0] == "none") return (0, 0, true, false);
+        return parts[0] switch
+        {
+            "xminymin" => (0.0, 0.0, false, slice),
+            "xmidymin" => (0.5, 0.0, false, slice),
+            "xmaxymin" => (1.0, 0.0, false, slice),
+            "xminymid" => (0.0, 0.5, false, slice),
+            "xmidymid" => (0.5, 0.5, false, slice),
+            "xmaxymid" => (1.0, 0.5, false, slice),
+            "xminymax" => (0.0, 1.0, false, slice),
+            "xmidymax" => (0.5, 1.0, false, slice),
+            "xmaxymax" => (1.0, 1.0, false, slice),
+            _ => Default, // unrecognized align keyword
+        };
     }
 }

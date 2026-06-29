@@ -94,14 +94,14 @@ internal static class SvgRasterizer
         state.PatternShaderFactory = (pat, bounds, opacity, style) => BuildPatternShader(pat, bounds, opacity, style, state);
         var raster = SubtreeRasterizer.Render(pxW, pxH, canvas =>
         {
-            // Map the viewBox onto the raster (preserveAspectRatio xMidYMid meet — the default §8.2).
+            // Map the root viewBox onto the raster honoring the root preserveAspectRatio (§8.2) — none /
+            // meet / slice + alignment (default xMidYMid meet). Slice overflow is clipped by the raster bounds.
             if (vbW > 0 && vbH > 0)
             {
-                var scale = Math.Min(pxW / vbW, pxH / vbH);
-                var tx = (pxW - vbW * scale) / 2.0 - vbX * scale;
-                var ty = (pxH - vbH * scale) / 2.0 - vbY * scale;
-                canvas.Translate((float)tx, (float)ty);
-                canvas.Scale((float)scale);
+                var par = SvgPreserveAspectRatio.Compute(Attr(root, "preserveAspectRatio"), vbW, vbH, pxW, pxH);
+                canvas.Translate(par.Tx, par.Ty);
+                canvas.Scale(par.ScaleX, par.ScaleY);
+                canvas.Translate((float)-vbX, (float)-vbY);
             }
             // The root <svg>'s own presentation attributes (color / fill / stroke / font-*) seed the
             // inherited context for its children (PR-231 review [P3] — e.g. <svg color="red"> + fill="currentColor").
@@ -704,8 +704,9 @@ internal static class SvgRasterizer
         SKCanvas canvas, XElement marker, SKPoint at, double orientDeg, float strokeWidth, bool isStart,
         SvgRenderState state, SvgStyle inherited)
     {
-        var mw = Attr(marker, "markerWidth") is { } mws && double.TryParse(mws, NumberStyles.Float, CultureInfo.InvariantCulture, out var mwv) ? mwv : 3;
-        var mh = Attr(marker, "markerHeight") is { } mhs && double.TryParse(mhs, NumberStyles.Float, CultureInfo.InvariantCulture, out var mhv) ? mhv : 3;
+        // markerWidth/Height are <length> values (px/pt/unitless) — default 3 when absent (§11.6.2).
+        var mw = marker.Attribute("markerWidth") is not null ? Num(marker, "markerWidth") : 3;
+        var mh = marker.Attribute("markerHeight") is not null ? Num(marker, "markerHeight") : 3;
         if (!(mw > 0) || !(mh > 0)) return;
         var refX = Num(marker, "refX");
         var refY = Num(marker, "refY");
@@ -785,15 +786,18 @@ internal static class SvgRasterizer
         using var it = path.CreateRawIterator();
         var buf = new SKPoint[4];
         SKPathVerb verb;
+        var subpathStart = new SKPoint();
+        var haveStart = false;
         while ((verb = it.Next(buf)) != SKPathVerb.Done)
         {
             switch (verb)
             {
-                case SKPathVerb.Move: pts.Add(buf[0]); break;
+                case SKPathVerb.Move: subpathStart = buf[0]; haveStart = true; pts.Add(buf[0]); break;
                 case SKPathVerb.Line: pts.Add(buf[1]); break;
                 case SKPathVerb.Quad:
                 case SKPathVerb.Conic: pts.Add(buf[2]); break;
                 case SKPathVerb.Cubic: pts.Add(buf[3]); break;
+                case SKPathVerb.Close: if (haveStart) pts.Add(subpathStart); break; // closing segment back to the start
             }
         }
         return pts;
@@ -835,15 +839,23 @@ internal static class SvgRasterizer
     /// <see cref="SKImageFilter"/> applied to the element's rendering (the <c>SourceGraphic</c>). A LINEAR
     /// chain is supported — each primitive feeds the next — covering <c>feGaussianBlur</c>, <c>feOffset</c>,
     /// and <c>feColorMatrix</c> (matrix / saturate / hueRotate / luminanceToAlpha). Graph-routing primitives
-    /// (<c>feMerge</c> / <c>feComposite</c> / <c>feBlend</c> / <c>feFlood</c> / <c>feImage</c> / …) and the
-    /// <c>in</c>/<c>result</c> named-input routing aren't modeled this cut → flagged. Returns
-    /// <see langword="null"/> when no supported primitive contributes (the element renders unfiltered).</summary>
+    /// (<c>feMerge</c> / <c>feComposite</c> / <c>feBlend</c> / <c>feFlood</c> / <c>feImage</c> / …), the
+    /// <c>in</c>/<c>result</c> named-input routing, primitive subregions, and the filter region /
+    /// <c>*Units</c> aren't modeled this cut → flagged (PR-243 review [P1]). Returns <see langword="null"/>
+    /// when no supported primitive contributes (the element renders unfiltered).</summary>
     private static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
     {
         SKImageFilter? current = null; // null input = SourceGraphic
-        var sawUnsupported = false;
+        // The filter region (x/y/width/height) and *Units change the result geometry but aren't applied here.
+        var sawUnsupported = HasAnyAttr(filter, "x", "y", "width", "height", "filterUnits", "primitiveUnits");
         foreach (var prim in filter.Elements())
         {
+            // A named result, a non-default input, or a primitive subregion implies a routing/region model
+            // this linear chain doesn't honor → flag (the chain still renders as a best effort).
+            if (HasAnyAttr(prim, "result", "x", "y", "width", "height")
+                || (Attr(prim, "in") is { } input && !input.Trim().Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase)))
+                sawUnsupported = true;
+
             switch (prim.Name.LocalName.ToLowerInvariant())
             {
                 case "fegaussianblur":
@@ -1300,6 +1312,14 @@ internal static class SvgRasterizer
     // ---- attribute / value helpers ----
 
     private static string? Attr(XElement el, string name) => el.Attribute(name)?.Value;
+
+    /// <summary>True if the element carries any of the named attributes (used to detect unmodeled
+    /// filter routing / subregion / region attributes).</summary>
+    private static bool HasAnyAttr(XElement el, params string[] names)
+    {
+        foreach (var n in names) if (el.Attribute(n) is not null) return true;
+        return false;
+    }
 
     private static double Num(XElement el, string name) =>
         double.TryParse(TrimUnit(Attr(el, name)), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;

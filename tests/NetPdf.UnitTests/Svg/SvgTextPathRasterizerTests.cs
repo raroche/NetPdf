@@ -75,6 +75,24 @@ public sealed class SvgTextPathRasterizerTests
     }
 
     [Fact]
+    public void Referenced_path_transform_is_applied_before_measuring()
+    {
+        // PR-243 review [P2] — the referenced path's own transform applies. translate(0,40) moves the path
+        // (and the text on it) down, so the ink sits lower than on the untransformed path.
+        var plain = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"140\" height=\"80\">" +
+            "<defs><path id=\"p\" d=\"M 10 15 L 130 15\"/></defs>" +
+            "<text font-size=\"20\"><textPath href=\"#p\">Hi</textPath></text></svg>"), out _);
+        var moved = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"140\" height=\"80\">" +
+            "<defs><path id=\"p\" d=\"M 10 15 L 130 15\" transform=\"translate(0,40)\"/></defs>" +
+            "<text font-size=\"20\"><textPath href=\"#p\">Hi</textPath></text></svg>"), out _);
+        Assert.NotNull(plain);
+        Assert.NotNull(moved);
+        Assert.True(InkBox(moved!).MinY > InkBox(plain!).MinY + 30);   // ~40px lower
+    }
+
+    [Fact]
     public void Textpath_referencing_a_non_path_is_flagged()
     {
         var info = SvgRasterizer.TryRender(Svg(

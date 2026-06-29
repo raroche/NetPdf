@@ -2690,8 +2690,8 @@ flags the categories):
      color stops (px + absolute units; resolve against the gradient-line length); elliptical radial
      shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
      raster for blur). **Gradient refinements SHIPPED (PR — gradient-refinements):** double-position
-     stops (§3.4), color-interpolation HINTS (§3.4.2 — approximated by a synthetic midpoint stop, NOT
-     the exact exponential easing), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
+     stops (§3.4), color-interpolation HINTS (§3.4.2 — the EXACT exponential easing curve `mix(c1, c2,
+     t^p)` with `p = ln(0.5)/ln(H)`, sampled as a row of stops), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
      to a Skia raster — `LinearGradientRasterizer`/`RadialGradientRasterizer` → image + `/SMask`;
      opaque stays the native shading). Stop colors interpolate in PREMULTIPLIED RGBA (§3.4.2) so a
      midpoint/boundary next to a (semi-)transparent stop doesn't bleed its RGB; a translucent gradient
@@ -2703,8 +2703,7 @@ flags the categories):
      axis / center / sweep spans the origin box [initial padding-box], the shading is clipped to the
      clip box [initial border-box, rounded]; parity with the `url()` image path + multi-layer gradient
      LAYERS [PR #235]; a box with no border/padding is byte-identical to the prior border-box behavior).
-     **Remaining gradient residuals (Phase 4 follow-ups):** the hint's exact exponential easing (only
-     the midpoint color is exact; the two surrounding segments are linear); per-stop alpha on a NATIVE
+     **Remaining gradient residuals (Phase 4 follow-ups):** per-stop alpha on a NATIVE
      shading (a soft-mask alpha shading) so a translucent gradient need not raster; **gradient
      `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin box; a gradient —
      SINGLE-layer OR a multi-layer LAYER — that specifies any of these surfaces

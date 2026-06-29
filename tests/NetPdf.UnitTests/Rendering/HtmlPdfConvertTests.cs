@@ -97,11 +97,11 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Convert_inserts_a_midpoint_stop_for_a_color_interpolation_hint()
+    public void Convert_eases_a_color_interpolation_hint_with_sampled_stops()
     {
-        // CSS Images §3.4.2 — `red, 50%, blue` puts the 50% color (a red/blue blend, 127,0,127 →
-        // ~0.498 DeviceRGB) at the hint position. The hint is approximated by a synthetic midpoint
-        // stop, so the shading function carries that blended color + renders (not unsupported).
+        // CSS Images §3.4.2 — `red, 50%, blue` eases through the hint along the exact exponential curve.
+        // The hint is now approximated by SAMPLED stops (not a single midpoint), so the stitching
+        // function gains many sub-functions and the 50% color (half red / half blue) lands at the hint.
         const string html =
             "<!DOCTYPE html><html><body>" +
             "<div style=\"width:100px;height:20px;" +
@@ -111,9 +111,31 @@ public sealed class HtmlPdfConvertTests
         var result = HtmlPdf.ConvertDetailed(html);
         var text = Latin1(result.Pdf);
         Assert.Contains("/ShadingType 2", text);
-        Assert.Contains("0.498", text);             // the synthetic midpoint blend (127/255)
+        Assert.Contains("0.5 0 0.5", text);          // the eased midpoint (half red, half blue)
+        // Multi-sample easing → many FunctionType 2 sub-functions (a plain 2-stop gradient has 1).
+        Assert.True(text.Split("/C0").Length - 1 >= 10, "expected many sampled stops from the hint easing");
         Assert.DoesNotContain(
             result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Convert_hint_off_center_biases_the_midpoint_toward_the_hint_side()
+    {
+        // `red, 25%, blue` with a hint at 25% — the exact easing (f(t) = t^p, p = ln0.5/ln0.25 = 0.5,
+        // i.e. f = √t) puts the 50% color at 25% and biases the rest toward BLUE: at gradient position
+        // 50% the color is ~mix(red, blue, √0.5 ≈ 0.707) → more blue than red. A plain (or single-
+        // midpoint) gradient would be balanced at 50%. We assert a stop exists whose blue clearly
+        // exceeds its red (the eased bias) — impossible for a symmetric red↔blue ramp.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(to right, red, 25%, blue)\"></div>" +
+            "</body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        // A sampled stop near t≈0.5 → R≈0.293, B≈0.707; assert the blue-dominant triple `0.29... 0 0.70...`
+        // appears (red never exceeds blue past the hint).
+        Assert.Contains("/ShadingType 2", text);
+        Assert.Matches(@"0\.29\d* 0 0\.70\d*", text);
     }
 
     [Fact]

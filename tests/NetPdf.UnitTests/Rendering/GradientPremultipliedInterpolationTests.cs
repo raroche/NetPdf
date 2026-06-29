@@ -8,36 +8,33 @@ using Xunit;
 namespace NetPdf.UnitTests.Rendering;
 
 /// <summary>PR #237 review [P2] — gradient stop colors must be interpolated in PREMULTIPLIED RGBA
-/// (CSS Images 3 §3.4.2). The 50%-blend HINT midpoint (<see cref="FragmentPainter.Blend50"/>) and the
-/// out-of-range boundary stop interpolation (<see cref="FragmentPainter.ColorAt"/>) are alpha-weighted
-/// so a (semi-)transparent neighbor doesn't bleed its RGB into the result. Opaque-only blends are
-/// unaffected (byte-identical with the prior straight-average behavior).</summary>
+/// (CSS Images 3 §3.4.2). The shared mix (<see cref="FragmentPainter.PremulMix"/>, used by the color-hint
+/// sampler) and the out-of-range boundary stop interpolation (<see cref="FragmentPainter.ColorAt"/>) are
+/// alpha-weighted so a (semi-)transparent neighbor doesn't bleed its RGB into the result. Opaque-only
+/// blends reduce to the plain RGB lerp (byte-identical with the prior straight-average behavior).</summary>
 public sealed class GradientPremultipliedInterpolationTests
 {
-    private static uint Argb(byte a, byte r, byte g, byte b) =>
-        ((uint)a << 24) | ((uint)r << 16) | ((uint)g << 8) | b;
-
     [Fact]
-    public void Blend50_with_a_fully_transparent_neighbor_keeps_the_opaque_color()
+    public void PremulMix_with_a_fully_transparent_endpoint_keeps_the_opaque_color()
     {
-        // Opaque red blended with FULLY-TRANSPARENT blue: the transparent side contributes no color, so
-        // the midpoint is pure red at half alpha — NOT a washed purple (the raw-average bug).
-        var mid = FragmentPainter.Blend50(Argb(255, 255, 0, 0), Argb(0, 0, 0, 255));
-        Assert.Equal(127u, (mid >> 24) & 0xFF); // alpha = straight average (255 + 0) / 2
-        Assert.Equal(255u, (mid >> 16) & 0xFF); // R fully red (the transparent blue adds nothing)
-        Assert.Equal(0u, (mid >> 8) & 0xFF);    // G
-        Assert.Equal(0u, mid & 0xFF);           // B — NO blue bleed
+        // Opaque red mixed 50% with FULLY-TRANSPARENT blue: the transparent side contributes no color, so
+        // the result is pure red at half alpha — NOT a washed purple (the raw-average bug).
+        var (r, g, b, a) = FragmentPainter.PremulMix((255, 0, 0, 1.0), (0, 0, 255, 0.0), 0.5);
+        Assert.Equal(0.5, a, 6);   // alpha = linear interpolant (1 + 0)/2
+        Assert.Equal(255.0, r, 6); // R fully red (the transparent blue adds nothing)
+        Assert.Equal(0.0, g, 6);
+        Assert.Equal(0.0, b, 6);   // B — NO blue bleed
     }
 
     [Fact]
-    public void Blend50_with_equal_alpha_is_the_plain_average_byte_identical()
+    public void PremulMix_with_equal_alpha_is_the_plain_lerp()
     {
-        // Two opaque colors: premultiplied average reduces to the straight per-channel average.
-        var mid = FragmentPainter.Blend50(Argb(255, 255, 0, 0), Argb(255, 0, 0, 255));
-        Assert.Equal(255u, (mid >> 24) & 0xFF);
-        Assert.Equal(127u, (mid >> 16) & 0xFF); // (255 + 0) / 2
-        Assert.Equal(0u, (mid >> 8) & 0xFF);
-        Assert.Equal(127u, mid & 0xFF);         // (0 + 255) / 2
+        // Two opaque colors: premultiplied mix reduces to the straight per-channel lerp.
+        var (r, g, b, a) = FragmentPainter.PremulMix((255, 0, 0, 1.0), (0, 0, 255, 1.0), 0.5);
+        Assert.Equal(1.0, a, 6);
+        Assert.Equal(127.5, r, 6); // (255 + 0)/2
+        Assert.Equal(0.0, g, 6);
+        Assert.Equal(127.5, b, 6); // (0 + 255)/2
     }
 
     [Fact]

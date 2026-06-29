@@ -2624,65 +2624,44 @@ internal static class FragmentPainter
     /// gradient line) + a premultiply-free DeviceRGB color with per-stop alpha.</summary>
     internal readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
 
-    /// <summary>Color-interpolation hints (CSS Images §3.4.2) — replace each HINT (a
-    /// <see cref="CssGradientStop.IsHint"/> entry: a bare position between two color stops) with a
-    /// synthetic color stop at the hint position whose color is the 50% blend of the bracketing color
-    /// stops. Returns the input unchanged when there are no hints (so a hint-free gradient stays
-    /// byte-identical). A hint at the first/last index, or one whose neighbors don't resolve, is dropped.</summary>
-    private static IReadOnlyList<CssGradientStop> ExpandColorHints(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb)
-    {
-        var hasHint = false;
-        for (var i = 0; i < gradientStops.Count; i++)
-            if (gradientStops[i].IsHint) { hasHint = true; break; }
-        if (!hasHint) return gradientStops;
+    private const int HintSampleCount = 16; // interior samples approximating a hint's easing curve
 
-        var result = new List<CssGradientStop>(gradientStops.Count);
-        for (var i = 0; i < gradientStops.Count; i++)
-        {
-            var s = gradientStops[i];
-            if (!s.IsHint) { result.Add(s); continue; }
-            // A hint needs a color stop on each side; resolve both colors to blend the midpoint.
-            if (i == 0 || i == gradientStops.Count - 1) continue;
-            if (!TryResolveStopArgb(gradientStops[i - 1].ColorRaw, currentColorArgb, out var a)
-                || !TryResolveStopArgb(gradientStops[i + 1].ColorRaw, currentColorArgb, out var b))
-            {
-                continue; // can't blend → drop the hint (the plain gradient still renders)
-            }
-            var mid = Blend50(a, b);
-            var midRaw = $"rgba({(mid >> 16) & 0xFF},{(mid >> 8) & 0xFF},{mid & 0xFF},{(Alpha(mid) / 255.0).ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)})";
-            result.Add(new CssGradientStop(midRaw, s.Position, s.PositionPx));
-        }
-        return result;
+    /// <summary>Mix two resolved stop colors in PREMULTIPLIED RGBA (CSS Images 3 §3.4.2) at fraction
+    /// <paramref name="f"/>: the alpha is the linear interpolant, each color channel is alpha-weighted
+    /// (premultiply → lerp → unpremultiply) so a (semi-)transparent endpoint doesn't bleed its RGB.
+    /// Opaque-only inputs reduce to the plain RGB lerp. <paramref name="f"/> = 0 → <paramref name="a"/>,
+    /// 1 → <paramref name="b"/>. Shared by the color-hint sampler + the boundary-stop interpolation.</summary>
+    internal static (double R, double G, double B, double A) PremulMix(
+        (double R, double G, double B, double A) a, (double R, double G, double B, double A) b, double f)
+    {
+        var aOut = a.A + (b.A - a.A) * f;
+        if (aOut <= 0) return (0, 0, 0, 0);
+        double Ch(double ca, double cb) => (ca * a.A + (cb * b.A - ca * a.A) * f) / aOut;
+        return (Ch(a.R, b.R), Ch(a.G, b.G), Ch(a.B, b.B), aOut);
     }
 
-    private static bool TryResolveStopArgb(string colorRaw, uint currentColorArgb, out uint argb)
+    /// <summary>Color-interpolation HINT easing (CSS Images §3.4.2) — append the EXACT exponential
+    /// transition between two color stops as a row of sampled stops. The color at segment-relative
+    /// position <c>t ∈ [0, 1]</c> is <c>mix(c1, c2, t^p)</c> with <c>p = ln(0.5) / ln(H)</c>, where
+    /// <c>H</c> is the hint's relative position in the segment — so the 50% color lands exactly at the
+    /// hint (<c>H → 0</c> / <c>1</c> degenerate to a hard edge near the start / end). The two endpoint
+    /// stops are appended by the caller; this adds only the <see cref="HintSampleCount"/> − 1 INTERIOR
+    /// samples (premultiplied). A degenerate (coincident-position) segment adds nothing.</summary>
+    private static void AppendHintSamples(
+        List<ResolvedGradientStop> raw,
+        (double R, double G, double B, double A) c1, double pos1,
+        (double R, double G, double B, double A) c2, double pos2, double hintPos)
     {
-        var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
-            colorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
-        return TryResolveColor(resolved.Slot, currentColorArgb, out argb);
-    }
-
-    /// <summary>The 50% blend of two ARGB colors — the hint's midpoint color (CSS Images §3.4.2).
-    /// Interpolated in PREMULTIPLIED RGBA space per CSS Images 3 §3.4.2 (PR #237 review [P2]): the
-    /// alpha is the straight average, each color channel is the ALPHA-WEIGHTED average (equivalent to
-    /// premultiply → average → unpremultiply), so a midpoint involving a transparent / semi-transparent
-    /// color doesn't bleed the transparent side's RGB. Equal alphas (incl. two opaque colors, the
-    /// common case) reduce to the plain channel average — byte-identical with the prior behavior.</summary>
-    internal static uint Blend50(uint x, uint y)
-    {
-        var ax = (x >> 24) & 0xFFu;
-        var ay = (y >> 24) & 0xFFu;
-        var aSum = ax + ay;
-        var aOut = aSum / 2u;                      // straight average (matches the prior alpha blend)
-        uint Chan(int shift)
+        var span = pos2 - pos1;
+        if (span <= 0) return; // endpoints coincide → nothing between them
+        var h = Math.Clamp((hintPos - pos1) / span, 1e-6, 1.0 - 1e-6); // away from 0/1 (avoids inf / 0 power)
+        var p = Math.Log(0.5) / Math.Log(h);                          // f(H) = H^p = 0.5
+        for (var k = 1; k < HintSampleCount; k++)
         {
-            if (aSum == 0) return 0;               // both fully transparent → color is irrelevant (0)
-            var cx = (x >> shift) & 0xFFu;
-            var cy = (y >> shift) & 0xFFu;
-            return (cx * ax + cy * ay) / aSum;     // alpha-weighted (premultiplied) average
+            var t = (double)k / HintSampleCount;
+            var c = PremulMix(c1, c2, Math.Pow(t, p));
+            raw.Add(new ResolvedGradientStop(pos1 + t * span, c.R, c.G, c.B, c.A));
         }
-        return (aOut << 24) | (Chan(16) << 16) | (Chan(8) << 8) | Chan(0);
     }
 
     /// <summary>Phase 4 gradients (PR 1 review) — the SHARED stop pipeline for linear / radial / conic.
@@ -2697,27 +2676,26 @@ internal static class FragmentPainter
     private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
         IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
     {
-        // Color-interpolation hints (CSS Images §3.4.2) — replace each hint (a bare position between two
-        // color stops) with a synthetic stop at the hint position whose color is the 50% blend of the
-        // bracketing stops. A coarse approximation of the exact exponential easing (two linear segments
-        // meeting at the hint's midpoint color), but it puts the right color at the right place; a hint
-        // at the first/last position (invalid) is dropped. No hints → the same list (byte-identical).
-        gradientStops = ExpandColorHints(gradientStops, currentColorArgb);
-
         var n = gradientStops.Count;
         var col = new (double R, double G, double B, double A)[n];
         var pos = new double?[n];
         var ok = new bool[n];
+        var isHint = new bool[n]; // a color-interpolation hint (§3.4.2): position only, no color
         for (var i = 0; i < n; i++)
         {
             var s = gradientStops[i];
-            var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
-                s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
-            if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
+            isHint[i] = s.IsHint;
+            // A hint carries no color (it eases between its neighbors) — only resolve real stops.
+            if (!s.IsHint)
             {
-                ColorChannels(argb, out var r, out var g, out var b);
-                col[i] = (r, g, b, Alpha(argb) / 255.0);
-                ok[i] = true;
+                var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                    s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+                if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
+                {
+                    ColorChannels(argb, out var r, out var g, out var b);
+                    col[i] = (r, g, b, Alpha(argb) / 255.0);
+                    ok[i] = true;
+                }
             }
             pos[i] = s.Position
                 ?? (s.PositionPx is { } px && lineLengthCssPx > 0 ? px / lineLengthCssPx : (double?)null);
@@ -2741,13 +2719,29 @@ internal static class FragmentPainter
         }
         // Non-decreasing fixup (CSS Images §3.4.3) — a stop never precedes the prior one — keeping raw,
         // possibly out-of-range positions (running starts at −∞ so a negative first stop survives).
+        var fixedPos = new double[n];
         var running = double.NegativeInfinity;
-        var raw = new List<ResolvedGradientStop>(n);
         for (var i = 0; i < n; i++)
         {
             var p = pos[i]!.Value;
             if (p < running) p = running; else running = p;
-            if (ok[i]) raw.Add(new ResolvedGradientStop(p, col[i].R, col[i].G, col[i].B, col[i].A));
+            fixedPos[i] = p;
+        }
+        // Build the raw stop list: a real stop as-is; a color-interpolation HINT (§3.4.2) expands into a
+        // row of sampled stops easing between the bracketing color stops along the exact exponential
+        // curve (so the visible transition is faithful, not the old single-midpoint approximation). A
+        // hint at an edge, or one whose neighbor color doesn't resolve, contributes nothing (the plain
+        // gradient still renders). No hints → the real stops only (byte-identical with the pre-hint path).
+        var raw = new List<ResolvedGradientStop>(n);
+        for (var i = 0; i < n; i++)
+        {
+            if (isHint[i])
+            {
+                if (i > 0 && i < n - 1 && ok[i - 1] && ok[i + 1])
+                    AppendHintSamples(raw, col[i - 1], fixedPos[i - 1], col[i + 1], fixedPos[i + 1], fixedPos[i]);
+                continue;
+            }
+            if (ok[i]) raw.Add(new ResolvedGradientStop(fixedPos[i], col[i].R, col[i].G, col[i].B, col[i].A));
         }
         if (raw.Count == 0) return raw;
         if (raw.Count == 1)
@@ -2824,10 +2818,8 @@ internal static class FragmentPainter
                 // Interpolate in PREMULTIPLIED RGBA (CSS Images 3 §3.4.2; PR #237 review [P2]) so a
                 // boundary stop between a transparent / semi-transparent color and an opaque one carries
                 // the correct color (opaque-only segments are unaffected — byte-identical).
-                var aOut = a.A + (b.A - a.A) * f;
-                if (aOut <= 0) return (0, 0, 0, 0);
-                double Chan(double ca, double cb) => (ca * a.A + (cb * b.A - ca * a.A) * f) / aOut;
-                return (Chan(a.R, b.R), Chan(a.G, b.G), Chan(a.B, b.B), aOut);
+                return PremulMix(
+                    (a.R, a.G, a.B, a.A), (b.R, b.G, b.B, b.A), f);
             }
         }
         return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);

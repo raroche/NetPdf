@@ -155,7 +155,7 @@ internal static class SvgRasterizer
             case "polygon": DrawPoly(canvas, el, style, state, close: true); break;
             case "path": DrawPath(canvas, el, style, state); break;
             case "text": SvgText.Draw(canvas, el, style, state); break;
-            case "image": DrawImage(canvas, el, state); break;
+            case "image": DrawImage(canvas, el, style, state); break;
             case "use": DrawUse(canvas, el, style, state, depth); break;
             // Definitions / metadata — not rendered in place, NOT flagged by mere presence (a definition is
             // only "unsupported" when REFERENCED, which the url(#…) resolution flags). A <symbol> renders only
@@ -174,10 +174,10 @@ internal static class SvgRasterizer
 
     private static void DrawRect(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var x = Num(el, "x"); var y = Num(el, "y");
-        var w = Num(el, "width"); var h = Num(el, "height");
+        var x = Len(el, "x", state, style, LenAxis.X); var y = Len(el, "y", state, style, LenAxis.Y);
+        var w = Len(el, "width", state, style, LenAxis.X); var h = Len(el, "height", state, style, LenAxis.Y);
         if (!(w > 0) || !(h > 0)) return;
-        var rx = Num(el, "rx"); var ry = Num(el, "ry");
+        var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
         using var path = new SKPath();
         if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
         else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
@@ -186,18 +186,18 @@ internal static class SvgRasterizer
 
     private static void DrawCircle(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var r = Num(el, "r");
+        var r = Len(el, "r", state, style, LenAxis.Other);
         if (!(r > 0)) return;
         using var path = new SKPath();
-        path.AddCircle((float)Num(el, "cx"), (float)Num(el, "cy"), (float)r);
+        path.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r);
         FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawEllipse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var rx = Num(el, "rx"); var ry = Num(el, "ry");
+        var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
         if (!(rx > 0) || !(ry > 0)) return;
-        var cx = Num(el, "cx"); var cy = Num(el, "cy");
+        var cx = Len(el, "cx", state, style, LenAxis.X); var cy = Len(el, "cy", state, style, LenAxis.Y);
         using var path = new SKPath();
         path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
         FillAndStroke(canvas, path, style, state);
@@ -206,8 +206,8 @@ internal static class SvgRasterizer
     private static void DrawLine(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         using var path = new SKPath();
-        path.MoveTo((float)Num(el, "x1"), (float)Num(el, "y1"));
-        path.LineTo((float)Num(el, "x2"), (float)Num(el, "y2"));
+        path.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
+        path.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
         StrokeOnly(canvas, path, style, state);
     }
 
@@ -236,10 +236,10 @@ internal static class SvgRasterizer
     /// element's <c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> rect, preserving aspect ratio
     /// (<c>xMidYMid meet</c> — the default; an explicit <c>preserveAspectRatio="none"</c> stretches to
     /// fill). A non-<c>data:</c> href, a missing/zero rect, or undecodable bytes → unsupported flag.</summary>
-    private static void DrawImage(SKCanvas canvas, XElement el, SvgRenderState state)
+    private static void DrawImage(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var w = Num(el, "width");
-        var h = Num(el, "height");
+        var w = Len(el, "width", state, style, LenAxis.X);
+        var h = Len(el, "height", state, style, LenAxis.Y);
         var href = SvgAttr.HrefRaw(el);
         if (!(w > 0) || !(h > 0) || href is null
             || !href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
@@ -250,8 +250,8 @@ internal static class SvgRasterizer
         }
         using (image)
         {
-            var x = (float)Num(el, "x");
-            var y = (float)Num(el, "y");
+            var x = (float)Len(el, "x", state, style, LenAxis.X);
+            var y = (float)Len(el, "y", state, style, LenAxis.Y);
             var dest = new SKRect(x, y, x + (float)w, y + (float)h);
             var stretch = string.Equals(Attr(el, "preserveAspectRatio")?.Trim(), "none", StringComparison.OrdinalIgnoreCase);
             if (stretch || image.Width <= 0 || image.Height <= 0)
@@ -540,6 +540,38 @@ internal static class SvgRasterizer
 
     private static double Num(XElement el, string name) =>
         double.TryParse(TrimUnit(Attr(el, name)), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+
+    /// <summary>Which reference a <c>%</c> length resolves against (SVG 1.1 §7.10): an X-axis length
+    /// (x/width/cx/rx) → the viewport WIDTH; a Y-axis length (y/height/cy/ry) → the HEIGHT; an
+    /// "other" length (r) → the normalized diagonal <c>√((w²+h²)/2)</c>.</summary>
+    private enum LenAxis { X, Y, Other }
+
+    /// <summary>Resolve a geometry length attribute honoring units: <c>px</c>/<c>pt</c>/unitless (as-is),
+    /// <c>%</c> (against the viewport per <paramref name="axis"/>), and <c>em</c>/<c>rem</c> (against the
+    /// current font-size). Absent / unparseable → 0.</summary>
+    private static double Len(XElement el, string name, SvgRenderState state, SvgStyle style, LenAxis axis)
+    {
+        var raw = Attr(el, name);
+        if (string.IsNullOrWhiteSpace(raw)) return 0;
+        raw = raw.Trim();
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+        {
+            if (!double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) return 0;
+            var basis = axis switch
+            {
+                LenAxis.X => state.ViewportW,
+                LenAxis.Y => state.ViewportH,
+                _ => Math.Sqrt((state.ViewportW * state.ViewportW + state.ViewportH * state.ViewportH) / 2.0),
+            };
+            return pct / 100.0 * basis;
+        }
+        // em / rem resolve against the current font-size (rem ≈ em here — no separate root cascade).
+        if (raw.EndsWith("rem", StringComparison.OrdinalIgnoreCase))
+            return double.TryParse(raw[..^3], NumberStyles.Float, CultureInfo.InvariantCulture, out var rem) ? rem * style.FontSizePx : 0;
+        if (raw.EndsWith("em", StringComparison.OrdinalIgnoreCase))
+            return double.TryParse(raw[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var em) ? em * style.FontSizePx : 0;
+        return double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+    }
 
     private static double ParseLengthPx(string? raw, double fallback) =>
         double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : fallback;

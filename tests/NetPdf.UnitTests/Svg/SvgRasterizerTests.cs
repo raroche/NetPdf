@@ -201,6 +201,32 @@ public sealed class SvgRasterizerTests
         Assert.True(unsupported);
     }
 
+    // ---- SVG part 3 task 3: % / em lengths ----
+
+    [Fact]
+    public void Percentage_width_resolves_against_the_viewport()
+    {
+        // width="50%" of a 40-wide viewport → 20px → the rect covers x∈[0,20): painted at 10, empty at 30.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<rect x=\"0\" y=\"0\" width=\"50%\" height=\"100%\" fill=\"red\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(info!.PixelBytes[(20 * info.Width + 10) * 4 + 3] > 200); // inside the left half
+        Assert.Equal(0, info.PixelBytes[(20 * info.Width + 30) * 4 + 3]);    // past 50% → transparent
+    }
+
+    [Fact]
+    public void Em_length_resolves_against_the_font_size()
+    {
+        // font-size:10 → 3em = 30px wide rect over a 40px box: painted at x=10, transparent at x=35.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" font-size=\"10\">" +
+            "<rect x=\"0\" y=\"0\" width=\"3em\" height=\"40\" fill=\"red\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(info!.PixelBytes[(20 * info.Width + 10) * 4 + 3] > 200); // inside the 30px-wide rect
+        Assert.Equal(0, info.PixelBytes[(20 * info.Width + 35) * 4 + 3]);    // past 30px → transparent
+    }
+
     [Fact]
     public void Title_desc_metadata_are_not_flagged()
     {

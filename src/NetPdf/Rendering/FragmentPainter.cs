@@ -307,12 +307,39 @@ internal static class FragmentPainter
                     page.BeginRectangleClip(gcx, gcy, gcw, gch);
                     gradientSliceClipped = true;
                 }
+                // Single-layer gradient background-origin / -clip (parity with the url() image path +
+                // multi-layer gradient layers, PR #235): the axis / center / sweep spans the ORIGIN box
+                // (initial padding-box) and the shading is clipped to the CLIP box (initial border-box,
+                // rounded). Both boxes are built over the WHOLE composite box (so a sliced gradient stays
+                // continuous; the outer slice rect clip above limits the paint to this fragment), which
+                // SUBSUMES the per-slice axisTopPx/axisHeightPx for the converted gradient types. Null
+                // geometry (or a non-gradient box) → the box itself, byte-identical default.
+                (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? gradClip = null;
+                double gradOriginLeftPx = leftPx, gradOriginTopPx = topPx,
+                    gradOriginWidthPx = widthPx, gradOriginHeightPx = heightPx;
+                if (imageCache is not null
+                    && imageCache.GradientGeometryBoxes.TryGetValue(fragment.Box, out var gradGeom))
+                {
+                    var (goT, goR, goB, goL) = BackgroundAreaInset(style, gradGeom.OriginRaw, defaultArea: 'p');
+                    var (gcT, gcR, gcB, gcL) = BackgroundAreaInset(style, gradGeom.ClipRaw, defaultArea: 'b');
+                    var (gCompTopPx, gCompHeightPx, gCompRadiiPx) = CompositeRoundedBox(
+                        style, topPx, widthPx, heightPx,
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx);
+                    gradOriginLeftPx = leftPx + goL;
+                    gradOriginTopPx = gCompTopPx + goT;
+                    gradOriginWidthPx = Math.Max(0, widthPx - goL - goR);
+                    gradOriginHeightPx = Math.Max(0, gCompHeightPx - goT - goB);
+                    gradClip = (
+                        leftPx + gcL, gCompTopPx + gcT,
+                        Math.Max(0, widthPx - gcL - gcR), Math.Max(0, gCompHeightPx - gcT - gcB),
+                        InsetRadii(gCompRadiiPx, gcT, gcR, gcB, gcL));
+                }
                 if (imageCache is not null && document is not null
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
                 {
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
-                        diagnostics, ref gradientAlphaCapReported, axisTopPx, axisHeightPx);
+                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
+                        currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gradClip);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))

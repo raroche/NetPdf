@@ -241,12 +241,14 @@ internal static class DiagnosticCodes
     public const string LinkUriUnsupported001 = "LINK-URI-UNSUPPORTED-001";
 
     /// <summary>
-    /// Phase 4 — a rendered SVG image used a feature the first-cut renderer doesn't support, so part of it
-    /// did not draw: <c>&lt;text&gt;</c>, <c>&lt;image&gt;</c>, <c>&lt;use&gt;</c> / <c>&lt;defs&gt;</c> /
-    /// <c>&lt;symbol&gt;</c>, a gradient / pattern paint server (<c>fill="url(#…)"</c> → painted
-    /// transparent, NOT black), an unknown element, or content truncated by the depth / element budget. The
-    /// supported shapes still render. Surfaced once per SVG image. Severity:
-    /// <see cref="DiagnosticSeverity.Info"/>.
+    /// Phase 4 — a rendered SVG image used a feature the renderer doesn't support, so part of it did not
+    /// draw: an <c>&lt;image&gt;</c> with an EXTERNAL / non-<c>data:</c> href (no fetch), a
+    /// <c>&lt;pattern&gt;</c> paint server, a <c>clip-path</c> / <c>mask</c> / <c>filter</c> / <c>marker</c>
+    /// reference, an unresolved gradient ref (<c>fill="url(#…)"</c> → painted transparent, NOT black), an
+    /// element the renderer doesn't draw (e.g. <c>&lt;foreignObject&gt;</c> / <c>&lt;switch&gt;</c> /
+    /// <c>textPath</c>), or content truncated by the depth / element budget. Shapes, paths, text, gradients,
+    /// <c>&lt;use&gt;</c>/<c>&lt;symbol&gt;</c>, <c>data:</c> images, stroke dashes, opacity, and nested
+    /// viewports DO render. Surfaced once per SVG image. Severity: <see cref="DiagnosticSeverity.Info"/>.
     /// </summary>
     public const string CssSvgUnsupported001 = "CSS-SVG-UNSUPPORTED-001";
 

@@ -153,8 +153,10 @@ internal static class SvgRasterizer
         {
             case "g":
             case "a": // an anchor wraps children for rendering purposes
-            case "svg": // nested viewports approximated as a group this cut
                 foreach (var child in el.Elements()) RenderElement(canvas, child, style, state, depth + 1);
+                break;
+            case "svg": // a NESTED viewport — clip to x/y/width/height + scale a viewBox to fit
+                DrawNestedSvg(canvas, el, style, state, depth);
                 break;
             case "rect": DrawRect(canvas, el, style, state); break;
             case "circle": DrawCircle(canvas, el, style, state); break;
@@ -172,8 +174,8 @@ internal static class SvgRasterizer
             case "defs": case "symbol": case "title": case "desc": case "metadata": case "style":
             case "lineargradient": case "radialgradient": case "stop":
             case "pattern": case "clippath": case "mask": case "filter": case "marker": break;
-            // image / foreignObject / switch / textPath / … aren't rendered this cut — flag so the caller
-            // surfaces one diagnostic per image (PR-230 [P2]).
+            // foreignObject / switch / textPath / … aren't rendered — flag so the caller surfaces one
+            // diagnostic per image (PR-230 [P2]).
             default: state.SawUnsupported = true; break;
         }
         canvas.RestoreToCount(restore);
@@ -293,6 +295,45 @@ internal static class SvgRasterizer
         if (bytes.Length == 0) return null;
         using var data = SKData.CreateCopy(bytes);
         return SKImage.FromEncodedData(data);
+    }
+
+    /// <summary>Render a NESTED <c>&lt;svg&gt;</c> as a proper viewport (SVG §7.2): translate to its
+    /// <c>x</c>/<c>y</c>, CLIP to its <c>width</c>/<c>height</c> (defaulting to the parent viewport when
+    /// absent), and — when it carries a <c>viewBox</c> — SCALE the content to fit (<c>xMidYMid meet</c>,
+    /// centered). The nested viewport becomes the new <c>%</c> reference for descendants.</summary>
+    private static void DrawNestedSvg(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, int depth)
+    {
+        var x = Len(el, "x", state, style, LenAxis.X);
+        var y = Len(el, "y", state, style, LenAxis.Y);
+        var w = Len(el, "width", state, style, LenAxis.X);
+        var h = Len(el, "height", state, style, LenAxis.Y);
+        if (w <= 0) w = state.ViewportW;   // width/height default to 100% of the parent viewport
+        if (h <= 0) h = state.ViewportH;
+        if (!(w > 0) || !(h > 0)) return;
+
+        var save = canvas.Save();
+        canvas.Translate((float)x, (float)y);
+        canvas.ClipRect(new SKRect(0, 0, (float)w, (float)h));
+        var vb = ParseViewBox(Attr(el, "viewBox"));
+        var newVpW = w;
+        var newVpH = h;
+        if (vb.W > 0 && vb.H > 0)
+        {
+            var scale = Math.Min(w / vb.W, h / vb.H); // meet
+            canvas.Translate((float)((w - vb.W * scale) / 2.0), (float)((h - vb.H * scale) / 2.0)); // xMidYMid
+            canvas.Scale((float)scale);
+            canvas.Translate((float)-vb.X, (float)-vb.Y);
+            newVpW = vb.W;   // descendants resolve % against the viewBox extent
+            newVpH = vb.H;
+        }
+        var prevW = state.ViewportW;
+        var prevH = state.ViewportH;
+        state.ViewportW = newVpW;
+        state.ViewportH = newVpH;
+        foreach (var child in el.Elements()) RenderElement(canvas, child, style, state, depth + 1);
+        state.ViewportW = prevW;
+        state.ViewportH = prevH;
+        canvas.RestoreToCount(save);
     }
 
     /// <summary>Clone a referenced element / symbol at the <c>&lt;use&gt;</c> position (SVG §5.6). A

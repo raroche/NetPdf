@@ -2752,11 +2752,15 @@ flags the categories):
      properties (family/size/weight/style), and fill/stroke incl. a gradient fill; (c) `<use>`/`<symbol>`/
      `<defs>` — `<use href="#id" x= y=>` clones a referenced shape/group/symbol with inherited paint, bare
      `<defs>`/`<symbol>` render nothing; plus `fill-opacity`/`stroke-opacity` and `skewX`/`skewY` transforms.
-     **SVG residuals (later):** `<image>` (embedded/external raster href), `<pattern>` paint servers, `%`/`em`
-     lengths, `stroke-dasharray`, `clip-path`/`mask`/`filter` element refs, `textPath`/`rotate`/`textLength`,
-     bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration), nested-viewport
-     `<symbol>` width/height clip+scale, native vector SVG → PDF operators (raster first cut), inline
-     `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
+     **SVG part 3 shipped:** `stroke-dasharray`/`-dashoffset`/`-linecap`/`-linejoin`/`-miterlimit`;
+     `<image>` from a `data:` URI (external/network href still unsupported — no fetch); `%`/`em`/`rem`
+     geometry lengths (% vs the viewport, em/rem vs font-size); element/group `opacity` (a SaveLayer
+     transparency layer); nested `<svg>` viewport (x/y/width/height clip + viewBox scale, xMidYMid meet).
+     **SVG residuals (later):** `<pattern>` paint servers (recursive tile + units), `clip-path`/`mask`/
+     `filter`/`marker` element refs, `textPath`/`rotate`/`textLength`, bidi/complex-script shaping (Skia
+     default shaping only — no HarfBuzz integration), `<symbol>` nested-viewport clip+scale via `<use>`,
+     native vector SVG → PDF operators (raster first cut), inline `<svg>` element layout integration (only
+     `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't
      depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow

@@ -266,6 +266,33 @@ public sealed class SvgRasterizerTests
         Assert.InRange(a, 110, 145); // ~50%, not ~75% (≈191)
     }
 
+    // ---- SVG part 3 task 5: nested <svg> viewport ----
+
+    [Fact]
+    public void Nested_svg_clips_content_to_its_viewport()
+    {
+        // A nested <svg> at (10,10) size 15×15 holds an oversized rect; it's CLIPPED to [10,25).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<svg x=\"10\" y=\"10\" width=\"15\" height=\"15\">" +
+            "<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"red\"/></svg></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(info!.PixelBytes[(15 * info.Width + 15) * 4 + 3] > 200); // inside the nested viewport
+        Assert.Equal(0, info.PixelBytes[(30 * info.Width + 30) * 4 + 3]);    // clipped away outside it
+    }
+
+    [Fact]
+    public void Nested_svg_viewbox_scales_content_to_fit()
+    {
+        // A 10×10 viewBox scaled into a 40×40 nested svg: the 10-unit rect fills the whole 40px box.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<svg x=\"0\" y=\"0\" width=\"40\" height=\"40\" viewBox=\"0 0 10 10\">" +
+            "<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"red\"/></svg></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(info!.PixelBytes[(35 * info.Width + 35) * 4 + 3] > 200); // scaled to fill (else empty here)
+    }
+
     [Fact]
     public void Title_desc_metadata_are_not_flagged()
     {

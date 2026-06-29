@@ -239,9 +239,28 @@ public sealed class SingleLayerGradientGeometryTests
     [InlineData("")]                              // all defaults
     [InlineData("background-repeat:repeat;")]     // the initial
     [InlineData("background-position:0 0;")]      // the initial (AngleSharp canonicalizes to unitless 0)
+    [InlineData("background-position:0px 0%;")]   // PR #238 [P3] — mixed zero units are still zero
+    [InlineData("background-position:0% 0px;")]   // PR #238 [P3]
+    [InlineData("background-position:0px 0px;")]
+    [InlineData("background-position:left top;")] // left/top = 0% on each axis
     [InlineData("background-origin:content-box;background-clip:content-box;")] // origin/clip ARE honored → no warning
     public void Initial_or_honored_geometry_raises_no_variant_warning(string style)
     {
         Assert.False(HasVariantWarning(style));
+    }
+
+    [Fact]
+    public void Degenerate_origin_box_translucent_gradient_does_not_warn_over_cap()
+    {
+        // PR #238 [P3] — a content-box origin on a zero-content-width box collapses the gradient origin
+        // to 0px. A translucent gradient there is a silent NO-OP, not an over-cap → no
+        // CSS-GRADIENT-ALPHA-UNSUPPORTED-001 (which would mislead — the bitmap never exceeded the cap).
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:0px;height:60px;border:10px solid black;background-origin:content-box;" +
+            "background-image:linear-gradient(rgba(255,0,0,0.5), blue)\"></div>" +
+            "</body></html>";
+        var result = HtmlPdf.ConvertDetailed(html);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssGradientAlphaUnsupported001);
     }
 }

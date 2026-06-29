@@ -2690,8 +2690,9 @@ flags the categories):
      color stops (px + absolute units; resolve against the gradient-line length); elliptical radial
      shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
      raster for blur). **Gradient refinements SHIPPED (PR — gradient-refinements):** double-position
-     stops (§3.4), color-interpolation HINTS (§3.4.2 — the EXACT exponential easing curve `mix(c1, c2,
-     t^p)` with `p = ln(0.5)/ln(H)`, sampled as a row of stops), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
+     stops (§3.4), color-interpolation HINTS (§3.4.2 — the exponential easing curve `mix(c1, c2,
+     t^p)` with `p = ln(0.5)/ln(H)`, SAMPLED as a row of stops with an exact stop pinned at the hint
+     position and linear PDF interpolation between samples), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
      to a Skia raster — `LinearGradientRasterizer`/`RadialGradientRasterizer` → image + `/SMask`;
      opaque stays the native shading). Stop colors interpolate in PREMULTIPLIED RGBA (§3.4.2) so a
      midpoint/boundary next to a (semi-)transparent stop doesn't bleed its RGB; a translucent gradient

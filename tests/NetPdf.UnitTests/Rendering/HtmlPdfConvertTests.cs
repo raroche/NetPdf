@@ -139,6 +139,23 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_pins_an_exact_stop_at_a_non_grid_aligned_hint()
+    {
+        // PR #238 [P2] — the hint sample grid is 1/16-spaced, so a 37% hint isn't grid-aligned. A stop is
+        // pinned at the EXACT hint position carrying the 50% color, so the midpoint (`0.5 0 0.5` for
+        // red↔blue) lands precisely at offset 0.37 in the shading's /Bounds — not at the nearest 1/16.
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;" +
+            "background-image:linear-gradient(to right, red, 37%, blue)\"></div>" +
+            "</body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.Contains("/ShadingType 2", text);
+        Assert.Contains("0.5 0 0.5", text);          // the pinned 50% color
+        Assert.Matches(@"/Bounds \[[^\]]*\b0\.37\b", text); // ... at the exact hint offset 0.37
+    }
+
+    [Fact]
     public void Convert_renders_a_double_position_stop_gradient_recovered_from_anglesharp()
     {
         // AngleSharp.Css drops a gradient with a double-position stop; the preprocessor recovers the

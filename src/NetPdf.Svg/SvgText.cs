@@ -23,11 +23,11 @@ internal static class SvgText
     public static void Draw(SKCanvas canvas, XElement text, SvgStyle style, SvgRenderState state)
     {
         var runs = new List<Run>();
-        CollectRuns(text, style, runs, topLevel: true);
+        CollectRuns(text, style, runs, state, topLevel: true);
         if (runs.Count == 0) return;
 
-        var startX = (float)NumOr(text, "x", 0);
-        var startY = (float)NumOr(text, "y", 0);
+        var startX = HasLen(text, "x", state, style, LenAxis.X, out var sx) ? sx : 0f;
+        var startY = HasLen(text, "y", state, style, LenAxis.Y, out var sy) ? sy : 0f;
 
         // A run with an absolute x establishes a new "text chunk" (SVG §10.5); text-anchor is resolved
         // independently PER chunk (PR-231 review [P2/P3]) — so multiple centered <tspan x=…> labels inside
@@ -112,7 +112,7 @@ internal static class SvgText
     /// <summary>Flatten the text content into drawable runs: direct text nodes plus one level of
     /// <c>&lt;tspan&gt;</c> (each with its own overrides + dx/dy/x/y). Whitespace is collapsed (the SVG
     /// default).</summary>
-    private static void CollectRuns(XElement el, SvgStyle inherited, List<Run> runs, bool topLevel)
+    private static void CollectRuns(XElement el, SvgStyle inherited, List<Run> runs, SvgRenderState state, bool topLevel)
     {
         foreach (var node in el.Nodes())
         {
@@ -124,13 +124,15 @@ internal static class SvgText
                     break;
                 case XElement child when child.Name.LocalName.Equals("tspan", StringComparison.OrdinalIgnoreCase):
                     var childStyle = ResolveRunStyle(child, inherited);
-                    var ax = HasNum(child, "x", out var xv) ? (float?)xv : null;
-                    var ay = HasNum(child, "y", out var yv) ? (float?)yv : null;
-                    var dx = (float)NumOr(child, "dx", 0);
-                    var dy = (float)NumOr(child, "dy", 0);
+                    // x/y/dx/dy resolve against the viewport (% — x against width, y against height) and the
+                    // run's font-size (em/rem); px/pt/unitless pass through (SVG §7.10 / §10.5).
+                    var ax = HasLen(child, "x", state, childStyle, LenAxis.X, out var xv) ? (float?)xv : null;
+                    var ay = HasLen(child, "y", state, childStyle, LenAxis.Y, out var yv) ? (float?)yv : null;
+                    var dx = HasLen(child, "dx", state, childStyle, LenAxis.X, out var dxv) ? dxv : 0f;
+                    var dy = HasLen(child, "dy", state, childStyle, LenAxis.Y, out var dyv) ? dyv : 0f;
                     // A tspan can hold its own text + nested tspans; flatten the text, apply the offset to the first run.
                     var before = runs.Count;
-                    CollectRuns(child, childStyle, runs, topLevel: false);
+                    CollectRuns(child, childStyle, runs, state, topLevel: false);
                     if (runs.Count > before && (ax is not null || ay is not null || dx != 0 || dy != 0))
                         runs[before] = runs[before] with { AbsX = ax, AbsY = ay, Dx = dx, Dy = dy };
                     break;
@@ -240,15 +242,40 @@ internal static class SvgText
         return inner.StartsWith('#') && inner.Length > 1 ? inner[1..] : null;
     }
 
-    private static bool HasNum(XElement el, string name, out double value)
+    /// <summary>Which viewport extent a <c>%</c> coordinate resolves against (SVG §7.10): an X-axis
+    /// coordinate (x/dx) → the viewport WIDTH; a Y-axis coordinate (y/dy) → the HEIGHT.</summary>
+    private enum LenAxis { X, Y }
+
+    /// <summary>Resolve a text coordinate honoring units: <c>%</c> (against the viewport per
+    /// <paramref name="axis"/>), <c>em</c>/<c>rem</c> (against the run's font-size), and
+    /// <c>px</c>/<c>pt</c>/unitless (as-is). Returns <see langword="false"/> when the attribute is absent
+    /// (so an absolute <c>x</c> establishing a text chunk is distinguished from an unset one) or unparseable.</summary>
+    private static bool HasLen(XElement el, string name, SvgRenderState state, SvgStyle style, LenAxis axis, out float value)
     {
         value = 0;
-        if (el.Attribute(name)?.Value is { } raw && TryUnit(raw, out var v)) { value = v; return true; }
-        return false;
+        var raw = el.Attribute(name)?.Value;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        raw = raw.Trim();
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+        {
+            if (!double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) return false;
+            value = (float)(pct / 100.0 * (axis == LenAxis.X ? state.ViewportW : state.ViewportH));
+            return true;
+        }
+        if (raw.EndsWith("rem", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!double.TryParse(raw[..^3], NumberStyles.Float, CultureInfo.InvariantCulture, out var rem)) return false;
+            value = (float)(rem * style.FontSizePx);
+            return true;
+        }
+        if (raw.EndsWith("em", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!double.TryParse(raw[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var em)) return false;
+            value = (float)(em * style.FontSizePx);
+            return true;
+        }
+        return TryUnit(raw, out value);
     }
-
-    private static double NumOr(XElement el, string name, double fallback) =>
-        el.Attribute(name)?.Value is { } raw && TryUnit(raw, out var v) ? v : fallback;
 
     private static bool TryUnit(string raw, out float value)
     {

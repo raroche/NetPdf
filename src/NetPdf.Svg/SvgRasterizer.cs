@@ -143,6 +143,10 @@ internal static class SvgRasterizer
         var transform = SvgTransform.Parse(Attr(el, "transform"));
         var restore = canvas.Save();
         if (transform is { } m) canvas.Concat(in m);
+        // clip-path="url(#id)" intersects the element (and its subtree) with the union of the referenced
+        // <clipPath>'s child geometry (§14.3). Applied in the element's local space, before the opacity
+        // layer so the group is clipped.
+        ApplyClipPath(canvas, el, style, state);
         if (opacity < 1f)
         {
             using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha((byte)Math.Round(opacity * 255f)) };
@@ -162,8 +166,8 @@ internal static class SvgRasterizer
             case "circle": DrawCircle(canvas, el, style, state); break;
             case "ellipse": DrawEllipse(canvas, el, style, state); break;
             case "line": DrawLine(canvas, el, style, state); break;
-            case "polyline": DrawPoly(canvas, el, style, state, close: false); break;
-            case "polygon": DrawPoly(canvas, el, style, state, close: true); break;
+            case "polyline":
+            case "polygon": DrawPoly(canvas, el, style, state); break;
             case "path": DrawPath(canvas, el, style, state); break;
             case "text": SvgText.Draw(canvas, el, style, state); break;
             case "image": DrawImage(canvas, el, style, state); break;
@@ -183,63 +187,104 @@ internal static class SvgRasterizer
 
     // ---- shapes ----
 
+    /// <summary>Build the geometry <see cref="SKPath"/> for a basic shape element (rect / circle / ellipse /
+    /// line / polyline / polygon / path) in the element's user space, or <see langword="null"/> when the
+    /// element isn't a basic shape or is geometrically empty. Shared by the draw walk and the
+    /// <c>clip-path</c> resolver (a <c>&lt;clipPath&gt;</c> unions its children's geometry).</summary>
+    private static SKPath? BuildShapePath(XElement el, SvgStyle style, SvgRenderState state)
+    {
+        switch (el.Name.LocalName.ToLowerInvariant())
+        {
+            case "rect":
+            {
+                var x = Len(el, "x", state, style, LenAxis.X); var y = Len(el, "y", state, style, LenAxis.Y);
+                var w = Len(el, "width", state, style, LenAxis.X); var h = Len(el, "height", state, style, LenAxis.Y);
+                if (!(w > 0) || !(h > 0)) return null;
+                var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
+                var path = new SKPath();
+                if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
+                else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
+                return path;
+            }
+            case "circle":
+            {
+                var r = Len(el, "r", state, style, LenAxis.Other);
+                if (!(r > 0)) return null;
+                var path = new SKPath();
+                path.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r);
+                return path;
+            }
+            case "ellipse":
+            {
+                var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
+                if (!(rx > 0) || !(ry > 0)) return null;
+                var cx = Len(el, "cx", state, style, LenAxis.X); var cy = Len(el, "cy", state, style, LenAxis.Y);
+                var path = new SKPath();
+                path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
+                return path;
+            }
+            case "line":
+            {
+                var path = new SKPath();
+                path.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
+                path.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
+                return path;
+            }
+            case "polyline":
+            case "polygon":
+            {
+                var pts = ParsePoints(Attr(el, "points"));
+                if (pts.Count < 2) return null;
+                var path = new SKPath();
+                path.MoveTo(pts[0]);
+                for (var i = 1; i < pts.Count; i++) path.LineTo(pts[i]);
+                if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase)) path.Close();
+                return path;
+            }
+            case "path":
+            {
+                var d = Attr(el, "d");
+                if (string.IsNullOrWhiteSpace(d)) return null;
+                return SKPath.ParseSvgPathData(d); // null on malformed data
+            }
+            default: return null;
+        }
+    }
+
     private static void DrawRect(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var x = Len(el, "x", state, style, LenAxis.X); var y = Len(el, "y", state, style, LenAxis.Y);
-        var w = Len(el, "width", state, style, LenAxis.X); var h = Len(el, "height", state, style, LenAxis.Y);
-        if (!(w > 0) || !(h > 0)) return;
-        var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
-        using var path = new SKPath();
-        if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
-        else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawCircle(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var r = Len(el, "r", state, style, LenAxis.Other);
-        if (!(r > 0)) return;
-        using var path = new SKPath();
-        path.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r);
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawEllipse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
-        if (!(rx > 0) || !(ry > 0)) return;
-        var cx = Len(el, "cx", state, style, LenAxis.X); var cy = Len(el, "cy", state, style, LenAxis.Y);
-        using var path = new SKPath();
-        path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawLine(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        using var path = new SKPath();
-        path.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
-        path.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
-        StrokeOnly(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) StrokeOnly(canvas, path, style, state);
     }
 
-    private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, bool close)
+    private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var pts = ParsePoints(Attr(el, "points"));
-        if (pts.Count < 2) return;
-        using var path = new SKPath();
-        path.MoveTo(pts[0]);
-        for (var i = 1; i < pts.Count; i++) path.LineTo(pts[i]);
-        if (close) path.Close();
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var d = Attr(el, "d");
-        if (string.IsNullOrWhiteSpace(d)) return;
-        using var path = SKPath.ParseSvgPathData(d);
-        if (path is null) return; // malformed path data → skip
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     /// <summary>Draw an <c>&lt;image&gt;</c> from a SELF-CONTAINED <c>data:</c> URI (no external fetch —
@@ -428,6 +473,92 @@ internal static class SvgRasterizer
         else
             RenderElement(canvas, target, style, state, depth + 1);
         canvas.RestoreToCount(restore);
+    }
+
+    // ---- clip-path ----
+
+    /// <summary>Apply a <c>clip-path="url(#id)"</c> reference (SVG §14.3): clip the canvas to the union of the
+    /// referenced <c>&lt;clipPath&gt;</c>'s child geometry. <c>clipPathUnits</c> is honored —
+    /// <c>userSpaceOnUse</c> (the default) treats the geometry as user-space coordinates;
+    /// <c>objectBoundingBox</c> maps the unit square onto the clipped element's geometry bounding box. A
+    /// non-<c>url(#…)</c> value, a missing / non-<c>&lt;clipPath&gt;</c> target, or empty geometry is flagged
+    /// unsupported (and leaves the element unclipped rather than wrongly clipping it all away).</summary>
+    private static void ApplyClipPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var raw = SvgAttr.Presentation(el, "clip-path");
+        if (raw is null) return;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+        if (PaintServerId(raw) is not { } id || !state.Ids.TryGetValue(id, out var clip)
+            || !clip.Name.LocalName.Equals("clipPath", StringComparison.OrdinalIgnoreCase))
+        {
+            state.SawUnsupported = true; // url() to a non-clipPath / geometry-box / unresolved → not applied
+            return;
+        }
+        var obb = (Attr(clip, "clipPathUnits") ?? "userSpaceOnUse")
+            .Trim().Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase);
+        var bbox = obb ? ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) : (SKRect?)null;
+        if (obb && bbox is not { Width: > 0, Height: > 0 }) { state.SawUnsupported = true; return; }
+        using var geom = BuildClipPathGeometry(clip, style, state);
+        if (geom is null || geom.IsEmpty) { state.SawUnsupported = true; return; }
+        if (obb)
+        {
+            var b = bbox!.Value;
+            geom.Transform(new SKMatrix { ScaleX = b.Width, ScaleY = b.Height, TransX = b.Left, TransY = b.Top, Persp2 = 1 });
+        }
+        canvas.ClipPath(geom, SKClipOperation.Intersect, antialias: true);
+    }
+
+    /// <summary>Union the geometry of a <c>&lt;clipPath&gt;</c>'s child shapes (each honoring its own
+    /// <c>transform</c>) into a single fill path. A child <c>&lt;use&gt;</c> resolving to a basic shape is
+    /// followed. Returns <see langword="null"/> when no child contributes geometry.</summary>
+    private static SKPath? BuildClipPathGeometry(XElement clip, SvgStyle style, SvgRenderState state)
+    {
+        SKPath? acc = null;
+        foreach (var child in clip.Elements())
+        {
+            var target = child;
+            SKMatrix? useOffset = null;
+            if (child.Name.LocalName.Equals("use", StringComparison.OrdinalIgnoreCase))
+            {
+                if (SvgAttr.HrefId(child) is not { } uid || !state.Ids.TryGetValue(uid, out var ut)) continue;
+                target = ut;
+                useOffset = SKMatrix.CreateTranslation((float)Len(child, "x", state, style, LenAxis.X), (float)Len(child, "y", state, style, LenAxis.Y));
+            }
+            using var sp = BuildShapePath(target, style, state);
+            if (sp is null || sp.IsEmpty) continue;
+            if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) sp.Transform(tm);
+            if (useOffset is { } uo) sp.Transform(uo);
+            if (acc is null) acc = new SKPath(sp);
+            else acc.AddPath(sp);
+        }
+        return acc;
+    }
+
+    /// <summary>The geometry bounding box of an element in its OWN coordinate space (its own
+    /// <c>transform</c> excluded, descendant transforms included) — the reference box for an
+    /// <c>objectBoundingBox</c> clip / paint server. Unions the bounds of every descendant basic shape.</summary>
+    private static SKRect? ComputeBBox(XElement el, SvgStyle inherited, SvgRenderState state, int depth, SKMatrix ctm, bool isRoot)
+    {
+        if (depth > MaxDepth) return null;
+        var style = ResolveStyle(el, inherited, state);
+        var local = ctm;
+        if (!isRoot && SvgTransform.Parse(Attr(el, "transform")) is { } m) local = ctm.PreConcat(m);
+        SKRect? acc = null;
+        using (var sp = BuildShapePath(el, style, state))
+            if (sp is not null && !sp.IsEmpty) acc = local.MapRect(sp.Bounds);
+        foreach (var child in el.Elements())
+            acc = UnionRect(acc, ComputeBBox(child, style, state, depth + 1, local, isRoot: false));
+        return acc;
+    }
+
+    private static SKRect? UnionRect(SKRect? a, SKRect? b)
+    {
+        if (a is null) return b;
+        if (b is null) return a;
+        var r = a.Value;
+        r.Union(b.Value);
+        return r;
     }
 
     // ---- fill / stroke ----

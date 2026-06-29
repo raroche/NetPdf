@@ -189,6 +189,63 @@ public sealed class SvgRasterizerTests
         Assert.True(info.PixelBytes[(10 * info.Width + 20) * 4 + 3] > 200); // center: painted
     }
 
+    // PR #240 review [P1] — a data: <image> runs the same pre-decode safety gates as any other image.
+
+    private static byte[] FakePngWithDeclaredDimensions(uint w, uint h)
+    {
+        // PNG signature + a single IHDR chunk declaring (w, h). ImageSafetyValidator peeks the IHDR
+        // dimensions (big-endian) WITHOUT decoding — a tiny file can claim a huge canvas.
+        var b = new System.Collections.Generic.List<byte> { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        b.AddRange(new byte[] { 0, 0, 0, 13 });          // IHDR length
+        b.AddRange(new byte[] { (byte)'I', (byte)'H', (byte)'D', (byte)'R' });
+        b.AddRange(new[] { (byte)(w >> 24), (byte)(w >> 16), (byte)(w >> 8), (byte)w });
+        b.AddRange(new[] { (byte)(h >> 24), (byte)(h >> 16), (byte)(h >> 8), (byte)h });
+        b.AddRange(new byte[] { 8, 6, 0, 0, 0, 0, 0, 0, 0 }); // bit-depth/colour/…, fake CRC
+        return b.ToArray();
+    }
+
+    private static bool DataImageRenders(string dataUri)
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
+            $"<image x=\"0\" y=\"0\" width=\"20\" height=\"20\" preserveAspectRatio=\"none\" href=\"{dataUri}\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        return !unsupported && info!.PixelBytes[(10 * info.Width + 10) * 4 + 3] > 200;
+    }
+
+    [Fact]
+    public void Image_with_oversized_declared_dimensions_is_rejected()
+    {
+        // A 0x7FFFFFFF×0x7FFFFFFF PNG (decompression-bomb shape) is rejected by the dimension cap.
+        var uri = "data:image/png;base64," + Convert.ToBase64String(FakePngWithDeclaredDimensions(0x7FFFFFFF, 0x7FFFFFFF));
+        Assert.False(DataImageRenders(uri));
+    }
+
+    [Fact]
+    public void Image_with_a_non_image_mime_is_rejected()
+    {
+        var uri = "data:text/plain;base64," + Convert.ToBase64String(SyntheticRasterImage.BuildOpaquePng(8, 8));
+        Assert.False(DataImageRenders(uri));
+    }
+
+    [Fact]
+    public void Image_with_invalid_base64_is_rejected()
+    {
+        Assert.False(DataImageRenders("data:image/png;base64,@@@not-base64@@@"));
+    }
+
+    [Fact]
+    public void Image_preserve_aspect_ratio_slice_is_flagged_unsupported()
+    {
+        // PR #240 review [P3] — only xMidYMid meet / none are honored; slice etc. flags (best-effort meet).
+        SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
+            $"<image x=\"0\" y=\"0\" width=\"20\" height=\"20\" preserveAspectRatio=\"xMinYMin slice\" href=\"{PngDataUri(8, 8)}\"/></svg>"),
+            out var unsupported);
+        Assert.True(unsupported);
+    }
+
     [Fact]
     public void Image_with_an_external_href_is_unsupported()
     {
@@ -291,6 +348,44 @@ public sealed class SvgRasterizerTests
             "<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"red\"/></svg></svg>"), out _);
         Assert.NotNull(info);
         Assert.True(info!.PixelBytes[(35 * info.Width + 35) * 4 + 3] > 200); // scaled to fill (else empty here)
+    }
+
+    [Theory]
+    [InlineData("width=\"0\" height=\"15\"")]   // PR #240 review [P2] — explicit zero → nothing
+    [InlineData("width=\"15\" height=\"0\"")]
+    [InlineData("width=\"-5\" height=\"15\"")]   // negative → nothing
+    public void Nested_svg_with_explicit_non_positive_size_renders_nothing(string size)
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<svg x=\"5\" y=\"5\" {size}><rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"red\"/></svg></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, info!.PixelBytes[(10 * info.Width + 10) * 4 + 3]); // nothing drawn
+    }
+
+    [Fact]
+    public void Nested_svg_with_omitted_size_defaults_to_the_parent_viewport()
+    {
+        // No width/height → 100% of the 40×40 parent: the rect fills and paints at (35,35).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<svg><rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"red\"/></svg></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(info!.PixelBytes[(35 * info.Width + 35) * 4 + 3] > 200);
+    }
+
+    [Fact]
+    public void Use_x_resolves_a_percentage_against_the_viewport()
+    {
+        // PR #240 review [P3] — <use x="50%"> translates the clone by 20px (50% of 40). The referenced
+        // 10×10 rect at local (0,0) lands at x∈[20,30): painted at (25,5), empty at (5,5).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<defs><rect id=\"r\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"red\"/></defs>" +
+            "<use href=\"#r\" x=\"50%\" y=\"0\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(info!.PixelBytes[(5 * info.Width + 25) * 4 + 3] > 200); // shifted to x≈20+
+        Assert.Equal(0, info.PixelBytes[(5 * info.Width + 5) * 4 + 3]);     // not at the un-shifted origin
     }
 
     [Fact]

@@ -264,7 +264,9 @@ internal static class SvgRasterizer
             var x = (float)Len(el, "x", state, style, LenAxis.X);
             var y = (float)Len(el, "y", state, style, LenAxis.Y);
             var dest = new SKRect(x, y, x + (float)w, y + (float)h);
-            var stretch = string.Equals(Attr(el, "preserveAspectRatio")?.Trim(), "none", StringComparison.OrdinalIgnoreCase);
+            var par = Attr(el, "preserveAspectRatio")?.Trim();
+            if (!IsSupportedPreserveAspectRatio(par)) state.SawUnsupported = true; // best-effort meet + flag
+            var stretch = string.Equals(par, "none", StringComparison.OrdinalIgnoreCase);
             if (stretch || image.Width <= 0 || image.Height <= 0)
             {
                 canvas.DrawImage(image, dest);
@@ -281,35 +283,75 @@ internal static class SvgRasterizer
         }
     }
 
-    /// <summary>Decode a <c>data:[mime][;base64],payload</c> image URI to an <see cref="SKImage"/>, or
-    /// <see langword="null"/> if it isn't base64 / doesn't decode. Self-contained — no I/O.</summary>
+    // The encoded base64 payload is capped so a hostile data: URI can't force a huge allocation before
+    // the byte-level caps run (base64 ≈ 4/3 of the decoded bytes; the decoded bytes are capped by
+    // ImageSafetyValidator.MaxBytes).
+    private const int MaxDataUriBase64Chars = (NetPdf.Pdf.Images.ImageSafetyValidator.MaxBytes / 3) * 4 + 8;
+
+    /// <summary>The renderer honors only <c>xMidYMid meet</c> (the default) + <c>none</c> (image stretch);
+    /// any other align/slice value (e.g. <c>slice</c>, <c>xMinYMin</c>) is NOT implemented and is flagged
+    /// (PR #240 [P3]) so the caller surfaces a diagnostic rather than rendering it wrong silently. Absent /
+    /// empty / <c>xMidYMid</c> / <c>xMidYMid meet</c> / <c>none</c> are supported.</summary>
+    private static bool IsSupportedPreserveAspectRatio(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return true;
+        var v = raw.Trim().ToLowerInvariant();
+        return v is "none" or "xmidymid" or "xmidymid meet";
+    }
+
+    /// <summary>Decode a <c>data:[mime];base64,payload</c> image URI to an <see cref="SKImage"/> — running
+    /// the SAME pre-decode safety gates the rest of the engine applies to images (PR #240 [P1]): an
+    /// <c>image/*</c> MIME allowlist, the encoded-size cap, the magic-byte + DECLARED-dimension caps
+    /// (<see cref="NetPdf.Pdf.Images.ImageSafetyValidator"/> — guards a decompression bomb: a tiny
+    /// compressed file declaring huge dimensions), and a decoded-raster pixel cap. Returns
+    /// <see langword="null"/> (→ the caller flags unsupported) for any non-data / non-image / over-cap /
+    /// undecodable input. Self-contained — no I/O / fetch.</summary>
     private static SKImage? DecodeDataUriImage(string dataUri)
     {
         var comma = dataUri.IndexOf(',');
-        if (comma < 0) return null;
-        var meta = dataUri.AsSpan(5, comma - 5);
+        if (comma <= 5) return null; // need "data:" + a non-empty meta + a comma
+        var meta = dataUri.Substring(5, comma - 5);
         if (!meta.Contains("base64", StringComparison.OrdinalIgnoreCase)) return null; // only base64 payloads
+        // MIME allowlist: the type must be image/* (a defense-in-depth check before the magic sniff).
+        var semi = meta.IndexOf(';');
+        var mime = (semi >= 0 ? meta[..semi] : meta).Trim();
+        if (!mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) return null;
+        var payload = dataUri[(comma + 1)..].Trim();
+        if (payload.Length == 0 || payload.Length > MaxDataUriBase64Chars) return null; // encoded-size cap
         byte[] bytes;
-        try { bytes = Convert.FromBase64String(dataUri[(comma + 1)..].Trim()); }
+        try { bytes = Convert.FromBase64String(payload); }
         catch (FormatException) { return null; }
         if (bytes.Length == 0) return null;
+        // Header safety: format magic-byte allowlist + DECLARED-dimension caps (before any decode).
+        if (!NetPdf.Pdf.Images.ImageSafetyValidator.Validate(bytes).IsSafe) return null;
         using var data = SKData.CreateCopy(bytes);
-        return SKImage.FromEncodedData(data);
+        var image = SKImage.FromEncodedData(data);
+        if (image is null) return null;
+        // Defense in depth: reject a decoded raster beyond the raster pixel-area cap.
+        if ((long)image.Width * image.Height > NetPdf.Pdf.Images.ImageSafetyValidator.MaxRasterPixelArea)
+        {
+            image.Dispose();
+            return null;
+        }
+        return image;
     }
 
     /// <summary>Render a NESTED <c>&lt;svg&gt;</c> as a proper viewport (SVG §7.2): translate to its
-    /// <c>x</c>/<c>y</c>, CLIP to its <c>width</c>/<c>height</c> (defaulting to the parent viewport when
-    /// absent), and — when it carries a <c>viewBox</c> — SCALE the content to fit (<c>xMidYMid meet</c>,
-    /// centered). The nested viewport becomes the new <c>%</c> reference for descendants.</summary>
+    /// <c>x</c>/<c>y</c>, CLIP to its <c>width</c>/<c>height</c>, and — when it carries a <c>viewBox</c> —
+    /// SCALE the content to fit (<c>xMidYMid meet</c>, centered). An OMITTED width/height defaults to 100%
+    /// of the parent viewport; an EXPLICIT zero / negative renders nothing (PR #240 [P2]). The nested
+    /// viewport becomes the new <c>%</c> reference for descendants.</summary>
     private static void DrawNestedSvg(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, int depth)
     {
         var x = Len(el, "x", state, style, LenAxis.X);
         var y = Len(el, "y", state, style, LenAxis.Y);
-        var w = Len(el, "width", state, style, LenAxis.X);
-        var h = Len(el, "height", state, style, LenAxis.Y);
-        if (w <= 0) w = state.ViewportW;   // width/height default to 100% of the parent viewport
-        if (h <= 0) h = state.ViewportH;
-        if (!(w > 0) || !(h > 0)) return;
+        // Distinguish an OMITTED width/height (→ 100% of the parent viewport) from an EXPLICIT non-positive
+        // one (→ nothing renders). Len resolves a present value; absence falls back to the viewport.
+        var w = el.Attribute("width") is not null ? Len(el, "width", state, style, LenAxis.X) : state.ViewportW;
+        var h = el.Attribute("height") is not null ? Len(el, "height", state, style, LenAxis.Y) : state.ViewportH;
+        if (!(w > 0) || !(h > 0)) return; // explicit 0 / negative → render nothing
+        // Only xMidYMid meet (the default) is honored; an explicit align/slice value is flagged (best-effort).
+        if (!IsSupportedPreserveAspectRatio(Attr(el, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
 
         var save = canvas.Save();
         canvas.Translate((float)x, (float)y);
@@ -346,7 +388,7 @@ internal static class SvgRasterizer
         if (depth + 1 > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
         var id = SvgAttr.HrefId(el);
         if (id is null || !state.Ids.TryGetValue(id, out var target)) { state.SawUnsupported = true; return; }
-        var x = Num(el, "x"); var y = Num(el, "y");
+        var x = Len(el, "x", state, style, LenAxis.X); var y = Len(el, "y", state, style, LenAxis.Y);
         var restore = canvas.Save();
         if (x != 0 || y != 0) canvas.Translate((float)x, (float)y);
         if (target.Name.LocalName.Equals("symbol", StringComparison.OrdinalIgnoreCase)

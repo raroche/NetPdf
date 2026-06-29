@@ -142,7 +142,7 @@ Phase column shows the milestone in which the feature first ships.
 |---|---|---|---|
 | Shapes (`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `path`) | ✅ | 4 | Rasterized via Skia (`<img>`-sourced SVG). |
 | Fills, strokes | ✅ | 4 | `fill`/`stroke`/`stroke-width`/`fill-opacity`/`stroke-opacity`, `stroke-dasharray`/`-dashoffset`/`-linecap`/`-linejoin`/`-miterlimit`. |
-| Lengths | ✅ | 4 | `px`/`pt`/unitless, `%` (vs the viewport), `em`/`rem` (vs font-size). |
+| Lengths | ✅ | 4 | `px`/`pt`/unitless, `%` (vs the viewport), `em`/`rem` (vs font-size) — on shape / `<image>` / `<use>` / nested-`<svg>` geometry. `<text>`/`<tspan>` coordinates (x/y/dx/dy) are px/unitless only (% / em deferred). |
 | Element / group `opacity` | ✅ | 4 | A transparency layer (SaveLayer) composites the subtree at once. |
 | Linear/radial gradients | ✅ | 4 | `url(#id)` paint servers; objectBoundingBox + userSpaceOnUse, spreadMethod, gradientTransform, href inheritance, radial focal. |
 | 2D transforms | ✅ | 4 | `translate`/`scale`/`rotate`/`matrix`/`skewX`/`skewY`. |

@@ -13,11 +13,15 @@ internal readonly record struct SvgStyle(
     SKColor Fill, string? FillRef, bool HasExplicitFill,
     SKColor? Stroke, string? StrokeRef, float StrokeWidth,
     float FillOpacity, float StrokeOpacity, SKColor CurrentColor,
-    float FontSizePx, string? FontFamily, int FontWeight, bool Italic, string? TextAnchor)
+    float FontSizePx, string? FontFamily, int FontWeight, bool Italic, string? TextAnchor,
+    // Stroke painting (inherited): the dash pattern (null = solid), its phase, and the cap / join /
+    // miter-limit. These map onto the Skia stroke paint at draw time.
+    float[]? StrokeDash, float StrokeDashOffset, SKStrokeCap StrokeCap, SKStrokeJoin StrokeJoin, float StrokeMiter)
 {
     public static SvgStyle Initial => new(
         Fill: SKColors.Black, FillRef: null, HasExplicitFill: false,
         Stroke: null, StrokeRef: null, StrokeWidth: 1,
         FillOpacity: 1, StrokeOpacity: 1, CurrentColor: SKColors.Black,
-        FontSizePx: 16, FontFamily: null, FontWeight: 400, Italic: false, TextAnchor: null);
+        FontSizePx: 16, FontFamily: null, FontWeight: 400, Italic: false, TextAnchor: null,
+        StrokeDash: null, StrokeDashOffset: 0, StrokeCap: SKStrokeCap.Butt, StrokeJoin: SKStrokeJoin.Miter, StrokeMiter: 4);
 }

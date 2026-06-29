@@ -162,6 +162,17 @@ internal static class SvgRasterizer
             canvas.SaveLayer(layerPaint);
         }
 
+        // filter="url(#id)" applies a composed Skia image filter to the element's whole subtree (§15) — the
+        // INNERMOST effect layer (the filtered result is then composited by opacity, then masked).
+        var filterEl = el.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase) ? null : ResolveFilter(el, state);
+        var imageFilter = filterEl is not null ? BuildImageFilter(filterEl, state) : null;
+        SKPaint? filterPaint = null;
+        if (imageFilter is not null)
+        {
+            filterPaint = new SKPaint { ImageFilter = imageFilter };
+            canvas.SaveLayer(filterPaint);
+        }
+
         switch (el.Name.LocalName.ToLowerInvariant())
         {
             case "g":
@@ -190,6 +201,12 @@ internal static class SvgRasterizer
             // foreignObject / switch / textPath / … aren't rendered — flag so the caller surfaces one
             // diagnostic per image (PR-230 [P2]).
             default: state.SawUnsupported = true; break;
+        }
+        if (imageFilter is not null)
+        {
+            canvas.Restore();        // composite the filtered layer
+            filterPaint!.Dispose();
+            imageFilter.Dispose();
         }
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
         if (mask is not null) ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
@@ -633,6 +650,138 @@ internal static class SvgRasterizer
         foreach (var child in mask.Elements()) RenderElement(canvas, child, maskStyle, state, depth + 1);
         canvas.Restore(); // composite the mask (luma → DstIn) into the element layer
         canvas.Restore(); // composite the element-content layer onto the canvas
+    }
+
+    // ---- filter ----
+
+    /// <summary>Resolve a <c>filter="url(#id)"</c> reference to its <c>&lt;filter&gt;</c> element (SVG §15), or
+    /// <see langword="null"/> for <c>none</c> / absent. A url() that doesn't resolve to a <c>&lt;filter&gt;</c>
+    /// is flagged (and the element renders unfiltered).</summary>
+    private static XElement? ResolveFilter(XElement el, SvgRenderState state)
+    {
+        var raw = SvgAttr.Presentation(el, "filter");
+        if (raw is null) return null;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (PaintServerId(raw) is { } id && state.Ids.TryGetValue(id, out var f)
+            && f.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase))
+            return f;
+        state.SawUnsupported = true;
+        return null;
+    }
+
+    /// <summary>Compose a <c>&lt;filter&gt;</c>'s primitive children into a single Skia
+    /// <see cref="SKImageFilter"/> applied to the element's rendering (the <c>SourceGraphic</c>). A LINEAR
+    /// chain is supported — each primitive feeds the next — covering <c>feGaussianBlur</c>, <c>feOffset</c>,
+    /// and <c>feColorMatrix</c> (matrix / saturate / hueRotate / luminanceToAlpha). Graph-routing primitives
+    /// (<c>feMerge</c> / <c>feComposite</c> / <c>feBlend</c> / <c>feFlood</c> / <c>feImage</c> / …) and the
+    /// <c>in</c>/<c>result</c> named-input routing aren't modeled this cut → flagged. Returns
+    /// <see langword="null"/> when no supported primitive contributes (the element renders unfiltered).</summary>
+    private static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
+    {
+        SKImageFilter? current = null; // null input = SourceGraphic
+        var sawUnsupported = false;
+        foreach (var prim in filter.Elements())
+        {
+            switch (prim.Name.LocalName.ToLowerInvariant())
+            {
+                case "fegaussianblur":
+                {
+                    var (sx, sy) = ParseStdDeviation(Attr(prim, "stdDeviation"));
+                    if (sx > 0 || sy > 0) current = SKImageFilter.CreateBlur(sx, sy, current);
+                    break;
+                }
+                case "feoffset":
+                    current = SKImageFilter.CreateOffset((float)Num(prim, "dx"), (float)Num(prim, "dy"), current);
+                    break;
+                case "fecolormatrix":
+                {
+                    var matrix = BuildColorMatrix(prim);
+                    if (matrix is not null)
+                    {
+                        using var cf = SKColorFilter.CreateColorMatrix(matrix);
+                        current = SKImageFilter.CreateColorFilter(cf, current);
+                    }
+                    break;
+                }
+                default:
+                    sawUnsupported = true; // unsupported primitive / graph routing
+                    break;
+            }
+        }
+        if (sawUnsupported) state.SawUnsupported = true;
+        return current;
+    }
+
+    /// <summary><c>feGaussianBlur stdDeviation</c> — one value (isotropic) or two (x then y). The SVG std
+    /// deviation IS the Gaussian sigma Skia's blur takes directly.</summary>
+    private static (float X, float Y) ParseStdDeviation(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return (0, 0);
+        var t = raw.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        float P(int i) => i < t.Length && float.TryParse(t[i], NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : 0;
+        var x = P(0);
+        return (x, t.Length > 1 ? P(1) : x);
+    }
+
+    /// <summary>Build the 20-entry color matrix for a <c>feColorMatrix</c> (<c>type</c> = matrix [default] /
+    /// saturate / hueRotate / luminanceToAlpha), or <see langword="null"/> when it's a degenerate identity /
+    /// unparseable. Row-major RGBA with the 5th column the bias, matching Skia's
+    /// <c>SKColorFilter.CreateColorMatrix</c>.</summary>
+    private static float[]? BuildColorMatrix(XElement prim)
+    {
+        var type = (Attr(prim, "type") ?? "matrix").Trim().ToLowerInvariant();
+        switch (type)
+        {
+            case "matrix":
+            {
+                var raw = Attr(prim, "values");
+                if (string.IsNullOrWhiteSpace(raw)) return null;
+                var t = raw.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                if (t.Length != 20) return null;
+                var m = new float[20];
+                for (var i = 0; i < 20; i++)
+                    if (!float.TryParse(t[i], NumberStyles.Float, CultureInfo.InvariantCulture, out m[i])) return null;
+                return m;
+            }
+            case "saturate":
+            {
+                var s = 1f;
+                if (Attr(prim, "values") is { } sv) float.TryParse(sv.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out s);
+                // SVG §15 saturate matrix.
+                return
+                [
+                    0.213f + 0.787f * s, 0.715f - 0.715f * s, 0.072f - 0.072f * s, 0, 0,
+                    0.213f - 0.213f * s, 0.715f + 0.285f * s, 0.072f - 0.072f * s, 0, 0,
+                    0.213f - 0.213f * s, 0.715f - 0.715f * s, 0.072f + 0.928f * s, 0, 0,
+                    0, 0, 0, 1, 0,
+                ];
+            }
+            case "huerotate":
+            {
+                var deg = 0f;
+                if (Attr(prim, "values") is { } hv) float.TryParse(hv.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out deg);
+                var c = (float)Math.Cos(deg * Math.PI / 180.0);
+                var s = (float)Math.Sin(deg * Math.PI / 180.0);
+                return
+                [
+                    0.213f + c * 0.787f - s * 0.213f, 0.715f - c * 0.715f - s * 0.715f, 0.072f - c * 0.072f + s * 0.928f, 0, 0,
+                    0.213f - c * 0.213f + s * 0.143f, 0.715f + c * 0.285f + s * 0.140f, 0.072f - c * 0.072f - s * 0.283f, 0, 0,
+                    0.213f - c * 0.213f - s * 0.787f, 0.715f - c * 0.715f + s * 0.715f, 0.072f + c * 0.928f + s * 0.072f, 0, 0,
+                    0, 0, 0, 1, 0,
+                ];
+            }
+            case "luminancetoalpha":
+                return
+                [
+                    0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0,
+                    0.2125f, 0.7154f, 0.0721f, 0, 0,
+                ];
+            default:
+                return null;
+        }
     }
 
     // ---- pattern paint server ----

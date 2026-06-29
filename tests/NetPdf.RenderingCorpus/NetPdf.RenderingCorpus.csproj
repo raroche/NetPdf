@@ -18,6 +18,9 @@
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="Microsoft.Playwright" />
+    <!-- PR 8 visual-regression harness: SkiaSharp decodes the committed reference PNGs (it can READ raster
+         formats; it canNOT read PDF — the NetPdf-side PDF→raster uses PDFium, a maintainer install). -->
+    <PackageReference Include="SkiaSharp" />
   </ItemGroup>
 
 </Project>

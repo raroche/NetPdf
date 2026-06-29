@@ -104,6 +104,58 @@ public sealed class SvgRasterizerTests
         Assert.True(unsupported);
     }
 
+    // ---- SVG part 3 task 1: stroke-dasharray + caps/joins ----
+
+    private static (int Painted, int Gaps) ScanLineAlpha(NetPdf.Pdf.Images.RasterImageInfo info, int y)
+    {
+        int painted = 0, gaps = 0;
+        for (var x = 1; x < info.Width - 1; x++)
+        {
+            var a = info.PixelBytes[(y * info.Width + x) * 4 + 3];
+            if (a > 150) painted++;
+            else if (a < 40) gaps++;
+        }
+        return (painted, gaps);
+    }
+
+    [Fact]
+    public void Stroke_dasharray_creates_gaps_along_the_line()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            "<line x1=\"0\" y1=\"10\" x2=\"60\" y2=\"10\" stroke=\"black\" stroke-width=\"6\" stroke-dasharray=\"6 6\"/></svg>"),
+            out _);
+        Assert.NotNull(info);
+        var (painted, gaps) = ScanLineAlpha(info!, 10);
+        Assert.True(painted > 0, "dash segments painted");
+        Assert.True(gaps > 0, "gaps between dashes");
+    }
+
+    [Fact]
+    public void Solid_stroke_has_no_interior_gaps()
+    {
+        // The control: the same line WITHOUT a dasharray is continuous (no transparent gaps along it).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            "<line x1=\"0\" y1=\"10\" x2=\"60\" y2=\"10\" stroke=\"black\" stroke-width=\"6\"/></svg>"),
+            out _);
+        Assert.NotNull(info);
+        var (painted, gaps) = ScanLineAlpha(info!, 10);
+        Assert.True(painted > 40);
+        Assert.Equal(0, gaps);
+    }
+
+    [Fact]
+    public void Stroke_dasharray_none_is_solid()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            "<line x1=\"0\" y1=\"10\" x2=\"60\" y2=\"10\" stroke=\"black\" stroke-width=\"6\" stroke-dasharray=\"none\"/></svg>"),
+            out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, ScanLineAlpha(info!, 10).Gaps);
+    }
+
     [Fact]
     public void Title_desc_metadata_are_not_flagged()
     {

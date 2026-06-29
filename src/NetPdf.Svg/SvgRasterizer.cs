@@ -282,24 +282,47 @@ internal static class SvgRasterizer
     private static void StrokeOnly(SKCanvas canvas, SKPath path, SvgStyle style, SvgRenderState state)
     {
         if (!(style.StrokeWidth > 0)) return;
-        if (style.StrokeRef is { } sref)
+        // The dash pattern (stroke-dasharray) is a PathEffect; cap/join/miter map directly. A valid dash
+        // array (even-length, ≥1 positive entry) is required by Skia; ParseDashArray guarantees that.
+        var dash = style.StrokeDash is { Length: > 0 } intervals
+            ? SKPathEffect.CreateDash(intervals, style.StrokeDashOffset)
+            : null;
+        void ApplyStrokeProps(SKPaint p)
         {
-            if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
-                using (shader)
-                using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
-                    canvas.DrawPath(path, p);
-            else state.SawUnsupported = true;
-            return;
+            p.StrokeCap = style.StrokeCap;
+            p.StrokeJoin = style.StrokeJoin;
+            p.StrokeMiter = style.StrokeMiter;
+            if (dash is not null) p.PathEffect = dash;
         }
-        if (style.Stroke is not { } sc) return;
-        using var stroke = new SKPaint
+        try
         {
-            Style = SKPaintStyle.Stroke,
-            Color = WithOpacity(sc, style.StrokeOpacity),
-            StrokeWidth = style.StrokeWidth,
-            IsAntialias = true,
-        };
-        canvas.DrawPath(path, stroke);
+            if (style.StrokeRef is { } sref)
+            {
+                if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
+                    using (shader)
+                    using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
+                    {
+                        ApplyStrokeProps(p);
+                        canvas.DrawPath(path, p);
+                    }
+                else state.SawUnsupported = true;
+                return;
+            }
+            if (style.Stroke is not { } sc) return;
+            using var stroke = new SKPaint
+            {
+                Style = SKPaintStyle.Stroke,
+                Color = WithOpacity(sc, style.StrokeOpacity),
+                StrokeWidth = style.StrokeWidth,
+                IsAntialias = true,
+            };
+            ApplyStrokeProps(stroke);
+            canvas.DrawPath(path, stroke);
+        }
+        finally
+        {
+            dash?.Dispose();
+        }
     }
 
     private static SKColor WithOpacity(SKColor c, float opacity) =>
@@ -346,6 +369,22 @@ internal static class SvgRasterizer
         var fillOpacity = ReadOpacity(el, "fill-opacity", inherited.FillOpacity);
         var strokeOpacity = ReadOpacity(el, "stroke-opacity", inherited.StrokeOpacity);
 
+        // Stroke dash + cap/join (all inherited). `stroke-dasharray: none` (or an all-zero / negative
+        // array) → solid; an ODD-length array repeats per SVG 1.1 §11.4 (Skia needs an even count).
+        var strokeDash = inherited.StrokeDash;
+        var dashRaw = SvgAttr.Presentation(el, "stroke-dasharray");
+        if (dashRaw is not null) strokeDash = ParseDashArray(dashRaw);
+        var strokeDashOffset = inherited.StrokeDashOffset;
+        var doRaw = SvgAttr.Presentation(el, "stroke-dashoffset");
+        if (doRaw is not null && double.TryParse(TrimUnit(doRaw), NumberStyles.Float, CultureInfo.InvariantCulture, out var dof))
+            strokeDashOffset = (float)dof;
+        var strokeCap = ParseLineCap(SvgAttr.Presentation(el, "stroke-linecap"), inherited.StrokeCap);
+        var strokeJoin = ParseLineJoin(SvgAttr.Presentation(el, "stroke-linejoin"), inherited.StrokeJoin);
+        var strokeMiter = inherited.StrokeMiter;
+        var mlRaw = SvgAttr.Presentation(el, "stroke-miterlimit");
+        if (mlRaw is not null && double.TryParse(mlRaw.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var ml) && ml >= 1)
+            strokeMiter = (float)ml;
+
         // Font properties (inherited) — drive <text> shaping.
         var fontSize = inherited.FontSizePx;
         var fsRaw = SvgAttr.Presentation(el, "font-size");
@@ -357,8 +396,48 @@ internal static class SvgRasterizer
         var textAnchor = SvgAttr.Presentation(el, "text-anchor") ?? inherited.TextAnchor;
 
         return new SvgStyle(fill, fillRef, hasFill, stroke, strokeRef, strokeWidth,
-            fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor);
+            fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor,
+            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter);
     }
+
+    /// <summary>Parse a <c>stroke-dasharray</c> value (comma/space-separated lengths). Returns
+    /// <see langword="null"/> for <c>none</c> / empty / an all-zero or any-negative list (→ solid), an
+    /// EVEN-length dash array otherwise (an odd list is repeated once, per SVG 1.1 §11.4, so Skia — which
+    /// requires an even count — gets the right pattern).</summary>
+    private static float[]? ParseDashArray(string raw)
+    {
+        raw = raw.Trim();
+        if (raw.Length == 0 || raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        var toks = raw.Split(new[] { ',', ' ', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        var vals = new List<float>(toks.Length);
+        var anyPositive = false;
+        foreach (var tok in toks)
+        {
+            if (!double.TryParse(TrimUnit(tok), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) || v < 0)
+                return null; // a negative / unparseable entry makes the whole list invalid → solid
+            vals.Add((float)v);
+            if (v > 0) anyPositive = true;
+        }
+        if (vals.Count == 0 || !anyPositive) return null; // all zero → solid
+        if (vals.Count % 2 == 1) vals.AddRange(vals); // odd → repeat (Skia needs an even count)
+        return vals.ToArray();
+    }
+
+    private static SKStrokeCap ParseLineCap(string? raw, SKStrokeCap inherited) => raw?.Trim().ToLowerInvariant() switch
+    {
+        "butt" => SKStrokeCap.Butt,
+        "round" => SKStrokeCap.Round,
+        "square" => SKStrokeCap.Square,
+        _ => inherited,
+    };
+
+    private static SKStrokeJoin ParseLineJoin(string? raw, SKStrokeJoin inherited) => raw?.Trim().ToLowerInvariant() switch
+    {
+        "miter" => SKStrokeJoin.Miter,
+        "round" => SKStrokeJoin.Round,
+        "bevel" => SKStrokeJoin.Bevel,
+        _ => inherited,
+    };
 
     /// <summary>The fragment id of a <c>url(#id)</c> paint server, or <see langword="null"/> when the value
     /// isn't a local <c>url(#…)</c> reference.</summary>

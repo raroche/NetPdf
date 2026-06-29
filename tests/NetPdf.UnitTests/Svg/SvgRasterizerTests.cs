@@ -236,14 +236,15 @@ public sealed class SvgRasterizerTests
     }
 
     [Fact]
-    public void Image_preserve_aspect_ratio_slice_is_flagged_unsupported()
+    public void Image_preserve_aspect_ratio_slice_is_now_supported()
     {
-        // PR #240 review [P3] — only xMidYMid meet / none are honored; slice etc. flags (best-effort meet).
-        SvgRasterizer.TryRender(Svg(
+        // SVG part 5 — all preserveAspectRatio align/slice values are honored now (was flagged in PR #240).
+        var info = SvgRasterizer.TryRender(Svg(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"20\" height=\"20\">" +
             $"<image x=\"0\" y=\"0\" width=\"20\" height=\"20\" preserveAspectRatio=\"xMinYMin slice\" href=\"{PngDataUri(8, 8)}\"/></svg>"),
             out var unsupported);
-        Assert.True(unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
     }
 
     [Fact]

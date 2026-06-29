@@ -320,22 +320,25 @@ internal static class SvgRasterizer
             var x = (float)Len(el, "x", state, style, LenAxis.X);
             var y = (float)Len(el, "y", state, style, LenAxis.Y);
             var dest = new SKRect(x, y, x + (float)w, y + (float)h);
-            var par = Attr(el, "preserveAspectRatio")?.Trim();
-            if (!IsSupportedPreserveAspectRatio(par)) state.SawUnsupported = true; // best-effort meet + flag
-            var stretch = string.Equals(par, "none", StringComparison.OrdinalIgnoreCase);
-            if (stretch || image.Width <= 0 || image.Height <= 0)
+            if (image.Width <= 0 || image.Height <= 0)
             {
                 canvas.DrawImage(image, dest);
                 return;
             }
-            // xMidYMid meet — scale to fit, centered.
-            var scale = Math.Min((float)w / image.Width, (float)h / image.Height);
-            var dw = image.Width * scale;
-            var dh = image.Height * scale;
-            var fitted = new SKRect(
-                x + ((float)w - dw) / 2f, y + ((float)h - dh) / 2f,
-                x + ((float)w + dw) / 2f, y + ((float)h + dh) / 2f);
-            canvas.DrawImage(image, fitted);
+            // preserveAspectRatio (§8.8) — none stretches; meet fits inside; slice covers + clips to the rect.
+            var par = SvgPreserveAspectRatio.Compute(Attr(el, "preserveAspectRatio"), image.Width, image.Height, w, h);
+            var dx = x + par.Tx;
+            var dy = y + par.Ty;
+            var fitted = new SKRect(dx, dy, dx + image.Width * par.ScaleX, dy + image.Height * par.ScaleY);
+            if (par.Slice)
+            {
+                var save = canvas.Save();
+                canvas.ClipRect(dest);
+                canvas.DrawImage(image, fitted);
+                canvas.RestoreToCount(save);
+            }
+            else
+                canvas.DrawImage(image, fitted);
         }
     }
 
@@ -343,17 +346,6 @@ internal static class SvgRasterizer
     // the byte-level caps run (base64 ≈ 4/3 of the decoded bytes; the decoded bytes are capped by
     // ImageSafetyValidator.MaxBytes).
     private const int MaxDataUriBase64Chars = (NetPdf.Pdf.Images.ImageSafetyValidator.MaxBytes / 3) * 4 + 8;
-
-    /// <summary>The renderer honors only <c>xMidYMid meet</c> (the default) + <c>none</c> (image stretch);
-    /// any other align/slice value (e.g. <c>slice</c>, <c>xMinYMin</c>) is NOT implemented and is flagged
-    /// (PR #240 [P3]) so the caller surfaces a diagnostic rather than rendering it wrong silently. Absent /
-    /// empty / <c>xMidYMid</c> / <c>xMidYMid meet</c> / <c>none</c> are supported.</summary>
-    private static bool IsSupportedPreserveAspectRatio(string? raw)
-    {
-        if (string.IsNullOrEmpty(raw)) return true;
-        var v = raw.Trim().ToLowerInvariant();
-        return v is "none" or "xmidymid" or "xmidymid meet";
-    }
 
     /// <summary>Decode a <c>data:[mime];base64,payload</c> image URI to an <see cref="SKImage"/> — running
     /// the SAME pre-decode safety gates the rest of the engine applies to images (PR #240 [P1]): an
@@ -406,8 +398,6 @@ internal static class SvgRasterizer
         var w = el.Attribute("width") is not null ? Len(el, "width", state, style, LenAxis.X) : state.ViewportW;
         var h = el.Attribute("height") is not null ? Len(el, "height", state, style, LenAxis.Y) : state.ViewportH;
         if (!(w > 0) || !(h > 0)) return; // explicit 0 / negative → render nothing
-        // Only xMidYMid meet (the default) is honored; an explicit align/slice value is flagged (best-effort).
-        if (!IsSupportedPreserveAspectRatio(Attr(el, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
 
         var save = canvas.Save();
         canvas.Translate((float)x, (float)y);
@@ -430,9 +420,10 @@ internal static class SvgRasterizer
         var newVpH = vpH;
         if (vb.W > 0 && vb.H > 0)
         {
-            var scale = Math.Min(vpW / vb.W, vpH / vb.H); // meet
-            canvas.Translate((float)((vpW - vb.W * scale) / 2.0), (float)((vpH - vb.H * scale) / 2.0)); // xMidYMid
-            canvas.Scale((float)scale);
+            // preserveAspectRatio (§8.8) maps the viewBox onto the viewport; slice overflow is clipped above.
+            var par = SvgPreserveAspectRatio.Compute(Attr(viewportEl, "preserveAspectRatio"), vb.W, vb.H, vpW, vpH);
+            canvas.Translate(par.Tx, par.Ty);
+            canvas.Scale(par.ScaleX, par.ScaleY);
             canvas.Translate((float)-vb.X, (float)-vb.Y);
             newVpW = vb.W;   // descendants resolve % against the viewBox extent
             newVpH = vb.H;
@@ -476,10 +467,7 @@ internal static class SvgRasterizer
                   : target.Attribute("height") is not null ? Len(target, "height", state, targetStyle, LenAxis.Y)
                   : state.ViewportH;
             if (w > 0 && h > 0)
-            {
-                if (!IsSupportedPreserveAspectRatio(Attr(target, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
                 RenderViewport(canvas, target, target.Elements(), targetStyle, state, depth, w, h);
-            }
         }
         else
             RenderElement(canvas, target, style, state, depth + 1);

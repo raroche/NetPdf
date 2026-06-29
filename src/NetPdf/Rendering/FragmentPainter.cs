@@ -361,12 +361,24 @@ internal static class FragmentPainter
                         out var unsupportedValue);
                     if (unsupportedValue)
                         EmitVariantUnsupported(diagnostics, anyVariantUnsupported: true, ref variantUnsupportedReported);
-                    // Cap the tile loop (each tile re-paints the shading); over-cap → single paint (task 3
-                    // adds the over-cap diagnostic). The product bound is overflow-safe.
-                    if (grid.TileWidthPx > 0 && grid.TileHeightPx > 0
+                    // Cap the tile loop (each tile re-paints the shading). The product bound is
+                    // overflow-safe. Over-cap → fall back to a SINGLE paint over the origin box (the
+                    // gradient still shows, untiled) + surface it once rather than dropping silently.
+                    var withinCap = grid.TileWidthPx > 0 && grid.TileHeightPx > 0
                         && grid.CountX is > 0 and <= MaxGradientTiles
                         && grid.CountY is > 0 and <= MaxGradientTiles
-                        && grid.CountX <= MaxGradientTiles / grid.CountY)
+                        && grid.CountX <= MaxGradientTiles / grid.CountY;
+                    if (!withinCap && grid.TileWidthPx > 0 && grid.TileHeightPx > 0
+                        && diagnostics is not null && !variantUnsupportedReported)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.CssBackgroundImageUnsupported001,
+                            $"A gradient's background-size/-repeat tiled to more than {MaxGradientTiles} "
+                            + "tiles; it was painted once (untiled) instead of as the full tile grid.",
+                            DiagnosticSeverity.Warning));
+                        variantUnsupportedReported = true;
+                    }
+                    if (withinCap)
                     {
                         ToPdfRect(gclip.LeftPx, gclip.TopPx, gclip.WidthPx, gclip.HeightPx, pageHeightPt,
                             out var cbx, out var cby, out var cbw, out var cbh);

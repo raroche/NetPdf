@@ -302,6 +302,34 @@ public sealed class SingleLayerGradientGeometryTests
     }
 
     [Fact]
+    public void Round_repeat_tiles_a_whole_number_per_axis()
+    {
+        // 30px tile, round over 100×60 → round(100/30)=3 cols × round(60/30)=2 rows = 6 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:30px 30px;background-repeat:round;")));
+        Assert.Equal(6, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Space_repeat_tiles_whole_tiles_with_gaps()
+    {
+        // 40×30 tile, space over 100×60 → floor(100/40)=2 cols × floor(60/30)=2 rows = 4 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:40px 30px;background-repeat:space;")));
+        Assert.Equal(4, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Over_cap_tiny_tile_paints_once_with_a_warning()
+    {
+        // A 2px tile over a 400px box → far more than the tile cap → painted once + diagnosed.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:400px;height:400px;background-size:2px 2px;" +
+            "background-image:linear-gradient(red, blue)\"></div></body></html>");
+        Assert.Equal(1, Count(Latin1(result.Pdf), "/ShadingType 2")); // single (untiled) paint
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
     public void Degenerate_origin_box_translucent_gradient_does_not_warn_over_cap()
     {
         // PR #238 [P3] — a content-box origin on a zero-content-width box collapses the gradient origin

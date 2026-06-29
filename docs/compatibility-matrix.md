@@ -148,11 +148,14 @@ Phase column shows the milestone in which the feature first ships.
 | `<pattern>` paint servers | ✅ | 4 | `fill`/`stroke="url(#id)"` tiles the pattern content (rendered once → Repeat shader); `patternUnits`/`patternContentUnits`/`viewBox`/`patternTransform`/`href` inheritance. Self-reference depth-bounded; tile rendered at user resolution (heavy scaling softens). |
 | `clip-path` / `mask` references | ✅ | 4 | `clip-path="url(#id)"` unions a `<clipPath>`'s child geometry (clipPathUnits userSpaceOnUse + objectBoundingBox); `mask="url(#id)"` luminance-masks (maskContentUnits honored). A url() to a non-clipPath/non-mask target is flagged + left un-clipped/un-masked. `maskUnits` region clip + `mask-type:alpha` deferred. |
 | 2D transforms | ✅ | 4 | `translate`/`scale`/`rotate`/`matrix`/`skewX`/`skewY`. |
-| `<text>` / `<tspan>` | ✅ | 4 | Skia text shaping; `text-anchor`, dx/dy, %/em coords, font props, gradient fill. `textPath`/complex-script deferred. |
-| `<use>` / `<symbol>` / `<defs>` | ✅ | 4 | `<use>` clones with inherited paint; a `<symbol>`/`<svg>` target establishes a viewport (use/target width/height clip + viewBox scale, xMidYMid meet). |
-| Nested `<svg>` viewport | ✅ | 4 | x/y/width/height clip + viewBox scale (xMidYMid meet). |
-| `<image>` (raster) | 🧪 | 4 | A `data:` URI raster renders (xMidYMid meet / `none`). External/network href not fetched. |
-| `<filter>` primitives | ❌ | post-v1 | CSS `filter` covers most needs. |
+| `<text>` / `<tspan>` | ✅ | 4 | Skia text shaping; `text-anchor`, dx/dy, %/em coords, `letter-spacing`/`word-spacing`, font props, gradient fill. Complex-script deferred. |
+| `<textPath>` | ✅ | 4 | Glyphs along a referenced `<path>` (startOffset + text-anchor, tangent rotation). Non-path targets + `rotate`/`textLength` deferred. |
+| `<marker>` references | ✅ | 4 | `marker-start`/`-mid`/`-end` (+ `marker` shorthand): markerWidth/Height, refX/refY, markerUnits (strokeWidth/userSpaceOnUse), orient (auto/auto-start-reverse/angle), viewBox. Chord tangents; group inheritance deferred. |
+| `<filter>` references | 🧪 | 4 | `filter="url(#id)"` — a linear chain of `feGaussianBlur`/`feOffset`/`feColorMatrix` (matrix/saturate/hueRotate/luminanceToAlpha) → a Skia image filter. Graph-routing primitives (feMerge/feComposite/feBlend/feFlood/…) + `in`/`result` routing + the filter region deferred (flagged). |
+| `preserveAspectRatio` | ✅ | 4 | Full grammar — none/meet/slice + the nine x/y MIN/MID/MAX alignments — on `<image>` + nested viewports. |
+| `<use>` / `<symbol>` / `<defs>` | ✅ | 4 | `<use>` clones with inherited paint; a `<symbol>`/`<svg>` target establishes a viewport (use/target width/height clip + viewBox scale + full preserveAspectRatio). |
+| Nested `<svg>` viewport | ✅ | 4 | x/y/width/height clip + viewBox scale (full preserveAspectRatio). |
+| `<image>` (raster) | 🧪 | 4 | A `data:` URI raster renders (full preserveAspectRatio). External/network href not fetched. |
 | `<animate>`, SMIL | ❌ | — | Static document. |
 | `<foreignObject>` | ❌ | — | No HTML-in-SVG embedding. |
 

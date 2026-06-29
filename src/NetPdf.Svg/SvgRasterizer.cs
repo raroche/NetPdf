@@ -94,14 +94,14 @@ internal static class SvgRasterizer
         state.PatternShaderFactory = (pat, bounds, opacity, style) => BuildPatternShader(pat, bounds, opacity, style, state);
         var raster = SubtreeRasterizer.Render(pxW, pxH, canvas =>
         {
-            // Map the viewBox onto the raster (preserveAspectRatio xMidYMid meet — the default §8.2).
+            // Map the root viewBox onto the raster honoring the root preserveAspectRatio (§8.2) — none /
+            // meet / slice + alignment (default xMidYMid meet). Slice overflow is clipped by the raster bounds.
             if (vbW > 0 && vbH > 0)
             {
-                var scale = Math.Min(pxW / vbW, pxH / vbH);
-                var tx = (pxW - vbW * scale) / 2.0 - vbX * scale;
-                var ty = (pxH - vbH * scale) / 2.0 - vbY * scale;
-                canvas.Translate((float)tx, (float)ty);
-                canvas.Scale((float)scale);
+                var par = SvgPreserveAspectRatio.Compute(Attr(root, "preserveAspectRatio"), vbW, vbH, pxW, pxH);
+                canvas.Translate(par.Tx, par.Ty);
+                canvas.Scale(par.ScaleX, par.ScaleY);
+                canvas.Translate((float)-vbX, (float)-vbY);
             }
             // The root <svg>'s own presentation attributes (color / fill / stroke / font-*) seed the
             // inherited context for its children (PR-231 review [P3] — e.g. <svg color="red"> + fill="currentColor").
@@ -162,6 +162,17 @@ internal static class SvgRasterizer
             canvas.SaveLayer(layerPaint);
         }
 
+        // filter="url(#id)" applies a composed Skia image filter to the element's whole subtree (§15) — the
+        // INNERMOST effect layer (the filtered result is then composited by opacity, then masked).
+        var filterEl = el.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase) ? null : ResolveFilter(el, state);
+        var imageFilter = filterEl is not null ? BuildImageFilter(filterEl, state) : null;
+        SKPaint? filterPaint = null;
+        if (imageFilter is not null)
+        {
+            filterPaint = new SKPaint { ImageFilter = imageFilter };
+            canvas.SaveLayer(filterPaint);
+        }
+
         switch (el.Name.LocalName.ToLowerInvariant())
         {
             case "g":
@@ -190,6 +201,12 @@ internal static class SvgRasterizer
             // foreignObject / switch / textPath / … aren't rendered — flag so the caller surfaces one
             // diagnostic per image (PR-230 [P2]).
             default: state.SawUnsupported = true; break;
+        }
+        if (imageFilter is not null)
+        {
+            canvas.Restore();        // composite the filtered layer
+            filterPaint!.Dispose();
+            imageFilter.Dispose();
         }
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
         if (mask is not null) ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
@@ -284,18 +301,21 @@ internal static class SvgRasterizer
     {
         using var path = BuildShapePath(el, style, state);
         if (path is not null) StrokeOnly(canvas, path, style, state);
+        DrawMarkers(canvas, el, style, state);
     }
 
     private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         using var path = BuildShapePath(el, style, state);
         if (path is not null) FillAndStroke(canvas, path, style, state);
+        DrawMarkers(canvas, el, style, state);
     }
 
     private static void DrawPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         using var path = BuildShapePath(el, style, state);
         if (path is not null) FillAndStroke(canvas, path, style, state);
+        DrawMarkers(canvas, el, style, state);
     }
 
     /// <summary>Draw an <c>&lt;image&gt;</c> from a SELF-CONTAINED <c>data:</c> URI (no external fetch —
@@ -320,22 +340,25 @@ internal static class SvgRasterizer
             var x = (float)Len(el, "x", state, style, LenAxis.X);
             var y = (float)Len(el, "y", state, style, LenAxis.Y);
             var dest = new SKRect(x, y, x + (float)w, y + (float)h);
-            var par = Attr(el, "preserveAspectRatio")?.Trim();
-            if (!IsSupportedPreserveAspectRatio(par)) state.SawUnsupported = true; // best-effort meet + flag
-            var stretch = string.Equals(par, "none", StringComparison.OrdinalIgnoreCase);
-            if (stretch || image.Width <= 0 || image.Height <= 0)
+            if (image.Width <= 0 || image.Height <= 0)
             {
                 canvas.DrawImage(image, dest);
                 return;
             }
-            // xMidYMid meet — scale to fit, centered.
-            var scale = Math.Min((float)w / image.Width, (float)h / image.Height);
-            var dw = image.Width * scale;
-            var dh = image.Height * scale;
-            var fitted = new SKRect(
-                x + ((float)w - dw) / 2f, y + ((float)h - dh) / 2f,
-                x + ((float)w + dw) / 2f, y + ((float)h + dh) / 2f);
-            canvas.DrawImage(image, fitted);
+            // preserveAspectRatio (§8.8) — none stretches; meet fits inside; slice covers + clips to the rect.
+            var par = SvgPreserveAspectRatio.Compute(Attr(el, "preserveAspectRatio"), image.Width, image.Height, w, h);
+            var dx = x + par.Tx;
+            var dy = y + par.Ty;
+            var fitted = new SKRect(dx, dy, dx + image.Width * par.ScaleX, dy + image.Height * par.ScaleY);
+            if (par.Slice)
+            {
+                var save = canvas.Save();
+                canvas.ClipRect(dest);
+                canvas.DrawImage(image, fitted);
+                canvas.RestoreToCount(save);
+            }
+            else
+                canvas.DrawImage(image, fitted);
         }
     }
 
@@ -343,17 +366,6 @@ internal static class SvgRasterizer
     // the byte-level caps run (base64 ≈ 4/3 of the decoded bytes; the decoded bytes are capped by
     // ImageSafetyValidator.MaxBytes).
     private const int MaxDataUriBase64Chars = (NetPdf.Pdf.Images.ImageSafetyValidator.MaxBytes / 3) * 4 + 8;
-
-    /// <summary>The renderer honors only <c>xMidYMid meet</c> (the default) + <c>none</c> (image stretch);
-    /// any other align/slice value (e.g. <c>slice</c>, <c>xMinYMin</c>) is NOT implemented and is flagged
-    /// (PR #240 [P3]) so the caller surfaces a diagnostic rather than rendering it wrong silently. Absent /
-    /// empty / <c>xMidYMid</c> / <c>xMidYMid meet</c> / <c>none</c> are supported.</summary>
-    private static bool IsSupportedPreserveAspectRatio(string? raw)
-    {
-        if (string.IsNullOrEmpty(raw)) return true;
-        var v = raw.Trim().ToLowerInvariant();
-        return v is "none" or "xmidymid" or "xmidymid meet";
-    }
 
     /// <summary>Decode a <c>data:[mime];base64,payload</c> image URI to an <see cref="SKImage"/> — running
     /// the SAME pre-decode safety gates the rest of the engine applies to images (PR #240 [P1]): an
@@ -406,8 +418,6 @@ internal static class SvgRasterizer
         var w = el.Attribute("width") is not null ? Len(el, "width", state, style, LenAxis.X) : state.ViewportW;
         var h = el.Attribute("height") is not null ? Len(el, "height", state, style, LenAxis.Y) : state.ViewportH;
         if (!(w > 0) || !(h > 0)) return; // explicit 0 / negative → render nothing
-        // Only xMidYMid meet (the default) is honored; an explicit align/slice value is flagged (best-effort).
-        if (!IsSupportedPreserveAspectRatio(Attr(el, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
 
         var save = canvas.Save();
         canvas.Translate((float)x, (float)y);
@@ -430,9 +440,10 @@ internal static class SvgRasterizer
         var newVpH = vpH;
         if (vb.W > 0 && vb.H > 0)
         {
-            var scale = Math.Min(vpW / vb.W, vpH / vb.H); // meet
-            canvas.Translate((float)((vpW - vb.W * scale) / 2.0), (float)((vpH - vb.H * scale) / 2.0)); // xMidYMid
-            canvas.Scale((float)scale);
+            // preserveAspectRatio (§8.8) maps the viewBox onto the viewport; slice overflow is clipped above.
+            var par = SvgPreserveAspectRatio.Compute(Attr(viewportEl, "preserveAspectRatio"), vb.W, vb.H, vpW, vpH);
+            canvas.Translate(par.Tx, par.Ty);
+            canvas.Scale(par.ScaleX, par.ScaleY);
             canvas.Translate((float)-vb.X, (float)-vb.Y);
             newVpW = vb.W;   // descendants resolve % against the viewBox extent
             newVpH = vb.H;
@@ -476,10 +487,7 @@ internal static class SvgRasterizer
                   : target.Attribute("height") is not null ? Len(target, "height", state, targetStyle, LenAxis.Y)
                   : state.ViewportH;
             if (w > 0 && h > 0)
-            {
-                if (!IsSupportedPreserveAspectRatio(Attr(target, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
                 RenderViewport(canvas, target, target.Elements(), targetStyle, state, depth, w, h);
-            }
         }
         else
             RenderElement(canvas, target, style, state, depth + 1);
@@ -645,6 +653,308 @@ internal static class SvgRasterizer
         foreach (var child in mask.Elements()) RenderElement(canvas, child, maskStyle, state, depth + 1);
         canvas.Restore(); // composite the mask (luma → DstIn) into the element layer
         canvas.Restore(); // composite the element-content layer onto the canvas
+    }
+
+    // ---- markers ----
+
+    private readonly record struct MarkerVertex(SKPoint P, double InDeg, double OutDeg);
+
+    /// <summary>Paint <c>marker-start</c> / <c>marker-mid</c> / <c>marker-end</c> (and the <c>marker</c>
+    /// shorthand) at a shape's vertices (SVG §11.6): start at the first vertex (oriented along the outgoing
+    /// segment), end at the last (incoming), mid at the interior vertices (bisector). Honors
+    /// <c>markerWidth</c>/<c>Height</c>, <c>refX</c>/<c>refY</c>, <c>markerUnits</c> (strokeWidth default /
+    /// userSpaceOnUse), <c>orient</c> (auto / auto-start-reverse / angle), and the marker's
+    /// <c>viewBox</c>/<c>preserveAspectRatio</c>. Marker refs are read off the element itself (group
+    /// inheritance is a residual); path tangents use chord directions (curve tangents approximated).</summary>
+    private static void DrawMarkers(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var startRef = MarkerRef(el, "marker-start");
+        var midRef = MarkerRef(el, "marker-mid");
+        var endRef = MarkerRef(el, "marker-end");
+        if (startRef is null && midRef is null && endRef is null) return;
+        var verts = ExtractVertices(el, style, state);
+        if (verts.Count == 0) return;
+
+        for (var i = 0; i < verts.Count; i++)
+        {
+            var refId = i == 0 ? startRef : i == verts.Count - 1 ? endRef : midRef;
+            if (refId is null || !state.Ids.TryGetValue(refId, out var marker)
+                || !marker.Name.LocalName.Equals("marker", StringComparison.OrdinalIgnoreCase))
+            {
+                if (refId is not null) state.SawUnsupported = true;
+                continue;
+            }
+            var v = verts[i];
+            var orientDeg = i == 0 ? v.OutDeg : i == verts.Count - 1 ? v.InDeg : Bisector(v.InDeg, v.OutDeg);
+            DrawOneMarker(canvas, marker, v.P, orientDeg, style.StrokeWidth, isStart: i == 0, state, style);
+        }
+    }
+
+    /// <summary>The <c>url(#id)</c> for a marker property — the specific <c>marker-start/-mid/-end</c> wins,
+    /// else the <c>marker</c> shorthand (which sets all three).</summary>
+    private static string? MarkerRef(XElement el, string which)
+    {
+        var raw = SvgAttr.Presentation(el, which) ?? SvgAttr.Presentation(el, "marker");
+        if (raw is null) return null;
+        raw = raw.Trim();
+        return raw.Equals("none", StringComparison.OrdinalIgnoreCase) ? null : PaintServerId(raw);
+    }
+
+    private static void DrawOneMarker(
+        SKCanvas canvas, XElement marker, SKPoint at, double orientDeg, float strokeWidth, bool isStart,
+        SvgRenderState state, SvgStyle inherited)
+    {
+        // markerWidth/Height are <length> values (px/pt/unitless) — default 3 when absent (§11.6.2).
+        var mw = marker.Attribute("markerWidth") is not null ? Num(marker, "markerWidth") : 3;
+        var mh = marker.Attribute("markerHeight") is not null ? Num(marker, "markerHeight") : 3;
+        if (!(mw > 0) || !(mh > 0)) return;
+        var refX = Num(marker, "refX");
+        var refY = Num(marker, "refY");
+        var unitsStroke = !(Attr(marker, "markerUnits") ?? "strokeWidth").Trim().Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+
+        // orient: auto follows the path; auto-start-reverse reverses the START marker; a number is fixed.
+        var orient = (Attr(marker, "orient") ?? "0").Trim();
+        double angle;
+        if (orient.Equals("auto", StringComparison.OrdinalIgnoreCase)) angle = orientDeg;
+        else if (orient.Equals("auto-start-reverse", StringComparison.OrdinalIgnoreCase)) angle = orientDeg + (isStart ? 180 : 0);
+        else angle = double.TryParse(orient.TrimEnd('d', 'e', 'g', 'D', 'E', 'G', ' '), NumberStyles.Float, CultureInfo.InvariantCulture, out var a) ? a : 0;
+
+        var vb = ParseViewBox(Attr(marker, "viewBox"));
+        var par = vb.W > 0 && vb.H > 0
+            ? SvgPreserveAspectRatio.Compute(Attr(marker, "preserveAspectRatio"), vb.W, vb.H, mw, mh)
+            : new SvgPar(1, 1, 0, 0, false);
+        // The reference point (in content coords) mapped into the marker viewport, aligned to the vertex.
+        var refVx = vb.W > 0 ? par.Tx + (refX - vb.X) * par.ScaleX : refX;
+        var refVy = vb.H > 0 ? par.Ty + (refY - vb.Y) * par.ScaleY : refY;
+
+        var save = canvas.Save();
+        canvas.Translate(at.X, at.Y);
+        canvas.RotateDegrees((float)angle);
+        if (unitsStroke && strokeWidth > 0) canvas.Scale(strokeWidth);
+        canvas.Translate((float)-refVx, (float)-refVy);
+        canvas.ClipRect(new SKRect(0, 0, (float)mw, (float)mh)); // overflow hidden (the default)
+        if (vb.W > 0 && vb.H > 0)
+        {
+            canvas.Translate(par.Tx, par.Ty);
+            canvas.Scale(par.ScaleX, par.ScaleY);
+            canvas.Translate((float)-vb.X, (float)-vb.Y);
+        }
+        // Marker content renders in a fresh context seeded by the marker's own presentation attributes.
+        var markerStyle = ResolveStyle(marker, SvgStyle.Initial, state);
+        foreach (var child in marker.Elements()) RenderElement(canvas, child, markerStyle, state, depth: 1);
+        canvas.RestoreToCount(save);
+    }
+
+    /// <summary>The bisector orientation (degrees) for a mid marker, averaging the incoming + outgoing
+    /// directions as unit vectors (handles the angle wraparound).</summary>
+    private static double Bisector(double inDeg, double outDeg)
+    {
+        var ir = inDeg * Math.PI / 180.0;
+        var or = outDeg * Math.PI / 180.0;
+        var x = Math.Cos(ir) + Math.Cos(or);
+        var y = Math.Sin(ir) + Math.Sin(or);
+        return x == 0 && y == 0 ? inDeg : Math.Atan2(y, x) * 180.0 / Math.PI;
+    }
+
+    /// <summary>The shape's vertices in order, each with the incoming + outgoing segment direction (degrees).
+    /// line / polyline / polygon use their points; a path uses its on-path verb endpoints (chord tangents).</summary>
+    private static List<MarkerVertex> ExtractVertices(XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var pts = new List<SKPoint>();
+        switch (el.Name.LocalName.ToLowerInvariant())
+        {
+            case "line":
+                pts.Add(new SKPoint((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y)));
+                pts.Add(new SKPoint((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y)));
+                break;
+            case "polyline":
+            case "polygon":
+                pts.AddRange(ParsePoints(Attr(el, "points")));
+                if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase) && pts.Count > 0) pts.Add(pts[0]);
+                break;
+            case "path":
+                using (var p = BuildShapePath(el, style, state))
+                    if (p is not null) pts.AddRange(PathVertices(p));
+                break;
+        }
+        return ToVertices(pts);
+    }
+
+    private static List<SKPoint> PathVertices(SKPath path)
+    {
+        var pts = new List<SKPoint>();
+        using var it = path.CreateRawIterator();
+        var buf = new SKPoint[4];
+        SKPathVerb verb;
+        var subpathStart = new SKPoint();
+        var haveStart = false;
+        while ((verb = it.Next(buf)) != SKPathVerb.Done)
+        {
+            switch (verb)
+            {
+                case SKPathVerb.Move: subpathStart = buf[0]; haveStart = true; pts.Add(buf[0]); break;
+                case SKPathVerb.Line: pts.Add(buf[1]); break;
+                case SKPathVerb.Quad:
+                case SKPathVerb.Conic: pts.Add(buf[2]); break;
+                case SKPathVerb.Cubic: pts.Add(buf[3]); break;
+                case SKPathVerb.Close: if (haveStart) pts.Add(subpathStart); break; // closing segment back to the start
+            }
+        }
+        return pts;
+    }
+
+    private static List<MarkerVertex> ToVertices(List<SKPoint> pts)
+    {
+        var result = new List<MarkerVertex>(pts.Count);
+        for (var i = 0; i < pts.Count; i++)
+        {
+            var inDeg = i > 0 ? Dir(pts[i - 1], pts[i]) : (i + 1 < pts.Count ? Dir(pts[i], pts[i + 1]) : 0);
+            var outDeg = i + 1 < pts.Count ? Dir(pts[i], pts[i + 1]) : inDeg;
+            result.Add(new MarkerVertex(pts[i], inDeg, outDeg));
+        }
+        return result;
+    }
+
+    private static double Dir(SKPoint a, SKPoint b) => Math.Atan2(b.Y - a.Y, b.X - a.X) * 180.0 / Math.PI;
+
+    // ---- filter ----
+
+    /// <summary>Resolve a <c>filter="url(#id)"</c> reference to its <c>&lt;filter&gt;</c> element (SVG §15), or
+    /// <see langword="null"/> for <c>none</c> / absent. A url() that doesn't resolve to a <c>&lt;filter&gt;</c>
+    /// is flagged (and the element renders unfiltered).</summary>
+    private static XElement? ResolveFilter(XElement el, SvgRenderState state)
+    {
+        var raw = SvgAttr.Presentation(el, "filter");
+        if (raw is null) return null;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (PaintServerId(raw) is { } id && state.Ids.TryGetValue(id, out var f)
+            && f.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase))
+            return f;
+        state.SawUnsupported = true;
+        return null;
+    }
+
+    /// <summary>Compose a <c>&lt;filter&gt;</c>'s primitive children into a single Skia
+    /// <see cref="SKImageFilter"/> applied to the element's rendering (the <c>SourceGraphic</c>). A LINEAR
+    /// chain is supported — each primitive feeds the next — covering <c>feGaussianBlur</c>, <c>feOffset</c>,
+    /// and <c>feColorMatrix</c> (matrix / saturate / hueRotate / luminanceToAlpha). Graph-routing primitives
+    /// (<c>feMerge</c> / <c>feComposite</c> / <c>feBlend</c> / <c>feFlood</c> / <c>feImage</c> / …), the
+    /// <c>in</c>/<c>result</c> named-input routing, primitive subregions, and the filter region /
+    /// <c>*Units</c> aren't modeled this cut → flagged (PR-243 review [P1]). Returns <see langword="null"/>
+    /// when no supported primitive contributes (the element renders unfiltered).</summary>
+    private static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
+    {
+        SKImageFilter? current = null; // null input = SourceGraphic
+        // The filter region (x/y/width/height) and *Units change the result geometry but aren't applied here.
+        var sawUnsupported = HasAnyAttr(filter, "x", "y", "width", "height", "filterUnits", "primitiveUnits");
+        foreach (var prim in filter.Elements())
+        {
+            // A named result, a non-default input, or a primitive subregion implies a routing/region model
+            // this linear chain doesn't honor → flag (the chain still renders as a best effort).
+            if (HasAnyAttr(prim, "result", "x", "y", "width", "height")
+                || (Attr(prim, "in") is { } input && !input.Trim().Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase)))
+                sawUnsupported = true;
+
+            switch (prim.Name.LocalName.ToLowerInvariant())
+            {
+                case "fegaussianblur":
+                {
+                    var (sx, sy) = ParseStdDeviation(Attr(prim, "stdDeviation"));
+                    if (sx > 0 || sy > 0) current = SKImageFilter.CreateBlur(sx, sy, current);
+                    break;
+                }
+                case "feoffset":
+                    current = SKImageFilter.CreateOffset((float)Num(prim, "dx"), (float)Num(prim, "dy"), current);
+                    break;
+                case "fecolormatrix":
+                {
+                    var matrix = BuildColorMatrix(prim);
+                    if (matrix is not null)
+                    {
+                        using var cf = SKColorFilter.CreateColorMatrix(matrix);
+                        current = SKImageFilter.CreateColorFilter(cf, current);
+                    }
+                    break;
+                }
+                default:
+                    sawUnsupported = true; // unsupported primitive / graph routing
+                    break;
+            }
+        }
+        if (sawUnsupported) state.SawUnsupported = true;
+        return current;
+    }
+
+    /// <summary><c>feGaussianBlur stdDeviation</c> — one value (isotropic) or two (x then y). The SVG std
+    /// deviation IS the Gaussian sigma Skia's blur takes directly.</summary>
+    private static (float X, float Y) ParseStdDeviation(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return (0, 0);
+        var t = raw.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        float P(int i) => i < t.Length && float.TryParse(t[i], NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : 0;
+        var x = P(0);
+        return (x, t.Length > 1 ? P(1) : x);
+    }
+
+    /// <summary>Build the 20-entry color matrix for a <c>feColorMatrix</c> (<c>type</c> = matrix [default] /
+    /// saturate / hueRotate / luminanceToAlpha), or <see langword="null"/> when it's a degenerate identity /
+    /// unparseable. Row-major RGBA with the 5th column the bias, matching Skia's
+    /// <c>SKColorFilter.CreateColorMatrix</c>.</summary>
+    private static float[]? BuildColorMatrix(XElement prim)
+    {
+        var type = (Attr(prim, "type") ?? "matrix").Trim().ToLowerInvariant();
+        switch (type)
+        {
+            case "matrix":
+            {
+                var raw = Attr(prim, "values");
+                if (string.IsNullOrWhiteSpace(raw)) return null;
+                var t = raw.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                if (t.Length != 20) return null;
+                var m = new float[20];
+                for (var i = 0; i < 20; i++)
+                    if (!float.TryParse(t[i], NumberStyles.Float, CultureInfo.InvariantCulture, out m[i])) return null;
+                return m;
+            }
+            case "saturate":
+            {
+                var s = 1f;
+                if (Attr(prim, "values") is { } sv) float.TryParse(sv.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out s);
+                // SVG §15 saturate matrix.
+                return
+                [
+                    0.213f + 0.787f * s, 0.715f - 0.715f * s, 0.072f - 0.072f * s, 0, 0,
+                    0.213f - 0.213f * s, 0.715f + 0.285f * s, 0.072f - 0.072f * s, 0, 0,
+                    0.213f - 0.213f * s, 0.715f - 0.715f * s, 0.072f + 0.928f * s, 0, 0,
+                    0, 0, 0, 1, 0,
+                ];
+            }
+            case "huerotate":
+            {
+                var deg = 0f;
+                if (Attr(prim, "values") is { } hv) float.TryParse(hv.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out deg);
+                var c = (float)Math.Cos(deg * Math.PI / 180.0);
+                var s = (float)Math.Sin(deg * Math.PI / 180.0);
+                return
+                [
+                    0.213f + c * 0.787f - s * 0.213f, 0.715f - c * 0.715f - s * 0.715f, 0.072f - c * 0.072f + s * 0.928f, 0, 0,
+                    0.213f - c * 0.213f + s * 0.143f, 0.715f + c * 0.285f + s * 0.140f, 0.072f - c * 0.072f - s * 0.283f, 0, 0,
+                    0.213f - c * 0.213f - s * 0.787f, 0.715f - c * 0.715f + s * 0.715f, 0.072f + c * 0.928f + s * 0.072f, 0, 0,
+                    0, 0, 0, 1, 0,
+                ];
+            }
+            case "luminancetoalpha":
+                return
+                [
+                    0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0,
+                    0.2125f, 0.7154f, 0.0721f, 0, 0,
+                ];
+            default:
+                return null;
+        }
     }
 
     // ---- pattern paint server ----
@@ -903,10 +1213,12 @@ internal static class SvgRasterizer
         var fontWeight = ParseFontWeight(SvgAttr.Presentation(el, "font-weight"), inherited.FontWeight);
         var italic = ParseItalic(SvgAttr.Presentation(el, "font-style"), inherited.Italic);
         var textAnchor = SvgAttr.Presentation(el, "text-anchor") ?? inherited.TextAnchor;
+        var letterSpacing = ParseSpacing(SvgAttr.Presentation(el, "letter-spacing"), inherited.LetterSpacing);
+        var wordSpacing = ParseSpacing(SvgAttr.Presentation(el, "word-spacing"), inherited.WordSpacing);
 
         return new SvgStyle(fill, fillRef, hasFill, stroke, strokeRef, strokeWidth,
             fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor,
-            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter);
+            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter, letterSpacing, wordSpacing);
     }
 
     /// <summary>Parse a <c>stroke-dasharray</c> value (comma/space-separated lengths). Returns
@@ -987,9 +1299,27 @@ internal static class SvgRasterizer
         ? inherited
         : raw.Trim().Equals("italic", StringComparison.OrdinalIgnoreCase) || raw.Trim().Equals("oblique", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary><c>letter-spacing</c> / <c>word-spacing</c> — <c>normal</c> (or absent) → 0; otherwise a
+    /// length (px/pt/unitless user units).</summary>
+    private static float ParseSpacing(string? raw, float inherited)
+    {
+        if (raw is null) return inherited;
+        raw = raw.Trim();
+        if (raw.Equals("normal", StringComparison.OrdinalIgnoreCase)) return 0;
+        return double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? (float)v : inherited;
+    }
+
     // ---- attribute / value helpers ----
 
     private static string? Attr(XElement el, string name) => el.Attribute(name)?.Value;
+
+    /// <summary>True if the element carries any of the named attributes (used to detect unmodeled
+    /// filter routing / subregion / region attributes).</summary>
+    private static bool HasAnyAttr(XElement el, params string[] names)
+    {
+        foreach (var n in names) if (el.Attribute(n) is not null) return true;
+        return false;
+    }
 
     private static double Num(XElement el, string name) =>
         double.TryParse(TrimUnit(Attr(el, name)), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;

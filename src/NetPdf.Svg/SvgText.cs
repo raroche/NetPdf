@@ -22,6 +22,14 @@ internal static class SvgText
 
     public static void Draw(SKCanvas canvas, XElement text, SvgStyle style, SvgRenderState state)
     {
+        // A <textPath> child lays the text along a referenced path instead of the normal horizontal flow.
+        foreach (var child in text.Elements())
+            if (child.Name.LocalName.Equals("textPath", StringComparison.OrdinalIgnoreCase))
+            {
+                DrawTextPath(canvas, child, style, state);
+                return;
+            }
+
         var runs = new List<Run>();
         CollectRuns(text, style, runs, state, topLevel: true);
         if (runs.Count == 0) return;
@@ -43,7 +51,7 @@ internal static class SvgText
             for (var k = i; k < j; k++)
             {
                 using var f = BuildFont(runs[k].Style);
-                chunkWidth += runs[k].Dx + f.MeasureText(runs[k].Text);
+                chunkWidth += runs[k].Dx + MeasureRun(f, runs[k].Text, runs[k].Style);
             }
             var anchorFactor = (runs[i].Style.TextAnchor?.Trim().ToLowerInvariant()) switch
             {
@@ -61,12 +69,131 @@ internal static class SvgText
                 if (run.AbsY is { } ay) penY = ay;
                 penX += run.Dx;
                 penY += run.Dy;
-                var width = font.MeasureText(run.Text);
-                DrawRun(canvas, run.Text, penX, penY, width, font, run.Style, state);
+                var width = MeasureRun(font, run.Text, run.Style);
+                DrawSpacedOrWhole(canvas, run.Text, penX, penY, font, run.Style, state);
                 penX += width;
             }
             i = j;
         }
+    }
+
+    /// <summary>The run's total advance including letter-spacing (after each glyph) + word-spacing (after
+    /// each space). With both zero this is exactly <c>SKFont.MeasureText</c> → the default stays unchanged.</summary>
+    private static float MeasureRun(SKFont font, string text, SvgStyle style)
+    {
+        var w = font.MeasureText(text);
+        if (style.LetterSpacing == 0 && style.WordSpacing == 0) return w;
+        w += style.LetterSpacing * text.Length;
+        foreach (var ch in text) if (ch == ' ') w += style.WordSpacing;
+        return w;
+    }
+
+    /// <summary>Draw a run honoring letter-/word-spacing. With no spacing it's a single whole-string draw
+    /// (byte-identical default); otherwise each glyph is drawn at its own pen position.</summary>
+    private static void DrawSpacedOrWhole(SKCanvas canvas, string text, float x, float baseline, SKFont font, SvgStyle style, SvgRenderState state)
+    {
+        if (style.LetterSpacing == 0 && style.WordSpacing == 0)
+        {
+            DrawRun(canvas, text, x, baseline, font.MeasureText(text), font, style, state);
+            return;
+        }
+        var gx = x;
+        foreach (var ch in text)
+        {
+            var glyph = ch.ToString();
+            var gw = font.MeasureText(glyph);
+            DrawRun(canvas, glyph, gx, baseline, gw, font, style, state);
+            gx += gw + style.LetterSpacing + (ch == ' ' ? style.WordSpacing : 0);
+        }
+    }
+
+    /// <summary>Lay the text of a <c>&lt;textPath&gt;</c> along its referenced <c>&lt;path&gt;</c> (SVG §10.13):
+    /// each glyph is positioned at its advance-midpoint along the path arc length (offset by
+    /// <c>startOffset</c> + the <c>text-anchor</c>) and rotated to the path tangent. Only a <c>&lt;path&gt;</c>
+    /// reference is supported; a missing / non-path target is flagged. Glyphs whose midpoint falls off the
+    /// path are dropped.</summary>
+    private static void DrawTextPath(SKCanvas canvas, XElement textPath, SvgStyle parentStyle, SvgRenderState state)
+    {
+        var id = SvgAttr.HrefId(textPath);
+        if (id is null || !state.Ids.TryGetValue(id, out var pathEl)
+            || !pathEl.Name.LocalName.Equals("path", StringComparison.OrdinalIgnoreCase)
+            || pathEl.Attribute("d")?.Value is not { } d || string.IsNullOrWhiteSpace(d))
+        {
+            state.SawUnsupported = true;
+            return;
+        }
+        using var path = SKPath.ParseSvgPathData(d);
+        if (path is null) { state.SawUnsupported = true; return; }
+
+        var style = ResolveRunStyle(textPath, parentStyle);
+        var content = Collapse(AllText(textPath));
+        if (content.Length == 0) return;
+        using var font = BuildFont(style);
+        using var measure = new SKPathMeasure(path, false);
+        var pathLen = measure.Length;
+        if (!(pathLen > 0)) return;
+
+        var startOffset = ParseStartOffset(SvgAttr.Get(textPath, "startOffset"), pathLen);
+        var total = MeasureRun(font, content, style);
+        var anchor = (style.TextAnchor ?? string.Empty).Trim().ToLowerInvariant();
+        var distance = startOffset + anchor switch { "middle" => -total / 2f, "end" => -total, _ => 0f };
+
+        using var fillShader = style.FillRef is { } fref ? state.ResolveShader(fref, path.Bounds, style.FillOpacity, style) : null;
+        for (var i = 0; i < content.Length; i++)
+        {
+            var glyph = content[i].ToString();
+            var adv = font.MeasureText(glyph);
+            var mid = distance + adv / 2f;
+            if (mid >= 0 && mid <= pathLen && measure.GetPositionAndTangent(mid, out var pos, out var tan))
+            {
+                var save = canvas.Save();
+                canvas.Translate(pos.X, pos.Y);
+                canvas.RotateRadians((float)Math.Atan2(tan.Y, tan.X));
+                DrawPathGlyph(canvas, glyph, -adv / 2f, font, style, fillShader?.Shader, state);
+                canvas.RestoreToCount(save);
+            }
+            distance += adv + style.LetterSpacing + (content[i] == ' ' ? style.WordSpacing : 0);
+        }
+    }
+
+    private static void DrawPathGlyph(
+        SKCanvas canvas, string glyph, float x, SKFont font, SvgStyle style, SKShader? fillShader, SvgRenderState state)
+    {
+        if (fillShader is not null)
+        {
+            using var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = fillShader, IsAntialias = true };
+            canvas.DrawText(glyph, x, 0, font, p);
+        }
+        else if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
+        {
+            using var p = new SKPaint { Style = SKPaintStyle.Fill, Color = WithOpacity(style.Fill, style.FillOpacity), IsAntialias = true };
+            canvas.DrawText(glyph, x, 0, font, p);
+        }
+        if (style.StrokeWidth > 0 && style.Stroke is { } sc && style.StrokeRef is null)
+        {
+            using var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Color = WithOpacity(sc, style.StrokeOpacity), IsAntialias = true };
+            canvas.DrawText(glyph, x, 0, font, p);
+        }
+    }
+
+    /// <summary>Parse a <c>startOffset</c> — a length (px/pt/unitless) or a percentage of the path length.</summary>
+    private static float ParseStartOffset(string? raw, float pathLen)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return 0;
+        raw = raw.Trim();
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+            return double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? (float)(pct / 100.0 * pathLen) : 0;
+        return TryUnit(raw, out var v) ? v : 0;
+    }
+
+    /// <summary>Concatenate all descendant text content (textPath glyphs ignore inner element structure
+    /// this cut).</summary>
+    private static string AllText(XElement el)
+    {
+        var sb = new StringBuilder();
+        foreach (var node in el.DescendantNodes())
+            if (node is XText t) sb.Append(t.Value);
+        return sb.ToString();
     }
 
     private static void DrawRun(
@@ -187,6 +314,10 @@ internal static class SvgText
         var fstRaw = SvgAttr.Presentation(el, "font-style");
         if (fstRaw is not null)
             s = s with { Italic = fstRaw.Trim().Equals("italic", StringComparison.OrdinalIgnoreCase) || fstRaw.Trim().Equals("oblique", StringComparison.OrdinalIgnoreCase) };
+        var lsRaw = SvgAttr.Presentation(el, "letter-spacing");
+        if (lsRaw is not null) s = s with { LetterSpacing = ParseSpacing(lsRaw) };
+        var wsRaw = SvgAttr.Presentation(el, "word-spacing");
+        if (wsRaw is not null) s = s with { WordSpacing = ParseSpacing(wsRaw) };
         return s;
     }
 
@@ -275,6 +406,14 @@ internal static class SvgText
             return true;
         }
         return TryUnit(raw, out value);
+    }
+
+    /// <summary><c>letter-spacing</c> / <c>word-spacing</c> — <c>normal</c> → 0; else a length.</summary>
+    private static float ParseSpacing(string raw)
+    {
+        raw = raw.Trim();
+        if (raw.Equals("normal", StringComparison.OrdinalIgnoreCase)) return 0;
+        return TryUnit(raw, out var v) ? v : 0;
     }
 
     private static bool TryUnit(string raw, out float value)

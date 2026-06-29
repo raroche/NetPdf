@@ -2767,12 +2767,19 @@ flags the categories):
      luma→alpha DstIn composited, `maskContentUnits` honored; non-`<mask>` target flagged + left unmasked);
      `<pattern>` paint servers (recursive tile rendered once into a Repeat/Repeat shader; `patternUnits` /
      `patternContentUnits` / `viewBox` / `patternTransform` / `href` content+attr inheritance; self-reference
-     depth-bounded; tile-area cap). **SVG residuals (later):** non-default `preserveAspectRatio` align/slice
-     (only `xMidYMid meet`/`none` honored — others flagged); `filter`/`marker` element refs;
-     `textPath`/`rotate`/`textLength`, bidi/complex-script shaping (Skia default shaping only — no HarfBuzz
-     integration); `mask` region clip (`maskUnits` -10%..120% default region not clipped) + `mask-type: alpha`;
-     pattern tile resolution under heavy scaling (tile rendered at user resolution); native vector SVG → PDF
-     operators (raster first cut), inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
+     depth-bounded; tile-area cap). **SVG part 5 shipped:** full `preserveAspectRatio` (none / meet / slice +
+     the nine x/y MIN/MID/MAX alignments on `<image>` + nested viewports); `filter="url(#id)"` (a linear chain
+     of `feGaussianBlur` / `feOffset` / `feColorMatrix` [matrix/saturate/hueRotate/luminanceToAlpha] → a Skia
+     image filter over the subtree; graph-routing primitives flagged); `marker-start`/`-mid`/`-end` (+ the
+     `marker` shorthand — markerWidth/Height/refX/refY/markerUnits/orient[auto/auto-start-reverse/angle]/
+     viewBox); `<textPath>` (glyphs along a referenced `<path>`, startOffset + text-anchor, tangent rotation);
+     SVG text `letter-spacing` / `word-spacing`. **SVG residuals (later):** filter graph primitives (feMerge/
+     feComposite/feBlend/feFlood/feImage/feTile/…) + `in`/`result` routing + the filter region; group-inherited
+     marker refs + exact curve tangents; `textPath` on non-path shapes + `rotate`/`textLength`/`lengthAdjust`;
+     bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip
+     (`maskUnits` -10%..120% default region not clipped) + `mask-type: alpha`; pattern tile resolution under
+     heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),
+     inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't
      depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow

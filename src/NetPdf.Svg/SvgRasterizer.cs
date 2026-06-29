@@ -1201,10 +1201,12 @@ internal static class SvgRasterizer
         var fontWeight = ParseFontWeight(SvgAttr.Presentation(el, "font-weight"), inherited.FontWeight);
         var italic = ParseItalic(SvgAttr.Presentation(el, "font-style"), inherited.Italic);
         var textAnchor = SvgAttr.Presentation(el, "text-anchor") ?? inherited.TextAnchor;
+        var letterSpacing = ParseSpacing(SvgAttr.Presentation(el, "letter-spacing"), inherited.LetterSpacing);
+        var wordSpacing = ParseSpacing(SvgAttr.Presentation(el, "word-spacing"), inherited.WordSpacing);
 
         return new SvgStyle(fill, fillRef, hasFill, stroke, strokeRef, strokeWidth,
             fillOpacity, strokeOpacity, currentColor, fontSize, fontFamily, fontWeight, italic, textAnchor,
-            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter);
+            strokeDash, strokeDashOffset, strokeCap, strokeJoin, strokeMiter, letterSpacing, wordSpacing);
     }
 
     /// <summary>Parse a <c>stroke-dasharray</c> value (comma/space-separated lengths). Returns
@@ -1284,6 +1286,16 @@ internal static class SvgRasterizer
     private static bool ParseItalic(string? raw, bool inherited) => raw is null
         ? inherited
         : raw.Trim().Equals("italic", StringComparison.OrdinalIgnoreCase) || raw.Trim().Equals("oblique", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary><c>letter-spacing</c> / <c>word-spacing</c> — <c>normal</c> (or absent) → 0; otherwise a
+    /// length (px/pt/unitless user units).</summary>
+    private static float ParseSpacing(string? raw, float inherited)
+    {
+        if (raw is null) return inherited;
+        raw = raw.Trim();
+        if (raw.Equals("normal", StringComparison.OrdinalIgnoreCase)) return 0;
+        return double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? (float)v : inherited;
+    }
 
     // ---- attribute / value helpers ----
 

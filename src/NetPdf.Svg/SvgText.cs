@@ -79,9 +79,9 @@ internal static class SvgText
 
         if (style.FillRef is { } fref)
         {
-            if (state.ResolveShader(fref, bounds, style.FillOpacity, style.CurrentColor) is { } shader)
-                using (shader)
-                using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = shader, IsAntialias = true })
+            if (state.ResolveShader(fref, bounds, style.FillOpacity, style) is { } rp)
+                using (rp)
+                using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = rp.Shader, IsAntialias = true })
                     canvas.DrawText(textRun, x, baseline, font, p);
             else state.SawUnsupported = true;
         }
@@ -95,9 +95,9 @@ internal static class SvgText
         {
             if (style.StrokeRef is { } sref)
             {
-                if (state.ResolveShader(sref, bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
-                    using (shader)
-                    using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
+                if (state.ResolveShader(sref, bounds, style.StrokeOpacity, style) is { } rp)
+                    using (rp)
+                    using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = rp.Shader, IsAntialias = true })
                         canvas.DrawText(textRun, x, baseline, font, p);
                 else state.SawUnsupported = true;
             }

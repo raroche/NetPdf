@@ -2758,11 +2758,20 @@ flags the categories):
      `%`/`em`/`rem` geometry lengths on SHAPE / `<image>` / `<use>` / nested-`<svg>` (% vs the viewport,
      em/rem vs font-size — `<text>`/`<tspan>` coords stay px/unitless); element/group `opacity` (a SaveLayer
      transparency layer); nested `<svg>` viewport (x/y/width/height clip + viewBox scale, xMidYMid meet —
-     an explicit zero/negative size renders nothing). **SVG residuals (later):** `<text>`/`<tspan>` `%`/`em`
-     coordinate lengths; non-default `preserveAspectRatio` align/slice (only `xMidYMid meet`/`none` honored —
-     others flagged); `<pattern>` paint servers (recursive tile + units), `clip-path`/`mask`/`filter`/`marker`
-     element refs, `textPath`/`rotate`/`textLength`, bidi/complex-script shaping (Skia default shaping only —
-     no HarfBuzz integration), `<symbol>` nested-viewport clip+scale via `<use>`, native vector SVG → PDF
+     an explicit zero/negative size renders nothing). **SVG part 4 shipped:** `<use>` → `<symbol>`/`<svg>`
+     VIEWPORT clip + viewBox scale (use width/height else target else 100%, explicit-zero renders nothing);
+     `<text>`/`<tspan>` `%`/`em`/`rem` coordinate lengths (x/dx vs viewport width, y/dy vs height, em/rem vs the
+     run font-size); `clip-path="url(#id)"` element references (union the `<clipPath>`'s child geometry,
+     `clipPathUnits` userSpaceOnUse default + objectBoundingBox via a computed bbox; a non-`<clipPath>` target
+     is flagged + left unclipped); `mask="url(#id)"` LUMINANCE masking (`<mask>` content rendered to a layer,
+     luma→alpha DstIn composited, `maskContentUnits` honored; non-`<mask>` target flagged + left unmasked);
+     `<pattern>` paint servers (recursive tile rendered once into a Repeat/Repeat shader; `patternUnits` /
+     `patternContentUnits` / `viewBox` / `patternTransform` / `href` content+attr inheritance; self-reference
+     depth-bounded; tile-area cap). **SVG residuals (later):** non-default `preserveAspectRatio` align/slice
+     (only `xMidYMid meet`/`none` honored — others flagged); `filter`/`marker` element refs;
+     `textPath`/`rotate`/`textLength`, bidi/complex-script shaping (Skia default shaping only — no HarfBuzz
+     integration); `mask` region clip (`maskUnits` -10%..120% default region not clipped) + `mask-type: alpha`;
+     pattern tile resolution under heavy scaling (tile rendered at user resolution); native vector SVG → PDF
      operators (raster first cut), inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't

@@ -91,6 +91,7 @@ internal static class SvgRasterizer
             ViewportH = vbH > 0 ? vbH : pxH,
             SawUnsupported = idMapOverBudget, // an over-cap definition tree is truncated → flag it
         };
+        state.PatternShaderFactory = (pat, bounds, opacity, style) => BuildPatternShader(pat, bounds, opacity, style, state);
         var raster = SubtreeRasterizer.Render(pxW, pxH, canvas =>
         {
             // Map the viewBox onto the raster (preserveAspectRatio xMidYMid meet — the default §8.2).
@@ -143,7 +144,19 @@ internal static class SvgRasterizer
         var transform = SvgTransform.Parse(Attr(el, "transform"));
         var restore = canvas.Save();
         if (transform is { } m) canvas.Concat(in m);
-        if (opacity < 1f)
+        // clip-path="url(#id)" intersects the element (and its subtree) with the union of the referenced
+        // <clipPath>'s child geometry (§14.3). Applied in the element's local space, before the opacity /
+        // mask layers so the group is clipped.
+        ApplyClipPath(canvas, el, style, state);
+
+        // mask="url(#id)" composites the element's subtree against the LUMINANCE of a <mask>'s content
+        // (§14.4). Open an element-content layer; after the content + opacity are drawn, the mask's luminance
+        // is multiplied into its alpha (DstIn).
+        var mask = ResolveMask(el, state);
+        var maskLayer = mask is not null;
+        if (maskLayer) canvas.SaveLayer(null);
+        var opacityLayer = opacity < 1f;
+        if (opacityLayer)
         {
             using var layerPaint = new SKPaint { Color = SKColors.White.WithAlpha((byte)Math.Round(opacity * 255f)) };
             canvas.SaveLayer(layerPaint);
@@ -162,8 +175,8 @@ internal static class SvgRasterizer
             case "circle": DrawCircle(canvas, el, style, state); break;
             case "ellipse": DrawEllipse(canvas, el, style, state); break;
             case "line": DrawLine(canvas, el, style, state); break;
-            case "polyline": DrawPoly(canvas, el, style, state, close: false); break;
-            case "polygon": DrawPoly(canvas, el, style, state, close: true); break;
+            case "polyline":
+            case "polygon": DrawPoly(canvas, el, style, state); break;
             case "path": DrawPath(canvas, el, style, state); break;
             case "text": SvgText.Draw(canvas, el, style, state); break;
             case "image": DrawImage(canvas, el, style, state); break;
@@ -178,68 +191,111 @@ internal static class SvgRasterizer
             // diagnostic per image (PR-230 [P2]).
             default: state.SawUnsupported = true; break;
         }
+        if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
+        if (mask is not null) ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
         canvas.RestoreToCount(restore);
     }
 
     // ---- shapes ----
 
+    /// <summary>Build the geometry <see cref="SKPath"/> for a basic shape element (rect / circle / ellipse /
+    /// line / polyline / polygon / path) in the element's user space, or <see langword="null"/> when the
+    /// element isn't a basic shape or is geometrically empty. Shared by the draw walk and the
+    /// <c>clip-path</c> resolver (a <c>&lt;clipPath&gt;</c> unions its children's geometry).</summary>
+    private static SKPath? BuildShapePath(XElement el, SvgStyle style, SvgRenderState state)
+    {
+        switch (el.Name.LocalName.ToLowerInvariant())
+        {
+            case "rect":
+            {
+                var x = Len(el, "x", state, style, LenAxis.X); var y = Len(el, "y", state, style, LenAxis.Y);
+                var w = Len(el, "width", state, style, LenAxis.X); var h = Len(el, "height", state, style, LenAxis.Y);
+                if (!(w > 0) || !(h > 0)) return null;
+                var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
+                var path = new SKPath();
+                if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
+                else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
+                return path;
+            }
+            case "circle":
+            {
+                var r = Len(el, "r", state, style, LenAxis.Other);
+                if (!(r > 0)) return null;
+                var path = new SKPath();
+                path.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r);
+                return path;
+            }
+            case "ellipse":
+            {
+                var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
+                if (!(rx > 0) || !(ry > 0)) return null;
+                var cx = Len(el, "cx", state, style, LenAxis.X); var cy = Len(el, "cy", state, style, LenAxis.Y);
+                var path = new SKPath();
+                path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
+                return path;
+            }
+            case "line":
+            {
+                var path = new SKPath();
+                path.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
+                path.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
+                return path;
+            }
+            case "polyline":
+            case "polygon":
+            {
+                var pts = ParsePoints(Attr(el, "points"));
+                if (pts.Count < 2) return null;
+                var path = new SKPath();
+                path.MoveTo(pts[0]);
+                for (var i = 1; i < pts.Count; i++) path.LineTo(pts[i]);
+                if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase)) path.Close();
+                return path;
+            }
+            case "path":
+            {
+                var d = Attr(el, "d");
+                if (string.IsNullOrWhiteSpace(d)) return null;
+                return SKPath.ParseSvgPathData(d); // null on malformed data
+            }
+            default: return null;
+        }
+    }
+
     private static void DrawRect(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var x = Len(el, "x", state, style, LenAxis.X); var y = Len(el, "y", state, style, LenAxis.Y);
-        var w = Len(el, "width", state, style, LenAxis.X); var h = Len(el, "height", state, style, LenAxis.Y);
-        if (!(w > 0) || !(h > 0)) return;
-        var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
-        using var path = new SKPath();
-        if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
-        else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawCircle(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var r = Len(el, "r", state, style, LenAxis.Other);
-        if (!(r > 0)) return;
-        using var path = new SKPath();
-        path.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r);
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawEllipse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
-        if (!(rx > 0) || !(ry > 0)) return;
-        var cx = Len(el, "cx", state, style, LenAxis.X); var cy = Len(el, "cy", state, style, LenAxis.Y);
-        using var path = new SKPath();
-        path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawLine(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        using var path = new SKPath();
-        path.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
-        path.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
-        StrokeOnly(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) StrokeOnly(canvas, path, style, state);
     }
 
-    private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, bool close)
+    private static void DrawPoly(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var pts = ParsePoints(Attr(el, "points"));
-        if (pts.Count < 2) return;
-        using var path = new SKPath();
-        path.MoveTo(pts[0]);
-        for (var i = 1; i < pts.Count; i++) path.LineTo(pts[i]);
-        if (close) path.Close();
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     private static void DrawPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var d = Attr(el, "d");
-        if (string.IsNullOrWhiteSpace(d)) return;
-        using var path = SKPath.ParseSvgPathData(d);
-        if (path is null) return; // malformed path data → skip
-        FillAndStroke(canvas, path, style, state);
+        using var path = BuildShapePath(el, style, state);
+        if (path is not null) FillAndStroke(canvas, path, style, state);
     }
 
     /// <summary>Draw an <c>&lt;image&gt;</c> from a SELF-CONTAINED <c>data:</c> URI (no external fetch —
@@ -355,14 +411,27 @@ internal static class SvgRasterizer
 
         var save = canvas.Save();
         canvas.Translate((float)x, (float)y);
-        canvas.ClipRect(new SKRect(0, 0, (float)w, (float)h));
-        var vb = ParseViewBox(Attr(el, "viewBox"));
-        var newVpW = w;
-        var newVpH = h;
+        RenderViewport(canvas, el, el.Elements(), style, state, depth, w, h);
+        canvas.RestoreToCount(save);
+    }
+
+    /// <summary>Establish an SVG viewport at the current canvas origin (SVG §7.2): CLIP to
+    /// <paramref name="vpW"/> × <paramref name="vpH"/>, and — when <paramref name="viewportEl"/> carries a
+    /// <c>viewBox</c> — SCALE its content to fit (<c>xMidYMid meet</c>, centered), making the viewBox extent
+    /// the new <c>%</c> reference for descendants. Shared by a nested <c>&lt;svg&gt;</c> and a
+    /// <c>&lt;use&gt;</c> → <c>&lt;symbol&gt;</c>/<c>&lt;svg&gt;</c> reference (both set up the same viewport).</summary>
+    private static void RenderViewport(
+        SKCanvas canvas, XElement viewportEl, IEnumerable<XElement> children, SvgStyle childStyle,
+        SvgRenderState state, int depth, double vpW, double vpH)
+    {
+        canvas.ClipRect(new SKRect(0, 0, (float)vpW, (float)vpH));
+        var vb = ParseViewBox(Attr(viewportEl, "viewBox"));
+        var newVpW = vpW;
+        var newVpH = vpH;
         if (vb.W > 0 && vb.H > 0)
         {
-            var scale = Math.Min(w / vb.W, h / vb.H); // meet
-            canvas.Translate((float)((w - vb.W * scale) / 2.0), (float)((h - vb.H * scale) / 2.0)); // xMidYMid
+            var scale = Math.Min(vpW / vb.W, vpH / vb.H); // meet
+            canvas.Translate((float)((vpW - vb.W * scale) / 2.0), (float)((vpH - vb.H * scale) / 2.0)); // xMidYMid
             canvas.Scale((float)scale);
             canvas.Translate((float)-vb.X, (float)-vb.Y);
             newVpW = vb.W;   // descendants resolve % against the viewBox extent
@@ -372,17 +441,17 @@ internal static class SvgRasterizer
         var prevH = state.ViewportH;
         state.ViewportW = newVpW;
         state.ViewportH = newVpH;
-        foreach (var child in el.Elements()) RenderElement(canvas, child, style, state, depth + 1);
+        foreach (var child in children) RenderElement(canvas, child, childStyle, state, depth + 1);
         state.ViewportW = prevW;
         state.ViewportH = prevH;
-        canvas.RestoreToCount(save);
     }
 
     /// <summary>Clone a referenced element / symbol at the <c>&lt;use&gt;</c> position (SVG §5.6). A
-    /// <c>&lt;symbol&gt;</c> / nested <c>&lt;svg&gt;</c> target renders its children as a group; any other
-    /// target renders as itself. A symbol/svg target's OWN presentation attributes + transform are resolved
-    /// before its children inherit (PR-231 review [P2]); <c>width</c>/<c>height</c> viewport clip+scale are
-    /// not applied this cut.</summary>
+    /// <c>&lt;symbol&gt;</c> / nested <c>&lt;svg&gt;</c> target establishes a VIEWPORT — its
+    /// <c>width</c>/<c>height</c> (from the <c>&lt;use&gt;</c> if set, else the target, else 100% of the
+    /// current viewport) clip the content and a <c>viewBox</c> scales to fit (§7.2 / §5.6) — and renders its
+    /// children as a group; any other target renders as itself. A symbol/svg target's OWN presentation
+    /// attributes + transform are resolved before its children inherit (PR-231 review [P2]).</summary>
     private static void DrawUse(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state, int depth)
     {
         if (depth + 1 > MaxDepth || ++state.Elements > MaxElements) { state.SawUnsupported = true; return; }
@@ -397,12 +466,304 @@ internal static class SvgRasterizer
             // The symbol/svg establishes its own resolved style + transform for its children.
             var targetStyle = ResolveStyle(target, style, state);
             if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) canvas.Concat(in tm);
-            foreach (var child in target.Elements())
-                RenderElement(canvas, child, targetStyle, state, depth + 1);
+            // Viewport size: the <use> width/height override the target's; an omitted dimension is 100% of
+            // the current viewport (§5.6 — the symbol is instanced as a viewport). A non-positive explicit
+            // size renders nothing.
+            var w = el.Attribute("width") is not null ? Len(el, "width", state, style, LenAxis.X)
+                  : target.Attribute("width") is not null ? Len(target, "width", state, targetStyle, LenAxis.X)
+                  : state.ViewportW;
+            var h = el.Attribute("height") is not null ? Len(el, "height", state, style, LenAxis.Y)
+                  : target.Attribute("height") is not null ? Len(target, "height", state, targetStyle, LenAxis.Y)
+                  : state.ViewportH;
+            if (w > 0 && h > 0)
+            {
+                if (!IsSupportedPreserveAspectRatio(Attr(target, "preserveAspectRatio")?.Trim())) state.SawUnsupported = true;
+                RenderViewport(canvas, target, target.Elements(), targetStyle, state, depth, w, h);
+            }
         }
         else
             RenderElement(canvas, target, style, state, depth + 1);
         canvas.RestoreToCount(restore);
+    }
+
+    // ---- clip-path ----
+
+    /// <summary>Apply a <c>clip-path="url(#id)"</c> reference (SVG §14.3): clip the canvas to the union of the
+    /// referenced <c>&lt;clipPath&gt;</c>'s child geometry. <c>clipPathUnits</c> is honored —
+    /// <c>userSpaceOnUse</c> (the default) treats the geometry as user-space coordinates;
+    /// <c>objectBoundingBox</c> maps the unit square onto the clipped element's geometry bounding box. A
+    /// non-<c>url(#…)</c> value, a missing / non-<c>&lt;clipPath&gt;</c> target, or empty geometry is flagged
+    /// unsupported (and leaves the element unclipped rather than wrongly clipping it all away).</summary>
+    private static void ApplyClipPath(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var raw = SvgAttr.Presentation(el, "clip-path");
+        if (raw is null) return;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return;
+        if (PaintServerId(raw) is not { } id || !state.Ids.TryGetValue(id, out var clip)
+            || !clip.Name.LocalName.Equals("clipPath", StringComparison.OrdinalIgnoreCase))
+        {
+            state.SawUnsupported = true; // url() to a non-clipPath / geometry-box / unresolved → not applied
+            return;
+        }
+        var obb = (Attr(clip, "clipPathUnits") ?? "userSpaceOnUse")
+            .Trim().Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase);
+        var bbox = obb ? ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) : (SKRect?)null;
+        if (obb && bbox is not { Width: > 0, Height: > 0 }) { state.SawUnsupported = true; return; }
+        using var geom = BuildClipPathGeometry(clip, style, state);
+        if (geom is null || geom.IsEmpty) { state.SawUnsupported = true; return; }
+        if (obb)
+        {
+            var b = bbox!.Value;
+            geom.Transform(new SKMatrix { ScaleX = b.Width, ScaleY = b.Height, TransX = b.Left, TransY = b.Top, Persp2 = 1 });
+        }
+        canvas.ClipPath(geom, SKClipOperation.Intersect, antialias: true);
+    }
+
+    /// <summary>Union the geometry of a <c>&lt;clipPath&gt;</c>'s child shapes (each honoring its own
+    /// <c>transform</c>) into a single fill path. A child <c>&lt;use&gt;</c> resolving to a basic shape is
+    /// followed, applying the use's <c>transform</c> AND <c>x</c>/<c>y</c> (the effective CTM is
+    /// <c>use.transform · translate(x,y) · target.transform</c>, SVG §5.6). Returns <see langword="null"/>
+    /// when no child contributes geometry.</summary>
+    private static SKPath? BuildClipPathGeometry(XElement clip, SvgStyle style, SvgRenderState state)
+    {
+        SKPath? acc = null;
+        foreach (var child in clip.Elements())
+        {
+            var target = child;
+            SKMatrix? useOffset = null;
+            SKMatrix? useTransform = null;
+            if (child.Name.LocalName.Equals("use", StringComparison.OrdinalIgnoreCase))
+            {
+                if (SvgAttr.HrefId(child) is not { } uid || !state.Ids.TryGetValue(uid, out var ut)) continue;
+                target = ut;
+                useOffset = SKMatrix.CreateTranslation((float)Len(child, "x", state, style, LenAxis.X), (float)Len(child, "y", state, style, LenAxis.Y));
+                useTransform = SvgTransform.Parse(Attr(child, "transform")); // the use's OWN transform
+            }
+            using var sp = BuildShapePath(target, style, state);
+            if (sp is null || sp.IsEmpty) continue;
+            // Apply innermost-first: the target's own transform, then translate(x,y), then the use's transform.
+            if (SvgTransform.Parse(Attr(target, "transform")) is { } tm) sp.Transform(tm);
+            if (useOffset is { } uo) sp.Transform(uo);
+            if (useTransform is { } ut2) sp.Transform(ut2);
+            if (acc is null) acc = new SKPath(sp);
+            else acc.AddPath(sp);
+        }
+        return acc;
+    }
+
+    /// <summary>The geometry bounding box of an element in its OWN coordinate space (its own
+    /// <c>transform</c> excluded, descendant transforms included) — the reference box for an
+    /// <c>objectBoundingBox</c> clip / paint server. Unions the bounds of every descendant basic shape,
+    /// SKIPPING non-rendered definition subtrees (<c>&lt;defs&gt;</c>/<c>&lt;clipPath&gt;</c>/<c>&lt;mask&gt;</c>
+    /// /<c>&lt;pattern&gt;</c>/gradients/<c>&lt;symbol&gt;</c>/…) so the box reflects PAINTED geometry, not
+    /// hidden definitions (PR-241 review [P2]).</summary>
+    private static SKRect? ComputeBBox(XElement el, SvgStyle inherited, SvgRenderState state, int depth, SKMatrix ctm, bool isRoot)
+    {
+        if (depth > MaxDepth) return null;
+        var style = ResolveStyle(el, inherited, state);
+        var local = ctm;
+        if (!isRoot && SvgTransform.Parse(Attr(el, "transform")) is { } m) local = ctm.PreConcat(m);
+        SKRect? acc = null;
+        using (var sp = BuildShapePath(el, style, state))
+            if (sp is not null && !sp.IsEmpty) acc = local.MapRect(sp.Bounds);
+        foreach (var child in el.Elements())
+        {
+            if (IsNonRenderedDefinition(child.Name.LocalName)) continue; // hidden definition → not in the bbox
+            acc = UnionRect(acc, ComputeBBox(child, style, state, depth + 1, local, isRoot: false));
+        }
+        return acc;
+    }
+
+    /// <summary>Element local-names that define a resource / metadata and are NOT painted in place (they
+    /// render only when REFERENCED), so they're excluded from a geometry bounding box. Mirrors the
+    /// non-rendering cases of the <see cref="RenderElement"/> switch.</summary>
+    private static bool IsNonRenderedDefinition(string localName) => localName.ToLowerInvariant() switch
+    {
+        "defs" or "symbol" or "title" or "desc" or "metadata" or "style"
+            or "lineargradient" or "radialgradient" or "stop"
+            or "pattern" or "clippath" or "mask" or "filter" or "marker" => true,
+        _ => false,
+    };
+
+    private static SKRect? UnionRect(SKRect? a, SKRect? b)
+    {
+        if (a is null) return b;
+        if (b is null) return a;
+        var r = a.Value;
+        r.Union(b.Value);
+        return r;
+    }
+
+    // ---- mask ----
+
+    /// <summary>Resolve a <c>mask="url(#id)"</c> reference to its <c>&lt;mask&gt;</c> element (SVG §14.4), or
+    /// <see langword="null"/> for <c>none</c> / an absent value. A url() that doesn't resolve to a
+    /// <c>&lt;mask&gt;</c> is flagged unsupported (and the element renders unmasked).</summary>
+    private static XElement? ResolveMask(XElement el, SvgRenderState state)
+    {
+        var raw = SvgAttr.Presentation(el, "mask");
+        if (raw is null) return null;
+        raw = raw.Trim();
+        if (raw.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (PaintServerId(raw) is { } id && state.Ids.TryGetValue(id, out var m)
+            && m.Name.LocalName.Equals("mask", StringComparison.OrdinalIgnoreCase))
+            return m;
+        state.SawUnsupported = true;
+        return null;
+    }
+
+    /// <summary>Multiply the element-content layer's alpha by the LUMINANCE of the <c>&lt;mask&gt;</c>'s
+    /// rendered content (SVG §14.4 default <c>mask-type: luminance</c>): render the mask content into a layer
+    /// whose composite applies a luminance→alpha color filter and the <c>DstIn</c> blend, then composite the
+    /// element layer. <c>maskContentUnits="objectBoundingBox"</c> maps the mask content's unit coordinates
+    /// onto the masked element's bounding box — computed with the element's RESOLVED <paramref name="style"/>
+    /// so inherited <c>em</c>/<c>rem</c> geometry resolves against the right font-size (PR-241 review [P2]); an
+    /// unavailable bbox (e.g. a text / image target with no basic-shape geometry) is flagged and the element
+    /// renders UNMASKED rather than silently masked in user space. Closes BOTH the mask layer and the
+    /// element-content layer the caller opened.</summary>
+    private static void ApplyMask(SKCanvas canvas, XElement mask, XElement el, SvgStyle style, SvgRenderState state, int depth)
+    {
+        SKMatrix? contentMatrix = null;
+        if ((Attr(mask, "maskContentUnits") ?? "userSpaceOnUse").Trim().Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase))
+        {
+            if (ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
+                contentMatrix = new SKMatrix { ScaleX = b.Width, ScaleY = b.Height, TransX = b.Left, TransY = b.Top, Persp2 = 1 };
+            else
+            {
+                state.SawUnsupported = true; // no bbox for objectBoundingBox content → leave the element unmasked
+                canvas.Restore();            // composite the element-content layer unmodified
+                return;
+            }
+        }
+        using var luma = SKColorFilter.CreateLumaColor();
+        using var maskPaint = new SKPaint { BlendMode = SKBlendMode.DstIn, ColorFilter = luma };
+        canvas.SaveLayer(maskPaint);
+        if (contentMatrix is { } cm) canvas.Concat(cm);
+        // Mask content renders in a fresh presentation context (its own attributes over the initial style).
+        var maskStyle = ResolveStyle(mask, SvgStyle.Initial, state);
+        foreach (var child in mask.Elements()) RenderElement(canvas, child, maskStyle, state, depth + 1);
+        canvas.Restore(); // composite the mask (luma → DstIn) into the element layer
+        canvas.Restore(); // composite the element-content layer onto the canvas
+    }
+
+    // ---- pattern paint server ----
+
+    private const int MaxPatternDepth = 4;          // a pattern's content can reference another pattern
+    private const long MaxPatternTilePixels = 4L * 1024 * 1024; // tile-bitmap area cap (DoS)
+
+    /// <summary>Build a repeating-tile <see cref="SKShader"/> for a <c>&lt;pattern&gt;</c> paint server (SVG
+    /// §13.3): resolve the tile rectangle (honoring <c>patternUnits</c> — objectBoundingBox default vs
+    /// userSpaceOnUse), render the pattern's content ONCE into a tile bitmap (mapping a <c>viewBox</c> to the
+    /// tile, or scaling by <c>patternContentUnits="objectBoundingBox"</c>), and wrap it in a Repeat/Repeat
+    /// shader positioned at the tile origin with the optional <c>patternTransform</c>. Geometry attributes +
+    /// content inherit through an <c>href</c> chain. Returns <see langword="null"/> (caller flags unsupported)
+    /// for a missing size, no content, an over-cap tile, or a self-referential nesting beyond the depth cap.</summary>
+    private static SvgResolvedShader? BuildPatternShader(XElement pattern, SKRect bbox, float opacity, SvgStyle style, SvgRenderState state)
+    {
+        if (state.PatternDepth >= MaxPatternDepth) { state.SawUnsupported = true; return null; }
+
+        var unitsObb = !string.Equals(ResolveHrefAttr(pattern, state.Ids, "patternUnits") ?? "objectBoundingBox",
+            "userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+        var contentObb = string.Equals(ResolveHrefAttr(pattern, state.Ids, "patternContentUnits") ?? "userSpaceOnUse",
+            "objectBoundingBox", StringComparison.OrdinalIgnoreCase);
+
+        var tileW = PatternCoord(ResolveHrefAttr(pattern, state.Ids, "width"), unitsObb, bbox.Width);
+        var tileH = PatternCoord(ResolveHrefAttr(pattern, state.Ids, "height"), unitsObb, bbox.Height);
+        if (!(tileW > 0) || !(tileH > 0)) { state.SawUnsupported = true; return null; }
+        var rawX = PatternCoord(ResolveHrefAttr(pattern, state.Ids, "x"), unitsObb, bbox.Width);
+        var rawY = PatternCoord(ResolveHrefAttr(pattern, state.Ids, "y"), unitsObb, bbox.Height);
+        var tileX = unitsObb ? bbox.Left + rawX : rawX;
+        var tileY = unitsObb ? bbox.Top + rawY : rawY;
+
+        var pxW = (int)Math.Ceiling(tileW);
+        var pxH = (int)Math.Ceiling(tileH);
+        if (pxW <= 0 || pxH <= 0 || (long)pxW * pxH > MaxPatternTilePixels) { state.SawUnsupported = true; return null; }
+
+        var content = ResolveHrefContent(pattern, state.Ids);
+        if (content is null) return null; // an empty pattern paints nothing (not a feature gap)
+        var viewBox = ParseViewBox(ResolveHrefAttr(pattern, state.Ids, "viewBox"));
+
+        SKImage image;
+        state.PatternDepth++;
+        try
+        {
+            using var bmp = new SKBitmap(pxW, pxH, SKColorType.Rgba8888, SKAlphaType.Premul);
+            using (var tileCanvas = new SKCanvas(bmp))
+            {
+                tileCanvas.Clear(SKColors.Transparent);
+                var opLayer = opacity < 1f;
+                if (opLayer)
+                {
+                    using var op = new SKPaint { Color = SKColors.White.WithAlpha((byte)Math.Round(opacity * 255f)) };
+                    tileCanvas.SaveLayer(op);
+                }
+                if (viewBox.W > 0 && viewBox.H > 0)
+                {
+                    var sc = Math.Min(tileW / viewBox.W, tileH / viewBox.H); // xMidYMid meet
+                    tileCanvas.Translate((float)((tileW - viewBox.W * sc) / 2.0), (float)((tileH - viewBox.H * sc) / 2.0));
+                    tileCanvas.Scale((float)sc);
+                    tileCanvas.Translate((float)-viewBox.X, (float)-viewBox.Y);
+                }
+                else if (contentObb)
+                {
+                    tileCanvas.Scale(bbox.Width, bbox.Height);
+                }
+                // The pattern element's own presentation attributes seed the content context (a fresh tree).
+                var contentStyle = ResolveStyle(pattern, SvgStyle.Initial, state);
+                foreach (var child in content.Elements()) RenderElement(tileCanvas, child, contentStyle, state, depth: 1);
+                if (opLayer) tileCanvas.Restore();
+            }
+            image = SKImage.FromBitmap(bmp); // copies the mutable bitmap → owns its pixels
+        }
+        finally { state.PatternDepth--; }
+
+        var local = SKMatrix.CreateTranslation((float)tileX, (float)tileY);
+        if (SvgTransform.Parse(Attr(pattern, "patternTransform")) is { } pt) local = pt.PreConcat(local);
+        var shader = image.ToShader(SKShaderTileMode.Repeat, SKShaderTileMode.Repeat, local);
+        return new SvgResolvedShader(shader, image);
+    }
+
+    /// <summary>A pattern tile coordinate / length: with <c>objectBoundingBox</c> units a bare number /
+    /// fraction and a percentage are both fractions of <paramref name="reference"/>; with
+    /// <c>userSpaceOnUse</c> a bare number is an absolute length and a percentage resolves against the
+    /// reference. Absent → 0.</summary>
+    private static double PatternCoord(string? raw, bool obb, double reference)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return 0;
+        raw = raw.Trim();
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+            return double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? pct / 100.0 * reference : 0;
+        if (!double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return 0;
+        return obb ? v * reference : v;
+    }
+
+    /// <summary>Resolve an attribute on a paint server, following its <c>href</c> chain when the element
+    /// itself doesn't set it (SVG §13.3 — geometry + config attributes inherit). Cycle-guarded.</summary>
+    private static string? ResolveHrefAttr(XElement el, IReadOnlyDictionary<string, XElement> ids, string name)
+    {
+        var src = el;
+        var visited = new HashSet<XElement>();
+        for (var depth = 0; src is not null && depth < 16 && visited.Add(src); depth++)
+        {
+            if (SvgAttr.Get(src, name) is { } v) return v;
+            src = SvgAttr.HrefId(src) is { } id && ids.TryGetValue(id, out var t) ? t : null;
+        }
+        return null;
+    }
+
+    /// <summary>The nearest element in the <c>href</c> chain that has child content (a pattern with no
+    /// children inherits its tile content from its referenced pattern). Cycle-guarded.</summary>
+    private static XElement? ResolveHrefContent(XElement el, IReadOnlyDictionary<string, XElement> ids)
+    {
+        var src = el;
+        var visited = new HashSet<XElement>();
+        for (var depth = 0; src is not null && depth < 16 && visited.Add(src); depth++)
+        {
+            if (src.HasElements) return src;
+            src = SvgAttr.HrefId(src) is { } id && ids.TryGetValue(id, out var t) ? t : null;
+        }
+        return null;
     }
 
     // ---- fill / stroke ----
@@ -413,11 +774,11 @@ internal static class SvgRasterizer
     {
         if (style.FillRef is { } fref)
         {
-            if (state.ResolveShader(fref, path.Bounds, style.FillOpacity, style.CurrentColor) is { } shader)
-                using (shader)
-                using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = shader, IsAntialias = true })
+            if (state.ResolveShader(fref, path.Bounds, style.FillOpacity, style) is { } rp)
+                using (rp)
+                using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = rp.Shader, IsAntialias = true })
                     canvas.DrawPath(path, p);
-            else state.SawUnsupported = true; // unresolved / non-gradient paint server → no fill
+            else state.SawUnsupported = true; // unresolved / non paint server → no fill
         }
         else if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
         {
@@ -446,9 +807,9 @@ internal static class SvgRasterizer
         {
             if (style.StrokeRef is { } sref)
             {
-                if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity, style.CurrentColor) is { } shader)
-                    using (shader)
-                    using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = shader, IsAntialias = true })
+                if (state.ResolveShader(sref, path.Bounds, style.StrokeOpacity, style) is { } rp)
+                    using (rp)
+                    using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = rp.Shader, IsAntialias = true })
                     {
                         ApplyStrokeProps(p);
                         canvas.DrawPath(path, p);

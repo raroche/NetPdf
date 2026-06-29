@@ -243,12 +243,15 @@ internal static class DiagnosticCodes
     /// <summary>
     /// Phase 4 — a rendered SVG image used a feature the renderer doesn't support, so part of it did not
     /// draw: an <c>&lt;image&gt;</c> with an EXTERNAL / non-<c>data:</c> href (no fetch), a
-    /// <c>&lt;pattern&gt;</c> paint server, a <c>clip-path</c> / <c>mask</c> / <c>filter</c> / <c>marker</c>
-    /// reference, an unresolved gradient ref (<c>fill="url(#…)"</c> → painted transparent, NOT black), an
-    /// element the renderer doesn't draw (e.g. <c>&lt;foreignObject&gt;</c> / <c>&lt;switch&gt;</c> /
-    /// <c>textPath</c>), or content truncated by the depth / element budget. Shapes, paths, text, gradients,
-    /// <c>&lt;use&gt;</c>/<c>&lt;symbol&gt;</c>, <c>data:</c> images, stroke dashes, opacity, and nested
-    /// viewports DO render. Surfaced once per SVG image. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// <c>filter</c> / <c>marker</c> reference, a <c>clip-path</c> / <c>mask</c> referencing a target that
+    /// isn't a <c>&lt;clipPath&gt;</c> / <c>&lt;mask&gt;</c> (a geometry-box keyword, an unresolved id), an
+    /// unresolved gradient/pattern ref (<c>fill="url(#…)"</c> → painted transparent, NOT black), an element
+    /// the renderer doesn't draw (e.g. <c>&lt;foreignObject&gt;</c> / <c>&lt;switch&gt;</c> /
+    /// <c>textPath</c>), or content truncated by the depth / element budget. Shapes, paths, text (incl.
+    /// <c>%</c>/<c>em</c> coordinates), gradients, <c>&lt;pattern&gt;</c> paint servers,
+    /// <c>clip-path</c>/<c>mask</c> element references, <c>&lt;use&gt;</c>/<c>&lt;symbol&gt;</c> (with the
+    /// viewport clip+scale), <c>data:</c> images, stroke dashes, opacity, and nested viewports DO render.
+    /// Surfaced once per SVG image. Severity: <see cref="DiagnosticSeverity.Info"/>.
     /// </summary>
     public const string CssSvgUnsupported001 = "CSS-SVG-UNSUPPORTED-001";
 

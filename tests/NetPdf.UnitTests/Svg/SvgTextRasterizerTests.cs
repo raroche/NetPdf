@@ -68,6 +68,53 @@ public sealed class SvgTextRasterizerTests
     }
 
     [Fact]
+    public void Text_x_percentage_resolves_against_the_viewport_width()
+    {
+        // SVG part 4 — x="50%" in a 100-wide viewport → the run starts at x=50, so (text-anchor:start)
+        // all ink sits in the right half.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"40\">" +
+            "<text x=\"50%\" y=\"28\" font-size=\"20\">Hi</text></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, PaintedInBand(info!, 0, 45));      // nothing left of ~50% (allow AA slack)
+        Assert.True(PaintedInBand(info!, 50, 100) > 0);    // ink to the right of the 50% start
+    }
+
+    [Fact]
+    public void Text_x_em_resolves_against_the_font_size()
+    {
+        // x="2em" at font-size 10 → x=20; nothing renders to the left of it.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"30\">" +
+            "<text x=\"2em\" y=\"20\" font-size=\"10\">Hi</text></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, PaintedInBand(info!, 0, 18));      // nothing left of x≈20 (2em)
+        Assert.True(PaintedInBand(info!, 18, 100) > 0);
+    }
+
+    [Fact]
+    public void Tspan_dx_em_shifts_by_the_font_size()
+    {
+        // A tspan with dx="3em" at font-size 10 shifts the run 30px right of where it would otherwise sit.
+        var with = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"30\">" +
+            "<text x=\"5\" y=\"20\" font-size=\"10\"><tspan dx=\"3em\">Hi</tspan></text></svg>"), out _);
+        var without = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"30\">" +
+            "<text x=\"5\" y=\"20\" font-size=\"10\"><tspan>Hi</tspan></text></svg>"), out _);
+        Assert.NotNull(with);
+        Assert.NotNull(without);
+        // The shifted run's leftmost ink is well right of the unshifted run's.
+        int FirstInkX(NetPdf.Pdf.Images.RasterImageInfo info)
+        {
+            for (var x = 0; x < info.Width; x++)
+                if (PaintedInBand(info, x, x + 1) > 0) return x;
+            return info.Width;
+        }
+        Assert.True(FirstInkX(with!) >= FirstInkX(without!) + 25);   // ≈ +30px (3em)
+    }
+
+    [Fact]
     public void Text_with_gradient_fill_paints_a_gradient()
     {
         var info = SvgRasterizer.TryRender(Svg(

@@ -310,9 +310,11 @@ internal static class FragmentPainter
                 (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? gradClip = null;
                 double gradOriginLeftPx = leftPx, gradOriginTopPx = topPx,
                     gradOriginWidthPx = widthPx, gradOriginHeightPx = heightPx;
+                ImageResourceCache.GradientBgGeometry? gradGeomOpt = null;
                 if (imageCache is not null
                     && imageCache.GradientGeometryBoxes.TryGetValue(fragment.Box, out var gradGeom))
                 {
+                    gradGeomOpt = gradGeom;
                     var (goT, goR, goB, goL) = BackgroundAreaInset(style, gradGeom.OriginRaw, defaultArea: 'p');
                     var (gcT, gcR, gcB, gcL) = BackgroundAreaInset(style, gradGeom.ClipRaw, defaultArea: 'b');
                     var (gCompTopPx, gCompHeightPx, gCompRadiiPx) = CompositeRoundedBox(
@@ -326,34 +328,64 @@ internal static class FragmentPainter
                         leftPx + gcL, gCompTopPx + gcT,
                         Math.Max(0, widthPx - gcL - gcR), Math.Max(0, gCompHeightPx - gcT - gcB),
                         InsetRadii(gCompRadiiPx, gcT, gcR, gcB, gcL));
-                    // background-size/-position/-repeat are NOT honored for a gradient (the shading fills
-                    // the origin box). Diagnose a NON-initial one once rather than SILENTLY ignoring it
-                    // (CLAUDE.md: diagnostics, not silent corruption) — parity with the multi-layer path.
-                    if (GradientVariantDeferred(gradGeom.SizeRaw, gradGeom.RepeatRaw, gradGeom.PositionRaw))
+                }
+                // Paint the box's gradient (whichever type) once into the ORIGIN box, clipped to `clip`.
+                void PaintGradientOnce(
+                    double oL, double oT, double oW, double oH,
+                    (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clip)
+                {
+                    if (imageCache is null || document is null) return;
+                    if (imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var lin))
+                        PaintLinearGradient(page, document, lin, style, pageHeightPt, oL, oT, oW, oH,
+                            currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: clip);
+                    else if (imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var rad))
+                        PaintRadialGradient(page, document, rad, style, pageHeightPt, oL, oT, oW, oH,
+                            currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: clip);
+                    else if (imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var con))
+                        PaintConicGradient(page, document, con, style, pageHeightPt, oL, oT, oW, oH,
+                            currentColorArgb, diagnostics,
+                            ref conicGradientRasterReported, ref conicGradientCapReported, clipOverride: clip);
+                }
+                // background-size/-position/-repeat (now HONORED for a gradient): when any is NON-initial,
+                // tile the gradient over the clip box; else a single paint over the origin box (byte-
+                // identical default). A gradient TILE re-paints the shading sized + positioned per the grid.
+                var gradientTiled = false;
+                if (gradGeomOpt is { } gg && gradClip is { } gclip
+                    && GradientVariantDeferred(gg.SizeRaw, gg.RepeatRaw, gg.PositionRaw)
+                    && gradOriginWidthPx > 0 && gradOriginHeightPx > 0)
+                {
+                    var grid = ResolveGradientTileGrid(
+                        gg, gradOriginWidthPx, gradOriginHeightPx,
+                        gclip.LeftPx - gradOriginLeftPx, gclip.LeftPx + gclip.WidthPx - gradOriginLeftPx,
+                        gclip.TopPx - gradOriginTopPx, gclip.TopPx + gclip.HeightPx - gradOriginTopPx,
+                        out var unsupportedValue);
+                    if (unsupportedValue)
                         EmitVariantUnsupported(diagnostics, anyVariantUnsupported: true, ref variantUnsupportedReported);
+                    // Cap the tile loop (each tile re-paints the shading); over-cap → single paint (task 3
+                    // adds the over-cap diagnostic). The product bound is overflow-safe.
+                    if (grid.TileWidthPx > 0 && grid.TileHeightPx > 0
+                        && grid.CountX is > 0 and <= MaxGradientTiles
+                        && grid.CountY is > 0 and <= MaxGradientTiles
+                        && grid.CountX <= MaxGradientTiles / grid.CountY)
+                    {
+                        ToPdfRect(gclip.LeftPx, gclip.TopPx, gclip.WidthPx, gclip.HeightPx, pageHeightPt,
+                            out var cbx, out var cby, out var cbw, out var cbh);
+                        if (gclip.Radii.AnyPositive) page.BeginRoundedRectangleClip(cbx, cby, cbw, cbh, ToPt(gclip.Radii));
+                        else page.BeginRectangleClip(cbx, cby, cbw, cbh);
+                        for (long row = 0; row < grid.CountY; row++)
+                        for (long col = 0; col < grid.CountX; col++)
+                        {
+                            var tL = gradOriginLeftPx + grid.FirstXPx + col * grid.StepXPx;
+                            var tT = gradOriginTopPx + grid.FirstYPx + row * grid.StepYPx;
+                            PaintGradientOnce(tL, tT, grid.TileWidthPx, grid.TileHeightPx,
+                                (tL, tT, grid.TileWidthPx, grid.TileHeightPx, default)); // tile-rect clip; the outer clip rounds
+                        }
+                        page.RestoreGraphicsState();
+                        gradientTiled = true;
+                    }
                 }
-                if (imageCache is not null && document is not null
-                    && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
-                {
-                    PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
-                        currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gradClip);
-                }
-                else if (imageCache is not null && document is not null
-                    && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
-                {
-                    PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
-                        currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gradClip);
-                }
-                else if (imageCache is not null && document is not null
-                    && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))
-                {
-                    PaintConicGradient(page, document, conic, style, pageHeightPt,
-                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
-                        currentColorArgb, diagnostics,
-                        ref conicGradientRasterReported, ref conicGradientCapReported, clipOverride: gradClip);
-                }
+                if (!gradientTiled)
+                    PaintGradientOnce(gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx, gradClip);
                 if (gradientSliceClipped) page.RestoreGraphicsState();
 
                 // Phase 4 multi-layer backgrounds — a comma-separated background-image list (a box is in this

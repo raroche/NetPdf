@@ -215,23 +215,39 @@ public sealed class SingleLayerGradientGeometryTests
         Assert.Contains("/SMask", t);
     }
 
-    // ---- size/position/repeat deferral diagnostic (task 4) ----
+    // ---- size/position/repeat (now HONORED via tiling) ----
 
     private static bool HasVariantWarning(string extraStyle) =>
         HtmlPdf.ConvertDetailed(Html(extraStyle)).Warnings
             .Any(d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
 
+    private static int Count(string haystack, string needle)
+    {
+        int n = 0, i = 0;
+        while ((i = haystack.IndexOf(needle, i, System.StringComparison.Ordinal)) >= 0) { n++; i += needle.Length; }
+        return n;
+    }
+
     [Theory]
-    [InlineData("background-size:cover;")]
+    [InlineData("background-size:cover;")]        // cover/contain/auto = the area → honored, no warning
     [InlineData("background-size:50px 20px;")]
     [InlineData("background-position:center;")]
     [InlineData("background-position:10px 20px;")]
     [InlineData("background-repeat:no-repeat;")]
     [InlineData("background-repeat:space;")]
-    public void Non_initial_size_position_or_repeat_on_a_single_layer_gradient_is_diagnosed(string style)
+    [InlineData("background-repeat:round;")]
+    public void Supported_size_position_repeat_is_honored_not_diagnosed(string style)
     {
-        // A gradient ignores background-size/-position/-repeat (the shading fills the origin box); a
-        // NON-initial one must be surfaced, not silently dropped.
+        // These are now honored by gradient tiling (the shading is sized/positioned/tiled), so the
+        // deferral warning must NOT fire — they no longer fall back to the initial silently.
+        Assert.False(HasVariantWarning(style));
+    }
+
+    [Theory]
+    [InlineData("background-size:3em 2em;")]      // em isn't an absolute unit → unsupported
+    [InlineData("background-position:3em 0;")]
+    public void Unsupported_size_or_position_value_is_diagnosed(string style)
+    {
         Assert.True(HasVariantWarning(style));
     }
 
@@ -247,6 +263,42 @@ public sealed class SingleLayerGradientGeometryTests
     public void Initial_or_honored_geometry_raises_no_variant_warning(string style)
     {
         Assert.False(HasVariantWarning(style));
+    }
+
+    // ---- tiling renders (task 2) ----
+
+    [Fact]
+    public void Explicit_size_tiles_a_linear_gradient_into_multiple_shadings()
+    {
+        // 50×30 tile over the 100×60 box → 2×2 = 4 tiles → 4 native axial shadings.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;")));
+        Assert.Equal(4, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void No_repeat_with_size_paints_a_single_tile()
+    {
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;background-repeat:no-repeat;")));
+        Assert.Equal(1, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Repeat_x_tiles_only_horizontally()
+    {
+        // repeat-x → 2 columns × 1 row = 2 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;background-repeat:repeat-x;")));
+        Assert.Equal(2, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Explicit_size_tiles_a_conic_gradient_into_multiple_images()
+    {
+        // A conic tile rasters per tile → 4 image placements (2×2).
+        var html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;background-size:50px 30px;" +
+            "background-image:conic-gradient(red, blue)\"></div></body></html>";
+        Assert.Equal(4, Count(Latin1(HtmlPdf.Convert(html)), " Do"));
     }
 
     [Fact]

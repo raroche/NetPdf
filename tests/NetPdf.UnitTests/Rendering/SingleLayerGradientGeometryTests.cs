@@ -215,23 +215,39 @@ public sealed class SingleLayerGradientGeometryTests
         Assert.Contains("/SMask", t);
     }
 
-    // ---- size/position/repeat deferral diagnostic (task 4) ----
+    // ---- size/position/repeat (now HONORED via tiling) ----
 
     private static bool HasVariantWarning(string extraStyle) =>
         HtmlPdf.ConvertDetailed(Html(extraStyle)).Warnings
             .Any(d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
 
+    private static int Count(string haystack, string needle)
+    {
+        int n = 0, i = 0;
+        while ((i = haystack.IndexOf(needle, i, System.StringComparison.Ordinal)) >= 0) { n++; i += needle.Length; }
+        return n;
+    }
+
     [Theory]
-    [InlineData("background-size:cover;")]
+    [InlineData("background-size:cover;")]        // cover/contain/auto = the area → honored, no warning
     [InlineData("background-size:50px 20px;")]
     [InlineData("background-position:center;")]
     [InlineData("background-position:10px 20px;")]
     [InlineData("background-repeat:no-repeat;")]
     [InlineData("background-repeat:space;")]
-    public void Non_initial_size_position_or_repeat_on_a_single_layer_gradient_is_diagnosed(string style)
+    [InlineData("background-repeat:round;")]
+    public void Supported_size_position_repeat_is_honored_not_diagnosed(string style)
     {
-        // A gradient ignores background-size/-position/-repeat (the shading fills the origin box); a
-        // NON-initial one must be surfaced, not silently dropped.
+        // These are now honored by gradient tiling (the shading is sized/positioned/tiled), so the
+        // deferral warning must NOT fire — they no longer fall back to the initial silently.
+        Assert.False(HasVariantWarning(style));
+    }
+
+    [Theory]
+    [InlineData("background-size:3em 2em;")]      // em isn't an absolute unit → unsupported
+    [InlineData("background-position:3em 0;")]
+    public void Unsupported_size_or_position_value_is_diagnosed(string style)
+    {
         Assert.True(HasVariantWarning(style));
     }
 
@@ -247,6 +263,109 @@ public sealed class SingleLayerGradientGeometryTests
     public void Initial_or_honored_geometry_raises_no_variant_warning(string style)
     {
         Assert.False(HasVariantWarning(style));
+    }
+
+    // ---- tiling renders (task 2) ----
+
+    [Fact]
+    public void Explicit_size_tiles_a_linear_gradient_into_multiple_shadings()
+    {
+        // 50×30 tile over the 100×60 box → 2×2 = 4 tiles → 4 native axial shadings.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;")));
+        Assert.Equal(4, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void No_repeat_with_size_paints_a_single_tile()
+    {
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;background-repeat:no-repeat;")));
+        Assert.Equal(1, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Repeat_x_tiles_only_horizontally()
+    {
+        // repeat-x → 2 columns × 1 row = 2 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;background-repeat:repeat-x;")));
+        Assert.Equal(2, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Explicit_size_tiles_a_conic_gradient_into_multiple_images()
+    {
+        // A conic tile rasters per tile → 4 image placements (2×2).
+        var html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;background-size:50px 30px;" +
+            "background-image:conic-gradient(red, blue)\"></div></body></html>";
+        Assert.Equal(4, Count(Latin1(HtmlPdf.Convert(html)), " Do"));
+    }
+
+    [Fact]
+    public void Round_repeat_tiles_a_whole_number_per_axis()
+    {
+        // 30px tile, round over 100×60 → round(100/30)=3 cols × round(60/30)=2 rows = 6 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:30px 30px;background-repeat:round;")));
+        Assert.Equal(6, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Space_repeat_tiles_whole_tiles_with_gaps()
+    {
+        // 40×30 tile, space over 100×60 → floor(100/40)=2 cols × floor(60/30)=2 rows = 4 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:40px 30px;background-repeat:space;")));
+        Assert.Equal(4, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Over_cap_tiny_tile_paints_once_with_a_warning()
+    {
+        // A 2px tile over a 400px box → far more than the tile cap → painted once + diagnosed.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:400px;height:400px;background-size:2px 2px;" +
+            "background-image:linear-gradient(red, blue)\"></div></body></html>");
+        Assert.Equal(1, Count(Latin1(result.Pdf), "/ShadingType 2")); // single (untiled) paint
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Theory]
+    [InlineData("background-size:0;")]                          // PR #239 [P1] — zero width
+    [InlineData("background-size:10px 0;")]                     // zero height
+    [InlineData("background-size:0%;")]                         // zero percentage
+    [InlineData("background-size:0;background-repeat:round;")]  // round must not divide by the zero tile
+    public void Zero_sized_tile_paints_nothing_without_a_warning(string style)
+    {
+        // A valid zero-sized gradient tile paints NOTHING (CSS B&B — like the url() path), NOT a full
+        // single gradient, and is not an "unsupported" value.
+        var result = HtmlPdf.ConvertDetailed(Html(style));
+        Assert.Equal(0, Count(Latin1(result.Pdf), "/ShadingType 2"));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Round_repeat_with_auto_size_still_renders()
+    {
+        // round with the default (auto) size = the area → 1 tile (no division by a zero tile).
+        Assert.Equal(1, Count(Latin1(HtmlPdf.Convert(Html("background-repeat:round;"))), "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Position_phases_the_tile_grid_adding_partial_edge_tiles()
+    {
+        // 50x30 tile phased at 25px 10px over 100x60 -> 3 cols (-25,25,75) x 3 rows (-20,10,40) = 9 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;background-position:25px 10px;")));
+        Assert.Equal(9, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Tiled_gradient_under_a_rounded_clip_still_tiles_and_rounds()
+    {
+        // border-radius rounds the OUTER clip box while the gradient tiles inside it: 4 shadings + a
+        // rounded-corner Bezier in the outer clip path (the rounded clip doesn't break tiling).
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;border-radius:12px;")));
+        Assert.Equal(4, Count(t, "/ShadingType 2"));
+        Assert.True(Count(t, "c ") >= 4, "the rounded outer clip emits 4 corner Beziers"); // tiles have none
     }
 
     [Fact]

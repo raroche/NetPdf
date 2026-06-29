@@ -105,9 +105,12 @@ internal static class DiagnosticCodes
     /// (comma-separated) list of those. Still surfaced here: an unrecognized <c>background-image</c>
     /// value; a multi-layer list with an unparseable layer; a page-margin-box gradient / multi-layer
     /// list (margin boxes take a single <c>url(...)</c>); a <c>background-repeat</c>/<c>-size</c>/
-    /// <c>-position</c> value outside the supported set; and <c>background-size</c>/<c>-position</c>/
-    /// <c>-repeat</c> on a gradient — single-layer OR a multi-layer layer (a gradient fills its origin
-    /// box — a documented deferral; <c>background-origin</c>/<c>-clip</c> ARE honored).
+    /// <c>-position</c> value outside the supported set; a gradient <c>background-size</c>/<c>-position</c>
+    /// in a non-absolute unit (e.g. <c>em</c>) or other unsupported VALUE (the longhand falls back to its
+    /// initial); and a gradient whose <c>background-size</c>/<c>-repeat</c> would tile beyond the tile cap
+    /// (painted once, untiled). Gradient <c>background-origin</c>/<c>-clip</c> and SUPPORTED
+    /// <c>-size</c>/<c>-position</c>/<c>-repeat</c> (absolute / percentage sizes, keyword / length
+    /// positions, repeat / no-repeat / repeat-x / repeat-y / space / round) ARE honored (tiled).
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssBackgroundImageUnsupported001 = "CSS-BACKGROUND-IMAGE-UNSUPPORTED-001";

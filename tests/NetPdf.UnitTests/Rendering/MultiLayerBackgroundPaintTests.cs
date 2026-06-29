@@ -166,22 +166,47 @@ public sealed class MultiLayerBackgroundPaintTests
     }
 
     [Fact]
-    public void Gradient_layer_size_position_repeat_are_deferred_with_a_diagnostic()
+    public void Gradient_layer_size_tiles_each_layer()
     {
-        // background-size/-position/-repeat are not honoured for a gradient layer (the shading fills the
-        // origin box) — each surfaces CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 once; the gradients still paint.
-        foreach (var variant in new[]
-                 {
-                     "background-size:cover,cover",
-                     "background-position:10px 10px,20px 20px",
-                     "background-repeat:no-repeat,no-repeat",
-                 })
-        {
-            var r = HtmlPdf.ConvertDetailed(Html("linear-gradient(red,blue), radial-gradient(lime,yellow)", variant));
-            Assert.Contains(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
-            Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 2"));
-            Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 3"));
-        }
+        // background-size on a gradient LAYER is now honored (tiling) — a 60×40 tile over the 120×80 box
+        // → 2×2 = 4 tiles per layer; both layers tile and no deferral diagnostic fires.
+        var r = HtmlPdf.ConvertDetailed(Html(
+            "linear-gradient(red,blue), radial-gradient(lime,yellow)",
+            "background-size:60px 40px,60px 40px"));
+        Assert.DoesNotContain(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+        Assert.Equal(4, Count(Latin1(r.Pdf), "/ShadingType 2"));
+        Assert.Equal(4, Count(Latin1(r.Pdf), "/ShadingType 3"));
+    }
+
+    [Fact]
+    public void Gradient_layer_no_repeat_with_size_paints_one_tile_per_layer()
+    {
+        var r = HtmlPdf.ConvertDetailed(Html(
+            "linear-gradient(red,blue), radial-gradient(lime,yellow)",
+            "background-size:60px 40px,60px 40px;background-repeat:no-repeat,no-repeat"));
+        Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 2"));
+        Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 3"));
+    }
+
+    [Fact]
+    public void Gradient_layer_unsupported_size_unit_is_diagnosed()
+    {
+        // em isn't an absolute unit → unsupported VALUE → diagnosed (the layer falls back to the area).
+        var r = HtmlPdf.ConvertDetailed(Html(
+            "linear-gradient(red,blue), radial-gradient(lime,yellow)", "background-size:3em 2em,auto"));
+        Assert.Contains(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+    }
+
+    [Fact]
+    public void Gradient_layer_zero_size_paints_nothing_without_a_warning()
+    {
+        // PR #239 [P1] — a zero-sized LAYER tile paints nothing (not a full gradient), no diagnostic; the
+        // other (auto) layer still paints.
+        var r = HtmlPdf.ConvertDetailed(Html(
+            "linear-gradient(red,blue), radial-gradient(lime,yellow)", "background-size:0,auto"));
+        Assert.Equal(0, Count(Latin1(r.Pdf), "/ShadingType 2"));  // zero-size linear layer painted nothing
+        Assert.Equal(1, Count(Latin1(r.Pdf), "/ShadingType 3"));  // the auto radial layer still paints
+        Assert.DoesNotContain(r.Warnings, d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
     }
 
     [Fact]

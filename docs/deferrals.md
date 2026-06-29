@@ -2699,14 +2699,15 @@ flags the categories):
      opaque shading — PR #237 review [P1]). AngleSharp.Css drops a gradient carrying a hint or
      double-position (incl. a FUNCTION-color double-position like `rgb(…) 10px 20px`), so
      `CssPreprocessor.ContainsDroppedStopSyntax` recovers the raw value via top-level token parsing.
+     **SINGLE-layer gradient `background-origin` / `-clip` now HONORED** (linear / radial / conic — the
+     axis / center / sweep spans the origin box [initial padding-box], the shading is clipped to the
+     clip box [initial border-box, rounded]; parity with the `url()` image path + multi-layer gradient
+     LAYERS [PR #235]; a box with no border/padding is byte-identical to the prior border-box behavior).
      **Remaining gradient residuals (Phase 4 follow-ups):** the hint's exact exponential easing (only
      the midpoint color is exact; the two surrounding segments are linear); per-stop alpha on a NATIVE
      shading (a soft-mask alpha shading) so a translucent gradient need not raster; **gradient
-     `background-clip` / `background-origin` insets on a SINGLE-layer gradient** (a single-layer
-     gradient still paints/clips against the border box; the `url()` image path already honors
-     origin/clip + inset radii — and as of PR #235 a MULTI-LAYER gradient LAYER honors `-origin`/`-clip`
-     too), **gradient `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin
-     box; a multi-layer gradient layer that specifies any of these surfaces
+     `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin box; a gradient —
+     SINGLE-layer OR a multi-layer LAYER — that specifies any of these surfaces
      `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` and falls back to the default — the `url()` path honors
      all three), and a repeating-radial under a `closest-*` extent clamps beyond the ending shape
      (the default farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**

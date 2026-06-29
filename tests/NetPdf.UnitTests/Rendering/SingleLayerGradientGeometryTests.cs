@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using NetPdf;
+using NetPdf.Diagnostics;
 using Xunit;
 
 namespace NetPdf.UnitTests.Rendering;
@@ -212,5 +213,35 @@ public sealed class SingleLayerGradientGeometryTests
         var t = Latin1(HtmlPdf.Convert(ConicHtml("")));
         Assert.Contains(" Do", t);
         Assert.Contains("/SMask", t);
+    }
+
+    // ---- size/position/repeat deferral diagnostic (task 4) ----
+
+    private static bool HasVariantWarning(string extraStyle) =>
+        HtmlPdf.ConvertDetailed(Html(extraStyle)).Warnings
+            .Any(d => d.Code == DiagnosticCodes.CssBackgroundImageUnsupported001);
+
+    [Theory]
+    [InlineData("background-size:cover;")]
+    [InlineData("background-size:50px 20px;")]
+    [InlineData("background-position:center;")]
+    [InlineData("background-position:10px 20px;")]
+    [InlineData("background-repeat:no-repeat;")]
+    [InlineData("background-repeat:space;")]
+    public void Non_initial_size_position_or_repeat_on_a_single_layer_gradient_is_diagnosed(string style)
+    {
+        // A gradient ignores background-size/-position/-repeat (the shading fills the origin box); a
+        // NON-initial one must be surfaced, not silently dropped.
+        Assert.True(HasVariantWarning(style));
+    }
+
+    [Theory]
+    [InlineData("")]                              // all defaults
+    [InlineData("background-repeat:repeat;")]     // the initial
+    [InlineData("background-position:0 0;")]      // the initial (AngleSharp canonicalizes to unitless 0)
+    [InlineData("background-origin:content-box;background-clip:content-box;")] // origin/clip ARE honored → no warning
+    public void Initial_or_honored_geometry_raises_no_variant_warning(string style)
+    {
+        Assert.False(HasVariantWarning(style));
     }
 }

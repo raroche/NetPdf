@@ -106,7 +106,8 @@ internal static class DiagnosticCodes
     /// value; a multi-layer list with an unparseable layer; a page-margin-box gradient / multi-layer
     /// list (margin boxes take a single <c>url(...)</c>); a <c>background-repeat</c>/<c>-size</c>/
     /// <c>-position</c> value outside the supported set; and <c>background-size</c>/<c>-position</c>/
-    /// <c>-repeat</c> on a gradient layer (a gradient fills its origin box — a documented deferral).
+    /// <c>-repeat</c> on a gradient — single-layer OR a multi-layer layer (a gradient fills its origin
+    /// box — a documented deferral; <c>background-origin</c>/<c>-clip</c> ARE honored).
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssBackgroundImageUnsupported001 = "CSS-BACKGROUND-IMAGE-UNSUPPORTED-001";

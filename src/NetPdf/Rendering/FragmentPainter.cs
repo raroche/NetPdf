@@ -326,6 +326,11 @@ internal static class FragmentPainter
                         leftPx + gcL, gCompTopPx + gcT,
                         Math.Max(0, widthPx - gcL - gcR), Math.Max(0, gCompHeightPx - gcT - gcB),
                         InsetRadii(gCompRadiiPx, gcT, gcR, gcB, gcL));
+                    // background-size/-position/-repeat are NOT honored for a gradient (the shading fills
+                    // the origin box). Diagnose a NON-initial one once rather than SILENTLY ignoring it
+                    // (CLAUDE.md: diagnostics, not silent corruption) — parity with the multi-layer path.
+                    if (GradientVariantDeferred(gradGeom.SizeRaw, gradGeom.RepeatRaw, gradGeom.PositionRaw))
+                        EmitVariantUnsupported(diagnostics, anyVariantUnsupported: true, ref variantUnsupportedReported);
                 }
                 if (imageCache is not null && document is not null
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
@@ -716,7 +721,14 @@ internal static class FragmentPainter
     /// True when the layer specifies any of those three as a NON-initial value — so the caller surfaces
     /// the deferral once. The position initial is <c>0% 0%</c> (the builder injects <c>0%</c> per missing
     /// axis), repeat <c>repeat</c>, size <c>auto</c>.</summary>
-    private static bool GradientVariantDeferred(ImageResourceCache.BgLayer layer)
+    private static bool GradientVariantDeferred(ImageResourceCache.BgLayer layer) =>
+        GradientVariantDeferred(layer.SizeRaw, layer.RepeatRaw, layer.PositionRaw);
+
+    /// <summary>A single-layer gradient's <c>background-size</c>/<c>-position</c>/<c>-repeat</c> are NOT
+    /// honored either (the shading fills the origin box) — same deferral as a gradient LAYER. True when
+    /// any is a NON-initial value, so the caller diagnoses the deferral once instead of SILENTLY ignoring
+    /// it (CLAUDE.md: diagnostics, not silent corruption). Shared by the single + multi-layer paths.</summary>
+    private static bool GradientVariantDeferred(string? sizeRaw, string? repeatRaw, string? positionRaw)
     {
         // The recomposed -x/-y position can carry stray/double spaces — collapse to single-space lowercase
         // before matching against the initial forms.
@@ -724,12 +736,12 @@ internal static class FragmentPainter
             ? string.Empty
             : string.Join(' ', raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();
 
-        var st = Norm(layer.SizeRaw);
+        var st = Norm(sizeRaw);
         if (st.Length > 0 && st is not ("auto" or "auto auto")) return true;
-        var rt = Norm(layer.RepeatRaw);
+        var rt = Norm(repeatRaw);
         if (rt.Length > 0 && rt is not ("repeat" or "repeat repeat")) return true;
         // AngleSharp canonicalizes the position zeros to unitless "0" (so "0% 0%" → "0 0").
-        var pt = Norm(layer.PositionRaw);
+        var pt = Norm(positionRaw);
         if (pt.Length > 0 && pt is not (
                 "0" or "0 0" or "0% 0%" or "0px 0px" or "0% 0" or "0 0%" or "0px 0" or "0 0px"
                 or "left top" or "top left"))

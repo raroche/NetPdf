@@ -281,19 +281,12 @@ internal static class FragmentPainter
 
                 // Phase 4 gradients — a linear-gradient(...) background-image layer paints
                 // over the background-color, under the borders (same z-order as an image
-                // layer), as a PDF native axial shading clipped to the (rounded) border box.
+                // layer), as a PDF native axial shading clipped to the (rounded) clip box.
                 // inline-only-block-line-splitting (box-decoration-break: slice) — when this fragment is one
-                // block-axis slice of a larger box (DecorationBlockExtentPx > 0), paint the gradient's AXIS
-                // over the WHOLE box (virtual top = this slice's top − its offset within the box, height =
-                // the full box extent) so it's CONTINUOUS across slices, while the shading is CLIPPED to the
-                // slice's own box. Null → the slice's own box (every non-sliced fragment byte-identical).
-                double? axisTopPx = null, axisHeightPx = null;
+                // block-axis slice of a larger box (DecorationBlockExtentPx > 0), the gradient's AXIS / center
+                // / sweep spans the WHOLE composite box (so it's CONTINUOUS across slices) via the origin/clip
+                // geometry below; an outer per-slice rect clip limits the paint to this fragment.
                 var gradientSliced = fragment.DecorationBlockExtentPx > 0;
-                if (gradientSliced)
-                {
-                    axisTopPx = topPx - fragment.DecorationBlockOffsetPx;
-                    axisHeightPx = fragment.DecorationBlockExtentPx;
-                }
                 // box-decoration-break: slice — the shading + its rounded clip span the WHOLE composite box;
                 // an outer per-slice rect clip limits the paint to this fragment (no-op for a non-slice).
                 var gradientSliceClipped = false;
@@ -307,26 +300,59 @@ internal static class FragmentPainter
                     page.BeginRectangleClip(gcx, gcy, gcw, gch);
                     gradientSliceClipped = true;
                 }
+                // Single-layer gradient background-origin / -clip (parity with the url() image path +
+                // multi-layer gradient layers, PR #235): the axis / center / sweep spans the ORIGIN box
+                // (initial padding-box) and the shading is clipped to the CLIP box (initial border-box,
+                // rounded). Both boxes are built over the WHOLE composite box (so a sliced gradient stays
+                // continuous; the outer slice rect clip above limits the paint to this fragment), which
+                // SUBSUMES the per-slice axisTopPx/axisHeightPx for the converted gradient types. Null
+                // geometry (or a non-gradient box) → the box itself, byte-identical default.
+                (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? gradClip = null;
+                double gradOriginLeftPx = leftPx, gradOriginTopPx = topPx,
+                    gradOriginWidthPx = widthPx, gradOriginHeightPx = heightPx;
+                if (imageCache is not null
+                    && imageCache.GradientGeometryBoxes.TryGetValue(fragment.Box, out var gradGeom))
+                {
+                    var (goT, goR, goB, goL) = BackgroundAreaInset(style, gradGeom.OriginRaw, defaultArea: 'p');
+                    var (gcT, gcR, gcB, gcL) = BackgroundAreaInset(style, gradGeom.ClipRaw, defaultArea: 'b');
+                    var (gCompTopPx, gCompHeightPx, gCompRadiiPx) = CompositeRoundedBox(
+                        style, topPx, widthPx, heightPx,
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx);
+                    gradOriginLeftPx = leftPx + goL;
+                    gradOriginTopPx = gCompTopPx + goT;
+                    gradOriginWidthPx = Math.Max(0, widthPx - goL - goR);
+                    gradOriginHeightPx = Math.Max(0, gCompHeightPx - goT - goB);
+                    gradClip = (
+                        leftPx + gcL, gCompTopPx + gcT,
+                        Math.Max(0, widthPx - gcL - gcR), Math.Max(0, gCompHeightPx - gcT - gcB),
+                        InsetRadii(gCompRadiiPx, gcT, gcR, gcB, gcL));
+                    // background-size/-position/-repeat are NOT honored for a gradient (the shading fills
+                    // the origin box). Diagnose a NON-initial one once rather than SILENTLY ignoring it
+                    // (CLAUDE.md: diagnostics, not silent corruption) — parity with the multi-layer path.
+                    if (GradientVariantDeferred(gradGeom.SizeRaw, gradGeom.RepeatRaw, gradGeom.PositionRaw))
+                        EmitVariantUnsupported(diagnostics, anyVariantUnsupported: true, ref variantUnsupportedReported);
+                }
                 if (imageCache is not null && document is not null
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
                 {
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
-                        diagnostics, ref gradientAlphaCapReported, axisTopPx, axisHeightPx);
+                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
+                        currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gradClip);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
-                        diagnostics, ref gradientAlphaCapReported, axisTopPx, axisHeightPx);
+                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
+                        currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gradClip);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))
                 {
                     PaintConicGradient(page, document, conic, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
-                        ref conicGradientRasterReported, ref conicGradientCapReported, axisTopPx, axisHeightPx);
+                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
+                        currentColorArgb, diagnostics,
+                        ref conicGradientRasterReported, ref conicGradientCapReported, clipOverride: gradClip);
                 }
                 if (gradientSliceClipped) page.RestoreGraphicsState();
 
@@ -695,7 +721,14 @@ internal static class FragmentPainter
     /// True when the layer specifies any of those three as a NON-initial value — so the caller surfaces
     /// the deferral once. The position initial is <c>0% 0%</c> (the builder injects <c>0%</c> per missing
     /// axis), repeat <c>repeat</c>, size <c>auto</c>.</summary>
-    private static bool GradientVariantDeferred(ImageResourceCache.BgLayer layer)
+    private static bool GradientVariantDeferred(ImageResourceCache.BgLayer layer) =>
+        GradientVariantDeferred(layer.SizeRaw, layer.RepeatRaw, layer.PositionRaw);
+
+    /// <summary>A single-layer gradient's <c>background-size</c>/<c>-position</c>/<c>-repeat</c> are NOT
+    /// honored either (the shading fills the origin box) — same deferral as a gradient LAYER. True when
+    /// any is a NON-initial value, so the caller diagnoses the deferral once instead of SILENTLY ignoring
+    /// it (CLAUDE.md: diagnostics, not silent corruption). Shared by the single + multi-layer paths.</summary>
+    private static bool GradientVariantDeferred(string? sizeRaw, string? repeatRaw, string? positionRaw)
     {
         // The recomposed -x/-y position can carry stray/double spaces — collapse to single-space lowercase
         // before matching against the initial forms.
@@ -703,19 +736,35 @@ internal static class FragmentPainter
             ? string.Empty
             : string.Join(' ', raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant();
 
-        var st = Norm(layer.SizeRaw);
+        var st = Norm(sizeRaw);
         if (st.Length > 0 && st is not ("auto" or "auto auto")) return true;
-        var rt = Norm(layer.RepeatRaw);
+        var rt = Norm(repeatRaw);
         if (rt.Length > 0 && rt is not ("repeat" or "repeat repeat")) return true;
-        // AngleSharp canonicalizes the position zeros to unitless "0" (so "0% 0%" → "0 0").
-        var pt = Norm(layer.PositionRaw);
-        if (pt.Length > 0 && pt is not (
-                "0" or "0 0" or "0% 0%" or "0px 0px" or "0% 0" or "0 0%" or "0px 0" or "0 0px"
-                or "left top" or "top left"))
+        // background-position is initial-equivalent when EVERY axis token resolves to a zero offset —
+        // parse each token (PR #238 [P3]) rather than allowlisting literal strings, so `0px 0%` /
+        // `0% 0px` / `0 0px` etc. are all recognised as no-ops. AngleSharp canonicalizes `0% 0%` → `0 0`.
+        var pt = Norm(positionRaw);
+        if (pt.Length > 0)
         {
-            return true;
+            foreach (var tok in pt.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                if (!IsZeroPositionToken(tok)) return true;
         }
         return false;
+    }
+
+    /// <summary>A <c>background-position</c> axis token that resolves to a ZERO start offset: the
+    /// <c>left</c>/<c>top</c> keywords (= 0%), or a numeric <c>0</c> in any unit (<c>0</c>, <c>0%</c>,
+    /// <c>0px</c>, …). <c>center</c>/<c>right</c>/<c>bottom</c> and any non-zero length/percentage are
+    /// NOT zero (the gradient would be repositioned were size honoured).</summary>
+    private static bool IsZeroPositionToken(string token)
+    {
+        if (token is "left" or "top") return true;
+        // Strip a trailing % or alphabetic unit, then parse the numeric — zero iff it parses to 0.
+        var end = token.Length;
+        while (end > 0 && (char.IsLetter(token[end - 1]) || token[end - 1] == '%')) end--;
+        var numberPart = token.AsSpan(0, end);
+        return double.TryParse(numberPart, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) && v == 0.0;
     }
 
     /// <summary>Tile <paramref name="entry"/> over the fragment's BORDER box (bg-image +
@@ -2429,15 +2478,13 @@ internal static class FragmentPainter
         // gradient stays the native shading (byte-identical).
         if (AnyTranslucent(normalized))
         {
-            if (TryPaintAlphaLinearGradientRaster(page, document, normalized, angleDeg, pageHeightPt,
-                    leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, style, clipOverride))
-            {
-                return;
-            }
-            // Over-cap: the alpha bitmap exceeds the raster size cap. Do NOT fall through to the native
-            // opaque shading (that would silently DROP the transparency, PR #237 review [P1]) — skip the
-            // gradient (the background-color shows) and surface a distinct Warning, like conic over-cap.
-            EmitGradientAlphaOverCap(diagnostics, ref gradientAlphaCapReported);
+            var painted = TryPaintAlphaLinearGradientRaster(page, document, normalized, angleDeg, pageHeightPt,
+                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, style, clipOverride);
+            // Over-cap (false): the alpha bitmap exceeds the raster size cap → skip the gradient (the
+            // background-color shows) and surface a distinct Warning rather than falling through to the
+            // native opaque shading and silently DROPPING the transparency (PR #237 review [P1]). A
+            // DEGENERATE origin box (null) is a no-op — nothing to paint, NOT an over-cap (PR #238 [P3]).
+            if (painted == false) EmitGradientAlphaOverCap(diagnostics, ref gradientAlphaCapReported);
             return;
         }
 
@@ -2483,15 +2530,17 @@ internal static class FragmentPainter
 
     /// <summary>Paint a translucent linear gradient via the Skia raster (image + alpha <c>/SMask</c>),
     /// clipped to the (rounded) box — the <paramref name="clipOverride"/> background-clip box for a
-    /// multi-layer gradient layer, else the style border-radius box. Returns <see langword="false"/>
-    /// for an over-cap bitmap (the caller falls back to the native opaque shading).</summary>
-    private static bool TryPaintAlphaLinearGradientRaster(
+    /// multi-layer gradient layer, else the style border-radius box. Tri-state: <see langword="true"/> =
+    /// painted; <see langword="false"/> = OVER-CAP (the caller skips the gradient + warns, NOT a native
+    /// fallback); <see langword="null"/> = a DEGENERATE (zero/negative) origin box → nothing to paint,
+    /// a silent no-op (not an over-cap — PR #238 [P3]).</summary>
+    private static bool? TryPaintAlphaLinearGradientRaster(
         PdfPage page, PdfDocument document, List<ResolvedGradientStop> normalized, double angleDeg,
         double pageHeightPt, double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx,
         ComputedStyle style,
         (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride)
     {
-        if (boxWidthPx <= 0 || boxHeightPx <= 0) return false;
+        if (boxWidthPx <= 0 || boxHeightPx <= 0) return null; // degenerate origin → no-op (not over-cap)
         var deviceW = (int)Math.Ceiling(boxWidthPx * ConicGradientRasterScale);
         var deviceH = (int)Math.Ceiling(boxHeightPx * ConicGradientRasterScale);
         var rstops = new List<NetPdf.Pdf.Images.LinearGradientRasterizer.Stop>(normalized.Count);
@@ -2507,15 +2556,16 @@ internal static class FragmentPainter
 
     /// <summary>Paint a translucent radial gradient via the Skia raster (image + alpha <c>/SMask</c>),
     /// clipped to the (rounded) box. The center fractions + per-axis CSS-px radii come from the
-    /// caller's geometry. Returns <see langword="false"/> for an over-cap bitmap (the caller falls back
-    /// to the native opaque shading).</summary>
-    private static bool TryPaintAlphaRadialGradientRaster(
+    /// caller's geometry. Tri-state: <see langword="true"/> = painted; <see langword="false"/> =
+    /// OVER-CAP (the caller skips the gradient + warns, NOT a native fallback); <see langword="null"/> =
+    /// a DEGENERATE (zero/negative) origin box → a silent no-op (not over-cap — PR #238 [P3]).</summary>
+    private static bool? TryPaintAlphaRadialGradientRaster(
         PdfPage page, PdfDocument document, List<ResolvedGradientStop> normalized, CssRadialGradient radial,
         double pageHeightPt, double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx,
         double rxCssPx, double ryCssPx, ComputedStyle style,
         (double LeftPx, double TopPx, double WidthPx, double HeightPx, CornerRadii Radii)? clipOverride)
     {
-        if (boxWidthPx <= 0 || boxHeightPx <= 0) return false;
+        if (boxWidthPx <= 0 || boxHeightPx <= 0) return null; // degenerate origin → no-op (not over-cap)
         var deviceW = (int)Math.Ceiling(boxWidthPx * ConicGradientRasterScale);
         var deviceH = (int)Math.Ceiling(boxHeightPx * ConicGradientRasterScale);
         var rstops = new List<NetPdf.Pdf.Images.RadialGradientRasterizer.Stop>(normalized.Count);
@@ -2591,65 +2641,55 @@ internal static class FragmentPainter
     /// gradient line) + a premultiply-free DeviceRGB color with per-stop alpha.</summary>
     internal readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
 
-    /// <summary>Color-interpolation hints (CSS Images §3.4.2) — replace each HINT (a
-    /// <see cref="CssGradientStop.IsHint"/> entry: a bare position between two color stops) with a
-    /// synthetic color stop at the hint position whose color is the 50% blend of the bracketing color
-    /// stops. Returns the input unchanged when there are no hints (so a hint-free gradient stays
-    /// byte-identical). A hint at the first/last index, or one whose neighbors don't resolve, is dropped.</summary>
-    private static IReadOnlyList<CssGradientStop> ExpandColorHints(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb)
-    {
-        var hasHint = false;
-        for (var i = 0; i < gradientStops.Count; i++)
-            if (gradientStops[i].IsHint) { hasHint = true; break; }
-        if (!hasHint) return gradientStops;
+    private const int HintSampleCount = 16; // interior samples approximating a hint's easing curve
 
-        var result = new List<CssGradientStop>(gradientStops.Count);
-        for (var i = 0; i < gradientStops.Count; i++)
-        {
-            var s = gradientStops[i];
-            if (!s.IsHint) { result.Add(s); continue; }
-            // A hint needs a color stop on each side; resolve both colors to blend the midpoint.
-            if (i == 0 || i == gradientStops.Count - 1) continue;
-            if (!TryResolveStopArgb(gradientStops[i - 1].ColorRaw, currentColorArgb, out var a)
-                || !TryResolveStopArgb(gradientStops[i + 1].ColorRaw, currentColorArgb, out var b))
-            {
-                continue; // can't blend → drop the hint (the plain gradient still renders)
-            }
-            var mid = Blend50(a, b);
-            var midRaw = $"rgba({(mid >> 16) & 0xFF},{(mid >> 8) & 0xFF},{mid & 0xFF},{(Alpha(mid) / 255.0).ToString("0.######", System.Globalization.CultureInfo.InvariantCulture)})";
-            result.Add(new CssGradientStop(midRaw, s.Position, s.PositionPx));
-        }
-        return result;
+    /// <summary>Mix two resolved stop colors in PREMULTIPLIED RGBA (CSS Images 3 §3.4.2) at fraction
+    /// <paramref name="f"/>: the alpha is the linear interpolant, each color channel is alpha-weighted
+    /// (premultiply → lerp → unpremultiply) so a (semi-)transparent endpoint doesn't bleed its RGB.
+    /// Opaque-only inputs reduce to the plain RGB lerp. <paramref name="f"/> = 0 → <paramref name="a"/>,
+    /// 1 → <paramref name="b"/>. Shared by the color-hint sampler + the boundary-stop interpolation.</summary>
+    internal static (double R, double G, double B, double A) PremulMix(
+        (double R, double G, double B, double A) a, (double R, double G, double B, double A) b, double f)
+    {
+        var aOut = a.A + (b.A - a.A) * f;
+        if (aOut <= 0) return (0, 0, 0, 0);
+        double Ch(double ca, double cb) => (ca * a.A + (cb * b.A - ca * a.A) * f) / aOut;
+        return (Ch(a.R, b.R), Ch(a.G, b.G), Ch(a.B, b.B), aOut);
     }
 
-    private static bool TryResolveStopArgb(string colorRaw, uint currentColorArgb, out uint argb)
+    /// <summary>Color-interpolation HINT easing (CSS Images §3.4.2) — append the exponential transition
+    /// between two color stops as a row of stops SAMPLING the curve. The color at segment-relative
+    /// position <c>t ∈ [0, 1]</c> is <c>mix(c1, c2, t^p)</c> with <c>p = ln(0.5) / ln(H)</c>, where
+    /// <c>H</c> is the hint's relative position in the segment — so the 50% color lands at the hint
+    /// (<c>H → 0</c> / <c>1</c> degenerate to a hard edge). A stop is emitted at the EXACT hint position
+    /// (PR #238 [P2]) — carrying the 50% color regardless of grid alignment — alongside an even
+    /// <see cref="HintSampleCount"/>-step grid; between samples the PDF interpolates linearly (a fine
+    /// approximation of the curve, NOT bit-exact). The two endpoint stops are appended by the caller;
+    /// this adds only INTERIOR stops (premultiplied). A degenerate (coincident-position) segment adds
+    /// nothing.</summary>
+    private static void AppendHintSamples(
+        List<ResolvedGradientStop> raw,
+        (double R, double G, double B, double A) c1, double pos1,
+        (double R, double G, double B, double A) c2, double pos2, double hintPos)
     {
-        var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
-            colorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
-        return TryResolveColor(resolved.Slot, currentColorArgb, out argb);
-    }
-
-    /// <summary>The 50% blend of two ARGB colors — the hint's midpoint color (CSS Images §3.4.2).
-    /// Interpolated in PREMULTIPLIED RGBA space per CSS Images 3 §3.4.2 (PR #237 review [P2]): the
-    /// alpha is the straight average, each color channel is the ALPHA-WEIGHTED average (equivalent to
-    /// premultiply → average → unpremultiply), so a midpoint involving a transparent / semi-transparent
-    /// color doesn't bleed the transparent side's RGB. Equal alphas (incl. two opaque colors, the
-    /// common case) reduce to the plain channel average — byte-identical with the prior behavior.</summary>
-    internal static uint Blend50(uint x, uint y)
-    {
-        var ax = (x >> 24) & 0xFFu;
-        var ay = (y >> 24) & 0xFFu;
-        var aSum = ax + ay;
-        var aOut = aSum / 2u;                      // straight average (matches the prior alpha blend)
-        uint Chan(int shift)
+        var span = pos2 - pos1;
+        if (span <= 0) return; // endpoints coincide → nothing between them
+        var h = Math.Clamp((hintPos - pos1) / span, 1e-6, 1.0 - 1e-6); // away from 0/1 (avoids inf / 0 power)
+        var p = Math.Log(0.5) / Math.Log(h);                          // f(H) = H^p = 0.5
+        // The even sample grid PLUS the exact hint position H (so the 50% color is pinned at the hint
+        // even for a non-grid-aligned hint like 37%), sorted + de-duplicated for a monotonic stop list.
+        var ts = new List<double>(HintSampleCount + 1);
+        for (var k = 1; k < HintSampleCount; k++) ts.Add((double)k / HintSampleCount);
+        ts.Add(h);
+        ts.Sort();
+        var prev = double.NegativeInfinity;
+        foreach (var t in ts)
         {
-            if (aSum == 0) return 0;               // both fully transparent → color is irrelevant (0)
-            var cx = (x >> shift) & 0xFFu;
-            var cy = (y >> shift) & 0xFFu;
-            return (cx * ax + cy * ay) / aSum;     // alpha-weighted (premultiplied) average
+            if (t - prev < 1e-6) continue; // skip a sample coincident with the hint stop
+            prev = t;
+            var c = PremulMix(c1, c2, Math.Pow(t, p));
+            raw.Add(new ResolvedGradientStop(pos1 + t * span, c.R, c.G, c.B, c.A));
         }
-        return (aOut << 24) | (Chan(16) << 16) | (Chan(8) << 8) | Chan(0);
     }
 
     /// <summary>Phase 4 gradients (PR 1 review) — the SHARED stop pipeline for linear / radial / conic.
@@ -2664,27 +2704,26 @@ internal static class FragmentPainter
     private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
         IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
     {
-        // Color-interpolation hints (CSS Images §3.4.2) — replace each hint (a bare position between two
-        // color stops) with a synthetic stop at the hint position whose color is the 50% blend of the
-        // bracketing stops. A coarse approximation of the exact exponential easing (two linear segments
-        // meeting at the hint's midpoint color), but it puts the right color at the right place; a hint
-        // at the first/last position (invalid) is dropped. No hints → the same list (byte-identical).
-        gradientStops = ExpandColorHints(gradientStops, currentColorArgb);
-
         var n = gradientStops.Count;
         var col = new (double R, double G, double B, double A)[n];
         var pos = new double?[n];
         var ok = new bool[n];
+        var isHint = new bool[n]; // a color-interpolation hint (§3.4.2): position only, no color
         for (var i = 0; i < n; i++)
         {
             var s = gradientStops[i];
-            var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
-                s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
-            if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
+            isHint[i] = s.IsHint;
+            // A hint carries no color (it eases between its neighbors) — only resolve real stops.
+            if (!s.IsHint)
             {
-                ColorChannels(argb, out var r, out var g, out var b);
-                col[i] = (r, g, b, Alpha(argb) / 255.0);
-                ok[i] = true;
+                var resolved = NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+                    s.ColorRaw, PropertyId.Color, "color", diagnostics: null, location: default);
+                if (TryResolveColor(resolved.Slot, currentColorArgb, out var argb))
+                {
+                    ColorChannels(argb, out var r, out var g, out var b);
+                    col[i] = (r, g, b, Alpha(argb) / 255.0);
+                    ok[i] = true;
+                }
             }
             pos[i] = s.Position
                 ?? (s.PositionPx is { } px && lineLengthCssPx > 0 ? px / lineLengthCssPx : (double?)null);
@@ -2708,13 +2747,29 @@ internal static class FragmentPainter
         }
         // Non-decreasing fixup (CSS Images §3.4.3) — a stop never precedes the prior one — keeping raw,
         // possibly out-of-range positions (running starts at −∞ so a negative first stop survives).
+        var fixedPos = new double[n];
         var running = double.NegativeInfinity;
-        var raw = new List<ResolvedGradientStop>(n);
         for (var i = 0; i < n; i++)
         {
             var p = pos[i]!.Value;
             if (p < running) p = running; else running = p;
-            if (ok[i]) raw.Add(new ResolvedGradientStop(p, col[i].R, col[i].G, col[i].B, col[i].A));
+            fixedPos[i] = p;
+        }
+        // Build the raw stop list: a real stop as-is; a color-interpolation HINT (§3.4.2) expands into a
+        // row of stops SAMPLING the exponential transition between the bracketing color stops (a far
+        // closer approximation than the old single-midpoint, with the exact 50% color pinned at the
+        // hint). A hint at an edge, or one whose neighbor color doesn't resolve, contributes nothing (the
+        // plain gradient still renders). No hints → the real stops only (byte-identical pre-hint path).
+        var raw = new List<ResolvedGradientStop>(n);
+        for (var i = 0; i < n; i++)
+        {
+            if (isHint[i])
+            {
+                if (i > 0 && i < n - 1 && ok[i - 1] && ok[i + 1])
+                    AppendHintSamples(raw, col[i - 1], fixedPos[i - 1], col[i + 1], fixedPos[i + 1], fixedPos[i]);
+                continue;
+            }
+            if (ok[i]) raw.Add(new ResolvedGradientStop(fixedPos[i], col[i].R, col[i].G, col[i].B, col[i].A));
         }
         if (raw.Count == 0) return raw;
         if (raw.Count == 1)
@@ -2791,10 +2846,8 @@ internal static class FragmentPainter
                 // Interpolate in PREMULTIPLIED RGBA (CSS Images 3 §3.4.2; PR #237 review [P2]) so a
                 // boundary stop between a transparent / semi-transparent color and an opaque one carries
                 // the correct color (opaque-only segments are unaffected — byte-identical).
-                var aOut = a.A + (b.A - a.A) * f;
-                if (aOut <= 0) return (0, 0, 0, 0);
-                double Chan(double ca, double cb) => (ca * a.A + (cb * b.A - ca * a.A) * f) / aOut;
-                return (Chan(a.R, b.R), Chan(a.G, b.G), Chan(a.B, b.B), aOut);
+                return PremulMix(
+                    (a.R, a.G, a.B, a.A), (b.R, b.G, b.B, b.A), f);
             }
         }
         return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);
@@ -2922,14 +2975,12 @@ internal static class FragmentPainter
         // native radial shading is DeviceRGB); a fully-opaque gradient stays native (byte-identical).
         if (AnyTranslucent(normalized))
         {
-            if (TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
-                    leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
-                    style, clipOverride))
-            {
-                return;
-            }
-            // Over-cap: skip rather than drop the alpha into an opaque shading (PR #237 review [P1]).
-            EmitGradientAlphaOverCap(diagnostics, ref gradientAlphaCapReported);
+            var painted = TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
+                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
+                style, clipOverride);
+            // false = over-cap → skip + warn (not a native fallback that would drop the alpha, PR #237
+            // [P1]); null = degenerate origin → silent no-op (not over-cap, PR #238 [P3]).
+            if (painted == false) EmitGradientAlphaOverCap(diagnostics, ref gradientAlphaCapReported);
             return;
         }
 

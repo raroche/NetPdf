@@ -33,8 +33,9 @@ internal sealed record CssLinearGradient(
 /// unpositioned (spread evenly per CSS Images §3.4). At most one is set.
 /// <para>When <see cref="IsHint"/> is true the entry is instead a color-interpolation HINT (CSS Images
 /// §3.4.2: a bare position between two color stops marking where the 50% color falls): it carries only
-/// a position, its <see cref="ColorRaw"/> is empty, and the resolver replaces it with a synthetic
-/// midpoint stop.</para></summary>
+/// a position, its <see cref="ColorRaw"/> is empty, and the resolver eases the transition between the
+/// bracketing stops through the exponential curve, sampled as stops (with the exact 50% color pinned at
+/// the hint).</para></summary>
 internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null, bool IsHint = false);
 
 /// <summary>Phase 4 gradients — a minimal, allocation-light parser for the
@@ -44,8 +45,8 @@ internal readonly record struct CssGradientStop(string ColorRaw, double? Positio
 /// stops (each <c>&lt;color&gt; [ &lt;percentage&gt; | &lt;length&gt; ]?</c>). The
 /// <c>repeating-linear-gradient</c> form sets <see cref="CssLinearGradient.Repeating"/> (the painter
 /// tiles the stop period). Double-position stops (<c>§3.4</c>) + color-interpolation hints
-/// (<c>§3.4.2</c>, a bare position between two color stops — approximated by a synthetic midpoint stop
-/// at resolve time) are supported. Returns
+/// (<c>§3.4.2</c>, a bare position between two color stops — eased through the exponential
+/// transition curve, sampled as stops at resolve time) are supported. Returns
 /// <see langword="null"/> for any value that isn't a single supported (repeating-)<c>linear-gradient()</c>.</summary>
 internal static class CssLinearGradient_Parser
 {

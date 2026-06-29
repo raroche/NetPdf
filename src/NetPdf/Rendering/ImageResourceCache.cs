@@ -94,6 +94,21 @@ internal sealed class ImageResourceCache
     /// successfully decoded references appear.</summary>
     public Dictionary<Box, BackgroundSpec> BackgroundImageBoxes { get; } = new();
 
+    /// <summary>Phase 4 gradients — the box-model geometry longhands (RAW winners, null = unset → the
+    /// initial) for a SINGLE-LAYER gradient background, parsed by the painter. <c>OriginRaw</c> sets the
+    /// positioning area the gradient axis/center/sweep spans (initial padding-box), <c>ClipRaw</c> the
+    /// painted/clip area (initial border-box) — matching the <c>url()</c> image path + multi-layer
+    /// gradient layers. <c>Size/Position/RepeatRaw</c> are NOT honored for a gradient (the shading fills
+    /// the origin box); a non-initial one is diagnosed (<c>CSS-BACKGROUND-IMAGE-UNSUPPORTED-001</c>).</summary>
+    internal readonly record struct GradientBgGeometry(
+        string? OriginRaw, string? ClipRaw, string? SizeRaw, string? PositionRaw, string? RepeatRaw);
+
+    /// <summary>Phase 4 gradients — element-backed box → its single-layer gradient
+    /// <c>background-origin</c>/<c>-clip</c>/<c>-size</c>/<c>-position</c>/<c>-repeat</c> geometry
+    /// (parallel to <see cref="BackgroundGradientBoxes"/> / radial / conic; one entry per single-layer
+    /// gradient box regardless of gradient type).</summary>
+    public Dictionary<Box, GradientBgGeometry> GradientGeometryBoxes { get; } = new();
+
     /// <summary>Phase 4 gradients — element-backed box → its parsed
     /// <c>background-image: linear-gradient(...)</c>. Populated during collection (no
     /// network/decode — a gradient is computed, not fetched); the painter emits a PDF
@@ -265,6 +280,7 @@ internal sealed class ImageResourceCache
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
+            cache.GradientGeometryBoxes,
             cache.MultiLayerBackgroundBoxes,
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes, cache.ClipPathBoxes,
@@ -415,6 +431,7 @@ internal sealed class ImageResourceCache
         Dictionary<Box, CssLinearGradient> gradientBoxes,
         Dictionary<Box, CssRadialGradient> radialGradientBoxes,
         Dictionary<Box, CssConicGradient> conicGradientBoxes,
+        Dictionary<Box, GradientBgGeometry> gradientGeometryBoxes,
         Dictionary<Box, List<BgLayer>> multiLayerBoxes,
         Dictionary<Box, IReadOnlyList<CssBoxShadow>> boxShadowBoxes,
         Dictionary<Box, IReadOnlyList<CssTextShadow>> textShadowBoxes,
@@ -665,16 +682,19 @@ internal sealed class ImageResourceCache
                     // Phase 4 gradients — a linear-gradient(...) needs no fetch; store the
                     // parsed spec for the painter to emit as a PDF native axial shading.
                     gradientBoxes[box] = gradient;
+                    gradientGeometryBoxes[box] = ReadGradientGeometry(rules);
                 }
                 else if (CssRadialGradient_Parser.TryParse(bgRaw) is { } radial)
                 {
                     radialGradientBoxes[box] = radial;
+                    gradientGeometryBoxes[box] = ReadGradientGeometry(rules);
                 }
                 else if (CssConicGradient_Parser.TryParse(bgRaw) is { } conic)
                 {
                     // Phase 4 gradients (PR 1) — conic / repeating-conic has no PDF native shading;
                     // store the parsed spec for the painter to rasterize via Skia (a sweep gradient).
                     conicGradientBoxes[box] = conic;
+                    gradientGeometryBoxes[box] = ReadGradientGeometry(rules);
                 }
                 else if (!unsupportedBackgroundReported)
                 {
@@ -692,6 +712,7 @@ internal sealed class ImageResourceCache
         foreach (var child in box.Children)
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
+                gradientGeometryBoxes,
                 multiLayerBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
                 borderImages, blendModeBoxes,
@@ -841,6 +862,17 @@ internal sealed class ImageResourceCache
         if (string.IsNullOrWhiteSpace(x) && string.IsNullOrWhiteSpace(y)) return null;
         return $"{(string.IsNullOrWhiteSpace(x) ? axisInitial : x)} {(string.IsNullOrWhiteSpace(y) ? axisInitial : y)}";
     }
+
+    /// <summary>Read a SINGLE-LAYER gradient's box-model geometry longhands from the cascade — the same
+    /// raw winners the <c>url()</c> image path + multi-layer gradient layers read. <c>-origin</c>/
+    /// <c>-clip</c> are simple winners; <c>-position</c>/<c>-repeat</c> recompose from the per-axis
+    /// longhands AngleSharp expands. Null winners = unset → the painter applies the initial.</summary>
+    private static GradientBgGeometry ReadGradientGeometry(ResolvedRuleSet? rules) => new(
+        OriginRaw: rules?.GetWinner("background-origin")?.ResolvedValue,
+        ClipRaw: rules?.GetWinner("background-clip")?.ResolvedValue,
+        SizeRaw: rules?.GetWinner("background-size")?.ResolvedValue,
+        PositionRaw: ComposeAxisLonghands(rules, "background-position", axisInitial: "0%"),
+        RepeatRaw: ComposeAxisLonghands(rules, "background-repeat", axisInitial: "repeat"));
 
     /// <summary>Build the ordered <see cref="BgLayer"/> list for a multi-layer <c>background-image</c>
     /// (2+ comma-separated layers, source order = topmost first). Each layer is parsed as

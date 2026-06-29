@@ -330,6 +330,24 @@ public sealed class SingleLayerGradientGeometryTests
     }
 
     [Fact]
+    public void Position_phases_the_tile_grid_adding_partial_edge_tiles()
+    {
+        // 50x30 tile phased at 25px 10px over 100x60 -> 3 cols (-25,25,75) x 3 rows (-20,10,40) = 9 tiles.
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;background-position:25px 10px;")));
+        Assert.Equal(9, Count(t, "/ShadingType 2"));
+    }
+
+    [Fact]
+    public void Tiled_gradient_under_a_rounded_clip_still_tiles_and_rounds()
+    {
+        // border-radius rounds the OUTER clip box while the gradient tiles inside it: 4 shadings + a
+        // rounded-corner Bezier in the outer clip path (the rounded clip doesn't break tiling).
+        var t = Latin1(HtmlPdf.Convert(Html("background-size:50px 30px;border-radius:12px;")));
+        Assert.Equal(4, Count(t, "/ShadingType 2"));
+        Assert.True(Count(t, "c ") >= 4, "the rounded outer clip emits 4 corner Beziers"); // tiles have none
+    }
+
+    [Fact]
     public void Degenerate_origin_box_translucent_gradient_does_not_warn_over_cap()
     {
         // PR #238 [P3] — a content-box origin on a zero-content-width box collapses the gradient origin

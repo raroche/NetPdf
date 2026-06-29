@@ -2700,17 +2700,19 @@ flags the categories):
      opaque shading — PR #237 review [P1]). AngleSharp.Css drops a gradient carrying a hint or
      double-position (incl. a FUNCTION-color double-position like `rgb(…) 10px 20px`), so
      `CssPreprocessor.ContainsDroppedStopSyntax` recovers the raw value via top-level token parsing.
-     **SINGLE-layer gradient `background-origin` / `-clip` now HONORED** (linear / radial / conic — the
-     axis / center / sweep spans the origin box [initial padding-box], the shading is clipped to the
-     clip box [initial border-box, rounded]; parity with the `url()` image path + multi-layer gradient
-     LAYERS [PR #235]; a box with no border/padding is byte-identical to the prior border-box behavior).
-     **Remaining gradient residuals (Phase 4 follow-ups):** per-stop alpha on a NATIVE
-     shading (a soft-mask alpha shading) so a translucent gradient need not raster; **gradient
-     `background-size` / `-position` / `-repeat`** (a gradient shading fills its origin box; a gradient —
-     SINGLE-layer OR a multi-layer LAYER — that specifies any of these surfaces
-     `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` and falls back to the default — the `url()` path honors
-     all three), and a repeating-radial under a `closest-*` extent clamps beyond the ending shape
-     (the default farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
+     **Gradient `background-origin` / `-clip` AND `background-size` / `-position` / `-repeat` now HONORED**
+     (linear / radial / conic, SINGLE-layer + multi-layer LAYER): origin/clip span / clip the shading to
+     the origin / clip box, and a non-initial size/position/repeat TILES the shading (`ResolveGradientTileGrid`
+     reuses the `url()` image tiler's `TryParseBackgroundSize`/`Position` + `AxisTilingPlan`; each tile
+     re-paints the shading sized + positioned, clipped to its rect, inside the rounded clip box — repeat /
+     repeat-x / repeat-y / no-repeat / space / round). A gradient has no intrinsic size (CSS Images §4.3),
+     so `auto`/`contain`/`cover` = the area + an auto axis = the area dimension. An unsupported VALUE (e.g.
+     `em`) or a grid beyond `MaxGradientTiles` is diagnosed (`CSS-BACKGROUND-IMAGE-UNSUPPORTED-001`) and
+     falls back to a single untiled paint. A box with no border/padding + initial size/position/repeat is
+     byte-identical to the prior single-paint. **Remaining gradient residuals (Phase 4 follow-ups):**
+     per-stop alpha on a NATIVE shading (a soft-mask alpha shading) so a translucent gradient need not
+     raster, and a repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default
+     farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
      box-shadow per-corner blur radii (the blur raster uses one representative radius) + inset under
      box-decoration-break:slice (painted per-slice); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
      (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`,

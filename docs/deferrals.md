@@ -2693,8 +2693,12 @@ flags the categories):
      stops (§3.4), color-interpolation HINTS (§3.4.2 — approximated by a synthetic midpoint stop, NOT
      the exact exponential easing), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
      to a Skia raster — `LinearGradientRasterizer`/`RadialGradientRasterizer` → image + `/SMask`;
-     opaque stays the native shading). AngleSharp.Css drops a gradient carrying a hint or
-     double-position, so `CssPreprocessor.ContainsDroppedStopSyntax` recovers the raw value.
+     opaque stays the native shading). Stop colors interpolate in PREMULTIPLIED RGBA (§3.4.2) so a
+     midpoint/boundary next to a (semi-)transparent stop doesn't bleed its RGB; a translucent gradient
+     too large to raster is SKIPPED with `CSS-GRADIENT-ALPHA-UNSUPPORTED-001` (never dropped to an
+     opaque shading — PR #237 review [P1]). AngleSharp.Css drops a gradient carrying a hint or
+     double-position (incl. a FUNCTION-color double-position like `rgb(…) 10px 20px`), so
+     `CssPreprocessor.ContainsDroppedStopSyntax` recovers the raw value via top-level token parsing.
      **Remaining gradient residuals (Phase 4 follow-ups):** the hint's exact exponential easing (only
      the midpoint color is exact; the two surrounding segments are linear); per-stop alpha on a NATIVE
      shading (a soft-mask alpha shading) so a translucent gradient need not raster; **gradient

@@ -1368,12 +1368,42 @@ internal static class CssPreprocessor
 
     private static bool ArgIsHintOrDoublePosition(string arg)
     {
-        if (arg.Length == 0 || arg.Contains(')')) return false; // skip args with a function tail (its own parens)
-        var toks = arg.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (toks.Length == 1 && IsGradientPositionToken(toks[0])) return true;          // a hint
-        if (toks.Length >= 3 && IsGradientPositionToken(toks[^1]) && IsGradientPositionToken(toks[^2]))
+        if (arg.Length == 0) return false;
+        // Split on TOP-LEVEL whitespace only, keeping a parenthesized function color (e.g.
+        // `rgb(1, 2, 3)` or `hsl(...)`) as a single token — so a function-color double-position stop
+        // like `rgb(1,2,3) 10px 20px` is still recovered (PR #237 review [P2]). The old
+        // `arg.Contains(')')` shortcut bailed on ANY function tail, missing those.
+        var toks = SplitTopLevelWhitespace(arg);
+        if (toks.Count == 1 && IsGradientPositionToken(toks[0])) return true;           // a hint
+        if (toks.Count >= 3 && IsGradientPositionToken(toks[^1]) && IsGradientPositionToken(toks[^2]))
             return true;                                                                 // double-position
         return false;
+    }
+
+    /// <summary>Split a gradient-stop argument on whitespace at PAREN DEPTH 0 — a parenthesized block
+    /// (a function color's argument list) stays one token, so internal spaces / commas don't fragment
+    /// it. Used to detect a function-color double-position stop in the AngleSharp recovery path.</summary>
+    private static System.Collections.Generic.List<string> SplitTopLevelWhitespace(string arg)
+    {
+        var toks = new System.Collections.Generic.List<string>();
+        var depth = 0;
+        var start = -1;
+        for (var i = 0; i < arg.Length; i++)
+        {
+            var ch = arg[i];
+            if (ch == '(') depth++;
+            else if (ch == ')') { if (depth > 0) depth--; }
+            if (depth == 0 && char.IsWhiteSpace(ch))
+            {
+                if (start >= 0) { toks.Add(arg.Substring(start, i - start)); start = -1; }
+            }
+            else if (start < 0)
+            {
+                start = i;
+            }
+        }
+        if (start >= 0) toks.Add(arg.Substring(start));
+        return toks;
     }
 
     /// <summary>A gradient-stop position token: a number with a <c>%</c>, a length unit, or an angle

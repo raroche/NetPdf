@@ -30,11 +30,11 @@ internal sealed record CssLinearGradient(
 /// The position is EITHER a <see cref="Position"/> fraction in [0, 1] (from a <c>%</c>) OR a
 /// <see cref="PositionPx"/> length in CSS px (from <c>px</c> + the absolute units — PR 1 refinements);
 /// the painter resolves a length to a fraction against the gradient-line length. Both null =
-/// unpositioned (spread evenly per CSS Images §3.4). At most one is set.</summary>
-/// <summary>One parsed gradient color stop, or — when <paramref name="IsHint"/> is true — a
-/// color-interpolation HINT (CSS Images §3.4.2: a bare position between two color stops marking where
-/// the 50% color falls). A hint carries only a position (<see cref="Position"/> / <see cref="PositionPx"/>);
-/// its <see cref="ColorRaw"/> is empty and the resolver replaces it with a synthetic midpoint stop.</summary>
+/// unpositioned (spread evenly per CSS Images §3.4). At most one is set.
+/// <para>When <see cref="IsHint"/> is true the entry is instead a color-interpolation HINT (CSS Images
+/// §3.4.2: a bare position between two color stops marking where the 50% color falls): it carries only
+/// a position, its <see cref="ColorRaw"/> is empty, and the resolver replaces it with a synthetic
+/// midpoint stop.</para></summary>
 internal readonly record struct CssGradientStop(string ColorRaw, double? Position, double? PositionPx = null, bool IsHint = false);
 
 /// <summary>Phase 4 gradients — a minimal, allocation-light parser for the

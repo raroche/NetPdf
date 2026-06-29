@@ -74,4 +74,18 @@ public sealed class LinearGradientLengthStopPaintTests
         Assert.Contains("/ShadingType 2", text);
         Assert.Contains(AllBounds(text), b => b.Length == 1 && System.Math.Abs(b[0] - 0.75) < 1e-6);
     }
+
+    [Fact]
+    public void Function_color_double_position_stop_renders_through_the_full_pipeline()
+    {
+        // PR #237 review [P2] — AngleSharp.Css drops a declaration carrying a double-position stop, so
+        // production only renders it via the CssPreprocessor recovery. With a FUNCTION color (rgb(...))
+        // the old `arg.Contains(')')` detector shortcut bailed → recovery never fired → nothing rendered.
+        // End-to-end through Convert the gradient must now produce a native shading, not a bg-color blank.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:40px;background-image:linear-gradient(to right, rgb(10,20,30) 10px 60px, blue)\"></div>" +
+            "</body></html>"));
+        Assert.Contains("/ShadingType 2", text);
+    }
 }

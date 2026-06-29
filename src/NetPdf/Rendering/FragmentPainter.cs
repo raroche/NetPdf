@@ -130,6 +130,7 @@ internal static class FragmentPainter
         var boxShadowCapReported = false;         // Phase 4 shadows — once-per-render over-cap Warning.
         var conicGradientRasterReported = false;  // Phase 4 gradients — once-per-render conic raster Info.
         var conicGradientCapReported = false;     // Phase 4 gradients — once-per-render conic over-cap Warning.
+        var gradientAlphaCapReported = false;     // Phase 4 gradients — once-per-render translucent linear/radial over-cap Warning.
         var clipPathRasterReported = false;       // Phase 4 clip-path — once-per-render path() Warning.
         var clipPathSubtreeReported = false;      // Phase 4 clip-path — once-per-render subtree Warning.
 
@@ -310,13 +311,15 @@ internal static class FragmentPainter
                     && imageCache.BackgroundGradientBoxes.TryGetValue(fragment.Box, out var gradient))
                 {
                     PaintLinearGradient(page, document, gradient, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
+                        diagnostics, ref gradientAlphaCapReported, axisTopPx, axisHeightPx);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb, axisTopPx, axisHeightPx);
+                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
+                        diagnostics, ref gradientAlphaCapReported, axisTopPx, axisHeightPx);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))
@@ -336,7 +339,8 @@ internal static class FragmentPainter
                     PaintMultiLayerBackground(page, document, imageCache, bgLayers, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb,
                         fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx, diagnostics,
-                        ref variantUnsupportedReported, ref conicGradientRasterReported, ref conicGradientCapReported);
+                        ref variantUnsupportedReported, ref conicGradientRasterReported, ref conicGradientCapReported,
+                        ref gradientAlphaCapReported);
                 }
 
                 // box-shadow INSET (Phase 4 PR 1) paints OVER the background (CSS B&B §7.2 — inset
@@ -611,7 +615,8 @@ internal static class FragmentPainter
         System.Collections.Generic.List<ImageResourceCache.BgLayer> layers, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx, uint currentColorArgb,
         double decorationBlockExtentPx, double decorationBlockOffsetPx, IDiagnosticsSink? diagnostics,
-        ref bool variantUnsupportedReported, ref bool conicRasterReported, ref bool conicCapReported)
+        ref bool variantUnsupportedReported, ref bool conicRasterReported, ref bool conicCapReported,
+        ref bool gradientAlphaCapReported)
     {
         var sliced = decorationBlockExtentPx > 0;
         var (compTopPx, compHeightPx, compRadiiPx) = CompositeRoundedBox(
@@ -675,9 +680,9 @@ internal static class FragmentPainter
                     gradientSliceClipped = true;
                 }
                 if (layer.Linear is { } lin)
-                    PaintLinearGradient(page, document, lin, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, clipOverride: gClip);
+                    PaintLinearGradient(page, document, lin, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gClip);
                 else if (layer.Radial is { } rad)
-                    PaintRadialGradient(page, document, rad, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, clipOverride: gClip);
+                    PaintRadialGradient(page, document, rad, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gClip);
                 else if (layer.Conic is { } con)
                     PaintConicGradient(page, document, con, style, pageHeightPt, gOriginLeftPx, gOriginTopPx, gOriginWidthPx, gOriginHeightPx, currentColorArgb, diagnostics, ref conicRasterReported, ref conicCapReported, clipOverride: gClip);
                 if (gradientSliceClipped) page.RestoreGraphicsState();
@@ -2392,7 +2397,7 @@ internal static class FragmentPainter
     private static void PaintLinearGradient(
         PdfPage page, PdfDocument document, CssLinearGradient gradient, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool gradientAlphaCapReported,
         // box-decoration-break: slice — when set, the gradient AXIS + the rounded CLIP span this (larger,
         // whole-box / composite) block extent instead of the painted slice, so a sliced block's gradient is
         // CONTINUOUS across slices and rounds correctly; the CALLER adds an outer per-slice rect clip to
@@ -2422,10 +2427,17 @@ internal static class FragmentPainter
         // Per-stop alpha (gradient refinements): a native axial shading is DeviceRGB (no alpha), so a
         // translucent stop falls back to a Skia raster (image + /SMask, like conic). A fully-opaque
         // gradient stays the native shading (byte-identical).
-        if (AnyTranslucent(normalized)
-            && TryPaintAlphaLinearGradientRaster(page, document, normalized, angleDeg, pageHeightPt,
-                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, style, clipOverride))
+        if (AnyTranslucent(normalized))
         {
+            if (TryPaintAlphaLinearGradientRaster(page, document, normalized, angleDeg, pageHeightPt,
+                    leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, style, clipOverride))
+            {
+                return;
+            }
+            // Over-cap: the alpha bitmap exceeds the raster size cap. Do NOT fall through to the native
+            // opaque shading (that would silently DROP the transparency, PR #237 review [P1]) — skip the
+            // gradient (the background-color shows) and surface a distinct Warning, like conic over-cap.
+            EmitGradientAlphaOverCap(diagnostics, ref gradientAlphaCapReported);
             return;
         }
 
@@ -2451,6 +2463,22 @@ internal static class FragmentPainter
     {
         foreach (var s in stops) if (s.A < 1.0 - 1e-9) return true;
         return false;
+    }
+
+    /// <summary>A translucent linear / radial gradient over-capped the raster (the alpha bitmap would
+    /// exceed the device-pixel cap). Surface it ONCE per render as a Warning under
+    /// <c>CSS-GRADIENT-ALPHA-UNSUPPORTED-001</c> — the caller skips the gradient (the background-color
+    /// shows) rather than dropping the alpha into an opaque native shading (PR #237 review [P1]).</summary>
+    private static void EmitGradientAlphaOverCap(IDiagnosticsSink? diagnostics, ref bool reported)
+    {
+        if (reported || diagnostics is null) return;
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssGradientAlphaUnsupported001,
+            "A translucent linear/radial gradient was too large to rasterize (the alpha bitmap would "
+            + $"exceed the {NetPdf.Pdf.Images.ShadowRasterizer.MaxDeviceDimension} px cap); the gradient "
+            + "was skipped (the background-color shows) rather than dropping its transparency.",
+            DiagnosticSeverity.Warning));
+        reported = true;
     }
 
     /// <summary>Paint a translucent linear gradient via the Skia raster (image + alpha <c>/SMask</c>),
@@ -2561,7 +2589,7 @@ internal static class FragmentPainter
 
     /// <summary>Phase 4 gradients — one fully-resolved gradient stop: an offset (a fraction of the
     /// gradient line) + a premultiply-free DeviceRGB color with per-stop alpha.</summary>
-    private readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
+    internal readonly record struct ResolvedGradientStop(double Offset, double R, double G, double B, double A);
 
     /// <summary>Color-interpolation hints (CSS Images §3.4.2) — replace each HINT (a
     /// <see cref="CssGradientStop.IsHint"/> entry: a bare position between two color stops) with a
@@ -2602,13 +2630,26 @@ internal static class FragmentPainter
         return TryResolveColor(resolved.Slot, currentColorArgb, out argb);
     }
 
-    /// <summary>The 50% blend of two ARGB colors (per-channel average, including alpha) — the hint's
-    /// midpoint color (CSS Images §3.4.2). Premultiplication is skipped (a coarse approximation; exact
-    /// for equal alphas, which is the common case).</summary>
-    private static uint Blend50(uint x, uint y)
+    /// <summary>The 50% blend of two ARGB colors — the hint's midpoint color (CSS Images §3.4.2).
+    /// Interpolated in PREMULTIPLIED RGBA space per CSS Images 3 §3.4.2 (PR #237 review [P2]): the
+    /// alpha is the straight average, each color channel is the ALPHA-WEIGHTED average (equivalent to
+    /// premultiply → average → unpremultiply), so a midpoint involving a transparent / semi-transparent
+    /// color doesn't bleed the transparent side's RGB. Equal alphas (incl. two opaque colors, the
+    /// common case) reduce to the plain channel average — byte-identical with the prior behavior.</summary>
+    internal static uint Blend50(uint x, uint y)
     {
-        static uint Avg(uint a, uint b, int shift) => (uint)((((a >> shift) & 0xFF) + ((b >> shift) & 0xFF)) / 2) << shift;
-        return Avg(x, y, 24) | Avg(x, y, 16) | Avg(x, y, 8) | Avg(x, y, 0);
+        var ax = (x >> 24) & 0xFFu;
+        var ay = (y >> 24) & 0xFFu;
+        var aSum = ax + ay;
+        var aOut = aSum / 2u;                      // straight average (matches the prior alpha blend)
+        uint Chan(int shift)
+        {
+            if (aSum == 0) return 0;               // both fully transparent → color is irrelevant (0)
+            var cx = (x >> shift) & 0xFFu;
+            var cy = (y >> shift) & 0xFFu;
+            return (cx * ax + cy * ay) / aSum;     // alpha-weighted (premultiplied) average
+        }
+        return (aOut << 24) | (Chan(16) << 16) | (Chan(8) << 8) | Chan(0);
     }
 
     /// <summary>Phase 4 gradients (PR 1 review) — the SHARED stop pipeline for linear / radial / conic.
@@ -2733,7 +2774,7 @@ internal static class FragmentPainter
     /// <summary>The interpolated color at offset <paramref name="t"/> along non-decreasing
     /// <paramref name="stops"/>. Outside the stop range the nearest end color is held; a zero-width
     /// (hard-stop) segment is skipped so the boundary lands on the segment just after it.</summary>
-    private static (double R, double G, double B, double A) ColorAt(List<ResolvedGradientStop> stops, double t)
+    internal static (double R, double G, double B, double A) ColorAt(List<ResolvedGradientStop> stops, double t)
     {
         if (t <= stops[0].Offset) return (stops[0].R, stops[0].G, stops[0].B, stops[0].A);
         var lastStop = stops[^1];
@@ -2747,7 +2788,13 @@ internal static class FragmentPainter
                 var span = b.Offset - a.Offset;
                 if (span <= 0) continue; // hard stop — fall through to the next positive-width segment
                 var f = (t - a.Offset) / span;
-                return (a.R + (b.R - a.R) * f, a.G + (b.G - a.G) * f, a.B + (b.B - a.B) * f, a.A + (b.A - a.A) * f);
+                // Interpolate in PREMULTIPLIED RGBA (CSS Images 3 §3.4.2; PR #237 review [P2]) so a
+                // boundary stop between a transparent / semi-transparent color and an opaque one carries
+                // the correct color (opaque-only segments are unaffected — byte-identical).
+                var aOut = a.A + (b.A - a.A) * f;
+                if (aOut <= 0) return (0, 0, 0, 0);
+                double Chan(double ca, double cb) => (ca * a.A + (cb * b.A - ca * a.A) * f) / aOut;
+                return (Chan(a.R, b.R), Chan(a.G, b.G), Chan(a.B, b.B), aOut);
             }
         }
         return (lastStop.R, lastStop.G, lastStop.B, lastStop.A);
@@ -2803,7 +2850,7 @@ internal static class FragmentPainter
     private static void PaintRadialGradient(
         PdfPage page, PdfDocument document, CssRadialGradient radial, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool gradientAlphaCapReported,
         // box-decoration-break: slice — when set, the gradient's center + radius + the rounded CLIP are
         // computed over this (larger, whole-box / composite) extent instead of the painted slice, so a
         // sliced radial gradient is CONTINUOUS + rounds correctly; the CALLER adds the per-slice rect clip
@@ -2873,11 +2920,16 @@ internal static class FragmentPainter
 
         // Per-stop alpha (gradient refinements) — a translucent stop falls back to a Skia raster (the
         // native radial shading is DeviceRGB); a fully-opaque gradient stays native (byte-identical).
-        if (AnyTranslucent(normalized)
-            && TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
-                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
-                style, clipOverride))
+        if (AnyTranslucent(normalized))
         {
+            if (TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
+                    leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
+                    style, clipOverride))
+            {
+                return;
+            }
+            // Over-cap: skip rather than drop the alpha into an opaque shading (PR #237 review [P1]).
+            EmitGradientAlphaOverCap(diagnostics, ref gradientAlphaCapReported);
             return;
         }
 

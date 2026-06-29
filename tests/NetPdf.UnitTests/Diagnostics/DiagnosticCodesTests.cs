@@ -1108,6 +1108,7 @@ public sealed class DiagnosticCodesTests
     [InlineData(nameof(DiagnosticCodes.CssTextShadowBlurRaster001), "CSS-TEXTSHADOW-BLUR-RASTER-001", "Info")]
     [InlineData(nameof(DiagnosticCodes.CssTransform3DUnsupported001), "CSS-TRANSFORM-3D-UNSUPPORTED-001", "Warning")]
     [InlineData(nameof(DiagnosticCodes.CssTransformUnsupported001), "CSS-TRANSFORM-UNSUPPORTED-001", "Warning")]
+    [InlineData(nameof(DiagnosticCodes.CssGradientAlphaUnsupported001), "CSS-GRADIENT-ALPHA-UNSUPPORTED-001", "Warning")]
     public void Phase4_shadow_and_transform_codes_match_registry(string fieldName, string code, string severity)
     {
         var constant = (string)typeof(DiagnosticCodes)

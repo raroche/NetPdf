@@ -29,14 +29,30 @@ public sealed class SingleLayerGradientGeometryTests
         return (P(1), P(2), P(3), P(4));
     }
 
-    // The clip rect (w, h in pt) the shading is painted into: `x y w h re W n /Sh<n> sh`.
+    // The clip rect (w, h in pt) the shading is painted into: `x y w h re W n [<cm> cm] /Sh<n> sh`
+    // (a radial ellipse inserts a CTM between `W n` and the `sh`).
     private static (double W, double H) ShadingClip(string pdf)
     {
-        var m = Regex.Match(pdf, @"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re W n /Sh\d+ sh");
+        var m = Regex.Match(pdf, @"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re W n (?:[-\d. ]+ cm )?/Sh\d+ sh");
         Assert.True(m.Success, "no shading clip rect found");
         return (double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture),
                 double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
     }
+
+    // The outer radius (r1) of the (single) radial shading: /Coords [cx0 cy0 r0 cx1 cy1 r1].
+    private static double RadialOuterRadius(string pdf)
+    {
+        var m = Regex.Match(pdf, @"/Coords \[([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)\]");
+        Assert.True(m.Success, "no radial /Coords found");
+        return double.Parse(m.Groups[6].Value, CultureInfo.InvariantCulture);
+    }
+
+    // A SQUARE box → the radial ending shape is a circle (rx == ry), so no CTM and the outer radius is
+    // the farthest-corner distance directly.
+    private static string RadialHtml(string extraStyle) =>
+        "<!DOCTYPE html><html><body>" +
+        $"<div style=\"width:100px;height:100px;{extraStyle}background-image:radial-gradient(red, blue)\"></div>" +
+        "</body></html>";
 
     private static string Html(string extraStyle) =>
         "<!DOCTYPE html><html><body>" +
@@ -96,5 +112,46 @@ public sealed class SingleLayerGradientGeometryTests
         var (w, h) = ShadingClip(t);
         Assert.Equal(130 * PtPerPx, w, 3); // border box = content 100 + padding 10 + border 20
         Assert.Equal(90 * PtPerPx, h, 3);
+    }
+
+    // ---- radial (task 2) ----
+
+    [Fact]
+    public void Radial_origin_border_box_uses_a_larger_radius_than_content_box()
+    {
+        // Farthest-corner radius scales with the origin box: border-box (130×130) > content-box (100×100).
+        var border = RadialOuterRadius(Latin1(HtmlPdf.Convert(
+            RadialHtml("border:10px solid black;padding:5px;background-origin:border-box;"))));
+        var content = RadialOuterRadius(Latin1(HtmlPdf.Convert(
+            RadialHtml("border:10px solid black;padding:5px;background-origin:content-box;"))));
+        // content box 100×100 → r = √(50²+50²)px; border box 130×130 → r = √(65²+65²)px.
+        Assert.Equal(System.Math.Sqrt(50 * 50 + 50 * 50) * PtPerPx, content, 2);
+        Assert.Equal(System.Math.Sqrt(65 * 65 + 65 * 65) * PtPerPx, border, 2);
+        Assert.True(border > content);
+    }
+
+    [Fact]
+    public void Radial_origin_defaults_to_padding_box()
+    {
+        // Default origin = padding-box: content 100 + padding 10 = 110×110 → r = √(55²+55²)px.
+        var r = RadialOuterRadius(Latin1(HtmlPdf.Convert(RadialHtml("border:10px solid black;padding:5px;"))));
+        Assert.Equal(System.Math.Sqrt(55 * 55 + 55 * 55) * PtPerPx, r, 2);
+    }
+
+    [Fact]
+    public void Radial_background_clip_content_box_clips_to_the_content_box()
+    {
+        var t = Latin1(HtmlPdf.Convert(RadialHtml(
+            "border:10px solid black;padding:5px;background-clip:content-box;")));
+        var (w, h) = ShadingClip(t);
+        Assert.Equal(100 * PtPerPx, w, 3);
+        Assert.Equal(100 * PtPerPx, h, 3);
+    }
+
+    [Fact]
+    public void Radial_no_border_renders_a_native_radial_shading()
+    {
+        var t = Latin1(HtmlPdf.Convert(RadialHtml("")));
+        Assert.Contains("/ShadingType 3", t);
     }
 }

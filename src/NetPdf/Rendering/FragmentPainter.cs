@@ -345,8 +345,8 @@ internal static class FragmentPainter
                     && imageCache.BackgroundRadialGradientBoxes.TryGetValue(fragment.Box, out var radial))
                 {
                     PaintRadialGradient(page, document, radial, style, pageHeightPt,
-                        leftPx, topPx, widthPx, heightPx, currentColorArgb,
-                        diagnostics, ref gradientAlphaCapReported, axisTopPx, axisHeightPx);
+                        gradOriginLeftPx, gradOriginTopPx, gradOriginWidthPx, gradOriginHeightPx,
+                        currentColorArgb, diagnostics, ref gradientAlphaCapReported, clipOverride: gradClip);
                 }
                 else if (imageCache is not null && document is not null
                     && imageCache.BackgroundConicGradientBoxes.TryGetValue(fragment.Box, out var conic))

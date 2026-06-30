@@ -8,6 +8,16 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: SVG part 9 (filter completion + mask-type)
+
+Rounds out the SVG `<filter>` graph and adds `mask-type`. Byte-identity safe (no corpus/snapshot uses inline SVG; the default `mask-type: luminance` path is unchanged).
+
+- **`feDiffuseLighting`** / **`feSpecularLighting`** — light the input alpha (a height field) with a `feDistantLight` (azimuth/elevation) / `fePointLight` (x/y/z) / `feSpotLight` (+ pointsAt + specularExponent + limitingConeAngle) child, honoring `surfaceScale`, `diffuseConstant` / (`specularConstant` + `specularExponent`), and `lighting-color` → `SKImageFilter.CreateDistantLitDiffuse`/`CreatePointLitDiffuse`/`CreateSpotLitDiffuse` (+ the `*Specular` variants). A missing/unknown light source flags + passes the input through.
+- **`feImage`** — a `data:` raster `href` decodes (through `ImageSafetyValidator`) → `SKImageFilter.CreateImage`. An external href or an element reference (`href="#id"`) isn't modeled → flagged + an empty (transparent) result (a generator never passes content through).
+- **Explicit filter region** — `<filter>` `x`/`y`/`width`/`height` + `filterUnits` (`objectBoundingBox` maps each as a bbox fraction, default `-10% -10% 120% 120%`; `userSpaceOnUse` as user-space lengths) now defines the result clip (`ResolveFilterRegion`), replacing the always-default bbox+10%; it's no longer flagged. (A per-primitive subregion + `primitiveUnits` stay deferred.)
+- **`mask-type: alpha`** — a `<mask mask-type="alpha">` multiplies the element by the mask's own ALPHA instead of its luminance (`SvgClipMask.ApplyMask` drops the luma color filter); the default `luminance` is unchanged.
+- **Residuals:** `feTile` + `feImage` element references; primitive subregions + `primitiveUnits`; `feTurbulence` `stitchTiles`.
+
 ### Added — Phase 4 visual parity: SVG part 8 (more filter primitives)
 
 Five more SVG `<filter>` primitives join the part-7 filter graph (`NetPdf.Svg.SvgFilters`), each backed by a native Skia `SKImageFilter`. Byte-identity safe (no corpus/snapshot uses inline SVG); each newly-supported primitive flips from flagged to rendered.

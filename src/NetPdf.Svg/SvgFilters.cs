@@ -41,18 +41,20 @@ internal static class SvgFilters
     /// primitive through their input references — is evaluated; disconnected primitive trees are ignored (they
     /// neither build a filter nor flag unsupported, PR-246 review [P2]). Supports <c>feGaussianBlur</c>,
     /// <c>feOffset</c>, <c>feDropShadow</c>, <c>feColorMatrix</c>, <c>feFlood</c>, <c>feMerge</c>,
-    /// <c>feComposite</c> (over/in/out/atop/xor/lighter/arithmetic), <c>feBlend</c>, and (SVG part 8)
+    /// <c>feComposite</c> (over/in/out/atop/xor/lighter/arithmetic), <c>feBlend</c>, (SVG part 8)
     /// <c>feMorphology</c> (erode/dilate), <c>feComponentTransfer</c> (identity/table/discrete/linear/gamma),
-    /// <c>feDisplacementMap</c>, <c>feConvolveMatrix</c>, and <c>feTurbulence</c> (turbulence/fractalNoise).
-    /// Primitive SUBREGIONS (x/y/width/height), the EXPLICIT filter region / <c>*Units</c>,
-    /// <c>BackgroundImage</c>/<c>FillPaint</c> inputs, and the remaining primitives (<c>feImage</c>/
-    /// <c>feTile</c>/lighting) aren't modeled → flagged. The DEFAULT filter region is applied by the caller as
-    /// a clip (see <see cref="DefaultFilterRegion"/>). Returns <see langword="null"/> when no primitive
-    /// contributes (the element renders unfiltered).</summary>
+    /// <c>feDisplacementMap</c>, <c>feConvolveMatrix</c>, <c>feTurbulence</c> (turbulence/fractalNoise), and
+    /// (SVG part 9) <c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (distant/point/spot lights),
+    /// <c>feImage</c> (a raster href), and <c>feTile</c>. The filter region (x/y/width/height + filterUnits) is
+    /// honored by the caller's clip (see <see cref="ResolveFilterRegion"/>); primitive SUBREGIONS (per-primitive
+    /// x/y/width/height), <c>primitiveUnits</c>, <c>BackgroundImage</c>/<c>FillPaint</c> inputs, and a
+    /// <c>feImage</c> ELEMENT reference (<c>href="#id"</c>) aren't modeled → flagged. Returns
+    /// <see langword="null"/> when no primitive contributes (the element renders unfiltered).</summary>
     public static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
     {
-        // The filter region (x/y/width/height) and *Units change the result geometry but aren't applied here.
-        var sawUnsupported = SvgRasterizer.HasAnyAttr(filter, "x", "y", "width", "height", "filterUnits", "primitiveUnits");
+        // The filter region (x/y/width/height + filterUnits) is now honored by the caller's clip
+        // (ResolveFilterRegion). primitiveUnits (objectBoundingBox primitive coordinates) is still not modeled.
+        var sawUnsupported = SvgRasterizer.HasAnyAttr(filter, "primitiveUnits");
 
         var prims = new List<XElement>();
         foreach (var e in filter.Elements()) prims.Add(e);
@@ -184,6 +186,39 @@ internal static class SvgFilters
                     shader.Dispose();
                     break;
                 }
+                case "feimage":
+                {
+                    // A GENERATOR — a data: raster href decodes (through the image-safety validator) to an
+                    // image filter. An external href or an ELEMENT reference (href="#id") isn't modeled →
+                    // flagged + an empty (transparent) result, never a content pass-through.
+                    var href = SvgAttr.HrefRaw(prim);
+                    if (href is not null && href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                        && SvgRasterizer.DecodeDataUriImage(href) is { } image)
+                    {
+                        // The filter references the image (kept alive by the composed chain, like the other
+                        // intermediate filters here); do not dispose it out from under the filter.
+                        output = SKImageFilter.CreateImage(image);
+                    }
+                    else
+                    {
+                        sawUnsupported = true;
+                        using var transparent = SKShader.CreateColor(SKColors.Transparent);
+                        output = SKImageFilter.CreateShader(transparent);
+                    }
+                    break;
+                }
+                case "fediffuselighting":
+                {
+                    var input = ResolveInput(prim, "in", last, results, ref sawUnsupported);
+                    output = BuildLighting(prim, input, specular: false, ref sawUnsupported);
+                    break;
+                }
+                case "fespecularlighting":
+                {
+                    var input = ResolveInput(prim, "in", last, results, ref sawUnsupported);
+                    output = BuildLighting(prim, input, specular: true, ref sawUnsupported);
+                    break;
+                }
                 default:
                     sawUnsupported = true; // unsupported primitive
                     output = last;         // pass the previous result through
@@ -198,22 +233,50 @@ internal static class SvgFilters
         return last;
     }
 
-    /// <summary>The DEFAULT SVG filter region (§15.7.4) in the filtered element's OWN coordinate space: the
-    /// element geometry bounding box inflated 10% on each side (<c>filterUnits=objectBoundingBox</c>,
-    /// x/y=-10%, width/height=120%). The caller hard-clips the composited filter result to this rect so an
-    /// otherwise unbounded primitive (a final <c>feFlood</c>) — and a blur halo — can't paint past the region
-    /// (PR-246 review [P1]). Returns <see langword="null"/> when no geometry bbox is available (text / image /
-    /// empty subtree); the caller then leaves the result uncropped. An EXPLICIT filter region (x/y/width/height
-    /// on the <c>&lt;filter&gt;</c>) is not modeled and is flagged in <see cref="BuildImageFilter"/>.</summary>
-    public static SKRect? DefaultFilterRegion(XElement el, SvgStyle style, SvgRenderState state)
+    /// <summary>The SVG filter region (§15.7.4) in the filtered element's OWN coordinate space — the rect the
+    /// caller hard-clips the composited filter result to (so an unbounded primitive / blur halo can't paint
+    /// past it, PR-246 review [P1]). Honors an EXPLICIT <c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> +
+    /// <c>filterUnits</c> on the <c>&lt;filter&gt;</c>: <c>objectBoundingBox</c> (default) maps each value as a
+    /// FRACTION of the element bbox (a <c>%</c> → /100; the §15 default is <c>-10% -10% 120% 120%</c>);
+    /// <c>userSpaceOnUse</c> maps them as user-space lengths (all four required, else the bbox default).
+    /// Returns <see langword="null"/> when no geometry bbox is available (text / image / empty subtree) and no
+    /// explicit userSpace rect is given; the caller then leaves the result uncropped.</summary>
+    public static SKRect? ResolveFilterRegion(XElement filter, XElement el, SvgStyle style, SvgRenderState state)
     {
+        var userSpace = (SvgRasterizer.Attr(filter, "filterUnits") ?? "objectBoundingBox").Trim()
+            .Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+        if (userSpace
+            && SvgRasterizer.HasAnyAttr(filter, "x") && SvgRasterizer.HasAnyAttr(filter, "y")
+            && SvgRasterizer.HasAnyAttr(filter, "width") && SvgRasterizer.HasAnyAttr(filter, "height"))
+        {
+            var x = (float)SvgRasterizer.Len(filter, "x", state, style, SvgRasterizer.LenAxis.X);
+            var y = (float)SvgRasterizer.Len(filter, "y", state, style, SvgRasterizer.LenAxis.Y);
+            var w = (float)SvgRasterizer.Len(filter, "width", state, style, SvgRasterizer.LenAxis.X);
+            var h = (float)SvgRasterizer.Len(filter, "height", state, style, SvgRasterizer.LenAxis.Y);
+            if (w > 0 && h > 0) return new SKRect(x, y, x + w, y + h);
+        }
         if (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
         {
-            var dx = b.Width * 0.1f;
-            var dy = b.Height * 0.1f;
-            return new SKRect(b.Left - dx, b.Top - dy, b.Right + dx, b.Bottom + dy);
+            var fx = RegionFraction(filter, "x", -0.1f);
+            var fy = RegionFraction(filter, "y", -0.1f);
+            var fw = RegionFraction(filter, "width", 1.2f);
+            var fh = RegionFraction(filter, "height", 1.2f);
+            if (fw <= 0 || fh <= 0) return null;
+            return new SKRect(b.Left + fx * b.Width, b.Top + fy * b.Height,
+                b.Left + (fx + fw) * b.Width, b.Top + (fy + fh) * b.Height);
         }
         return null;
+    }
+
+    /// <summary>An <c>objectBoundingBox</c> filter-region value as a bbox FRACTION: a <c>%</c> → value/100, a
+    /// plain number → as-is, absent → <paramref name="fallback"/> (the §15 default).</summary>
+    private static float RegionFraction(XElement filter, string name, float fallback)
+    {
+        var raw = SvgRasterizer.Attr(filter, name)?.Trim();
+        if (string.IsNullOrEmpty(raw)) return fallback;
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+            return float.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? pct / 100f : fallback;
+        return float.TryParse(SvgRasterizer.TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
     }
 
     /// <summary>Mark the filter primitives reachable backward from the LAST primitive through their input
@@ -629,6 +692,71 @@ internal static class SvgFilters
             ? SKShader.CreatePerlinNoiseFractalNoise(fx, fy, octaves, seed)
             : SKShader.CreatePerlinNoiseTurbulence(fx, fy, octaves, seed);
     }
+
+    /// <summary><c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (Filter Effects §9.16/§9.17) → a Skia
+    /// lighting image filter. The input ALPHA is the height field; a single light-source child
+    /// (<c>feDistantLight</c> / <c>fePointLight</c> / <c>feSpotLight</c>) lights it with the
+    /// <c>lighting-color</c>, <c>surfaceScale</c>, and <c>diffuseConstant</c> / (<c>specularConstant</c> +
+    /// <c>specularExponent</c>). A missing / unknown light source flags + passes the input through.</summary>
+    private static SKImageFilter? BuildLighting(XElement prim, SKImageFilter? input, bool specular, ref bool sawUnsupported)
+    {
+        var surfaceScale = ReadFloat(prim, "surfaceScale", 1f);
+        var color = LightingColor(prim);
+        XElement? light = null;
+        foreach (var c in prim.Elements())
+            if (c.Name.LocalName.ToLowerInvariant() is "fedistantlight" or "fepointlight" or "fespotlight") { light = c; break; }
+        if (light is null) { sawUnsupported = true; return input; }
+
+        if (specular)
+        {
+            var ks = ReadFloat(prim, "specularConstant", 1f);
+            var shininess = ReadFloat(prim, "specularExponent", 1f);
+            return light.Name.LocalName.ToLowerInvariant() switch
+            {
+                "fedistantlight" => SKImageFilter.CreateDistantLitSpecular(DistantDirection(light), color, surfaceScale, ks, shininess, input),
+                "fepointlight" => SKImageFilter.CreatePointLitSpecular(PointLocation(light), color, surfaceScale, ks, shininess, input),
+                "fespotlight" => SKImageFilter.CreateSpotLitSpecular(PointLocation(light), SpotTarget(light), ReadFloat(light, "specularExponent", 1f), SpotCutoff(light), color, surfaceScale, ks, shininess, input),
+                _ => Flag(ref sawUnsupported, input),
+            };
+        }
+        var kd = ReadFloat(prim, "diffuseConstant", 1f);
+        return light.Name.LocalName.ToLowerInvariant() switch
+        {
+            "fedistantlight" => SKImageFilter.CreateDistantLitDiffuse(DistantDirection(light), color, surfaceScale, kd, input),
+            "fepointlight" => SKImageFilter.CreatePointLitDiffuse(PointLocation(light), color, surfaceScale, kd, input),
+            "fespotlight" => SKImageFilter.CreateSpotLitDiffuse(PointLocation(light), SpotTarget(light), ReadFloat(light, "specularExponent", 1f), SpotCutoff(light), color, surfaceScale, kd, input),
+            _ => Flag(ref sawUnsupported, input),
+        };
+    }
+
+    private static SKImageFilter? Flag(ref bool sawUnsupported, SKImageFilter? input) { sawUnsupported = true; return input; }
+
+    /// <summary>The <c>lighting-color</c> presentation property (default white).</summary>
+    private static SKColor LightingColor(XElement prim)
+    {
+        var color = SKColors.White;
+        if (SvgAttr.Presentation(prim, "lighting-color") is { } lc) SvgColor.TryParse(lc, out color);
+        return color;
+    }
+
+    /// <summary>An <c>feDistantLight</c> direction from <c>azimuth</c>/<c>elevation</c> (degrees): the unit
+    /// vector (cos·az·cos·el, sin·az·cos·el, sin·el).</summary>
+    private static SKPoint3 DistantDirection(XElement light)
+    {
+        var az = ReadFloat(light, "azimuth", 0f) * (float)(Math.PI / 180.0);
+        var el = ReadFloat(light, "elevation", 0f) * (float)(Math.PI / 180.0);
+        return new SKPoint3((float)(Math.Cos(az) * Math.Cos(el)), (float)(Math.Sin(az) * Math.Cos(el)), (float)Math.Sin(el));
+    }
+
+    private static SKPoint3 PointLocation(XElement light) =>
+        new(ReadFloat(light, "x", 0f), ReadFloat(light, "y", 0f), ReadFloat(light, "z", 0f));
+
+    private static SKPoint3 SpotTarget(XElement light) =>
+        new(ReadFloat(light, "pointsAtX", 0f), ReadFloat(light, "pointsAtY", 0f), ReadFloat(light, "pointsAtZ", 0f));
+
+    /// <summary>The <c>feSpotLight limitingConeAngle</c> in degrees (absent → 90° = effectively no cone
+    /// restriction).</summary>
+    private static float SpotCutoff(XElement light) => ReadFloat(light, "limitingConeAngle", 90f);
 
     private static float ReadFloat(XElement el, string attr, float fallback) =>
         SvgRasterizer.Attr(el, attr) is { } s && float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)

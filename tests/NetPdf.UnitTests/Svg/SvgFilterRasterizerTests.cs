@@ -1,8 +1,10 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Text;
 using NetPdf.Svg;
+using NetPdf.UnitTests.Pdf.Images;
 using Xunit;
 
 namespace NetPdf.UnitTests.Svg;
@@ -102,12 +104,11 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Theory]
-    // The filter REGION / primitive subregion / *Units still aren't modeled → flagged. (in/result routing is
-    // now SUPPORTED via the filter graph — SVG part 7.)
-    [InlineData("<filter id=\"f\" x=\"0\" y=\"0\" width=\"100\" height=\"100\"><feGaussianBlur stdDeviation=\"1\"/></filter>")] // filter region
+    // A primitive subregion / primitiveUnits still aren't modeled → flagged. (The EXPLICIT filter region is
+    // now honored — SVG part 9; in/result routing is supported — SVG part 7.)
     [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" x=\"0\" y=\"0\" width=\"10\" height=\"10\"/></filter>")]   // primitive subregion
     [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]        // primitiveUnits
-    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // unsupported primitive
+    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // unsupported primitive (non-data href)
     [InlineData("<filter id=\"f\"><feOffset dx=\"2\" in=\"BackgroundImage\"/></filter>")]                                     // unsupported input
     public void Filter_region_or_unsupported_input_is_flagged(string filter)
     {
@@ -557,5 +558,114 @@ public sealed class SvgFilterRasterizerTests
             for (var x = 26; x < 54 && !differs; x++)
                 if (Px(still!, x, y) != Px(moved!, x, y)) differs = true;
         Assert.True(differs, "the displacement map must move the source ink");
+    }
+
+    // ---- SVG part 9: lighting / feImage / explicit filter region / mask-type ----
+
+    [Theory]
+    // feDiffuseLighting lights the input alpha (a height field) with each light source — SUPPORTED, the lit
+    // (opaque) surface fills the region.
+    [InlineData("<feDistantLight azimuth=\"45\" elevation=\"60\"/>")]
+    [InlineData("<fePointLight x=\"30\" y=\"30\" z=\"20\"/>")]
+    [InlineData("<feSpotLight x=\"30\" y=\"30\" z=\"30\" pointsAtX=\"30\" pointsAtY=\"30\" pointsAtZ=\"0\" specularExponent=\"2\"/>")]
+    public void Fe_diffuse_lighting_with_each_light_source_renders(string light)
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\"><feDiffuseLighting surfaceScale=\"2\" diffuseConstant=\"1\" lighting-color=\"white\">" +
+            light + "</feDiffuseLighting></filter>" +
+            "<rect x=\"20\" y=\"20\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 30, 30).A > 100);    // the lit surface fills the region
+    }
+
+    [Fact]
+    public void Fe_specular_lighting_is_supported()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\"><feSpecularLighting surfaceScale=\"3\" specularConstant=\"1\" specularExponent=\"10\" lighting-color=\"white\">" +
+            "<feDistantLight azimuth=\"45\" elevation=\"45\"/></feSpecularLighting></filter>" +
+            "<rect x=\"20\" y=\"20\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+    }
+
+    [Fact]
+    public void Fe_lighting_without_a_light_source_is_flagged()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feDiffuseLighting surfaceScale=\"1\"/></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.True(unsupported);
+        Assert.True(Px(info!, 20, 20).R > 150);    // no light → the input passes through
+    }
+
+    [Fact]
+    public void Fe_image_with_a_data_uri_raster_renders()
+    {
+        var png = "data:image/png;base64," + Convert.ToBase64String(SyntheticPng.BuildOpaqueRgb8(16, 16, 0x00, 0x00, 0xFF));
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<filter id=\"f\"><feImage href=\"{png}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 5, 5).B > 150);      // the blue feImage raster is placed (top-left of the region)
+    }
+
+    [Theory]
+    // An EXTERNAL href and an ELEMENT reference aren't modeled → flagged + an empty (transparent) result, NOT
+    // a content pass-through (feImage is a generator).
+    [InlineData("<feImage href=\"http://example.com/x.png\"/>")]
+    [InlineData("<feImage href=\"#other\"/>")]
+    public void Fe_image_external_or_element_reference_is_flagged(string prim)
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" + prim + "</filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.True(unsupported);
+        Assert.Equal(0, Px(info!, 20, 20).A);      // empty result, NOT the source passed through
+    }
+
+    [Fact]
+    public void Explicit_filter_region_object_bounding_box_clips_the_result()
+    {
+        // filterUnits=objectBoundingBox (default), x/y=0% width/height=50% → the region is the TOP-LEFT quadrant
+        // of the bbox (rect 10..50 → region 10..30). A feFlood fills only that quadrant.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" x=\"0%\" y=\"0%\" width=\"50%\" height=\"50%\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);                 // an explicit filter region is no longer flagged
+        Assert.True(Px(info!, 20, 20).B > 150);    // inside the region (top-left quadrant): flooded blue
+        Assert.Equal(0, Px(info!, 45, 45).A);      // outside the region (bottom-right): transparent
+    }
+
+    [Fact]
+    public void Explicit_filter_region_user_space_clips_the_result()
+    {
+        // filterUnits=userSpaceOnUse with absolute x/y/width/height → the region is (10,10)-(30,30) in user space.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"10\" y=\"10\" width=\"20\" height=\"20\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"50\" height=\"50\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).B > 150);    // inside (10,10)-(30,30): blue
+        Assert.Equal(0, Px(info!, 45, 45).A);      // outside the region: transparent
     }
 }

@@ -171,10 +171,11 @@ internal static class SvgRasterizer
         if (imageFilter is not null)
         {
             filterPaint = new SKPaint { ImageFilter = imageFilter };
-            // The filter region (§15) clips the whole filter result. With no explicit region we apply the
-            // DEFAULT (element bbox inflated 10%) as a HARD canvas clip — a blur halo spreads past a SaveLayer
-            // bounds hint, so an unbounded primitive (a final feFlood) must be clipped here (PR-246 review [P1]).
-            if (SvgFilters.DefaultFilterRegion(el, style, state) is { } region)
+            // The filter region (§15) clips the whole filter result, applied as a HARD canvas clip — a blur
+            // halo spreads past a SaveLayer bounds hint, so an unbounded primitive (a final feFlood) must be
+            // clipped here (PR-246 review [P1]). An EXPLICIT x/y/width/height + filterUnits is honored; else the
+            // default (element bbox + 10%).
+            if (filterEl is not null && SvgFilters.ResolveFilterRegion(filterEl, el, style, state) is { } region)
             {
                 canvas.Save();
                 canvas.ClipRect(region);
@@ -385,8 +386,9 @@ internal static class SvgRasterizer
     /// (<see cref="NetPdf.Pdf.Images.ImageSafetyValidator"/> — guards a decompression bomb: a tiny
     /// compressed file declaring huge dimensions), and a decoded-raster pixel cap. Returns
     /// <see langword="null"/> (→ the caller flags unsupported) for any non-data / non-image / over-cap /
-    /// undecodable input. Self-contained — no I/O / fetch.</summary>
-    private static SKImage? DecodeDataUriImage(string dataUri)
+    /// undecodable input. Self-contained — no I/O / fetch. (Also used by <c>feImage</c> in
+    /// <see cref="SvgFilters"/>.)</summary>
+    internal static SKImage? DecodeDataUriImage(string dataUri)
     {
         var comma = dataUri.IndexOf(',');
         if (comma <= 5) return null; // need "data:" + a non-empty meta + a comma

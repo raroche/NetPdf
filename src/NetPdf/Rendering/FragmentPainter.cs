@@ -395,7 +395,10 @@ internal static class FragmentPainter
                 {
                     PaintInsetBoxShadows(page, document, insetShadows, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
-                        ref boxShadowRasterReported, ref boxShadowCapReported);
+                        ref boxShadowRasterReported, ref boxShadowCapReported,
+                        // box-decoration-break: slice — the band is computed over the WHOLE composite box
+                        // + clipped to this slice (continuous across cuts, like the outset path above).
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx);
                 }
             }
 
@@ -2496,21 +2499,32 @@ internal static class FragmentPainter
     /// contracted by the spread). A sharp (blur ≈ 0) layer is a native even-odd RING (padding box
     /// minus the hole); a blurred layer rasterizes the band via the Skia bridge (fill + a
     /// <c>DstOut</c> blurred hole) and places it. Layers paint in REVERSE list order (first listed on
-    /// top). Outset layers are skipped here (the under-background pass painted them). The box's OWN
-    /// (fragment) geometry is used — a box-decoration-break: slice fragment paints relative to the
-    /// slice (a documented residual; the common single-page box is exact).</summary>
+    /// top). Outset layers are skipped here (the under-background pass painted them).
+    /// <para>box-decoration-break: slice — when this fragment is one block-axis slice
+    /// (<paramref name="decorationBlockExtentPx"/> &gt; 0), the band is computed over the WHOLE
+    /// composite padding box (virtual top = <c>topPx − decorationBlockOffsetPx</c>, height = the full
+    /// extent, radii against the composite height) and an outer slice-rect clip limits the paint to
+    /// this fragment — so the band is CONTINUOUS across cuts (the block-start band shows only on the
+    /// first slice, the block-end only on the last, the side bands on every slice). A BLURRED inset on
+    /// a slice falls back to a SHARP ring (the whole-composite band raster would blow the cap), like the
+    /// outset path. Default 0 ⇒ the box's own padding box (byte-identical for a non-slice box).</para></summary>
     private static void PaintInsetBoxShadows(
         PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported,
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0)
     {
+        var isSlice = decorationBlockExtentPx > 0;
+        var boxTopPx = isSlice ? topPx - decorationBlockOffsetPx : topPx;
+        var boxHeightPx = isSlice ? decorationBlockExtentPx : heightPx;
+
         var (bt, br, bb, bl) = BackgroundAreaInset(style, "padding-box", defaultArea: 'p');
         var padLeftPx = leftPx + bl;
-        var padTopPx = topPx + bt;
+        var padTopPx = boxTopPx + bt;
         var padWidthPx = widthPx - bl - br;
-        var padHeightPx = heightPx - bt - bb;
+        var padHeightPx = boxHeightPx - bt - bb;
         if (padWidthPx <= 0 || padHeightPx <= 0) return;
-        var padRadii = InsetRadii(ReadCornerRadii(style, widthPx, heightPx), bt, br, bb, bl);
+        var padRadii = InsetRadii(ReadCornerRadii(style, widthPx, boxHeightPx), bt, br, bb, bl);
 
         for (var i = shadows.Count - 1; i >= 0; i--)
         {
@@ -2529,7 +2543,7 @@ internal static class FragmentPainter
             if (alpha <= 0) continue;
             ColorChannels(argb, out var r, out var g, out var b);
 
-            // The lit hole = the padding box offset by (x, y) and contracted by the spread.
+            // The lit hole = the (composite) padding box offset by (x, y) and contracted by the spread.
             var holeLeftPx = padLeftPx + s.OffsetXPx + s.SpreadPx;
             var holeTopPx = padTopPx + s.OffsetYPx + s.SpreadPx;
             var holeWidthPx = padWidthPx - 2 * s.SpreadPx;
@@ -2539,10 +2553,20 @@ internal static class FragmentPainter
             ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt,
                 out var px, out var py, out var pw, out var ph);
 
-            if (s.BlurPx <= BoxShadowBlurEpsilonPx)
+            // box-decoration-break: slice — limit the whole-composite band to THIS slice's border box.
+            var sliceClipped = false;
+            if (isSlice)
+            {
+                ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var scx, out var scy, out var scw, out var sch);
+                page.BeginRectangleClip(scx, scy, scw, sch);
+                sliceClipped = true;
+            }
+
+            if (s.BlurPx <= BoxShadowBlurEpsilonPx || isSlice)
             {
                 // Sharp inset → a native even-odd ring (padding box minus the hole), clipped to the
-                // padding box so the offset hole's overflow doesn't fill outside the box.
+                // padding box so the offset hole's overflow doesn't fill outside the box. A blurred inset
+                // on a SLICE falls back here (the whole-composite band raster would blow the cap).
                 page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
                 if (holeWidthPx > 0 && holeHeightPx > 0)
                 {
@@ -2557,6 +2581,15 @@ internal static class FragmentPainter
                     page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), 0, 0, 0, 0, default, r, g, b, alpha);
                 }
                 page.RestoreGraphicsState();
+                if (isSlice && s.BlurPx > BoxShadowBlurEpsilonPx && !capReported)
+                {
+                    diagnostics?.Emit(new Diagnostic(
+                        DiagnosticCodes.CssBoxShadowUnsupported001,
+                        "A blurred inset box-shadow on a block split across pages (box-decoration-break: slice) "
+                        + "was painted as a SHARP inset — the whole-box blur raster would exceed the cap.",
+                        DiagnosticSeverity.Warning));
+                    capReported = true;
+                }
             }
             else
             {
@@ -2564,6 +2597,8 @@ internal static class FragmentPainter
                     holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, holeRadii, s.BlurPx, pageHeightPt,
                     r, g, b, alpha, diagnostics, ref rasterReported, ref capReported);
             }
+
+            if (sliceClipped) page.RestoreGraphicsState();
         }
     }
 

@@ -52,13 +52,15 @@ This batch closes the documented Phase-3 residual deferrals (`deferrals.md`) in 
 
 The SVG `<filter>` is now modeled as a filter GRAPH (§15), not a linear chain (`NetPdf.Svg.SvgFilters`). Byte-identity safe (no corpus/snapshot uses inline SVG).
 
-- **Named-result routing** — each primitive resolves its `in`/`in2` (the previous primitive's result — `SourceGraphic` for the first — or an explicit `SourceGraphic`/`SourceAlpha`/named `result`) and stores its output under `result`. `in`/`result` are now honored (no longer flagged); only the filter region / primitive subregion / `*Units` and `BackgroundImage`/`FillPaint` inputs remain flagged.
+- **Named-result routing** — each primitive resolves its `in`/`in2` (the previous primitive's result — `SourceGraphic` for the first — or an explicit `SourceGraphic`/`SourceAlpha`/named `result`) and stores its output under `result`. `in`/`result` are now honored (no longer flagged); only an EXPLICIT filter region / primitive subregion / `*Units` and `BackgroundImage`/`FillPaint` inputs remain flagged. A forward/missing custom `result` reference is treated as unspecified (Filter Effects §9.2) — not flagged (PR-246 review).
+- **Primary-tree-only** — only the primitives reachable backward from the last primitive contribute; a disconnected primitive tree is ignored (no filter built, no diagnostic) (PR-246 review).
+- **Default filter region** — the composited result is clipped to the default region (element bbox inflated 10%), so an unbounded `feFlood` — and a blur halo — can't paint past it (PR-246 review).
 - **`feFlood`** — a flood-color image (`flood-color` × `flood-opacity`).
 - **`feMerge`** / **`feMergeNode`** — stack inputs bottom-to-top.
-- **`feComposite`** — Porter-Duff `over`/`in`/`out`/`atop`/`xor` + `arithmetic`.
+- **`feComposite`** — Porter-Duff `over`/`in`/`out`/`atop`/`xor` + `lighter` (additive) + `arithmetic`; an unknown operator is flagged (PR-246 review).
 - **`feBlend`** — 16 blend modes (`normal`/`multiply`/`screen`/…/`luminosity`).
 - The classic hand-built drop shadow (`feOffset` of `SourceAlpha` → `feFlood` → `feComposite in` → `feMerge` under `SourceGraphic`) now renders.
-- **Residuals:** remaining primitives (`feImage`/`feTile`/`feTurbulence`/`feComponentTransfer`/`feDisplacementMap`/`feMorphology`/…); the filter region + primitive subregions + `*Units`.
+- **Residuals:** remaining primitives (`feImage`/`feTile`/`feTurbulence`/`feComponentTransfer`/`feDisplacementMap`/`feMorphology`/…); an EXPLICIT filter region + primitive subregions + `*Units`.
 
 ### Changed — Phase 4 internal: split the SVG renderer into feature collaborators
 

@@ -7,10 +7,12 @@ using Xunit;
 
 namespace NetPdf.UnitTests.Svg;
 
-/// <summary>Phase 4 SVG part 5 — <c>filter="url(#id)"</c> element references: a linear chain of
-/// <c>feGaussianBlur</c> / <c>feOffset</c> / <c>feColorMatrix</c> primitives composes into a Skia image
-/// filter over the element subtree. Graph-routing primitives (feMerge/feComposite/…) and a non-filter
-/// target are flagged.</summary>
+/// <summary>Phase 4 SVG — <c>filter="url(#id)"</c> element references: primitives compose into a Skia image
+/// filter over the element subtree. SVG part 7 models a filter GRAPH — <c>feFlood</c>/<c>feMerge</c>/
+/// <c>feComposite</c>/<c>feBlend</c> with <c>in</c>/<c>in2</c>/named-<c>result</c> routing are SUPPORTED; the
+/// composited result is clipped to the default filter region; only the primary (reachable) tree contributes.
+/// A non-filter target, an EXPLICIT filter region / primitive subregion / <c>*Units</c>, and unmodeled inputs
+/// (<c>BackgroundImage</c>/…) are flagged.</summary>
 public sealed class SvgFilterRasterizerTests
 {
     private static byte[] Svg(string s) => Encoding.UTF8.GetBytes(s);
@@ -32,7 +34,8 @@ public sealed class SvgFilterRasterizerTests
         Assert.NotNull(info);
         Assert.False(unsupported);
         Assert.True(Px(info!, 40, 40).A > 150);    // core still painted
-        Assert.True(Px(info!, 26, 40).A > 0);      // blurred halo 4px left of the sharp edge (x=30)
+        Assert.True(Px(info!, 29, 40).A > 0);      // blurred halo 1px left of the sharp edge (x=30), inside the region
+        Assert.Equal(0, Px(info!, 24, 40).A);      // clipped at the default filter region (left ≈ x=28)
         Assert.Equal(0, Px(info!, 2, 2).A);        // far corner clean
     }
 
@@ -79,7 +82,7 @@ public sealed class SvgFilterRasterizerTests
         Assert.NotNull(info);
         Assert.False(unsupported);                 // feDropShadow is a supported primitive
         Assert.True(Px(info!, 20, 20).R > 150);    // the red source on top
-        var shadow = Px(info!, 35, 35);            // shadow region beyond the source (rect ends at 30)
+        var shadow = Px(info!, 31, 31);            // shadow beyond the source (rect ends at 30), inside the region (≤32)
         Assert.True(shadow.B > 150 && shadow.R < 100); // blue shadow, not red
     }
 
@@ -147,7 +150,7 @@ public sealed class SvgFilterRasterizerTests
         Assert.NotNull(info);
         Assert.False(unsupported);
         Assert.True(Px(info!, 20, 20).R > 150);    // red source on top
-        var shadow = Px(info!, 35, 35);            // shadow region beyond the source
+        var shadow = Px(info!, 31, 31);            // shadow beyond the source, inside the region (≤32)
         Assert.True(shadow.B > 150 && shadow.R < 100); // blue shadow
     }
 
@@ -167,5 +170,133 @@ public sealed class SvgFilterRasterizerTests
         Assert.False(unsupported);
         var p = Px(info!, 20, 20);
         Assert.True(p.R < 80 && p.G < 80 && p.B < 80);   // red × green ≈ black
+    }
+
+    [Fact]
+    public void Fe_flood_alone_is_clipped_to_the_default_filter_region()
+    {
+        // PR-246 review [P1]: a bare final feFlood would fill the whole layer; the default filter region (the
+        // element bbox inflated 10%) clips it so a far-corner pixel outside the region stays transparent.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).B > 150);    // inside the region (≈8..32): flooded blue
+        Assert.Equal(0, Px(info!, 70, 70).A);      // far corner outside the default region: transparent
+    }
+
+    [Theory]
+    // PR-246 review [P2]: every advertised feComposite operator (plus 'lighter') is supported, not flagged.
+    [InlineData("over")]
+    [InlineData("in")]
+    [InlineData("out")]
+    [InlineData("atop")]
+    [InlineData("xor")]
+    [InlineData("arithmetic")]
+    [InlineData("lighter")]
+    public void Fe_composite_advertised_operators_are_supported(string op)
+    {
+        var k = op == "arithmetic" ? " k1=\"0\" k2=\"1\" k3=\"1\" k4=\"0\"" : "";
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"#00ff00\" result=\"g\"/>" +
+            $"<feComposite in=\"SourceGraphic\" in2=\"g\" operator=\"{op}\"{k}/>" +
+            "</filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#ff0000\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+    }
+
+    [Fact]
+    public void Fe_composite_lighter_adds_source_and_destination()
+    {
+        // 'lighter' = source + destination (additive): red SourceGraphic over a green flood → yellow.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"#00ff00\" result=\"g\"/>" +
+            "<feComposite in=\"SourceGraphic\" in2=\"g\" operator=\"lighter\"/>" +
+            "</filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#ff0000\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var p = Px(info!, 20, 20);
+        Assert.True(p.R > 150 && p.G > 150 && p.B < 100); // red + green = yellow
+    }
+
+    [Fact]
+    public void Fe_composite_unknown_operator_is_flagged()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"#00ff00\" result=\"g\"/>" +
+            "<feComposite in=\"SourceGraphic\" in2=\"g\" operator=\"frobnicate\"/>" +
+            "</filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#ff0000\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.True(unsupported);
+    }
+
+    [Theory]
+    // PR-246 review [P2]: a forward reference (in="later" before result="later") and a missing custom result
+    // name are treated as if no input were specified (Filter Effects §9.2) — NOT an unsupported feature.
+    [InlineData("<feOffset dx=\"2\" in=\"later\"/><feGaussianBlur stdDeviation=\"1\" result=\"later\"/>")]
+    [InlineData("<feGaussianBlur stdDeviation=\"1\" in=\"missing\"/>")]
+    public void Filter_forward_or_missing_result_reference_is_not_flagged(string body)
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" + body + "</filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+    }
+
+    [Fact]
+    public void Disconnected_unsupported_primitive_tree_does_not_flag()
+    {
+        // PR-246 review [P2]: an unsupported feImage in a DISCONNECTED earlier tree must not flag — only the
+        // primary tree (the final feComposite reachable through in/in2) contributes.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" +
+            "<feImage href=\"x.png\" result=\"ignored\"/>" +            // disconnected, unsupported
+            "<feFlood flood-color=\"blue\" result=\"c\"/>" +
+            "<feComposite in=\"c\" in2=\"SourceAlpha\" operator=\"in\"/>" +
+            "</filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).B > 150);    // the blue silhouette of the rect, feImage tree ignored
+    }
+
+    [Fact]
+    public void Fe_merge_stacks_nodes_bottom_to_top_with_a_shaped_source()
+    {
+        // feMerge stacks nodes bottom-to-top (§15): bottom = a blue silhouette of the source, top = the red
+        // SourceGraphic (a non-full-canvas shape) → red wins over the same shape.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"blue\" result=\"b\"/>" +
+            "<feComposite in=\"b\" in2=\"SourceAlpha\" operator=\"in\" result=\"sil\"/>" +
+            "<feMerge><feMergeNode in=\"sil\"/><feMergeNode in=\"SourceGraphic\"/></feMerge>" +
+            "</filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var p = Px(info!, 15, 15);
+        Assert.True(p.R > 150 && p.B < 80);        // red (top node) wins over the blue silhouette (bottom node)
     }
 }

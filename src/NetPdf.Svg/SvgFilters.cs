@@ -37,20 +37,38 @@ internal static class SvgFilters
     /// <see cref="SKImageFilter"/> applied to the element's rendering. Modeled as a filter GRAPH: each
     /// primitive resolves its <c>in</c>/<c>in2</c> (the previous primitive's result — <c>SourceGraphic</c>
     /// for the first — or an explicit <c>SourceGraphic</c>/<c>SourceAlpha</c>/named <c>result</c>) and stores
-    /// its output under <c>result</c>. Supports <c>feGaussianBlur</c>, <c>feOffset</c>, <c>feDropShadow</c>,
-    /// <c>feColorMatrix</c>, <c>feFlood</c>, <c>feMerge</c>, <c>feComposite</c>, and <c>feBlend</c>. Primitive
-    /// SUBREGIONS (x/y/width/height), the filter region / <c>*Units</c>, <c>BackgroundImage</c>/<c>FillPaint</c>
-    /// inputs, and other primitives aren't modeled → flagged. Returns <see langword="null"/> when no
+    /// its output under <c>result</c>. Only the PRIMARY tree — the primitives reachable backward from the last
+    /// primitive through their input references — is evaluated; disconnected primitive trees are ignored (they
+    /// neither build a filter nor flag unsupported, PR-246 review [P2]). Supports <c>feGaussianBlur</c>,
+    /// <c>feOffset</c>, <c>feDropShadow</c>, <c>feColorMatrix</c>, <c>feFlood</c>, <c>feMerge</c>,
+    /// <c>feComposite</c> (over/in/out/atop/xor/lighter/arithmetic), and <c>feBlend</c>. Primitive SUBREGIONS
+    /// (x/y/width/height), the EXPLICIT filter region / <c>*Units</c>, <c>BackgroundImage</c>/<c>FillPaint</c>
+    /// inputs, and other primitives aren't modeled → flagged. The DEFAULT filter region is applied by the
+    /// caller as a clip (see <see cref="DefaultFilterRegion"/>). Returns <see langword="null"/> when no
     /// primitive contributes (the element renders unfiltered).</summary>
     public static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
     {
         // The filter region (x/y/width/height) and *Units change the result geometry but aren't applied here.
         var sawUnsupported = SvgRasterizer.HasAnyAttr(filter, "x", "y", "width", "height", "filterUnits", "primitiveUnits");
+
+        var prims = new List<XElement>();
+        foreach (var e in filter.Elements()) prims.Add(e);
+        if (prims.Count == 0)
+        {
+            if (sawUnsupported) state.SawUnsupported = true;
+            return null;
+        }
+
+        // Evaluate only the primary tree (reachable backward from the last primitive). Skipped primitives in a
+        // disconnected tree contribute nothing and must not flag — only the primary tree is the filter result.
+        var reachable = ComputeReachableTree(prims);
         var results = new Dictionary<string, SKImageFilter?>(StringComparer.Ordinal);
         SKImageFilter? last = null; // null = SourceGraphic; tracks the previous primitive's output
 
-        foreach (var prim in filter.Elements())
+        for (var idx = 0; idx < prims.Count; idx++)
         {
+            if (!reachable[idx]) continue;
+            var prim = prims[idx];
             if (SvgRasterizer.HasAnyAttr(prim, "x", "y", "width", "height")) sawUnsupported = true; // subregion not modeled
 
             SKImageFilter? output;
@@ -123,10 +141,97 @@ internal static class SvgFilters
         return last;
     }
 
+    /// <summary>The DEFAULT SVG filter region (§15.7.4) in the filtered element's OWN coordinate space: the
+    /// element geometry bounding box inflated 10% on each side (<c>filterUnits=objectBoundingBox</c>,
+    /// x/y=-10%, width/height=120%). The caller hard-clips the composited filter result to this rect so an
+    /// otherwise unbounded primitive (a final <c>feFlood</c>) — and a blur halo — can't paint past the region
+    /// (PR-246 review [P1]). Returns <see langword="null"/> when no geometry bbox is available (text / image /
+    /// empty subtree); the caller then leaves the result uncropped. An EXPLICIT filter region (x/y/width/height
+    /// on the <c>&lt;filter&gt;</c>) is not modeled and is flagged in <see cref="BuildImageFilter"/>.</summary>
+    public static SKRect? DefaultFilterRegion(XElement el, SvgStyle style, SvgRenderState state)
+    {
+        if (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
+        {
+            var dx = b.Width * 0.1f;
+            var dy = b.Height * 0.1f;
+            return new SKRect(b.Left - dx, b.Top - dy, b.Right + dx, b.Bottom + dy);
+        }
+        return null;
+    }
+
+    /// <summary>Mark the filter primitives reachable backward from the LAST primitive through their input
+    /// references (<c>in</c>/<c>in2</c>/<c>feMergeNode in</c>), so only the PRIMARY tree (§15) is evaluated.
+    /// An absent input depends on the previous primitive; a dangling / forward custom <c>result</c> name is
+    /// treated as unspecified → the previous primitive (Filter Effects §9.2); a standard source
+    /// (<c>SourceGraphic</c>/…) and a generator (<c>feFlood</c>/<c>feImage</c>) are terminal (no edge).</summary>
+    private static bool[] ComputeReachableTree(List<XElement> prims)
+    {
+        var reachable = new bool[prims.Count];
+        var stack = new Stack<int>();
+        reachable[prims.Count - 1] = true;
+        stack.Push(prims.Count - 1);
+        while (stack.Count > 0)
+        {
+            var i = stack.Pop();
+            void Visit(int src) { if (src >= 0 && !reachable[src]) { reachable[src] = true; stack.Push(src); } }
+            var prim = prims[i];
+            switch (prim.Name.LocalName.ToLowerInvariant())
+            {
+                case "feflood":
+                case "feimage":
+                    break; // generators take no input
+                case "femerge":
+                {
+                    var any = false;
+                    foreach (var node in prim.Elements())
+                        if (node.Name.LocalName.Equals("feMergeNode", StringComparison.OrdinalIgnoreCase))
+                        { any = true; Visit(SourceIndex(prims, i, SvgRasterizer.Attr(node, "in"))); }
+                    if (!any) Visit(i - 1); // empty merge falls back to the previous result
+                    break;
+                }
+                case "fecomposite":
+                case "feblend":
+                    Visit(SourceIndex(prims, i, SvgRasterizer.Attr(prim, "in")));
+                    Visit(SourceIndex(prims, i, SvgRasterizer.Attr(prim, "in2")));
+                    break;
+                default: // single-input primitives + unknown primitives (which pass the previous result through)
+                    Visit(SourceIndex(prims, i, SvgRasterizer.Attr(prim, "in")));
+                    break;
+            }
+        }
+        return reachable;
+    }
+
+    /// <summary>Resolve a primitive input reference to its source primitive index: the nearest PRECEDING
+    /// primitive whose <c>result</c> matches a custom name; -1 for a standard source
+    /// (<c>SourceGraphic</c>/<c>SourceAlpha</c>/<c>BackgroundImage</c>/<c>BackgroundAlpha</c>/<c>FillPaint</c>/
+    /// <c>StrokePaint</c>); the previous primitive (<c>i-1</c>) for an absent or dangling/forward reference
+    /// (treated as unspecified — Filter Effects §9.2).</summary>
+    private static int SourceIndex(List<XElement> prims, int i, string? name)
+    {
+        name = name?.Trim();
+        if (string.IsNullOrEmpty(name)) return i - 1;        // absent → previous (i-1 = -1 → SourceGraphic for first)
+        if (IsStandardInput(name)) return -1;                // a terminal standard source, not a primitive
+        for (var j = i - 1; j >= 0; j--)
+            if (SvgRasterizer.Attr(prims[j], "result")?.Trim() == name) return j;
+        return i - 1;                                        // dangling / forward custom name → unspecified → previous
+    }
+
+    /// <summary>A standard SVG filter input keyword (not a custom <c>result</c> name).</summary>
+    private static bool IsStandardInput(string name) =>
+        name.Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("SourceAlpha", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("BackgroundImage", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("BackgroundAlpha", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("FillPaint", StringComparison.OrdinalIgnoreCase) ||
+        name.Equals("StrokePaint", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>Resolve a primitive input attribute to a filter (<see langword="null"/> = <c>SourceGraphic</c>,
     /// i.e. the layer content). Absent → the previous primitive's result; <c>SourceGraphic</c> → null;
-    /// <c>SourceAlpha</c> → an alpha-only filter; a named <c>result</c> → that result. An unknown / unmodeled
-    /// input (<c>BackgroundImage</c>/<c>FillPaint</c>/…) flags and falls back to the previous result.</summary>
+    /// <c>SourceAlpha</c> → an alpha-only filter; a named <c>result</c> → that result. A standard input we don't
+    /// model (<c>BackgroundImage</c>/<c>BackgroundAlpha</c>/<c>FillPaint</c>/<c>StrokePaint</c>) flags; a
+    /// dangling / forward custom <c>result</c> name is treated as unspecified (Filter Effects §9.2) → falls
+    /// back to the previous result WITHOUT a diagnostic (PR-246 review [P2]).</summary>
     private static SKImageFilter? ResolveInput(XElement prim, string attr, SKImageFilter? last, Dictionary<string, SKImageFilter?> results, ref bool sawUnsupported)
     {
         var name = SvgRasterizer.Attr(prim, attr)?.Trim();
@@ -134,8 +239,8 @@ internal static class SvgFilters
         if (name.Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase)) return null;
         if (name.Equals("SourceAlpha", StringComparison.OrdinalIgnoreCase)) return SourceAlpha();
         if (results.TryGetValue(name, out var r)) return r;
-        sawUnsupported = true; // BackgroundImage/BackgroundAlpha/FillPaint/StrokePaint or an undefined result
-        return last;
+        if (IsStandardInput(name)) sawUnsupported = true; // BackgroundImage/BackgroundAlpha/FillPaint/StrokePaint
+        return last;                                       // else a dangling / forward custom name → previous result
     }
 
     /// <summary>An <see cref="SKImageFilter"/> producing the ALPHA of <c>SourceGraphic</c> with black RGB
@@ -178,14 +283,17 @@ internal static class SvgFilters
             float K(string n) => (float)SvgRasterizer.Num(prim, n);
             return SKImageFilter.CreateArithmetic(K("k1"), K("k2"), K("k3"), K("k4"), enforcePMColor: true, background: bg, foreground: fg);
         }
-        var mode = op switch
+        SKBlendMode mode;
+        switch (op)
         {
-            "in" => SKBlendMode.SrcIn,
-            "out" => SKBlendMode.SrcOut,
-            "atop" => SKBlendMode.SrcATop,
-            "xor" => SKBlendMode.Xor,
-            _ => SKBlendMode.SrcOver, // "over"
-        };
+            case "over": mode = SKBlendMode.SrcOver; break;
+            case "in": mode = SKBlendMode.SrcIn; break;
+            case "out": mode = SKBlendMode.SrcOut; break;
+            case "atop": mode = SKBlendMode.SrcATop; break;
+            case "xor": mode = SKBlendMode.Xor; break;
+            case "lighter": mode = SKBlendMode.Plus; break;                  // additive (Filter Effects §9.8)
+            default: mode = SKBlendMode.SrcOver; sawUnsupported = true; break; // an unknown operator → flag
+        }
         return SKImageFilter.CreateBlendMode(mode, bg, fg);
     }
 

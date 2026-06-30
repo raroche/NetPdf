@@ -167,9 +167,19 @@ internal static class SvgRasterizer
         var filterEl = el.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase) ? null : SvgFilters.ResolveFilter(el, state);
         var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, state) : null;
         SKPaint? filterPaint = null;
+        var filterRegionClipped = false;
         if (imageFilter is not null)
         {
             filterPaint = new SKPaint { ImageFilter = imageFilter };
+            // The filter region (§15) clips the whole filter result. With no explicit region we apply the
+            // DEFAULT (element bbox inflated 10%) as a HARD canvas clip — a blur halo spreads past a SaveLayer
+            // bounds hint, so an unbounded primitive (a final feFlood) must be clipped here (PR-246 review [P1]).
+            if (SvgFilters.DefaultFilterRegion(el, style, state) is { } region)
+            {
+                canvas.Save();
+                canvas.ClipRect(region);
+                filterRegionClipped = true;
+            }
             canvas.SaveLayer(filterPaint);
         }
 
@@ -207,6 +217,7 @@ internal static class SvgRasterizer
             canvas.Restore();        // composite the filtered layer
             filterPaint!.Dispose();
             imageFilter.Dispose();
+            if (filterRegionClipped) canvas.Restore(); // pop the filter-region clip
         }
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
         if (mask is not null) SvgClipMask.ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in

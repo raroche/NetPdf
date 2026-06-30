@@ -93,12 +93,90 @@ public sealed class SvgTextPathRasterizerTests
     }
 
     [Fact]
-    public void Textpath_referencing_a_non_path_is_flagged()
+    public void Textpath_along_a_basic_shape_renders()
+    {
+        // SVG part 6 — textPath geometry can be any basic shape (here a horizontal line), not just <path>.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"140\" height=\"50\">" +
+            "<defs><line id=\"l\" x1=\"10\" y1=\"30\" x2=\"130\" y2=\"30\"/></defs>" +
+            "<text font-size=\"20\" fill=\"black\"><textPath href=\"#l\">Hello</textPath></text></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var box = InkBox(info!);
+        Assert.True(box.Count > 30);
+        Assert.True(box.MaxX - box.MinX > box.MaxY - box.MinY);   // runs horizontally along the line
+    }
+
+    [Fact]
+    public void Textpath_honors_rotate_supplemental_to_the_tangent()
+    {
+        // PR-244 review [P2] — a per-glyph rotate adds to the path-tangent rotation. On a horizontal path,
+        // rotate="90" makes each glyph run vertically, so the ink is taller than the unrotated run.
+        var plain = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\">" +
+            "<defs><path id=\"p\" d=\"M 10 40 L 150 40\"/></defs>" +
+            "<text font-size=\"22\" fill=\"black\"><textPath href=\"#p\">Hi</textPath></text></svg>"), out _);
+        var rotated = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\">" +
+            "<defs><path id=\"p\" d=\"M 10 40 L 150 40\"/></defs>" +
+            "<text font-size=\"22\" fill=\"black\" rotate=\"90\"><textPath href=\"#p\">Hi</textPath></text></svg>"), out _);
+        Assert.NotNull(plain);
+        Assert.NotNull(rotated);
+        // Rotating each glyph about its on-path origin moves the ink to a different vertical band than the
+        // unrotated (above-the-baseline) run.
+        Assert.True(System.Math.Abs(InkBox(rotated!).MaxY - InkBox(plain!).MaxY) > 5
+            || System.Math.Abs(InkBox(rotated!).MinY - InkBox(plain!).MinY) > 5);
+    }
+
+    [Fact]
+    public void Textpath_honors_dominant_baseline()
+    {
+        // PR-244 review [P2] — dominant-baseline shifts glyphs perpendicular to the path; hanging drops them.
+        var alphabetic = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\">" +
+            "<defs><path id=\"p\" d=\"M 10 40 L 150 40\"/></defs>" +
+            "<text font-size=\"22\" fill=\"black\"><textPath href=\"#p\">Hi</textPath></text></svg>"), out _);
+        var hanging = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"80\">" +
+            "<defs><path id=\"p\" d=\"M 10 40 L 150 40\"/></defs>" +
+            "<text font-size=\"22\" fill=\"black\" dominant-baseline=\"hanging\"><textPath href=\"#p\">Hi</textPath></text></svg>"), out _);
+        Assert.NotNull(alphabetic);
+        Assert.NotNull(hanging);
+        Assert.True(InkBox(hanging!).MinY > InkBox(alphabetic!).MinY + 8);   // dropped below the path
+    }
+
+    [Fact]
+    public void Textpath_geometry_uses_the_referenced_shapes_own_font_size_for_em()
+    {
+        // PR-244 review [P3] — the referenced line's x2="4em" resolves against the LINE's own font-size (20 →
+        // 80px), not the <text> font-size (8). So the text spreads to ~x80, not ~x32.
+        int MaxInkX(NetPdf.Pdf.Images.RasterImageInfo info)
+        {
+            var maxX = 0;
+            for (var y = 0; y < info.Height; y++)
+                for (var x = 0; x < info.Width; x++)
+                    if (info.PixelBytes[(y * info.Width + x) * 4 + 3] > 40 && x > maxX) maxX = x;
+            return maxX;
+        }
+        // The line's x2="10em" uses the LINE's font-size (18 → 180px), not the <text>'s (9 → 90px). Glyphs
+        // whose midpoint passes the path end are dropped, so a wrong (90px) path would cap the ink near x≈90;
+        // the correct 180px path lets the run reach past x≈120.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"210\" height=\"40\">" +
+            "<defs><line id=\"l\" x1=\"5\" y1=\"30\" x2=\"10em\" y2=\"30\" font-size=\"18\"/></defs>" +
+            "<text font-size=\"9\" fill=\"black\"><textPath href=\"#l\">WWWWWWWWWWWWWWWWWWWW</textPath></text></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.True(MaxInkX(info!) > 120);   // correct 180px path; a text-font 90px path would cap near x90
+    }
+
+    [Fact]
+    public void Textpath_referencing_a_non_shape_is_flagged()
     {
         var info = SvgRasterizer.TryRender(Svg(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"40\">" +
-            "<defs><rect id=\"r\" x=\"0\" y=\"0\" width=\"50\" height=\"10\"/></defs>" +
-            "<text><textPath href=\"#r\">Hi</textPath></text></svg>"), out var unsupported);
+            "<defs><g id=\"g\"/></defs>" +
+            "<text><textPath href=\"#g\">Hi</textPath></text></svg>"), out var unsupported);
         Assert.NotNull(info);
         Assert.True(unsupported);
     }

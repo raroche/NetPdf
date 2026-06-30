@@ -19,7 +19,12 @@ internal readonly record struct SvgStyle(
     float[]? StrokeDash, float StrokeDashOffset, SKStrokeCap StrokeCap, SKStrokeJoin StrokeJoin, float StrokeMiter,
     // Text advance adjustments (inherited): extra space added after each glyph (letter-spacing) and after
     // each space character (word-spacing). Both default 0 → the whole-run fast path stays byte-identical.
-    float LetterSpacing, float WordSpacing)
+    float LetterSpacing, float WordSpacing,
+    // Marker references (inherited — marker properties cascade down `<g>`): the url(#id) fragment for
+    // marker-start / -mid / -end (null = none).
+    string? MarkerStart, string? MarkerMid, string? MarkerEnd,
+    // dominant-baseline (inherited): the baseline the text aligns to its y position (null/auto = alphabetic).
+    string? DominantBaseline)
 {
     public static SvgStyle Initial => new(
         Fill: SKColors.Black, FillRef: null, HasExplicitFill: false,
@@ -27,5 +32,7 @@ internal readonly record struct SvgStyle(
         FillOpacity: 1, StrokeOpacity: 1, CurrentColor: SKColors.Black,
         FontSizePx: 16, FontFamily: null, FontWeight: 400, Italic: false, TextAnchor: null,
         StrokeDash: null, StrokeDashOffset: 0, StrokeCap: SKStrokeCap.Butt, StrokeJoin: SKStrokeJoin.Miter, StrokeMiter: 4,
-        LetterSpacing: 0, WordSpacing: 0);
+        LetterSpacing: 0, WordSpacing: 0,
+        MarkerStart: null, MarkerMid: null, MarkerEnd: null,
+        DominantBaseline: null);
 }

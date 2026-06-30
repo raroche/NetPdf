@@ -68,6 +68,22 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Fact]
+    public void Fe_drop_shadow_paints_an_offset_colored_shadow_under_the_source()
+    {
+        // SVG part 6 — feDropShadow: a sharp blue shadow offset +8,+8 with the red source drawn on top.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"ds\"><feDropShadow dx=\"8\" dy=\"8\" stdDeviation=\"0\" flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#ds)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);                 // feDropShadow is a supported primitive
+        Assert.True(Px(info!, 20, 20).R > 150);    // the red source on top
+        var shadow = Px(info!, 35, 35);            // shadow region beyond the source (rect ends at 30)
+        Assert.True(shadow.B > 150 && shadow.R < 100); // blue shadow, not red
+    }
+
+    [Fact]
     public void A_filter_referencing_a_non_filter_is_flagged_and_renders_unfiltered()
     {
         var info = SvgRasterizer.TryRender(Svg(
@@ -87,6 +103,8 @@ public sealed class SvgFilterRasterizerTests
     [InlineData("<filter id=\"f\" x=\"0\" y=\"0\" width=\"100\" height=\"100\"><feGaussianBlur stdDeviation=\"1\"/></filter>")] // filter region
     [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" x=\"0\" y=\"0\" width=\"10\" height=\"10\"/></filter>")]   // primitive subregion
     [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]        // primitiveUnits
+    // PR-244 review [P2] — in="SourceGraphic" AFTER a prior result is NOT the linear input → flag.
+    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\"/><feOffset dx=\"2\" in=\"SourceGraphic\"/></filter>")]
     public void Filter_routing_or_region_attributes_are_flagged(string filter)
     {
         var info = SvgRasterizer.TryRender(Svg(

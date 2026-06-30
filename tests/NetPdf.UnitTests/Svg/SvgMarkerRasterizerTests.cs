@@ -113,6 +113,31 @@ public sealed class SvgMarkerRasterizerTests
     }
 
     [Fact]
+    public void Marker_refs_inherit_from_an_ancestor_group()
+    {
+        // SVG part 6 — marker properties cascade: marker-end on a <g> applies to the line inside it.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            RedSquareMarker +
+            "<g marker-end=\"url(#m)\"><line x1=\"5\" y1=\"10\" x2=\"40\" y2=\"10\" stroke=\"black\" stroke-width=\"1\"/></g></svg>"),
+            out _);
+        Assert.NotNull(info);
+        Assert.True(Px(info!, 45, 10).R > 200);    // inherited marker renders at the line end
+    }
+
+    [Fact]
+    public void A_child_marker_none_overrides_an_inherited_marker()
+    {
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"20\">" +
+            RedSquareMarker +
+            "<g marker-end=\"url(#m)\"><line x1=\"5\" y1=\"10\" x2=\"40\" y2=\"10\" stroke=\"black\" stroke-width=\"1\" marker-end=\"none\"/></g></svg>"),
+            out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, Px(info!, 45, 10).A);      // child marker-end:none cancels the inherited marker
+    }
+
+    [Fact]
     public void Marker_referencing_a_non_marker_is_flagged()
     {
         var info = SvgRasterizer.TryRender(Svg(

@@ -2773,9 +2773,13 @@ flags the categories):
      image filter over the subtree; graph-routing primitives flagged); `marker-start`/`-mid`/`-end` (+ the
      `marker` shorthand — markerWidth/Height/refX/refY/markerUnits/orient[auto/auto-start-reverse/angle]/
      viewBox); `<textPath>` (glyphs along a referenced `<path>`, startOffset + text-anchor, tangent rotation);
-     SVG text `letter-spacing` / `word-spacing`. **SVG residuals (later):** filter graph primitives (feMerge/
-     feComposite/feBlend/feFlood/feImage/feTile/…) + `in`/`result` routing + the filter region; group-inherited
-     marker refs + exact curve tangents; `textPath` on non-path shapes + `rotate`/`textLength`/`lengthAdjust`;
+     SVG text `letter-spacing` / `word-spacing`. **SVG part 6 shipped:** group-inherited marker refs (markers
+     cascade via the resolved style); `<textPath>` along ANY basic shape (not just `<path>`); per-glyph
+     `rotate` (text/tspan, run-local index); `feDropShadow` filter primitive (blur + offset + flood-color/
+     -opacity); SVG text `dominant-baseline` (hanging / text-before-edge / text-after-edge / middle / central
+     via font metrics). **SVG residuals (later):** filter graph primitives (feMerge/feComposite/feBlend/
+     feFlood/feImage/feTile/…) + `in`/`result` routing + the filter region; exact curve tangents for path
+     markers (chord approximation); `rotate` global (cross-run) index + `textLength`/`lengthAdjust`;
      bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip
      (`maskUnits` -10%..120% default region not clipped) + `mask-type: alpha`; pattern tile resolution under
      heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),

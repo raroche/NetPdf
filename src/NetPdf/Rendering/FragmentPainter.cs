@@ -2420,7 +2420,6 @@ internal static class FragmentPainter
         var bmpHeightPx = shHeightPx + 2 * marginPx;
         var deviceW = (int)Math.Ceiling(bmpWidthPx * BoxShadowRasterScale);
         var deviceH = (int)Math.Ceiling(bmpHeightPx * BoxShadowRasterScale);
-        var radiusPx = MaxCorner(shadowRadii);
 
         var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterize(
             deviceW, deviceH,
@@ -2428,7 +2427,7 @@ internal static class FragmentPainter
             shapeTop: (float)(marginPx * BoxShadowRasterScale),
             shapeWidth: (float)(shWidthPx * BoxShadowRasterScale),
             shapeHeight: (float)(shHeightPx * BoxShadowRasterScale),
-            radius: (float)(radiusPx * BoxShadowRasterScale),
+            radii: ScaleRadii(shadowRadii, BoxShadowRasterScale),
             blurSigma: (float)(sigmaPx * BoxShadowRasterScale),
             r, g, b, alpha);
 
@@ -2485,9 +2484,11 @@ internal static class FragmentPainter
             E(radii.BottomLeftX, spreadPx), E(radii.BottomLeftY, spreadPx));
     }
 
-    private static double MaxCorner(CornerRadii c) => Math.Max(
-        Math.Max(Math.Max(c.TopLeftX, c.TopLeftY), Math.Max(c.TopRightX, c.TopRightY)),
-        Math.Max(Math.Max(c.BottomRightX, c.BottomRightY), Math.Max(c.BottomLeftX, c.BottomLeftY)));
+    /// <summary>Scale every (elliptical, per-corner) radius by <paramref name="s"/> — used to map the
+    /// CSS-px corner radii into the shadow raster's DEVICE-px space (Task: per-corner blur radii).</summary>
+    private static CornerRadii ScaleRadii(CornerRadii c, double s) => new(
+        c.TopLeftX * s, c.TopLeftY * s, c.TopRightX * s, c.TopRightY * s,
+        c.BottomRightX * s, c.BottomRightY * s, c.BottomLeftX * s, c.BottomLeftY * s);
 
     /// <summary>Phase 4 shadows (PR 1 refinements) — paint a box's INSET <c>box-shadow</c> layers
     /// OVER the background, clipped to the PADDING box (CSS B&amp;B §7.2 — an inset shadow casts a
@@ -2580,12 +2581,12 @@ internal static class FragmentPainter
         var deviceW = (int)Math.Ceiling(padWidthPx * BoxShadowRasterScale);
         var deviceH = (int)Math.Ceiling(padHeightPx * BoxShadowRasterScale);
         var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterizeInset(
-            deviceW, deviceH, (float)(MaxCorner(padRadii) * BoxShadowRasterScale),
+            deviceW, deviceH, ScaleRadii(padRadii, BoxShadowRasterScale),
             holeLeft: (float)((holeLeftPx - padLeftPx) * BoxShadowRasterScale),
             holeTop: (float)((holeTopPx - padTopPx) * BoxShadowRasterScale),
             holeWidth: (float)(holeWidthPx * BoxShadowRasterScale),
             holeHeight: (float)(holeHeightPx * BoxShadowRasterScale),
-            holeRadius: (float)(MaxCorner(holeRadii) * BoxShadowRasterScale),
+            holeRadii: ScaleRadii(holeRadii, BoxShadowRasterScale),
             blurSigma: (float)(sigmaPx * BoxShadowRasterScale), r, g, b, alpha);
 
         ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt, out var px, out var py, out var pw, out var ph);

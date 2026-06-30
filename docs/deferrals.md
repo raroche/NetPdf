@@ -2713,8 +2713,9 @@ flags the categories):
      per-stop alpha on a NATIVE shading (a soft-mask alpha shading) so a translucent gradient need not
      raster, and a repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default
      farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
-     box-shadow per-corner blur radii (the blur raster uses one representative radius) + inset under
-     box-decoration-break:slice (painted per-slice); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
+     box-shadow inset under box-decoration-break:slice (painted per-slice — the **per-corner blur radii
+     residual SHIPPED**: the outset + inset blur raster now draws each corner's own elliptical radius via
+     `SKRoundRect.SetRectRadii`, not one representative radius); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
      (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`,
      `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residuals are an
      over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset, and PER-SEGMENT

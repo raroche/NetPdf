@@ -13,6 +13,7 @@ The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHA
 A batch of documented `deferrals.md` follow-ups for transforms, shadows, and gradients. Every change is gated so non-feature rendering stays byte-identical (no corpus/snapshot sample uses these).
 
 - **`transform` `em`/`rem`/`%` offsets + `transform-origin` lengths** — `translate`/`translateX`/`translateY`/`translate3d` offsets and `transform-origin` now resolve `em` (the element font-size), `rem` (the root element font-size), and `%` (a translate percentage against the box border-box, CSS Transforms L1 §6). `em`/`rem` fold to px at parse time; a `%` translate is carried as a width/height fraction through matrix composition and resolved against the box at paint time (`CssTransform` gains split `EPx`/`EW`/`EH` + `FPx`/`FW`/`FH` translation components, resolved in `ToPdfMatrix`). Previously any of these dropped the whole value with `CSS-TRANSFORM-UNSUPPORTED-001`.
+- **`box-shadow` per-corner blur radii** — a blurred (outset OR inset) shadow on a box with mixed `border-radius` corners now rasterizes each corner's own elliptical radius (`ShadowRasterizer` draws via `SKRoundRect.SetRectRadii`), instead of collapsing all four to one representative radius. The native sharp path already honored per-corner radii; this closes the blur raster's approximation.
 
 ### Fixed — Phase 3 residual long-tail
 

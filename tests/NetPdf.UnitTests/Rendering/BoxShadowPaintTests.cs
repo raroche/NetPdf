@@ -105,6 +105,22 @@ public sealed class BoxShadowPaintTests
     }
 
     [Fact]
+    public void Blurred_shadow_with_mixed_corner_radii_rasterizes_without_unsupported()
+    {
+        // A box with mixed per-corner border-radius + a blurred shadow rasterizes the shadow shape with
+        // each corner's own radius (no representative-radius collapse) and places it, no unsupported flag.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:0 30px 0 30px;background-color:#3366cc;box-shadow:0 0 8px #cc3366\"></div>" +
+            "</body></html>");
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/Subtype /Image", text);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowBlurRaster001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+    }
+
+    [Fact]
     public void Oversized_blur_falls_back_to_sharp_with_a_diagnostic()
     {
         // An 800px blur on the 100×60 box drives the raster bitmap past the 4096px cap → sharp

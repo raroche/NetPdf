@@ -30,13 +30,14 @@ internal static class ShadowRasterizer
     /// DEVICE pixels (the caller multiplies CSS px by its raster scale): the bitmap is
     /// <paramref name="deviceWidth"/> × <paramref name="deviceHeight"/>; the shadow shape sits at
     /// (<paramref name="shapeLeft"/>, <paramref name="shapeTop"/>) with size
-    /// (<paramref name="shapeWidth"/>, <paramref name="shapeHeight"/>) and corner radius
-    /// <paramref name="radius"/>; the Gaussian <paramref name="blurSigma"/> is the device-px
-    /// standard deviation. Color channels are [0, 1]. Returns <see langword="null"/> for a
-    /// non-positive or over-cap bitmap.</summary>
+    /// (<paramref name="shapeWidth"/>, <paramref name="shapeHeight"/>) and PER-CORNER elliptical
+    /// <paramref name="radii"/> (each corner's own X/Y radius, so a box with mixed
+    /// <c>border-radius</c> corners blurs each corner faithfully); the Gaussian
+    /// <paramref name="blurSigma"/> is the device-px standard deviation. Color channels are [0, 1].
+    /// Returns <see langword="null"/> for a non-positive or over-cap bitmap.</summary>
     public static ImageXObjectResult? TryRasterize(
         int deviceWidth, int deviceHeight,
-        float shapeLeft, float shapeTop, float shapeWidth, float shapeHeight, float radius,
+        float shapeLeft, float shapeTop, float shapeWidth, float shapeHeight, CornerRadii radii,
         float blurSigma, double r, double g, double b, double a)
     {
         if (deviceWidth <= 0 || deviceHeight <= 0) return null;
@@ -59,10 +60,7 @@ internal static class ShadowRasterizer
             paint.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, blurSigma);
 
         var rect = new SKRect(shapeLeft, shapeTop, shapeLeft + shapeWidth, shapeTop + shapeHeight);
-        if (radius > 0)
-            canvas.DrawRoundRect(rect, radius, radius, paint);
-        else
-            canvas.DrawRect(rect, paint);
+        DrawRounded(canvas, rect, radii, paint);
 
         using var image = surface.Snapshot();
         using var pixmap = image.PeekPixels();
@@ -85,17 +83,17 @@ internal static class ShadowRasterizer
 
     /// <summary>Phase 4 shadows (PR 1 refinements) — rasterize a blurred INSET shadow into an Image
     /// XObject. The bitmap is the PADDING box (<paramref name="deviceWidth"/> ×
-    /// <paramref name="deviceHeight"/> device px, corner radius <paramref name="paddingRadius"/>),
+    /// <paramref name="deviceHeight"/> device px, per-corner <paramref name="paddingRadii"/>),
     /// FILLED with the shadow color, then the inner lit HOLE (offset + spread-contracted, at
     /// (<paramref name="holeLeft"/>, <paramref name="holeTop"/>) size
-    /// (<paramref name="holeWidth"/>, <paramref name="holeHeight"/>) radius
-    /// <paramref name="holeRadius"/>) is punched out with a Gaussian-blurred <c>DstOut</c> — so the
+    /// (<paramref name="holeWidth"/>, <paramref name="holeHeight"/>) per-corner
+    /// <paramref name="holeRadii"/>) is punched out with a Gaussian-blurred <c>DstOut</c> — so the
     /// shadow color forms a soft band around the inside edges (CSS B&amp;B §7.2 inset). Same caps /
     /// determinism contract as <see cref="TryRasterize"/>. A non-positive hole fills the whole padding
     /// box (the shadow swallowed the lit area).</summary>
     public static ImageXObjectResult? TryRasterizeInset(
-        int deviceWidth, int deviceHeight, float paddingRadius,
-        float holeLeft, float holeTop, float holeWidth, float holeHeight, float holeRadius,
+        int deviceWidth, int deviceHeight, CornerRadii paddingRadii,
+        float holeLeft, float holeTop, float holeWidth, float holeHeight, CornerRadii holeRadii,
         float blurSigma, double r, double g, double b, double a)
     {
         if (deviceWidth <= 0 || deviceHeight <= 0) return null;
@@ -111,12 +109,9 @@ internal static class ShadowRasterizer
         var paddingRect = new SKRect(0, 0, deviceWidth, deviceHeight);
         var color = new SKColor(ToByte(r), ToByte(g), ToByte(b), ToByte(a));
 
-        // 1) Fill the whole padding box (rounded) with the shadow color.
+        // 1) Fill the whole padding box (per-corner rounded) with the shadow color.
         using (var fill = new SKPaint { IsAntialias = true, Style = SKPaintStyle.Fill, Color = color })
-        {
-            if (paddingRadius > 0) canvas.DrawRoundRect(paddingRect, paddingRadius, paddingRadius, fill);
-            else canvas.DrawRect(paddingRect, fill);
-        }
+            DrawRounded(canvas, paddingRect, paddingRadii, fill);
 
         // 2) Punch the lit hole out with a blurred DstOut (dst α ×= 1 − src α): the band stays, the
         // hole clears, and the blurred edge gives the soft inset falloff.
@@ -131,8 +126,7 @@ internal static class ShadowRasterizer
             };
             if (blurSigma > 0) cut.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, blurSigma);
             var holeRect = new SKRect(holeLeft, holeTop, holeLeft + holeWidth, holeTop + holeHeight);
-            if (holeRadius > 0) canvas.DrawRoundRect(holeRect, holeRadius, holeRadius, cut);
-            else canvas.DrawRect(holeRect, cut);
+            DrawRounded(canvas, holeRect, holeRadii, cut);
         }
 
         using var image = surface.Snapshot();
@@ -152,6 +146,28 @@ internal static class ShadowRasterizer
             PixelBytes = pixels,
         };
         return RasterImageXObject.Build(info);
+    }
+
+    /// <summary>Draw a rectangle with PER-CORNER elliptical radii (the box's own
+    /// <c>border-radius</c> corners) — a plain rect when no corner rounds, else an
+    /// <see cref="SKRoundRect"/> via <c>SetRectRadii</c> (Skia scales overlapping radii to fit, §4.2).
+    /// Corner order matches <see cref="CornerRadii"/>: top-left, top-right, bottom-right, bottom-left.</summary>
+    private static void DrawRounded(SKCanvas canvas, SKRect rect, CornerRadii radii, SKPaint paint)
+    {
+        if (!radii.AnyPositive)
+        {
+            canvas.DrawRect(rect, paint);
+            return;
+        }
+        using var rrect = new SKRoundRect();
+        rrect.SetRectRadii(rect,
+        [
+            new SKPoint((float)radii.TopLeftX, (float)radii.TopLeftY),
+            new SKPoint((float)radii.TopRightX, (float)radii.TopRightY),
+            new SKPoint((float)radii.BottomRightX, (float)radii.BottomRightY),
+            new SKPoint((float)radii.BottomLeftX, (float)radii.BottomLeftY),
+        ]);
+        canvas.DrawRoundRect(rrect, paint);
     }
 
     private static byte ToByte(double channel) =>

@@ -44,13 +44,15 @@ internal static class SvgFilters
     /// <c>feComposite</c> (over/in/out/atop/xor/lighter/arithmetic), <c>feBlend</c>, (SVG part 8)
     /// <c>feMorphology</c> (erode/dilate), <c>feComponentTransfer</c> (identity/table/discrete/linear/gamma),
     /// <c>feDisplacementMap</c>, <c>feConvolveMatrix</c>, <c>feTurbulence</c> (turbulence/fractalNoise), and
-    /// (SVG part 9) <c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (distant/point/spot lights),
-    /// <c>feImage</c> (a raster href), and <c>feTile</c>. The filter region (x/y/width/height + filterUnits) is
-    /// honored by the caller's clip (see <see cref="ResolveFilterRegion"/>); primitive SUBREGIONS (per-primitive
-    /// x/y/width/height), <c>primitiveUnits</c>, <c>BackgroundImage</c>/<c>FillPaint</c> inputs, and a
-    /// <c>feImage</c> ELEMENT reference (<c>href="#id"</c>) aren't modeled → flagged. Returns
-    /// <see langword="null"/> when no primitive contributes (the element renders unfiltered).</summary>
-    public static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
+    /// (SVG part 9) <c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (distant/point/spot lights), and
+    /// <c>feImage</c> (a <c>data:</c> raster href placed into the filter region via <c>preserveAspectRatio</c>).
+    /// The filter region (x/y/width/height + filterUnits, objectBoundingBox / userSpaceOnUse) is honored by the
+    /// caller's clip (see <see cref="ResolveFilterRegion"/>); primitive SUBREGIONS (per-primitive
+    /// x/y/width/height), <c>primitiveUnits</c>, <c>BackgroundImage</c>/<c>FillPaint</c> inputs, <c>feTile</c>,
+    /// a <c>feImage</c> ELEMENT reference (<c>href="#id"</c>), and lighting <c>kernelUnitLength</c> aren't
+    /// modeled → flagged. Returns <see langword="null"/> when no primitive contributes (the element renders
+    /// unfiltered).</summary>
+    public static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state, FilterRegion? region, List<SKImage> ownedImages)
     {
         // The filter region (x/y/width/height + filterUnits) is now honored by the caller's clip
         // (ResolveFilterRegion). primitiveUnits (objectBoundingBox primitive coordinates) is still not modeled.
@@ -188,16 +190,19 @@ internal static class SvgFilters
                 }
                 case "feimage":
                 {
-                    // A GENERATOR — a data: raster href decodes (through the image-safety validator) to an
-                    // image filter. An external href or an ELEMENT reference (href="#id") isn't modeled →
-                    // flagged + an empty (transparent) result, never a content pass-through.
+                    // A GENERATOR — a data: raster href decodes (through the image-safety validator) and is
+                    // PLACED into the filter primitive subregion (default = the filter region) honoring
+                    // preserveAspectRatio (default xMidYMid meet), so it scales / aligns rather than rendering
+                    // at natural pixel size near the origin. An external href or an ELEMENT reference
+                    // (href="#id") isn't modeled → flagged + an empty (transparent) result, never a
+                    // content pass-through. The decoded image is recorded in ownedImages and disposed by the
+                    // caller after the filter layer composites (Skia refs the native image).
                     var href = SvgAttr.HrefRaw(prim);
                     if (href is not null && href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
                         && SvgRasterizer.DecodeDataUriImage(href) is { } image)
                     {
-                        // The filter references the image (kept alive by the composed chain, like the other
-                        // intermediate filters here); do not dispose it out from under the filter.
-                        output = SKImageFilter.CreateImage(image);
+                        ownedImages.Add(image);
+                        output = BuildFeImage(prim, image, region);
                     }
                     else
                     {
@@ -233,27 +238,47 @@ internal static class SvgFilters
         return last;
     }
 
+    /// <summary>The filter-region resolution: the rect the caller hard-clips the filter result to, plus a
+    /// flag distinguishing an EMPTY region (clip everything out → the element renders nothing) from "no
+    /// region" (leave the result uncropped). A non-empty <see cref="Rect"/> is clipped to; an EMPTY region
+    /// (<see cref="Empty"/>) clips to nothing; a <see langword="null"/> result of
+    /// <see cref="ResolveFilterRegion"/> means no clip.</summary>
+    public readonly record struct FilterRegion(SKRect Rect, bool Empty)
+    {
+        public static FilterRegion Of(SKRect rect) => new(rect, false);
+        public static readonly FilterRegion EmptyRegion = new(SKRect.Empty, true);
+    }
+
     /// <summary>The SVG filter region (§15.7.4) in the filtered element's OWN coordinate space — the rect the
     /// caller hard-clips the composited filter result to (so an unbounded primitive / blur halo can't paint
     /// past it, PR-246 review [P1]). Honors an EXPLICIT <c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> +
     /// <c>filterUnits</c> on the <c>&lt;filter&gt;</c>: <c>objectBoundingBox</c> (default) maps each value as a
     /// FRACTION of the element bbox (a <c>%</c> → /100; the §15 default is <c>-10% -10% 120% 120%</c>);
-    /// <c>userSpaceOnUse</c> maps them as user-space lengths (all four required, else the bbox default).
-    /// Returns <see langword="null"/> when no geometry bbox is available (text / image / empty subtree) and no
-    /// explicit userSpace rect is given; the caller then leaves the result uncropped.</summary>
-    public static SKRect? ResolveFilterRegion(XElement filter, XElement el, SvgStyle style, SvgRenderState state)
+    /// <c>userSpaceOnUse</c> maps them as user-space lengths, each attribute resolved INDEPENDENTLY with its
+    /// own §15 default (<c>-10% / -10% / 120% / 120%</c> of the viewport) — a partial / omitted attribute
+    /// stays in the userSpace coordinate system rather than falling back to the bbox. A zero / negative width
+    /// or height is an EMPTY region (§15.7.4 — the element is not rendered), returned as
+    /// <see cref="FilterRegion.EmptyRegion"/> (distinct from "no region"). An unrecognized <c>filterUnits</c>
+    /// value falls back to <c>objectBoundingBox</c> and is flagged. Returns <see langword="null"/> only when no
+    /// geometry bbox is available (text / image / empty subtree) under <c>objectBoundingBox</c>; the caller
+    /// then leaves the result uncropped.</summary>
+    public static FilterRegion? ResolveFilterRegion(XElement filter, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var userSpace = (SvgRasterizer.Attr(filter, "filterUnits") ?? "objectBoundingBox").Trim()
-            .Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
-        if (userSpace
-            && SvgRasterizer.HasAnyAttr(filter, "x") && SvgRasterizer.HasAnyAttr(filter, "y")
-            && SvgRasterizer.HasAnyAttr(filter, "width") && SvgRasterizer.HasAnyAttr(filter, "height"))
+        var unitsRaw = (SvgRasterizer.Attr(filter, "filterUnits") ?? "objectBoundingBox").Trim();
+        var userSpace = unitsRaw.Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+        if (!userSpace && !unitsRaw.Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase))
+            state.SawUnsupported = true; // an unknown filterUnits value → objectBoundingBox behavior, flagged
+
+        if (userSpace)
         {
-            var x = (float)SvgRasterizer.Len(filter, "x", state, style, SvgRasterizer.LenAxis.X);
-            var y = (float)SvgRasterizer.Len(filter, "y", state, style, SvgRasterizer.LenAxis.Y);
-            var w = (float)SvgRasterizer.Len(filter, "width", state, style, SvgRasterizer.LenAxis.X);
-            var h = (float)SvgRasterizer.Len(filter, "height", state, style, SvgRasterizer.LenAxis.Y);
-            if (w > 0 && h > 0) return new SKRect(x, y, x + w, y + h);
+            // Each value is a user-space length, resolved with its own §15 default (-10% / 120% of the
+            // viewport). Omitted / partial attributes keep the userSpace coordinate system — they do NOT fall
+            // back to the bbox math (this path needs no bbox at all).
+            var x = (float)UserSpaceRegionLen(filter, "x", state, style, SvgRasterizer.LenAxis.X, -0.10);
+            var y = (float)UserSpaceRegionLen(filter, "y", state, style, SvgRasterizer.LenAxis.Y, -0.10);
+            var w = (float)UserSpaceRegionLen(filter, "width", state, style, SvgRasterizer.LenAxis.X, 1.20);
+            var h = (float)UserSpaceRegionLen(filter, "height", state, style, SvgRasterizer.LenAxis.Y, 1.20);
+            return w > 0 && h > 0 ? FilterRegion.Of(new SKRect(x, y, x + w, y + h)) : FilterRegion.EmptyRegion;
         }
         if (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
         {
@@ -261,11 +286,24 @@ internal static class SvgFilters
             var fy = RegionFraction(filter, "y", -0.1f);
             var fw = RegionFraction(filter, "width", 1.2f);
             var fh = RegionFraction(filter, "height", 1.2f);
-            if (fw <= 0 || fh <= 0) return null;
-            return new SKRect(b.Left + fx * b.Width, b.Top + fy * b.Height,
-                b.Left + (fx + fw) * b.Width, b.Top + (fy + fh) * b.Height);
+            if (fw <= 0 || fh <= 0) return FilterRegion.EmptyRegion; // explicit zero / negative → empty region
+            return FilterRegion.Of(new SKRect(b.Left + fx * b.Width, b.Top + fy * b.Height,
+                b.Left + (fx + fw) * b.Width, b.Top + (fy + fh) * b.Height));
         }
         return null;
+    }
+
+    /// <summary>A <c>&lt;filter&gt;</c> region length under <c>filterUnits="userSpaceOnUse"</c>: the attribute
+    /// resolved as a user-space length (px / % / em), or — when absent — its §15 default
+    /// (<paramref name="defaultFraction"/>, <c>-0.10</c> / <c>1.20</c>) as a fraction of the relevant viewport
+    /// dimension.</summary>
+    private static double UserSpaceRegionLen(XElement filter, string name, SvgRenderState state, SvgStyle style,
+        SvgRasterizer.LenAxis axis, double defaultFraction)
+    {
+        if (SvgRasterizer.HasAnyAttr(filter, name))
+            return SvgRasterizer.Len(filter, name, state, style, axis);
+        var basis = axis == SvgRasterizer.LenAxis.X ? state.ViewportW : state.ViewportH;
+        return defaultFraction * basis;
     }
 
     /// <summary>An <c>objectBoundingBox</c> filter-region value as a bbox FRACTION: a <c>%</c> → value/100, a
@@ -693,6 +731,29 @@ internal static class SvgFilters
             : SKShader.CreatePerlinNoiseTurbulence(fx, fy, octaves, seed);
     }
 
+    /// <summary>Place a <c>feImage</c> raster into the filter primitive SUBREGION — defaulted to the filter
+    /// region (per-primitive x/y/width/height subregions aren't modeled) — honoring <c>preserveAspectRatio</c>
+    /// (§8.8, default <c>xMidYMid meet</c>): the image is SCALED + ALIGNED into the region instead of drawn at
+    /// natural pixel size near the origin. With no region available (a text / image target has no bbox) it
+    /// falls back to natural size at the origin. A <c>slice</c> overflow is clipped by the caller's
+    /// filter-region clip.</summary>
+    private static SKImageFilter BuildFeImage(XElement prim, SKImage image, FilterRegion? region)
+    {
+        var src = new SKRect(0, 0, image.Width, image.Height);
+        SKRect dst;
+        if (region is { Empty: false } r && r.Rect is { Width: > 0, Height: > 0 } rect && image.Width > 0 && image.Height > 0)
+        {
+            var par = SvgPreserveAspectRatio.Compute(SvgRasterizer.Attr(prim, "preserveAspectRatio"),
+                image.Width, image.Height, rect.Width, rect.Height);
+            var dx = rect.Left + par.Tx;
+            var dy = rect.Top + par.Ty;
+            dst = new SKRect(dx, dy, dx + image.Width * par.ScaleX, dy + image.Height * par.ScaleY);
+        }
+        else
+            dst = src; // no region → natural size at the origin
+        return SKImageFilter.CreateImage(image, src, dst, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
+    }
+
     /// <summary><c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (Filter Effects §9.16/§9.17) → a Skia
     /// lighting image filter. The input ALPHA is the height field; a single light-source child
     /// (<c>feDistantLight</c> / <c>fePointLight</c> / <c>feSpotLight</c>) lights it with the
@@ -701,6 +762,9 @@ internal static class SvgFilters
     private static SKImageFilter? BuildLighting(XElement prim, SKImageFilter? input, bool specular, ref bool sawUnsupported)
     {
         var surfaceScale = ReadFloat(prim, "surfaceScale", 1f);
+        // kernelUnitLength (§15.7.5) changes the surface-normal sampling grid; Skia's lighting filters sample
+        // at device resolution, so an explicit value alters the result we can't reproduce → flagged.
+        if (SvgRasterizer.HasAnyAttr(prim, "kernelUnitLength")) sawUnsupported = true;
         var color = LightingColor(prim);
         XElement? light = null;
         foreach (var c in prim.Elements())

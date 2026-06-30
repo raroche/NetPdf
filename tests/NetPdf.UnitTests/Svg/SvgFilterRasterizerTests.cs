@@ -14,9 +14,12 @@ namespace NetPdf.UnitTests.Svg;
 /// <c>feComposite</c>/<c>feBlend</c> with <c>in</c>/<c>in2</c>/named-<c>result</c> routing are SUPPORTED; the
 /// composited result is clipped to the default filter region; only the primary (reachable) tree contributes.
 /// SVG part 8 adds <c>feMorphology</c> / <c>feComponentTransfer</c> / <c>feDisplacementMap</c> /
-/// <c>feConvolveMatrix</c> / <c>feTurbulence</c>. A non-filter target, an EXPLICIT filter region / primitive
-/// subregion / <c>*Units</c>, the remaining primitives (<c>feImage</c>/<c>feTile</c>/lighting), and unmodeled
-/// inputs (<c>BackgroundImage</c>/…) are flagged.</summary>
+/// <c>feConvolveMatrix</c> / <c>feTurbulence</c>. SVG part 9 adds <c>feDiffuseLighting</c> /
+/// <c>feSpecularLighting</c> (distant/point/spot lights), <c>feImage</c> (a <c>data:</c> raster placed into the
+/// region via <c>preserveAspectRatio</c>), and an EXPLICIT filter region (x/y/width/height + <c>filterUnits</c>
+/// objectBoundingBox/userSpaceOnUse, incl. an empty zero-size region). A non-filter target, <c>feTile</c>, a
+/// <c>feImage</c> element ref, a primitive subregion / <c>primitiveUnits</c>, lighting <c>kernelUnitLength</c>,
+/// an unknown <c>filterUnits</c> value, and unmodeled inputs (<c>BackgroundImage</c>/…) are flagged.</summary>
 public sealed class SvgFilterRasterizerTests
 {
     private static byte[] Svg(string s) => Encoding.UTF8.GetBytes(s);
@@ -667,5 +670,169 @@ public sealed class SvgFilterRasterizerTests
         Assert.False(unsupported);
         Assert.True(Px(info!, 20, 20).B > 150);    // inside (10,10)-(30,30): blue
         Assert.Equal(0, Px(info!, 45, 45).A);      // outside the region: transparent
+    }
+
+    // ---- SVG part 10: filter-region edge cases / feImage placement / lighting intensity / attr flags ----
+
+    private static NetPdf.Pdf.Images.RasterImageInfo Render(string svg, out bool unsupported)
+    {
+        var info = SvgRasterizer.TryRender(Svg(svg), out unsupported);
+        Assert.NotNull(info);
+        return info!;
+    }
+
+    private static string BlueDataPng16 =>
+        "data:image/png;base64," + Convert.ToBase64String(SyntheticPng.BuildOpaqueRgb8(16, 16, 0x00, 0x00, 0xFF));
+
+    [Fact]
+    public void Fe_image_fits_into_a_wide_region_with_preserve_aspect_ratio_meet()
+    {
+        // A square 16×16 image placed into a WIDE 40×20 user-space region (xMidYMid meet): scale 1.25 → 20×20,
+        // centered horizontally → occupies x∈[10,30], y∈[0,20]. The horizontal letterbox stays transparent.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"20\"><feImage href=\"{BlueDataPng16}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"80\" height=\"80\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 10).B > 150);     // center of the fitted image: blue
+        Assert.Equal(0, Px(info, 2, 10).A);        // left letterbox (inside region, outside image): transparent
+        Assert.Equal(0, Px(info, 37, 10).A);       // right letterbox: transparent
+        Assert.Equal(0, Px(info, 20, 30).A);       // below the region (height 20): clipped away
+    }
+
+    [Fact]
+    public void Fe_image_preserve_aspect_ratio_none_stretches_to_fill_the_region()
+    {
+        // preserveAspectRatio="none" stretches the 16×16 image to the full 40×20 region — no letterbox.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"20\"><feImage preserveAspectRatio=\"none\" href=\"{BlueDataPng16}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"80\" height=\"80\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 2, 10).B > 150);      // left edge filled (was letterbox under meet)
+        Assert.True(Px(info, 37, 10).B > 150);     // right edge filled
+        Assert.Equal(0, Px(info, 20, 30).A);       // still clipped to the region height
+    }
+
+    private static string DiffuseDoc(string primAttrs, string light) =>
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+        $"<filter id=\"f\"><feDiffuseLighting surfaceScale=\"1\" {primAttrs}>" + light + "</feDiffuseLighting></filter>" +
+        "<rect x=\"15\" y=\"15\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>";
+
+    private const string LightStraightDown = "<feDistantLight azimuth=\"0\" elevation=\"90\"/>";
+
+    [Fact]
+    public void Fe_diffuse_lighting_color_tints_the_lit_surface()
+    {
+        // A flat interior surface lit straight down (N·L = 1, kd = 1) → the lit color IS the lighting-color.
+        var white = Render(DiffuseDoc("diffuseConstant=\"1\" lighting-color=\"white\"", LightStraightDown), out _);
+        var red = Render(DiffuseDoc("diffuseConstant=\"1\" lighting-color=\"red\"", LightStraightDown), out _);
+        var w = Px(white, 30, 30);
+        Assert.True(w.R > 150 && System.Math.Abs(w.R - w.G) < 40 && System.Math.Abs(w.R - w.B) < 40); // neutral bright
+        var r = Px(red, 30, 30);
+        Assert.True(r.R > 120 && r.G < 90 && r.B < 90);    // red-only: the lighting-color tints the surface
+    }
+
+    [Fact]
+    public void Fe_diffuse_lighting_constant_scales_brightness()
+    {
+        // diffuseConstant (kd) scales the lit intensity: kd=1 is markedly brighter than kd=0.3.
+        var bright = Px(Render(DiffuseDoc("diffuseConstant=\"1\" lighting-color=\"white\"", LightStraightDown), out _), 30, 30);
+        var dim = Px(Render(DiffuseDoc("diffuseConstant=\"0.3\" lighting-color=\"white\"", LightStraightDown), out _), 30, 30);
+        Assert.True(bright.R > dim.R + 40);
+    }
+
+    [Fact]
+    public void Fe_diffuse_lighting_elevation_changes_intensity()
+    {
+        // On a flat surface the diffuse term is N·L = sin(elevation): high elevation lights it far brighter.
+        var high = Px(Render(DiffuseDoc("diffuseConstant=\"1\" lighting-color=\"white\"", "<feDistantLight azimuth=\"0\" elevation=\"90\"/>"), out _), 30, 30);
+        var low = Px(Render(DiffuseDoc("diffuseConstant=\"1\" lighting-color=\"white\"", "<feDistantLight azimuth=\"0\" elevation=\"10\"/>"), out _), 30, 30);
+        Assert.True(high.R > low.R + 40);
+    }
+
+    [Fact]
+    public void Fe_specular_lighting_produces_a_lit_highlight()
+    {
+        // Specular lighting adds light → the lit surface has non-zero (opaque-ish) output where it reflects.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\"><feSpecularLighting surfaceScale=\"2\" specularConstant=\"1\" specularExponent=\"4\" lighting-color=\"white\">" +
+            "<feDistantLight azimuth=\"0\" elevation=\"90\"/></feSpecularLighting></filter>" +
+            "<rect x=\"15\" y=\"15\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 30, 30).A > 80);      // a specular highlight is produced
+    }
+
+    [Fact]
+    public void Fe_lighting_kernel_unit_length_is_flagged()
+    {
+        // kernelUnitLength changes the surface-normal sampling grid — not reproduced → flagged (still renders).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feDiffuseLighting surfaceScale=\"1\" diffuseConstant=\"1\" kernelUnitLength=\"2 2\">" +
+            "<feDistantLight azimuth=\"0\" elevation=\"90\"/></feDiffuseLighting></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.True(unsupported);
+        Assert.True(Px(info, 20, 20).A > 80);      // flagged but still lit
+    }
+
+    [Theory]
+    // A zero (or negative) filter-region width/height is an EMPTY region (§15.7.4): the element renders NOTHING
+    // — distinct from "no region" (which would leave it unfiltered). Not a diagnostic (valid empty geometry).
+    [InlineData("filterUnits=\"userSpaceOnUse\" x=\"10\" y=\"10\" width=\"0\" height=\"20\"")]
+    [InlineData("x=\"0%\" y=\"0%\" width=\"-10%\" height=\"50%\"")]
+    public void Empty_filter_region_renders_nothing(string regionAttrs)
+    {
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            $"<filter id=\"f\" {regionAttrs}><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // an empty region is valid geometry, not unsupported
+        Assert.Equal(0, Px(info, 20, 20).A);       // nothing renders (neither the flood NOR the red source)
+        Assert.Equal(0, Px(info, 40, 40).A);
+    }
+
+    [Fact]
+    public void User_space_filter_region_with_omitted_width_uses_the_user_space_default()
+    {
+        // filterUnits=userSpaceOnUse with x/y/height but NO width: the omitted width takes its §15 default
+        // (120% of the viewport), staying in user space rather than falling back to bbox math. y/height honored.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"10\" y=\"10\" height=\"20\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"50\" height=\"50\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 40, 20).B > 150);     // inside (x≥10, y∈[10,30]): flooded blue
+        Assert.True(Px(info, 70, 20).B > 150);     // x=70 < default width (96) → still inside (NOT bbox-limited to ~60)
+        Assert.Equal(0, Px(info, 40, 45).A);       // y=45 > 30 (height honored): outside the region
+        Assert.Equal(0, Px(info, 5, 20).A);        // x=5 < 10 (x honored): outside the region
+    }
+
+    [Fact]
+    public void Unknown_filter_units_value_is_flagged_and_falls_back_to_bounding_box()
+    {
+        // An unrecognized filterUnits → objectBoundingBox behavior, FLAGGED (CLAUDE.md: no silent semantics).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" filterUnits=\"garbage\" x=\"0%\" y=\"0%\" width=\"50%\" height=\"50%\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.True(unsupported);                  // unknown units flagged
+        Assert.True(Px(info, 20, 20).B > 150);     // still clipped to the bbox top-left quadrant (10..30): blue
+        Assert.Equal(0, Px(info, 45, 45).A);       // outside that quadrant: transparent
+    }
+
+    [Fact]
+    public void User_space_filter_region_resolves_percentage_lengths()
+    {
+        // filterUnits=userSpaceOnUse with PERCENTAGE x/y/width/height → resolved against the viewport (80×80):
+        // 10%,10%,50%,50% → region (8,8)-(48,48).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"10%\" y=\"10%\" width=\"50%\" height=\"50%\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"80\" height=\"80\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 20).B > 150);     // inside (8,8)-(48,48): blue
+        Assert.Equal(0, Px(info, 60, 60).A);       // outside: transparent
     }
 }

@@ -165,22 +165,29 @@ internal static class SvgRasterizer
         // filter="url(#id)" applies a composed Skia image filter to the element's whole subtree (§15) — the
         // INNERMOST effect layer (the filtered result is then composited by opacity, then masked).
         var filterEl = el.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase) ? null : SvgFilters.ResolveFilter(el, state);
-        var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, state) : null;
+        // The filter region (§15) — resolved ONCE: it both clips the result AND positions a feImage primitive.
+        var filterRegion = filterEl is not null ? SvgFilters.ResolveFilterRegion(filterEl, el, style, state) : null;
+        // feImage decodes a raster the composed filter references; the managed SKImage is held alive in this
+        // list and disposed only AFTER the filter layer is composited (Skia refs the native image, so an early
+        // managed dispose would risk freeing it out from under the filter graph).
+        var ownedImages = filterEl is not null ? new List<SKImage>() : null;
+        var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, state, filterRegion, ownedImages!) : null;
         SKPaint? filterPaint = null;
         var filterRegionClipped = false;
+        // The filter region (§15) clips the whole filter result, applied as a HARD canvas clip — a blur halo
+        // spreads past a SaveLayer bounds hint, so an unbounded primitive (a final feFlood) must be clipped
+        // here (PR-246 review [P1]). An EXPLICIT x/y/width/height + filterUnits is honored; an EMPTY region
+        // (zero / negative width or height, §15.7.4) clips everything out so the element renders nothing —
+        // applied even when no primitive produced a visible filter; else the default (element bbox + 10%).
+        if (filterRegion is { } region && (imageFilter is not null || region.Empty))
+        {
+            canvas.Save();
+            canvas.ClipRect(region.Empty ? SKRect.Empty : region.Rect);
+            filterRegionClipped = true;
+        }
         if (imageFilter is not null)
         {
             filterPaint = new SKPaint { ImageFilter = imageFilter };
-            // The filter region (§15) clips the whole filter result, applied as a HARD canvas clip — a blur
-            // halo spreads past a SaveLayer bounds hint, so an unbounded primitive (a final feFlood) must be
-            // clipped here (PR-246 review [P1]). An EXPLICIT x/y/width/height + filterUnits is honored; else the
-            // default (element bbox + 10%).
-            if (filterEl is not null && SvgFilters.ResolveFilterRegion(filterEl, el, style, state) is { } region)
-            {
-                canvas.Save();
-                canvas.ClipRect(region);
-                filterRegionClipped = true;
-            }
             canvas.SaveLayer(filterPaint);
         }
 
@@ -217,9 +224,10 @@ internal static class SvgRasterizer
         {
             canvas.Restore();        // composite the filtered layer
             filterPaint!.Dispose();
-            imageFilter.Dispose();
-            if (filterRegionClipped) canvas.Restore(); // pop the filter-region clip
+            imageFilter.Dispose();   // releases the native filter graph's ref to any feImage raster
         }
+        if (filterRegionClipped) canvas.Restore();   // pop the filter-region clip
+        if (ownedImages is not null) foreach (var img in ownedImages) img.Dispose(); // feImage rasters, now safe
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
         if (mask is not null) SvgClipMask.ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
         canvas.RestoreToCount(restore);

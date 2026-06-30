@@ -11,10 +11,29 @@ namespace NetPdf.Rendering;
 /// <summary>Phase 4 transforms — a resolved CSS <c>transform</c> as a 2D affine matrix in CSS px
 /// space (the <c>matrix(a, b, c, d, e, f)</c> form every 2D function reduces to: x' = a·x + c·y + e,
 /// y' = b·x + d·y + f) plus <see cref="Had3D"/> (a 3D function was flattened — the caller emits
-/// CSS-TRANSFORM-3D-UNSUPPORTED-001).</summary>
-internal sealed record CssTransform(double A, double B, double C, double D, double E, double F, bool Had3D)
+/// CSS-TRANSFORM-3D-UNSUPPORTED-001). The translation e/f are split into an absolute px part plus
+/// coefficients of the box border-box <c>width</c>/<c>height</c>, so a <c>translate(%)</c> resolves
+/// against the box at paint time (CSS Transforms L1 §6 — a translate percentage resolves against the
+/// box dimensions): <c>e = EPx + EW·width + EH·height</c>, <c>f = FPx + FW·width + FH·height</c>.</summary>
+internal sealed record CssTransform(
+    double A, double B, double C, double D,
+    double EPx, double EW, double EH,
+    double FPx, double FW, double FH,
+    bool Had3D)
 {
-    public bool IsIdentity => A == 1 && B == 0 && C == 0 && D == 1 && E == 0 && F == 0;
+    /// <summary>Back-compat constructor for an absolute (px-only) translation — no percentage parts.</summary>
+    public CssTransform(double a, double b, double c, double d, double e, double f, bool had3D)
+        : this(a, b, c, d, e, 0, 0, f, 0, 0, had3D) { }
+
+    /// <summary>The absolute (px) X translation — the percentage-free part (for px-only transforms,
+    /// the whole translation).</summary>
+    public double E => EPx;
+
+    /// <summary>The absolute (px) Y translation.</summary>
+    public double F => FPx;
+
+    public bool IsIdentity => A == 1 && B == 0 && C == 0 && D == 1
+        && EPx == 0 && EW == 0 && EH == 0 && FPx == 0 && FW == 0 && FH == 0;
 }
 
 /// <summary>Phase 4 transforms — a resolved <c>transform-origin</c>: per axis a percentage
@@ -34,7 +53,12 @@ internal readonly record struct TransformOrigin(double XFraction, double XPx, do
 /// <see langword="null"/> for <c>none</c> / empty / any unparseable function.</summary>
 internal static class CssTransform_Parser
 {
-    public static CssTransform? TryParse(string? raw)
+    /// <summary>Parse a CSS <c>transform</c>. <paramref name="emPx"/> / <paramref name="remPx"/> are the
+    /// element / root font-sizes used to resolve <c>em</c> / <c>rem</c> translate offsets; pass
+    /// <see cref="double.NaN"/> (the default) when no font context is available, in which case an
+    /// <c>em</c> / <c>rem</c> offset makes the value unsupported. A <c>%</c> translate is always parseable
+    /// — it is carried as a width/height fraction and resolved against the box at paint time.</summary>
+    public static CssTransform? TryParse(string? raw, double emPx = double.NaN, double remPx = double.NaN)
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var v = raw.Trim();
@@ -44,32 +68,38 @@ internal static class CssTransform_Parser
         if (functions.Count == 0) return null;
 
         // Accumulate M = M · m in list order (the first-listed function is outermost — applied last).
-        double a = 1, b = 0, c = 0, d = 1, e = 0, f = 0;
+        double a = 1, b = 0, c = 0, d = 1, ePx = 0, eW = 0, eH = 0, fPx = 0, fW = 0, fH = 0;
         var had3D = false;
         foreach (var fn in functions)
         {
-            if (!TryParseFunction(fn, out var m, out var fn3D)) return null;
+            if (!TryParseFunction(fn, emPx, remPx, out var m, out var fn3D)) return null;
             had3D |= fn3D;
             if (m is { } mm)
-                (a, b, c, d, e, f) = Multiply(a, b, c, d, e, f, mm.A, mm.B, mm.C, mm.D, mm.E, mm.F);
+                (a, b, c, d, ePx, eW, eH, fPx, fW, fH) = Multiply(
+                    a, b, c, d, ePx, eW, eH, fPx, fW, fH,
+                    mm.A, mm.B, mm.C, mm.D, mm.EPx, mm.EW, mm.EH, mm.FPx, mm.FW, mm.FH);
         }
         // A composed matrix can blow up to non-finite (e.g. skew near 90° → tan → huge) — reject it
         // so it never reaches PDF emission (PR #210 review [P2]).
-        if (!(double.IsFinite(a) && double.IsFinite(b) && double.IsFinite(c)
-            && double.IsFinite(d) && double.IsFinite(e) && double.IsFinite(f))) return null;
-        return new CssTransform(a, b, c, d, e, f, had3D);
+        if (!(double.IsFinite(a) && double.IsFinite(b) && double.IsFinite(c) && double.IsFinite(d)
+            && double.IsFinite(ePx) && double.IsFinite(eW) && double.IsFinite(eH)
+            && double.IsFinite(fPx) && double.IsFinite(fW) && double.IsFinite(fH))) return null;
+        return new CssTransform(a, b, c, d, ePx, eW, eH, fPx, fW, fH, had3D);
     }
 
-    private readonly record struct M(double A, double B, double C, double D, double E, double F);
+    private readonly record struct M(
+        double A, double B, double C, double D,
+        double EPx, double EW, double EH, double FPx, double FW, double FH);
 
-    private static (double, double, double, double, double, double) Multiply(
-        double a1, double b1, double c1, double d1, double e1, double f1,
-        double a2, double b2, double c2, double d2, double e2, double f2) =>
+    private static (double, double, double, double, double, double, double, double, double, double) Multiply(
+        double a1, double b1, double c1, double d1, double ePx1, double eW1, double eH1, double fPx1, double fW1, double fH1,
+        double a2, double b2, double c2, double d2, double ePx2, double eW2, double eH2, double fPx2, double fW2, double fH2) =>
         (a1 * a2 + c1 * b2, b1 * a2 + d1 * b2,
          a1 * c2 + c1 * d2, b1 * c2 + d1 * d2,
-         a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1);
+         a1 * ePx2 + c1 * fPx2 + ePx1, a1 * eW2 + c1 * fW2 + eW1, a1 * eH2 + c1 * fH2 + eH1,
+         b1 * ePx2 + d1 * fPx2 + fPx1, b1 * eW2 + d1 * fW2 + fW1, b1 * eH2 + d1 * fH2 + fH1);
 
-    private static bool TryParseFunction(string fn, out M? matrix, out bool is3D)
+    private static bool TryParseFunction(string fn, double emPx, double remPx, out M? matrix, out bool is3D)
     {
         matrix = null;
         is3D = false;
@@ -82,12 +112,16 @@ internal static class CssTransform_Parser
         switch (name)
         {
             case "translate":
-                return Lengths(args, 1, 2, out var tr)
-                    && Set(out matrix, 1, 0, 0, 1, tr[0], tr.Length > 1 ? tr[1] : 0);
+                if (!TransLengths(args, emPx, remPx, 1, 2, out var tr)) return false;
+                return SetM(out matrix, 1, 0, 0, 1,
+                    tr[0].Px, tr[0].Frac, 0,
+                    tr.Length > 1 ? tr[1].Px : 0, 0, tr.Length > 1 ? tr[1].Frac : 0);
             case "translatex":
-                return Lengths(args, 1, 1, out var trx) && Set(out matrix, 1, 0, 0, 1, trx[0], 0);
+                if (!TransLengths(args, emPx, remPx, 1, 1, out var trx)) return false;
+                return SetM(out matrix, 1, 0, 0, 1, trx[0].Px, trx[0].Frac, 0, 0, 0, 0);
             case "translatey":
-                return Lengths(args, 1, 1, out var trY) && Set(out matrix, 1, 0, 0, 1, 0, trY[0]);
+                if (!TransLengths(args, emPx, remPx, 1, 1, out var trY)) return false;
+                return SetM(out matrix, 1, 0, 0, 1, 0, 0, 0, trY[0].Px, 0, trY[0].Frac);
             case "scale":
                 return Numbers(args, 1, 2, out var sc)
                     && Set(out matrix, sc[0], 0, 0, sc.Length > 1 ? sc[1] : sc[0], 0, 0);
@@ -113,7 +147,8 @@ internal static class CssTransform_Parser
             // 3D functions — flatten (keep the 2D-meaningful part) + flag for the diagnostic.
             case "translate3d":
                 is3D = true;
-                return Lengths(args, 3, 3, out var t3) && Set(out matrix, 1, 0, 0, 1, t3[0], t3[1]);
+                if (!TransLengths(args, emPx, remPx, 3, 3, out var t3)) return false;
+                return SetM(out matrix, 1, 0, 0, 1, t3[0].Px, t3[0].Frac, 0, t3[1].Px, 0, t3[1].Frac);
             case "scale3d":
                 is3D = true;
                 return Numbers(args, 3, 3, out var s3) && Set(out matrix, s3[0], 0, 0, s3[1], 0, 0);
@@ -131,21 +166,65 @@ internal static class CssTransform_Parser
         }
     }
 
-    private static bool Set(out M? matrix, double a, double b, double c, double d, double e, double f)
+    private static bool SetM(out M? matrix, double a, double b, double c, double d,
+        double ePx, double eW, double eH, double fPx, double fW, double fH)
     {
-        matrix = new M(a, b, c, d, e, f);
+        matrix = new M(a, b, c, d, ePx, eW, eH, fPx, fW, fH);
         return true;
     }
 
-    private static bool Lengths(IReadOnlyList<string> args, int min, int max, out double[] px)
+    /// <summary>A px-only (percentage-free) function matrix — scale/rotate/skew/matrix.</summary>
+    private static bool Set(out M? matrix, double a, double b, double c, double d, double e, double f)
+        => SetM(out matrix, a, b, c, d, e, 0, 0, f, 0, 0);
+
+    /// <summary>Parse 1–<paramref name="max"/> translate-length arguments, each resolved to an absolute px
+    /// part plus a percentage fraction (% of the axis dimension, applied later).</summary>
+    private static bool TransLengths(IReadOnlyList<string> args, double emPx, double remPx, int min, int max,
+        out (double Px, double Frac)[] vals)
     {
-        px = [];
+        vals = [];
         if (args.Count < min || args.Count > max) return false;
-        var result = new double[args.Count];
+        var result = new (double, double)[args.Count];
         for (var i = 0; i < args.Count; i++)
-            if (!CssLengthParsing.TryLengthPx(args[i], out result[i])) return false;
-        px = result;
+        {
+            if (!TryTransformLen(args[i], emPx, remPx, out var px, out var frac)) return false;
+            result[i] = (px, frac);
+        }
+        vals = result;
         return true;
+    }
+
+    /// <summary>Resolve one translate length to (absolute px, percentage fraction). <c>px</c> + the
+    /// absolute units and a finite zero resolve to px; <c>em</c> / <c>rem</c> fold into px using the font
+    /// context (unresolvable when that context is <see cref="double.NaN"/>); <c>%</c> becomes a fraction
+    /// (value / 100) resolved against the axis dimension at paint time. Exactly one of px / frac is
+    /// non-zero.</summary>
+    private static bool TryTransformLen(string token, double emPx, double remPx, out double px, out double frac)
+    {
+        px = 0;
+        frac = 0;
+        var t = token.Trim();
+        if (t.Length == 0) return false;
+        var lower = t.ToLowerInvariant();
+        if (lower.EndsWith("%", StringComparison.Ordinal))
+        {
+            if (!CssLengthParsing.TryFinite(lower.AsSpan(0, lower.Length - 1), out frac)) return false;
+            frac /= 100.0;
+            return true;
+        }
+        if (lower.EndsWith("rem", StringComparison.Ordinal))
+        {
+            if (!double.IsFinite(remPx) || !CssLengthParsing.TryFinite(lower.AsSpan(0, lower.Length - 3), out var rv)) return false;
+            px = rv * remPx;
+            return double.IsFinite(px);
+        }
+        if (lower.EndsWith("em", StringComparison.Ordinal))
+        {
+            if (!double.IsFinite(emPx) || !CssLengthParsing.TryFinite(lower.AsSpan(0, lower.Length - 2), out var ev)) return false;
+            px = ev * emPx;
+            return double.IsFinite(px);
+        }
+        return CssLengthParsing.TryLengthPx(t, out px);
     }
 
     private static bool Numbers(IReadOnlyList<string> args, int min, int max, out double[] values)
@@ -225,9 +304,12 @@ internal static class CssTransform_Parser
     {
         var ox = leftPx + origin.XFraction * widthPx + origin.XPx;
         var oy = topPx + origin.YFraction * heightPx + origin.YPx;
+        // A translate percentage resolves against the box border-box here (CSS Transforms L1 §6).
+        var tE = t.EPx + t.EW * widthPx + t.EH * heightPx;
+        var tF = t.FPx + t.FW * widthPx + t.FH * heightPx;
         double a = t.A, b = t.B, c = t.C, d = t.D;
-        var bx = ox * (1 - a) - c * oy + t.E;
-        var by = -b * ox + oy * (1 - d) + t.F;
+        var bx = ox * (1 - a) - c * oy + tE;
+        var by = -b * ox + oy * (1 - d) + tF;
         var h = pageHeightPt;
         // `+ 0.0` canonicalizes IEEE −0.0 to +0.0 so the cm never emits an ugly/non-deterministic "-0".
         return (a + 0.0, -b + 0.0, -c + 0.0, d + 0.0,
@@ -241,15 +323,20 @@ internal static class CssTransform_Parser
 /// (lenient — a bad origin must not drop the whole transform).</summary>
 internal static class CssTransformOrigin_Parser
 {
-    public static TransformOrigin Parse(string? raw)
+    /// <summary>Parse <c>transform-origin</c>. <paramref name="emPx"/> / <paramref name="remPx"/> resolve
+    /// <c>em</c> / <c>rem</c> offsets (pass <see cref="double.NaN"/> when no font context exists — an
+    /// <c>em</c> / <c>rem</c> token then fails to classify and the origin falls back to center).</summary>
+    public static TransformOrigin Parse(string? raw, double emPx = double.NaN, double remPx = double.NaN)
     {
         if (string.IsNullOrWhiteSpace(raw)) return TransformOrigin.Center;
         var tokens = CssLengthParsing.SplitTopLevelSpaces(raw.Trim());
         if (tokens.Count is 0 or > 3) return TransformOrigin.Center;
-        // A 3rd value is the z-length (CSS Transforms L1 §3) — it must be a length, and is ignored.
-        if (tokens.Count == 3 && !CssLengthParsing.TryLengthPx(tokens[2], out _)) return TransformOrigin.Center;
+        // A 3rd value is the z-length (CSS Transforms L1 §3) — it must be a length (not a keyword / %),
+        // and is ignored.
+        if (tokens.Count == 3 && !CssLengthParsing.TryLengthPxEmRem(tokens[2], emPx, remPx, out _))
+            return TransformOrigin.Center;
 
-        var k0 = Classify(tokens[0], out var f0, out var p0);
+        var k0 = Classify(tokens[0], emPx, remPx, out var f0, out var p0);
         if (k0 == OriginKind.Invalid) return TransformOrigin.Center;
         if (tokens.Count == 1)
         {
@@ -263,7 +350,7 @@ internal static class CssTransformOrigin_Parser
             };
         }
 
-        var k1 = Classify(tokens[1], out var f1, out var p1);
+        var k1 = Classify(tokens[1], emPx, remPx, out var f1, out var p1);
         if (k1 == OriginKind.Invalid) return TransformOrigin.Center;
 
         if (k0 != OriginKind.Offset && k1 != OriginKind.Offset)
@@ -291,7 +378,7 @@ internal static class CssTransformOrigin_Parser
     /// <summary>Classify a transform-origin token + read its value as a box fraction (keyword / %)
     /// OR a px offset (length). Exactly one of <paramref name="frac"/> / <paramref name="px"/> is
     /// non-trivial; the caller assigns whichever to the resolved axis.</summary>
-    private static OriginKind Classify(string token, out double frac, out double px)
+    private static OriginKind Classify(string token, double emPx, double remPx, out double frac, out double px)
     {
         frac = 0.5;
         px = 0.0;
@@ -311,7 +398,7 @@ internal static class CssTransformOrigin_Parser
             px = 0;
             return OriginKind.Offset;
         }
-        if (CssLengthParsing.TryLengthPx(t, out var lengthPx))
+        if (CssLengthParsing.TryLengthPxEmRem(t, emPx, remPx, out var lengthPx))
         {
             frac = 0;
             px = lengthPx;

@@ -109,7 +109,7 @@ Phase column shows the milestone in which the feature first ships.
 | `clip-path: path()` | ✅ | 4 | Native PDF clip (SVG path → PDF path + `W n`/`W* n`, curves preserved, fill-rule honored). |
 | `mask`, `mask-image` | 🧪 | 4 | Skia raster fallback. |
 | `filter: blur` / `drop-shadow` / `brightness` / `contrast` / `saturate` / `sepia` / `hue-rotate` / `invert` / `grayscale` | 🧪 | 4 | Skia raster fallback per filtered subtree. |
-| `transform` (2D) | ✅ | 4 | Translate, rotate, scale, skew, matrix. |
+| `transform` (2D) | ✅ | 4 | Translate, rotate, scale, skew, matrix. `em`/`rem`/`%` translate offsets + `transform-origin` lengths resolve (% against the box border-box). |
 | `transform` (3D) | ❌ | — | Emits `CSS-TRANSFORM-3D-UNSUPPORTED-001`. |
 | Animations / transitions | ❌ | — | PDF is static. Emits `CSS-ANIMATION-UNSUPPORTED-001`. |
 

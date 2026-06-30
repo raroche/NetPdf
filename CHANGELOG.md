@@ -8,6 +8,12 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: transform / shadow / gradient residuals
+
+A batch of documented `deferrals.md` follow-ups for transforms, shadows, and gradients. Every change is gated so non-feature rendering stays byte-identical (no corpus/snapshot sample uses these).
+
+- **`transform` `em`/`rem`/`%` offsets + `transform-origin` lengths** — `translate`/`translateX`/`translateY`/`translate3d` offsets and `transform-origin` now resolve `em` (the element font-size), `rem` (the root element font-size), and `%` (a translate percentage against the box border-box, CSS Transforms L1 §6). `em`/`rem` fold to px at parse time; a `%` translate is carried as a width/height fraction through matrix composition and resolved against the box at paint time (`CssTransform` gains split `EPx`/`EW`/`EH` + `FPx`/`FW`/`FH` translation components, resolved in `ToPdfMatrix`). Previously any of these dropped the whole value with `CSS-TRANSFORM-UNSUPPORTED-001`.
+
 ### Fixed — Phase 3 residual long-tail
 
 This batch closes the documented Phase-3 residual deferrals (`deferrals.md`) in a single pass; every change is gated so non-feature rendering stays byte-identical.

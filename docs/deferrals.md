@@ -2724,8 +2724,10 @@ flags the categories):
      STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
      composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element
      transforms too — but each fragment still wraps that `cm` independently, NOT as one isolated
-     z-order group; a transformed ancestor split onto another page is also skipped) + `em`/`rem`/`%`
-     lengths in transform offsets / `transform-origin`. The `NetPdf.Paint` `DisplayCommand` IR still has no
+     z-order group; a transformed ancestor split onto another page is also skipped). **`em`/`rem`/`%`
+     lengths in transform offsets / `transform-origin` now RESOLVE** (em = the element font-size, rem =
+     the root element font-size, a translate % against the box border-box at paint time — carried as a
+     width/height fraction through matrix composition). The `NetPdf.Paint` `DisplayCommand` IR still has no
      fragment→command or command→PDF consumer — the bridge emits straight to `IContentStream`.
      **Phase 4 PR 2 (CSS filters) shipped — IMAGES only:** `filter` on an `<img>` applies via the Skia
      `ImageFilterApplier` (a composed `SKImageFilter` chain → raster XObject + `/SMask`,

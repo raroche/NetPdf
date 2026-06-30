@@ -2719,10 +2719,13 @@ flags the categories):
      composite padding box + clipped per slice — continuous across cuts, like the outset path — a blurred
      inset on a slice falls back to a sharp ring); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
      (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`,
-     `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residuals are an
-     over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset, and PER-SEGMENT
-     rasterization (a justified line's blurred words don't bleed across the inter-word gaps, since each
-     glyph segment rasters independently); `transform` faithful 3D PROJECTION (genuinely-3D
+     `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residual is an
+     over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset. **PER-SEGMENT
+     rasterization on a JUSTIFIED line SHIPPED**: a justified line's BLURRED layers now rasterize ONCE per
+     slice over the whole line (the inter-word justify gaps baked into the glyph X positions via
+     `TextShadowRasterizer.TryRasterizePositionedGlyphRun`), so the blur is continuous instead of seamed at
+     the gaps; sharp layers stay per-word (they don't bleed), and a mixed blurred+sharp multi-layer line's
+     blurred-vs-sharp z-order is a minor sub-residual. `transform` faithful 3D PROJECTION (genuinely-3D
      functions flatten to identity, not an orthographic projection) + the transformed-element
      STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
      composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element

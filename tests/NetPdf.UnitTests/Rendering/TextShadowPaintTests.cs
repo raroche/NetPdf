@@ -207,6 +207,28 @@ public sealed class TextShadowPaintTests
     }
 
     [Fact]
+    public void Blurred_text_shadow_on_a_justified_line_rasterizes_per_line_not_per_word()
+    {
+        // A justified multi-word line previously rasterized its blurred shadow PER WORD (the blur seamed at
+        // the inter-word gaps). It now rasterizes ONCE per slice over the whole line — so a justified line
+        // produces ~the same number of shadow images as the SAME text left-aligned (per-line), not one per
+        // word. (Real font — the synthetic font's empty glyphs would fall back to sharp, emitting no image.)
+        string Body(string align) =>
+            "<!DOCTYPE html><html><body>"
+            + $"<p style=\"width:160px;text-align:{align};text-shadow:2px 2px 3px #ff0000\">"
+            + "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima</p>"
+            + "</body></html>";
+        int Images(string align) => Latin1(HtmlPdf.Convert(Body(align))).Split(" Do").Length - 1;
+
+        var justify = Images("justify");
+        var left = Images("left");
+        Assert.True(justify >= 1 && left >= 1, $"both must rasterize the blurred shadow (justify={justify}, left={left})");
+        // Per-slice (not per-word): the justified count tracks the left-aligned per-line count (the last line
+        // isn't justified, so allow a small margin), NOT the much larger word count.
+        Assert.True(justify <= left + 1, $"justify={justify} should be ~per-line like left={left}, not per-word");
+    }
+
+    [Fact]
     public void None_paints_only_the_text_with_no_diagnostic()
     {
         var result = HtmlPdf.ConvertDetailed(Html("none"), Opts());

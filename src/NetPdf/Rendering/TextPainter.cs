@@ -619,6 +619,15 @@ internal static class TextPainter
                     ?? lineBaselineTopPx - InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
             }
 
+            // text-shadow on a justified line — rasterize each BLURRED layer ONCE over the WHOLE slice (so
+            // the blur is continuous across the inter-word gaps); the per-word segments below skip the layers
+            // it handled. Uses a read-only pen simulation, so the segment loop's pen state is unaffected.
+            bool[]? blurredHandled = null;
+            if (fc is not null && shadows is { Count: > 0 })
+                blurredHandled = EmitSliceBlurredTextShadows(run, slice, concatText, gapCount, extraPerGapPx,
+                    penXPx, opportunitiesUsed, contentLeftPx, fc, key!, fontSizePx, baselineTopPx, argb,
+                    pageHeightPt, clipPt, transformCm, draws, shadows);
+
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.
             var segPenXPx = penXPx;       // painted x of the current segment's first glyph.
             for (var g = 0; g < slice.GlyphLength; g++)
@@ -633,7 +642,7 @@ internal static class TextPainter
                 if (fc is not null)
                     EmitGlyphSegment(run, slice.GlyphStart + segStartG, g - segStartG + 1, fc, key!,
                         fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                        baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache);
+                        baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache, blurredHandled);
                 penXPx += extraPerGapPx;
                 segStartG = g + 1;
                 segPenXPx = penXPx;
@@ -642,7 +651,7 @@ internal static class TextPainter
             if (fc is not null && segStartG < slice.GlyphLength)
                 EmitGlyphSegment(run, slice.GlyphStart + segStartG, slice.GlyphLength - segStartG, fc, key!,
                     fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                    baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache);
+                    baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache, blurredHandled);
         }
     }
 
@@ -659,7 +668,7 @@ internal static class TextPainter
         (double X, double Y, double W, double H)? clipPt, List<DrawCommand> draws,
         IReadOnlyList<ResolvedTextShadow>? shadows,
         (double, double, double, double, double, double)? transformCm,
-        Dictionary<string, BlurredShadowRaster?>? shadowCache)
+        Dictionary<string, BlurredShadowRaster?>? shadowCache, bool[]? blurredHandledAtSlice = null)
     {
         var ids = new ushort[glyphCount];
         for (var i = 0; i < glyphCount; i++)
@@ -677,7 +686,68 @@ internal static class TextPainter
             ColorArgb: argb,
             ClipPt: clipPt,
             Transform: transformCm);
-        AddTextDrawWithShadows(draws, command, shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt, shadowCache);
+        AddTextDrawWithShadows(draws, command, shadows, fc, fontSizePx, xStartPx, baselineTopPx,
+            pageHeightPt, shadowCache, blurredHandledAtSlice);
+    }
+
+    /// <summary>text-shadow on a JUSTIFIED line — rasterize each BLURRED layer ONCE over the WHOLE slice
+    /// (all its words at their justified positions, the inter-word gaps baked into the glyph X), so the
+    /// blur is CONTINUOUS instead of seamed per word. A read-only pen simulation (matching the segment
+    /// loop's advancement) collects the slice's glyph ids + their X relative to the slice origin; each
+    /// blurred layer that rasterizes is placed under the text and its index marked in the returned
+    /// <c>handled</c> array so the per-word segments skip it (a layer whose raster fails stays unhandled
+    /// → the segments paint it as a sharp offset). Returns <see langword="null"/> when no layer blurs.</summary>
+    private static bool[]? EmitSliceBlurredTextShadows(
+        ShapedRun run, ShapedRunSlice slice, string concatText, int gapCount, double extraPerGapPx,
+        double startPenXPx, int startOpportunities, double contentLeftPx, FontCollect fc, string fontKey,
+        double fontSizePx, double baselineTopPx, uint runArgb, double pageHeightPt,
+        (double X, double Y, double W, double H)? clipPt,
+        (double, double, double, double, double, double)? transformCm, List<DrawCommand> draws,
+        IReadOnlyList<ResolvedTextShadow> shadows)
+    {
+        var anyBlur = false;
+        foreach (var s in shadows) if (s.BlurPx > 0) { anyBlur = true; break; }
+        if (!anyBlur) return null;
+
+        // Read-only pen simulation over the slice (no global-state mutation) → the slice's glyph ids + their
+        // painted X relative to the slice origin (origin = the first glyph's pen + its x-offset).
+        var gids = new ushort[slice.GlyphLength];
+        var xRel = new double[slice.GlyphLength];
+        var pen = startPenXPx;
+        var opp = startOpportunities;
+        var originPen = startPenXPx + run.Glyphs[slice.GlyphStart].XOffset;
+        for (var g = 0; g < slice.GlyphLength; g++)
+        {
+            var glyph = run.Glyphs[slice.GlyphStart + g];
+            gids[g] = glyph.GlyphId;
+            xRel[g] = pen + glyph.XOffset - originPen;
+            pen += glyph.XAdvance;
+            if (opp < gapCount && InlineJustify.IsJustifySpace(concatText, glyph.Cluster)) { opp++; pen += extraPerGapPx; }
+        }
+
+        var handled = new bool[shadows.Count];
+        for (var i = shadows.Count - 1; i >= 0; i--) // reverse → first-listed ends up on top among the layers
+        {
+            var s = shadows[i];
+            if (s.BlurPx <= 0) continue;
+            var argb = s.Argb ?? runArgb;
+            if (FragmentPainter.Alpha(argb) == 0) { handled[i] = true; continue; } // invisible → nothing to paint
+            FragmentPainter.ColorChannels(argb, out var r, out var g, out var b);
+            var alpha = FragmentPainter.Alpha(argb) / 255.0;
+            var image = NetPdf.Pdf.Images.TextShadowRasterizer.TryRasterizePositionedGlyphRun(
+                fc.Font.FontBytes, gids, xRel, (float)fontSizePx, (float)s.BlurPx, r, g, b, alpha,
+                TextShadowRasterScale, out var offX, out var offY, out var w, out var h);
+            if (image is null) continue; // raster failed (over-cap / unreadable) → the segments paint it sharp
+            var leftPx = contentLeftPx + originPen + s.DxPx + offX;
+            var topPx = baselineTopPx + s.DyPx + offY;
+            FragmentPainter.ToPdfRect(leftPx, topPx, w, h, pageHeightPt, out var ix, out var iy, out var iw, out var ih);
+            draws.Add(new DrawCommand(
+                FontKey: fontKey, OriginalGlyphIds: System.Array.Empty<ushort>(),
+                XPt: 0, YPt: 0, SizePt: PdfUnits.PxToPt(fontSizePx), ColorArgb: argb, ClipPt: clipPt,
+                Transform: transformCm, ShadowImage: (image, ix, iy, iw, ih)));
+            handled[i] = true;
+        }
+        return handled;
     }
 
     /// <summary>A cached rasterized blurred text-shadow (PR #236 review [P2]): the image + its top-left
@@ -729,12 +799,15 @@ internal static class TextPainter
     private static void AddTextDrawWithShadows(
         List<DrawCommand> draws, DrawCommand command, IReadOnlyList<ResolvedTextShadow>? shadows,
         FontCollect fc, double fontSizePx, double xStartPx, double baselineTopPx, double pageHeightPt,
-        Dictionary<string, BlurredShadowRaster?>? shadowCache)
+        Dictionary<string, BlurredShadowRaster?>? shadowCache, bool[]? blurredHandledAtSlice = null)
     {
         if (shadows is { Count: > 0 })
         {
             for (var i = shadows.Count - 1; i >= 0; i--)
             {
+                // A justified line rasterizes its BLURRED layers ONCE per slice (continuous across the
+                // inter-word gaps); those layers are already emitted, so the per-word segment skips them.
+                if (blurredHandledAtSlice is not null && blurredHandledAtSlice[i]) continue;
                 var s = shadows[i];
                 var argb = s.Argb ?? command.ColorArgb; // null = currentColor = the run's text color
                 if (FragmentPainter.Alpha(argb) == 0) continue;

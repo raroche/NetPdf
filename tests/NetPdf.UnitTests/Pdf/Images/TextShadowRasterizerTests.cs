@@ -78,4 +78,28 @@ public sealed class TextShadowRasterizerTests
             bytes, new[] { gid }, 9000f, 0f, 0, 0, 0, 1, 1.0, out _, out _, out _, out _);
         Assert.Null(img);
     }
+
+    [Fact]
+    public void Positioned_glyph_run_honors_the_explicit_spacing()
+    {
+        // A justified line bakes the inter-word gaps into per-glyph X. The same glyphs at NATURAL advances
+        // vs spread far apart → the positioned raster is much wider (the whole line, not one word).
+        var bytes = FontBytes(out var gid);
+        TextShadowRasterizer.TryRasterizeGlyphRun(
+            bytes, new[] { gid, gid, gid }, 32f, 2f, 0, 0, 0, 1, 2.0, out _, out _, out var wNatural, out _);
+        TextShadowRasterizer.TryRasterizePositionedGlyphRun(
+            bytes, new[] { gid, gid, gid }, new double[] { 0, 100, 200 }, 32f, 2f, 0, 0, 0, 1, 2.0,
+            out _, out _, out var wPositioned, out _);
+        Assert.True(wPositioned > wNatural + 100,
+            $"positioned width {wPositioned} should exceed natural {wNatural} by the extra spacing");
+    }
+
+    [Fact]
+    public void Positioned_run_with_mismatched_lengths_returns_null()
+    {
+        var bytes = FontBytes(out var gid);
+        var img = TextShadowRasterizer.TryRasterizePositionedGlyphRun(
+            bytes, new[] { gid, gid }, new double[] { 0 }, 32f, 0f, 0, 0, 0, 1, 2.0, out _, out _, out _, out _);
+        Assert.Null(img);
+    }
 }

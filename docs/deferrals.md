@@ -2777,8 +2777,14 @@ flags the categories):
      cascade via the resolved style); `<textPath>` along ANY basic shape (not just `<path>`); per-glyph
      `rotate` (text/tspan, run-local index); `feDropShadow` filter primitive (blur + offset + flood-color/
      -opacity); SVG text `dominant-baseline` (hanging / text-before-edge / text-after-edge / middle / central
-     via font metrics). **SVG residuals (later):** filter graph primitives (feMerge/feComposite/feBlend/
-     feFlood/feImage/feTile/…) + `in`/`result` routing + the filter region; exact curve tangents for path
+     via font metrics). **SVG part 7 shipped:** the filter GRAPH — `feFlood` / `feMerge` / `feComposite`
+     (over/in/out/atop/xor/lighter/arithmetic) / `feBlend` (16 modes) primitives + named `in`/`in2`/`result`
+     routing (incl. `SourceGraphic`/`SourceAlpha`); only the primary (reachable) tree contributes; forward/
+     missing custom `result` refs are treated as unspecified; the result is clipped to the DEFAULT filter
+     region (bbox + 10%); the hand-built drop-shadow pattern works. **SVG residuals (later):**
+     remaining filter primitives (feImage/feTile/feTurbulence/feComponentTransfer/feDisplacementMap/
+     feMorphology/feConvolveMatrix/feDiffuseLighting/feSpecularLighting) + an EXPLICIT filter region / primitive
+     subregion / `*Units` + `BackgroundImage`/`FillPaint` inputs; exact curve tangents for path
      markers (chord approximation); `rotate` global (cross-run) index + `textLength`/`lengthAdjust`;
      bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip
      (`maskUnits` -10%..120% default region not clipped) + `mask-type: alpha`; pattern tile resolution under

@@ -1023,15 +1023,16 @@ internal sealed class ImageResourceCache
                 diagnostics.Emit(new Diagnostic(
                     DiagnosticCodes.CssSvgUnsupported001,
                     "An SVG image used a feature the renderer doesn't support (an EXTERNAL / non-data: "
-                    + "<image> href, a filter with an unsupported primitive [only feGaussianBlur/feOffset/"
-                    + "feColorMatrix/feDropShadow are modeled] or routing/region attributes, a filter/marker/"
-                    + "clip-path/mask/textPath referencing a wrong-kind or unresolved target, an unresolved "
-                    + "url(#…) reference, an unknown element such as foreignObject, or content beyond the "
-                    + "depth / element budget); the supported shapes, text (incl. %/em coords, spacing, "
-                    + "rotate, dominant-baseline, textPath), gradients, pattern paint-servers, clip-path/mask/"
-                    + "filter/marker references, preserveAspectRatio, use/symbol viewports, data: images, "
-                    + "stroke dashes, opacity, and nested viewports still rendered. An unresolvable paint "
-                    + "server was painted transparent (not black).",
+                    + "<image> href, a filter with an unsupported primitive [feImage/feTile/feTurbulence/…] or "
+                    + "input/region attributes, a filter/marker/clip-path/mask/textPath referencing a "
+                    + "wrong-kind or unresolved target, an unresolved url(#…) reference, an unknown element "
+                    + "such as foreignObject, or content beyond the depth / element budget); the supported "
+                    + "shapes, text (incl. %/em coords, spacing, rotate, dominant-baseline, textPath), "
+                    + "gradients, pattern paint-servers, filter graphs (feGaussianBlur/feOffset/feColorMatrix/"
+                    + "feDropShadow/feFlood/feMerge/feComposite/feBlend + named routing), clip-path/mask/marker "
+                    + "references, preserveAspectRatio, use/symbol viewports, data: images, stroke dashes, "
+                    + "opacity, and nested viewports still rendered. An unresolvable paint server was painted "
+                    + "transparent (not black).",
                     DiagnosticSeverity.Info));
             // SourceBytes = the RASTERIZED RGBA re-encoded as PNG (NOT the SVG XML), so a CSS filter / mask
             // on the <img> can re-decode it via SKCodec (PR-230 review [P2]); fall back to the SVG bytes if

@@ -10,7 +10,7 @@ using SkiaSharp;
 namespace NetPdf.Svg;
 
 /// <summary>SVG marker support (§11.6) for the raster renderer — paints <c>marker-start</c>/<c>-mid</c>/
-/// <c>-end</c> at a shape's vertices. Extracted from <see cref="SvgRasterizer"/> (PR-244 review — keep
+/// <c>-end</c> at a shape's vertices. Extracted from <see cref="SvgRasterizer"/> (PR-245 refactor — keep
 /// feature areas as small internal collaborators).</summary>
 internal static class SvgMarkers
 {

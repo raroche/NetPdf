@@ -11,7 +11,7 @@ namespace NetPdf.Svg;
 /// <summary>SVG <c>filter</c> support (§15) for the raster renderer — resolves a <c>filter="url(#id)"</c>
 /// reference and composes a <c>&lt;filter&gt;</c>'s primitive children into a single Skia
 /// <see cref="SKImageFilter"/> applied to the element subtree. Extracted from <see cref="SvgRasterizer"/>
-/// (PR-244 review — keep feature areas as small internal collaborators).</summary>
+/// (PR-245 refactor — keep feature areas as small internal collaborators).</summary>
 internal static class SvgFilters
 {
     /// <summary>Resolve a <c>filter="url(#id)"</c> reference to its <c>&lt;filter&gt;</c> element, or

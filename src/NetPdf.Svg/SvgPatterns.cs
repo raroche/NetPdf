@@ -11,7 +11,7 @@ namespace NetPdf.Svg;
 
 /// <summary>SVG <c>&lt;pattern&gt;</c> paint-server support (§13.3) for the raster renderer — renders the
 /// pattern content once into a tile and wraps it in a repeating shader. Extracted from
-/// <see cref="SvgRasterizer"/> (PR-244 review — keep feature areas as small internal collaborators).</summary>
+/// <see cref="SvgRasterizer"/> (PR-245 refactor — keep feature areas as small internal collaborators).</summary>
 internal static class SvgPatterns
 {
     private const int MaxPatternDepth = 4;          // a pattern's content can reference another pattern

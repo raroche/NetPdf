@@ -9,7 +9,7 @@ namespace NetPdf.Svg;
 
 /// <summary>SVG <c>clip-path</c> (§14.3) + <c>mask</c> (§14.4) element-reference support for the raster
 /// renderer, plus the <c>objectBoundingBox</c> reference-box computation they share. Extracted from
-/// <see cref="SvgRasterizer"/> (PR-244 review — keep feature areas as small internal collaborators).</summary>
+/// <see cref="SvgRasterizer"/> (PR-245 refactor — keep feature areas as small internal collaborators).</summary>
 internal static class SvgClipMask
 {
     /// <summary>Apply a <c>clip-path="url(#id)"</c> reference: clip the canvas to the union of the referenced

@@ -282,10 +282,10 @@ internal static class SvgFilters
         }
         if (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
         {
-            var fx = RegionFraction(filter, "x", -0.1f);
-            var fy = RegionFraction(filter, "y", -0.1f);
-            var fw = RegionFraction(filter, "width", 1.2f);
-            var fh = RegionFraction(filter, "height", 1.2f);
+            var fx = RegionFraction(filter, "x", -0.1f, state);
+            var fy = RegionFraction(filter, "y", -0.1f, state);
+            var fw = RegionFraction(filter, "width", 1.2f, state);
+            var fh = RegionFraction(filter, "height", 1.2f, state);
             if (fw <= 0 || fh <= 0) return FilterRegion.EmptyRegion; // explicit zero / negative → empty region
             return FilterRegion.Of(new SKRect(b.Left + fx * b.Width, b.Top + fy * b.Height,
                 b.Left + (fx + fw) * b.Width, b.Top + (fy + fh) * b.Height));
@@ -307,15 +307,23 @@ internal static class SvgFilters
     }
 
     /// <summary>An <c>objectBoundingBox</c> filter-region value as a bbox FRACTION: a <c>%</c> → value/100, a
-    /// plain number → as-is, absent → <paramref name="fallback"/> (the §15 default).</summary>
-    private static float RegionFraction(XElement filter, string name, float fallback)
+    /// UNITLESS number → as-is, absent → <paramref name="fallback"/> (the §15 default). Under
+    /// <c>objectBoundingBox</c> the value is a fraction of the target bbox, NOT a length — a unit-suffixed
+    /// value (<c>10px</c> / <c>20em</c>) or a malformed value must NOT be silently reinterpreted as a huge bbox
+    /// multiplier (which would make a filter clip far outside its region / vanish): it is FLAGGED
+    /// (<c>CSS-SVG-UNSUPPORTED-001</c>) and falls back to the §15 default.</summary>
+    private static float RegionFraction(XElement filter, string name, float fallback, SvgRenderState state)
     {
         var raw = SvgRasterizer.Attr(filter, name)?.Trim();
         if (string.IsNullOrEmpty(raw)) return fallback;
         if (raw.EndsWith("%", StringComparison.Ordinal))
-            return float.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? pct / 100f : fallback;
-        return float.TryParse(SvgRasterizer.TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+            return float.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? pct / 100f : Invalid(state, fallback);
+        // A bbox fraction is UNITLESS — parse the raw value as-is (no unit stripping). A trailing unit fails
+        // the parse and is flagged rather than reinterpreted as a bbox multiplier.
+        return float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : Invalid(state, fallback);
     }
+
+    private static float Invalid(SvgRenderState state, float fallback) { state.SawUnsupported = true; return fallback; }
 
     /// <summary>Mark the filter primitives reachable backward from the LAST primitive through their input
     /// references (<c>in</c>/<c>in2</c>/<c>feMergeNode in</c>), so only the PRIMARY tree (§15) is evaluated.

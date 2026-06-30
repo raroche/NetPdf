@@ -18,6 +18,7 @@ Discharges the part-9 review: filter-region correctness, `feImage` sizing/owners
 - **Flagged, not silently ignored** — an unknown `filterUnits` value (→ `objectBoundingBox` behavior) and a lighting `kernelUnitLength` are now surfaced through `CSS-SVG-UNSUPPORTED-001`.
 - **`mask-type` via inline `style=`** — confirmed + tested (`SvgAttr.Presentation` already reads the inline style declaration, which wins per §6.4).
 - **Tests** — feImage meet-letterbox + none-stretch placement; lighting `lighting-color` tint, `diffuseConstant` + elevation intensity, specular highlight; empty/omitted/percentage/unknown-units regions; inline-style `mask-type`. Stale docs swept (`feTile` no longer claimed supported; compat-matrix `mask-type:alpha`; test summaries).
+- **PR #250 review hardening:** (1) [P2] the `objectBoundingBox` filter-region parser (`RegionFraction`) is now STRICT — a value is a bbox fraction (`%` or unitless), so a unit-suffixed length (`width="20px"`) is no longer stripped and reinterpreted as a `20×`-bbox multiplier (which would push the region far outside / make the filter vanish); it is FLAGGED (`CSS-SVG-UNSUPPORTED-001`) and falls back to the §15 default. (2) [P3] added a `feImage preserveAspectRatio="xMidYMid slice"` test (a wide image in a square region covers it and the overflow is cropped by the filter-region clip — no leak), plus unitless-fraction + unit-suffixed-flag regression tests.
 
 ### Added — Phase 4 visual parity: SVG part 9 (filter completion + mask-type)
 

@@ -835,4 +835,52 @@ public sealed class SvgFilterRasterizerTests
         Assert.True(Px(info, 20, 20).B > 150);     // inside (8,8)-(48,48): blue
         Assert.Equal(0, Px(info, 60, 60).A);       // outside: transparent
     }
+
+    [Fact]
+    public void Fe_image_preserve_aspect_ratio_slice_covers_and_clips_to_the_region()
+    {
+        // preserveAspectRatio="xMidYMid slice" on a WIDE 32×8 image in a SQUARE 20×20 region: the image scales
+        // to COVER the region (scale 2.5 → 80×20, centered) and the horizontal overflow is cropped by the
+        // filter-region clip — it must NOT leak outside the region. (Under meet the top/bottom would letterbox.)
+        var png = "data:image/png;base64," + Convert.ToBase64String(SyntheticPng.BuildOpaqueRgb8(32, 8, 0x00, 0x00, 0xFF));
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"20\" height=\"20\"><feImage preserveAspectRatio=\"xMidYMid slice\" href=\"{png}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"80\" height=\"80\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 10, 10).B > 150);     // region center covered
+        Assert.True(Px(info, 10, 2).B > 150);      // top band covered too (slice cover, not a meet letterbox)
+        Assert.True(Px(info, 18, 10).B > 150);     // near the right edge of the region still covered
+        Assert.Equal(0, Px(info, 25, 10).A);       // overflow beyond the region clipped away (no leak)
+        Assert.Equal(0, Px(info, 10, 30).A);       // below the region clipped
+    }
+
+    [Fact]
+    public void Object_bounding_box_region_accepts_unitless_fractions()
+    {
+        // A UNITLESS objectBoundingBox value is a bbox fraction: width="0.5" == 50% → the top-left quadrant of
+        // the bbox (rect 10..50 → region 10..30). Valid, not flagged.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" x=\"0\" y=\"0\" width=\"0.5\" height=\"0.5\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 20).B > 150);     // inside the top-left quadrant (10..30): blue
+        Assert.Equal(0, Px(info, 45, 45).A);       // outside: transparent
+    }
+
+    [Fact]
+    public void Object_bounding_box_region_with_unit_suffixed_length_is_flagged_not_a_bbox_multiplier()
+    {
+        // Under the default filterUnits=objectBoundingBox a value is a bbox FRACTION, not a length. width="20px"
+        // must NOT be stripped to 20 and read as 20× the bbox (which would push the region far outside) — it is
+        // FLAGGED and falls back to the §15 default (120%), so the region stays near the bbox.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" x=\"0\" y=\"0\" width=\"20px\" height=\"20px\"><feFlood flood-color=\"blue\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.True(unsupported);                  // a unit-suffixed objectBoundingBox value is flagged
+        Assert.True(Px(info, 30, 30).B > 150);     // inside the default region (10..58): blue
+        Assert.Equal(0, Px(info, 70, 30).A);       // x=70 is outside the default region — NOT the 20×-bbox bug
+    }
 }

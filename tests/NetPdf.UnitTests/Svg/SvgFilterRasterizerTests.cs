@@ -97,15 +97,14 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Theory]
-    // PR-243 review [P1] — routing / subregion / region attributes aren't modeled → flag them.
-    [InlineData("<filter id=\"f\"><feOffset dx=\"2\" in=\"SourceAlpha\"/></filter>")]            // non-default input
-    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" result=\"b\"/></filter>")] // named result
+    // The filter REGION / primitive subregion / *Units still aren't modeled → flagged. (in/result routing is
+    // now SUPPORTED via the filter graph — SVG part 7.)
     [InlineData("<filter id=\"f\" x=\"0\" y=\"0\" width=\"100\" height=\"100\"><feGaussianBlur stdDeviation=\"1\"/></filter>")] // filter region
     [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" x=\"0\" y=\"0\" width=\"10\" height=\"10\"/></filter>")]   // primitive subregion
     [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]        // primitiveUnits
-    // PR-244 review [P2] — in="SourceGraphic" AFTER a prior result is NOT the linear input → flag.
-    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\"/><feOffset dx=\"2\" in=\"SourceGraphic\"/></filter>")]
-    public void Filter_routing_or_region_attributes_are_flagged(string filter)
+    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // unsupported primitive
+    [InlineData("<filter id=\"f\"><feOffset dx=\"2\" in=\"BackgroundImage\"/></filter>")]                                     // unsupported input
+    public void Filter_region_or_unsupported_input_is_flagged(string filter)
     {
         var info = SvgRasterizer.TryRender(Svg(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" + filter +
@@ -115,13 +114,15 @@ public sealed class SvgFilterRasterizerTests
         Assert.True(unsupported);
     }
 
-    [Fact]
-    public void Explicit_source_graphic_input_is_not_flagged()
+    [Theory]
+    // SVG part 7 — named-result routing (in/in2/result, SourceGraphic, SourceAlpha) is now supported, not flagged.
+    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" in=\"SourceGraphic\"/></filter>")]
+    [InlineData("<filter id=\"f\"><feOffset dx=\"2\" in=\"SourceAlpha\"/></filter>")]
+    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" result=\"b\"/><feOffset dx=\"2\" in=\"b\"/></filter>")]
+    public void Filter_named_result_routing_is_supported(string filter)
     {
-        // in="SourceGraphic" is exactly the linear default → not flagged.
         var info = SvgRasterizer.TryRender(Svg(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
-            "<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" in=\"SourceGraphic\"/></filter>" +
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" + filter +
             "<rect x=\"10\" y=\"10\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
             out var unsupported);
         Assert.NotNull(info);
@@ -129,16 +130,42 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Fact]
-    public void An_unsupported_primitive_is_flagged()
+    public void Fe_merge_and_flood_build_a_colored_drop_shadow()
     {
-        // feMerge (graph routing) isn't modeled this cut → flagged; the supported blur still applies.
+        // The classic hand-built drop shadow: SourceAlpha → blur → offset → flood-colored (composite in) →
+        // merged under SourceGraphic. A blue shadow offset down-right with the red source on top.
         var info = SvgRasterizer.TryRender(Svg(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
-            "<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\"/><feMerge><feMergeNode/></feMerge></filter>" +
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\">" +
+            "<feOffset in=\"SourceAlpha\" dx=\"8\" dy=\"8\" result=\"o\"/>" +
+            "<feFlood flood-color=\"blue\" result=\"c\"/>" +
+            "<feComposite in=\"c\" in2=\"o\" operator=\"in\" result=\"s\"/>" +
+            "<feMerge><feMergeNode in=\"s\"/><feMergeNode in=\"SourceGraphic\"/></feMerge>" +
+            "</filter>" +
             "<rect x=\"10\" y=\"10\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
             out var unsupported);
         Assert.NotNull(info);
-        Assert.True(unsupported);
-        Assert.True(Px(info!, 20, 20).A > 100);    // still rendered (blur applied)
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).R > 150);    // red source on top
+        var shadow = Px(info!, 35, 35);            // shadow region beyond the source
+        Assert.True(shadow.B > 150 && shadow.R < 100); // blue shadow
+    }
+
+    [Fact]
+    public void Fe_blend_multiply_darkens()
+    {
+        // SourceGraphic (red) blended multiply with a green flood → near-black (R·G ≈ 0).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"#00ff00\" result=\"g\"/>" +
+            "<feBlend in=\"SourceGraphic\" in2=\"g\" mode=\"multiply\"/>" +
+            "</filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#ff0000\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var p = Px(info!, 20, 20);
+        Assert.True(p.R < 80 && p.G < 80 && p.B < 80);   // red × green ≈ black
     }
 }

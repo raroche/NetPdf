@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Xml.Linq;
 using SkiaSharp;
@@ -10,8 +11,10 @@ namespace NetPdf.Svg;
 
 /// <summary>SVG <c>filter</c> support (§15) for the raster renderer — resolves a <c>filter="url(#id)"</c>
 /// reference and composes a <c>&lt;filter&gt;</c>'s primitive children into a single Skia
-/// <see cref="SKImageFilter"/> applied to the element subtree. Extracted from <see cref="SvgRasterizer"/>
-/// (PR-245 refactor — keep feature areas as small internal collaborators).</summary>
+/// <see cref="SKImageFilter"/> applied to the element subtree. A filter GRAPH is modeled (SVG part 7): each
+/// primitive resolves its <c>in</c>/<c>in2</c> (the previous result / <c>SourceGraphic</c> / <c>SourceAlpha</c>
+/// / a named <c>result</c>) and its output is stored under <c>result</c>. Extracted from
+/// <see cref="SvgRasterizer"/> (PR-245 refactor — keep feature areas as small internal collaborators).</summary>
 internal static class SvgFilters
 {
     /// <summary>Resolve a <c>filter="url(#id)"</c> reference to its <c>&lt;filter&gt;</c> element, or
@@ -31,74 +34,190 @@ internal static class SvgFilters
     }
 
     /// <summary>Compose a <c>&lt;filter&gt;</c>'s primitive children into a single Skia
-    /// <see cref="SKImageFilter"/> applied to the element's rendering (the <c>SourceGraphic</c>). A LINEAR
-    /// chain is supported — each primitive feeds the next — covering <c>feGaussianBlur</c>, <c>feOffset</c>,
-    /// <c>feDropShadow</c>, and <c>feColorMatrix</c> (matrix / saturate / hueRotate / luminanceToAlpha).
-    /// Graph-routing primitives (<c>feMerge</c> / <c>feComposite</c> / <c>feBlend</c> / <c>feFlood</c> /
-    /// <c>feImage</c> / …), the <c>in</c>/<c>result</c> named-input routing, primitive subregions, and the
-    /// filter region / <c>*Units</c> aren't modeled this cut → flagged. Returns <see langword="null"/> when no
-    /// supported primitive contributes (the element renders unfiltered).</summary>
+    /// <see cref="SKImageFilter"/> applied to the element's rendering. Modeled as a filter GRAPH: each
+    /// primitive resolves its <c>in</c>/<c>in2</c> (the previous primitive's result — <c>SourceGraphic</c>
+    /// for the first — or an explicit <c>SourceGraphic</c>/<c>SourceAlpha</c>/named <c>result</c>) and stores
+    /// its output under <c>result</c>. Supports <c>feGaussianBlur</c>, <c>feOffset</c>, <c>feDropShadow</c>,
+    /// <c>feColorMatrix</c>, <c>feFlood</c>, <c>feMerge</c>, <c>feComposite</c>, and <c>feBlend</c>. Primitive
+    /// SUBREGIONS (x/y/width/height), the filter region / <c>*Units</c>, <c>BackgroundImage</c>/<c>FillPaint</c>
+    /// inputs, and other primitives aren't modeled → flagged. Returns <see langword="null"/> when no
+    /// primitive contributes (the element renders unfiltered).</summary>
     public static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state)
     {
-        SKImageFilter? current = null; // null input = SourceGraphic
         // The filter region (x/y/width/height) and *Units change the result geometry but aren't applied here.
         var sawUnsupported = SvgRasterizer.HasAnyAttr(filter, "x", "y", "width", "height", "filterUnits", "primitiveUnits");
+        var results = new Dictionary<string, SKImageFilter?>(StringComparer.Ordinal);
+        SKImageFilter? last = null; // null = SourceGraphic; tracks the previous primitive's output
+
         foreach (var prim in filter.Elements())
         {
-            // A named result, a primitive subregion, or an `in` we can't honor implies a routing/region model
-            // this linear chain doesn't model → flag (the chain still renders as a best effort). An explicit
-            // `in` is honored ONLY as the FIRST primitive's `in="SourceGraphic"` (≡ the implicit chain input);
-            // once a prior result exists we feed the chain regardless of `in`, so any `in` then is wrong.
-            if (SvgRasterizer.HasAnyAttr(prim, "result", "x", "y", "width", "height"))
-                sawUnsupported = true;
-            else if (SvgRasterizer.Attr(prim, "in") is { } input)
-            {
-                var inIsSource = input.Trim().Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase);
-                if (current is not null || !inIsSource) sawUnsupported = true;
-            }
+            if (SvgRasterizer.HasAnyAttr(prim, "x", "y", "width", "height")) sawUnsupported = true; // subregion not modeled
 
+            SKImageFilter? output;
             switch (prim.Name.LocalName.ToLowerInvariant())
             {
                 case "fegaussianblur":
                 {
+                    var input = ResolveInput(prim, "in", last, results, ref sawUnsupported);
                     var (sx, sy) = ParseStdDeviation(SvgRasterizer.Attr(prim, "stdDeviation"));
-                    if (sx > 0 || sy > 0) current = SKImageFilter.CreateBlur(sx, sy, current);
+                    output = sx > 0 || sy > 0 ? SKImageFilter.CreateBlur(sx, sy, input) : input;
                     break;
                 }
                 case "feoffset":
-                    current = SKImageFilter.CreateOffset((float)SvgRasterizer.Num(prim, "dx"), (float)SvgRasterizer.Num(prim, "dy"), current);
+                    output = SKImageFilter.CreateOffset((float)SvgRasterizer.Num(prim, "dx"), (float)SvgRasterizer.Num(prim, "dy"),
+                        ResolveInput(prim, "in", last, results, ref sawUnsupported));
                     break;
                 case "fedropshadow":
                 {
                     // A self-contained drop shadow: blur + offset + flood, with the source drawn on top.
+                    var input = ResolveInput(prim, "in", last, results, ref sawUnsupported);
                     var (bx, by) = ParseStdDeviation(SvgRasterizer.Attr(prim, "stdDeviation"));
                     if (bx == 0 && prim.Attribute("stdDeviation") is null) { bx = 2; by = 2; } // default σ=2
                     var dx = prim.Attribute("dx") is not null ? (float)SvgRasterizer.Num(prim, "dx") : 2f;
                     var dy = prim.Attribute("dy") is not null ? (float)SvgRasterizer.Num(prim, "dy") : 2f;
-                    var color = SKColors.Black;
-                    if (SvgAttr.Presentation(prim, "flood-color") is { } fc) SvgColor.TryParse(fc, out color);
-                    var floodOpacity = ParseFloodOpacity(SvgAttr.Presentation(prim, "flood-opacity"));
-                    color = color.WithAlpha((byte)Math.Clamp((int)Math.Round(color.Alpha / 255f * floodOpacity * 255f), 0, 255));
-                    current = SKImageFilter.CreateDropShadow(dx, dy, bx, by, color, current);
+                    output = SKImageFilter.CreateDropShadow(dx, dy, bx, by, FloodColor(prim), input);
                     break;
                 }
                 case "fecolormatrix":
                 {
+                    var input = ResolveInput(prim, "in", last, results, ref sawUnsupported);
                     var matrix = BuildColorMatrix(prim);
                     if (matrix is not null)
                     {
                         using var cf = SKColorFilter.CreateColorMatrix(matrix);
-                        current = SKImageFilter.CreateColorFilter(cf, current);
+                        output = SKImageFilter.CreateColorFilter(cf, input);
                     }
+                    else output = input;
+                    break;
+                }
+                case "feflood":
+                {
+                    using var shader = SKShader.CreateColor(FloodColor(prim));
+                    output = SKImageFilter.CreateShader(shader);
+                    break;
+                }
+                case "femerge":
+                    output = BuildMerge(prim, last, results, ref sawUnsupported);
+                    break;
+                case "fecomposite":
+                    output = BuildComposite(prim, last, results, ref sawUnsupported);
+                    break;
+                case "feblend":
+                {
+                    var fg = ResolveInput(prim, "in", last, results, ref sawUnsupported);
+                    var bg = ResolveInput(prim, "in2", last, results, ref sawUnsupported);
+                    output = SKImageFilter.CreateBlendMode(BlendMode(SvgRasterizer.Attr(prim, "mode")), bg, fg);
                     break;
                 }
                 default:
-                    sawUnsupported = true; // unsupported primitive / graph routing
+                    sawUnsupported = true; // unsupported primitive
+                    output = last;         // pass the previous result through
                     break;
             }
+
+            last = output;
+            if (SvgRasterizer.Attr(prim, "result") is { } r && !string.IsNullOrWhiteSpace(r)) results[r.Trim()] = output;
         }
+
         if (sawUnsupported) state.SawUnsupported = true;
-        return current;
+        return last;
+    }
+
+    /// <summary>Resolve a primitive input attribute to a filter (<see langword="null"/> = <c>SourceGraphic</c>,
+    /// i.e. the layer content). Absent → the previous primitive's result; <c>SourceGraphic</c> → null;
+    /// <c>SourceAlpha</c> → an alpha-only filter; a named <c>result</c> → that result. An unknown / unmodeled
+    /// input (<c>BackgroundImage</c>/<c>FillPaint</c>/…) flags and falls back to the previous result.</summary>
+    private static SKImageFilter? ResolveInput(XElement prim, string attr, SKImageFilter? last, Dictionary<string, SKImageFilter?> results, ref bool sawUnsupported)
+    {
+        var name = SvgRasterizer.Attr(prim, attr)?.Trim();
+        if (string.IsNullOrEmpty(name)) return last;
+        if (name.Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase)) return null;
+        if (name.Equals("SourceAlpha", StringComparison.OrdinalIgnoreCase)) return SourceAlpha();
+        if (results.TryGetValue(name, out var r)) return r;
+        sawUnsupported = true; // BackgroundImage/BackgroundAlpha/FillPaint/StrokePaint or an undefined result
+        return last;
+    }
+
+    /// <summary>An <see cref="SKImageFilter"/> producing the ALPHA of <c>SourceGraphic</c> with black RGB
+    /// (the SVG <c>SourceAlpha</c> input).</summary>
+    private static SKImageFilter SourceAlpha()
+    {
+        using var cf = SKColorFilter.CreateColorMatrix(
+        [
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 0, 1, 0,
+        ]);
+        return SKImageFilter.CreateColorFilter(cf, null);
+    }
+
+    /// <summary>Stack a <c>feMerge</c>'s <c>feMergeNode</c> inputs bottom-to-top (the first node is the
+    /// bottom layer, SVG §15).</summary>
+    private static SKImageFilter? BuildMerge(XElement prim, SKImageFilter? last, Dictionary<string, SKImageFilter?> results, ref bool sawUnsupported)
+    {
+        var inputs = new List<SKImageFilter?>();
+        foreach (var node in prim.Elements())
+            if (node.Name.LocalName.Equals("feMergeNode", StringComparison.OrdinalIgnoreCase))
+                inputs.Add(ResolveInput(node, "in", last, results, ref sawUnsupported));
+        if (inputs.Count == 0) return last;
+        var arr = new SKImageFilter[inputs.Count]; // null entries (= SourceGraphic) are valid for Skia
+        for (var i = 0; i < inputs.Count; i++) arr[i] = inputs[i]!;
+        return SKImageFilter.CreateMerge(arr);
+    }
+
+    /// <summary>Porter-Duff / arithmetic compositing of <c>in</c> (source) over <c>in2</c> (destination),
+    /// SVG §15 <c>feComposite</c>.</summary>
+    private static SKImageFilter? BuildComposite(XElement prim, SKImageFilter? last, Dictionary<string, SKImageFilter?> results, ref bool sawUnsupported)
+    {
+        var fg = ResolveInput(prim, "in", last, results, ref sawUnsupported);
+        var bg = ResolveInput(prim, "in2", last, results, ref sawUnsupported);
+        var op = (SvgRasterizer.Attr(prim, "operator") ?? "over").Trim().ToLowerInvariant();
+        if (op == "arithmetic")
+        {
+            float K(string n) => (float)SvgRasterizer.Num(prim, n);
+            return SKImageFilter.CreateArithmetic(K("k1"), K("k2"), K("k3"), K("k4"), enforcePMColor: true, background: bg, foreground: fg);
+        }
+        var mode = op switch
+        {
+            "in" => SKBlendMode.SrcIn,
+            "out" => SKBlendMode.SrcOut,
+            "atop" => SKBlendMode.SrcATop,
+            "xor" => SKBlendMode.Xor,
+            _ => SKBlendMode.SrcOver, // "over"
+        };
+        return SKImageFilter.CreateBlendMode(mode, bg, fg);
+    }
+
+    /// <summary>Map a <c>feBlend</c> <c>mode</c> to a Skia blend mode (unknown → normal).</summary>
+    private static SKBlendMode BlendMode(string? mode) => (mode?.Trim().ToLowerInvariant()) switch
+    {
+        "multiply" => SKBlendMode.Multiply,
+        "screen" => SKBlendMode.Screen,
+        "darken" => SKBlendMode.Darken,
+        "lighten" => SKBlendMode.Lighten,
+        "overlay" => SKBlendMode.Overlay,
+        "color-dodge" => SKBlendMode.ColorDodge,
+        "color-burn" => SKBlendMode.ColorBurn,
+        "hard-light" => SKBlendMode.HardLight,
+        "soft-light" => SKBlendMode.SoftLight,
+        "difference" => SKBlendMode.Difference,
+        "exclusion" => SKBlendMode.Exclusion,
+        "hue" => SKBlendMode.Hue,
+        "saturation" => SKBlendMode.Saturation,
+        "color" => SKBlendMode.Color,
+        "luminosity" => SKBlendMode.Luminosity,
+        _ => SKBlendMode.SrcOver, // "normal"
+    };
+
+    /// <summary>The <c>flood-color</c> × <c>flood-opacity</c> for <c>feFlood</c> / <c>feDropShadow</c>
+    /// (default black, fully opaque).</summary>
+    private static SKColor FloodColor(XElement prim)
+    {
+        var color = SKColors.Black;
+        if (SvgAttr.Presentation(prim, "flood-color") is { } fc) SvgColor.TryParse(fc, out color);
+        var floodOpacity = ParseFloodOpacity(SvgAttr.Presentation(prim, "flood-opacity"));
+        return color.WithAlpha((byte)Math.Clamp((int)Math.Round(color.Alpha / 255f * floodOpacity * 255f), 0, 255));
     }
 
     /// <summary><c>flood-opacity</c> (0..1, or a percentage) — default 1.</summary>

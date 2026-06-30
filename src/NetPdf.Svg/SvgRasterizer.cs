@@ -171,7 +171,7 @@ internal static class SvgRasterizer
         // list and disposed only AFTER the filter layer is composited (Skia refs the native image, so an early
         // managed dispose would risk freeing it out from under the filter graph).
         var ownedImages = filterEl is not null ? new List<SKImage>() : null;
-        var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, state, filterRegion, ownedImages!) : null;
+        var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, el, style, state, filterRegion, ownedImages!) : null;
         SKPaint? filterPaint = null;
         var filterRegionClipped = false;
         // The filter region (§15) clips the whole filter result, applied as a HARD canvas clip — a blur halo

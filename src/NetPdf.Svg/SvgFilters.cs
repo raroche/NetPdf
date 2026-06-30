@@ -44,19 +44,25 @@ internal static class SvgFilters
     /// <c>feComposite</c> (over/in/out/atop/xor/lighter/arithmetic), <c>feBlend</c>, (SVG part 8)
     /// <c>feMorphology</c> (erode/dilate), <c>feComponentTransfer</c> (identity/table/discrete/linear/gamma),
     /// <c>feDisplacementMap</c>, <c>feConvolveMatrix</c>, <c>feTurbulence</c> (turbulence/fractalNoise), and
-    /// (SVG part 9) <c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (distant/point/spot lights), and
-    /// <c>feImage</c> (a <c>data:</c> raster href placed into the filter region via <c>preserveAspectRatio</c>).
-    /// The filter region (x/y/width/height + filterUnits, objectBoundingBox / userSpaceOnUse) is honored by the
-    /// caller's clip (see <see cref="ResolveFilterRegion"/>); primitive SUBREGIONS (per-primitive
-    /// x/y/width/height), <c>primitiveUnits</c>, <c>BackgroundImage</c>/<c>FillPaint</c> inputs, <c>feTile</c>,
-    /// a <c>feImage</c> ELEMENT reference (<c>href="#id"</c>), and lighting <c>kernelUnitLength</c> aren't
-    /// modeled → flagged. Returns <see langword="null"/> when no primitive contributes (the element renders
+    /// (SVG part 9) <c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (distant/point/spot lights),
+    /// <c>feImage</c> (a <c>data:</c> raster placed via <c>preserveAspectRatio</c>, OR an element reference
+    /// <c>href="#id"</c> rendered like a <c>&lt;use&gt;</c>), and (SVG part 11) <c>feTile</c> + per-primitive
+    /// SUBREGIONS (<c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> → a crop). The filter region (x/y/width/height +
+    /// filterUnits, objectBoundingBox / userSpaceOnUse) is honored by the caller's clip (see
+    /// <see cref="ResolveFilterRegion"/>). <c>primitiveUnits="objectBoundingBox"</c> (subregion fractions are
+    /// mapped, but the non-subregion remap is partial → flagged), <c>BackgroundImage</c>/<c>FillPaint</c>
+    /// inputs, an EXTERNAL <c>feImage</c> href, and lighting <c>kernelUnitLength</c> aren't modeled → flagged.
+    /// Returns <see langword="null"/> when no primitive contributes (the element renders
     /// unfiltered).</summary>
-    public static SKImageFilter? BuildImageFilter(XElement filter, SvgRenderState state, FilterRegion? region, List<SKImage> ownedImages)
+    public static SKImageFilter? BuildImageFilter(XElement filter, XElement el, SvgStyle style, SvgRenderState state,
+        FilterRegion? region, List<SKImage> ownedImages)
     {
-        // The filter region (x/y/width/height + filterUnits) is now honored by the caller's clip
-        // (ResolveFilterRegion). primitiveUnits (objectBoundingBox primitive coordinates) is still not modeled.
-        var sawUnsupported = SvgRasterizer.HasAnyAttr(filter, "primitiveUnits");
+        // primitiveUnits=objectBoundingBox additionally remaps non-subregion primitive values (feOffset dx/dy,
+        // blur stdDeviation, …) into bbox units — only the SUBREGION mapping is modeled here, so its presence
+        // is still flagged as partial. The filter region itself is honored by the caller's clip.
+        var primitiveBBox = (SvgRasterizer.Attr(filter, "primitiveUnits") ?? "userSpaceOnUse").Trim()
+            .Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase);
+        var sawUnsupported = primitiveBBox;
 
         var prims = new List<XElement>();
         foreach (var e in filter.Elements()) prims.Add(e);
@@ -65,6 +71,9 @@ internal static class SvgFilters
             if (sawUnsupported) state.SawUnsupported = true;
             return null;
         }
+
+        var regionRect = region is { Empty: false } rr ? rr.Rect : (SKRect?)null;
+        var subregions = new SKRect?[prims.Count]; // each primitive's resolved subregion (null = the filter region)
 
         // Evaluate only the primary tree (reachable backward from the last primitive). Skipped primitives in a
         // disconnected tree contribute nothing and must not flag — only the primary tree is the filter result.
@@ -76,7 +85,10 @@ internal static class SvgFilters
         {
             if (!reachable[idx]) continue;
             var prim = prims[idx];
-            if (SvgRasterizer.HasAnyAttr(prim, "x", "y", "width", "height")) sawUnsupported = true; // subregion not modeled
+            // The primitive SUBREGION (x/y/width/height) — now MODELED: it crops the primitive's output (and
+            // bounds a generator). Default (no attrs) = the filter region. Stored so feTile can tile it.
+            var subregion = ComputeSubregion(prim, primitiveBBox, regionRect, el, style, state);
+            subregions[idx] = subregion ?? regionRect;
 
             SKImageFilter? output;
             switch (prim.Name.LocalName.ToLowerInvariant())
@@ -190,19 +202,26 @@ internal static class SvgFilters
                 }
                 case "feimage":
                 {
-                    // A GENERATOR — a data: raster href decodes (through the image-safety validator) and is
-                    // PLACED into the filter primitive subregion (default = the filter region) honoring
-                    // preserveAspectRatio (default xMidYMid meet), so it scales / aligns rather than rendering
-                    // at natural pixel size near the origin. An external href or an ELEMENT reference
-                    // (href="#id") isn't modeled → flagged + an empty (transparent) result, never a
-                    // content pass-through. The decoded image is recorded in ownedImages and disposed by the
-                    // caller after the filter layer composites (Skia refs the native image).
+                    // A GENERATOR. A data: raster href decodes (through the image-safety validator) and is PLACED
+                    // into the filter primitive subregion (default = the filter region) honoring
+                    // preserveAspectRatio. An ELEMENT reference (href="#id") renders the referenced subtree into
+                    // a region-sized raster and places it at the region (like a <use>). An external href (http…)
+                    // isn't modeled → flagged + an empty (transparent) result, never a content pass-through. Each
+                    // decoded / rendered image is recorded in ownedImages and disposed by the caller after the
+                    // filter layer composites (Skia refs the native image).
                     var href = SvgAttr.HrefRaw(prim);
+                    var elemId = SvgAttr.HrefId(prim);
                     if (href is not null && href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
                         && SvgRasterizer.DecodeDataUriImage(href) is { } image)
                     {
                         ownedImages.Add(image);
                         output = BuildFeImage(prim, image, region);
+                    }
+                    else if (elemId is not null && state.Ids.TryGetValue(elemId, out var refEl)
+                        && RenderElementToImage(refEl, region, state) is { } rendered)
+                    {
+                        ownedImages.Add(rendered);
+                        output = PlaceElementImage(rendered, region);
                     }
                     else
                     {
@@ -224,11 +243,26 @@ internal static class SvgFilters
                     output = BuildLighting(prim, input, specular: true, ref sawUnsupported);
                     break;
                 }
+                case "fetile":
+                {
+                    // Tile the INPUT primitive's subregion across the filter region (§15.7). The tile source is
+                    // the input's subregion (its x/y/width/height); the destination is the filter region.
+                    var input = ResolveInput(prim, "in", last, results, ref sawUnsupported);
+                    var srcIdx = SourceIndex(prims, idx, SvgRasterizer.Attr(prim, "in"));
+                    var src = (srcIdx >= 0 ? subregions[srcIdx] : null) ?? regionRect;
+                    output = input is not null && src is { } s && regionRect is { } d && s.Width > 0 && s.Height > 0
+                        ? SKImageFilter.CreateTile(s, d, input)
+                        : input;
+                    break;
+                }
                 default:
                     sawUnsupported = true; // unsupported primitive
                     output = last;         // pass the previous result through
                     break;
             }
+
+            // Apply the primitive subregion: crop the output (a zero-offset crop bounds any filter / generator).
+            if (subregion is { } crop && output is not null) output = SKImageFilter.CreateOffset(0f, 0f, output, crop);
 
             last = output;
             if (SvgRasterizer.Attr(prim, "result") is { } r && !string.IsNullOrWhiteSpace(r)) results[r.Trim()] = output;
@@ -324,6 +358,48 @@ internal static class SvgFilters
     }
 
     private static float Invalid(SvgRenderState state, float fallback) { state.SawUnsupported = true; return fallback; }
+
+    /// <summary>The filter primitive SUBREGION (§15.7) in the filtered element's user space, or
+    /// <see langword="null"/> when the primitive has no explicit <c>x</c>/<c>y</c>/<c>width</c>/<c>height</c>
+    /// (its subregion defaults to the whole filter region). <c>primitiveUnits="userSpaceOnUse"</c> (default)
+    /// reads each present coordinate as a user-space length; <c>objectBoundingBox</c> reads them as fractions
+    /// of the target bbox. An ABSENT coordinate defaults to the corresponding edge of the filter region. A
+    /// zero / negative width or height yields an empty subregion (the primitive produces nothing).</summary>
+    private static SKRect? ComputeSubregion(XElement prim, bool bboxUnits, SKRect? regionRect,
+        XElement el, SvgStyle style, SvgRenderState state)
+    {
+        if (!SvgRasterizer.HasAnyAttr(prim, "x", "y", "width", "height")) return null; // default = filter region
+        if (regionRect is not { } region) return null; // nothing to anchor against
+        float x = region.Left, y = region.Top, w = region.Width, h = region.Height;
+        if (bboxUnits)
+        {
+            if (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is not { Width: > 0, Height: > 0 } b)
+                return region; // no bbox → fall back to the filter region
+            if (SvgRasterizer.HasAnyAttr(prim, "x")) x = b.Left + SubregionFraction(prim, "x") * b.Width;
+            if (SvgRasterizer.HasAnyAttr(prim, "y")) y = b.Top + SubregionFraction(prim, "y") * b.Height;
+            if (SvgRasterizer.HasAnyAttr(prim, "width")) w = SubregionFraction(prim, "width") * b.Width;
+            if (SvgRasterizer.HasAnyAttr(prim, "height")) h = SubregionFraction(prim, "height") * b.Height;
+        }
+        else
+        {
+            if (SvgRasterizer.HasAnyAttr(prim, "x")) x = (float)SvgRasterizer.Len(prim, "x", state, style, SvgRasterizer.LenAxis.X);
+            if (SvgRasterizer.HasAnyAttr(prim, "y")) y = (float)SvgRasterizer.Len(prim, "y", state, style, SvgRasterizer.LenAxis.Y);
+            if (SvgRasterizer.HasAnyAttr(prim, "width")) w = (float)SvgRasterizer.Len(prim, "width", state, style, SvgRasterizer.LenAxis.X);
+            if (SvgRasterizer.HasAnyAttr(prim, "height")) h = (float)SvgRasterizer.Len(prim, "height", state, style, SvgRasterizer.LenAxis.Y);
+        }
+        return w > 0 && h > 0 ? new SKRect(x, y, x + w, y + h) : SKRect.Empty;
+    }
+
+    /// <summary>An <c>objectBoundingBox</c> primitive-subregion value as a bbox FRACTION (a <c>%</c> → /100, a
+    /// unitless number → as-is, else 0 — the partial <c>primitiveUnits</c> support is already flagged).</summary>
+    private static float SubregionFraction(XElement prim, string name)
+    {
+        var raw = SvgRasterizer.Attr(prim, name)?.Trim();
+        if (string.IsNullOrEmpty(raw)) return 0f;
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+            return float.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? pct / 100f : 0f;
+        return float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0f;
+    }
 
     /// <summary>Mark the filter primitives reachable backward from the LAST primitive through their input
     /// references (<c>in</c>/<c>in2</c>/<c>feMergeNode in</c>), so only the PRIMARY tree (§15) is evaluated.
@@ -759,6 +835,36 @@ internal static class SvgFilters
         }
         else
             dst = src; // no region → natural size at the origin
+        return SKImageFilter.CreateImage(image, src, dst, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
+    }
+
+    /// <summary>Render a <c>feImage href="#id"</c> ELEMENT reference (Filter Effects §15.7 — feImage of an SVG
+    /// element acts like a <c>&lt;use&gt;</c>): rasterize the referenced subtree into a buffer sized to the
+    /// filter region (in the region's user space), to be placed back at the region. Returns
+    /// <see langword="null"/> when there is no usable region or the buffer would exceed the raster pixel cap.
+    /// Recursion is bounded by the shared element budget + depth guard inside <c>RenderElement</c>.</summary>
+    private static SKImage? RenderElementToImage(XElement target, FilterRegion? region, SvgRenderState state)
+    {
+        if (region is not { Empty: false } r || r.Rect is not { Width: > 0, Height: > 0 } rect) return null;
+        var w = (int)Math.Ceiling(rect.Width);
+        var h = (int)Math.Ceiling(rect.Height);
+        if (w <= 0 || h <= 0 || (long)w * h > NetPdf.Pdf.Images.ImageSafetyValidator.MaxRasterPixelArea) return null;
+        var info = new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Premul);
+        using var surface = SKSurface.Create(info);
+        if (surface is null) return null;
+        surface.Canvas.Clear(SKColors.Transparent);
+        surface.Canvas.Translate(-rect.Left, -rect.Top); // filter-region user space → raster pixels
+        var style = SvgRasterizer.ResolveStyle(target, SvgStyle.Initial, state);
+        SvgRasterizer.RenderElement(surface.Canvas, target, style, state, depth: 1);
+        return surface.Snapshot();
+    }
+
+    /// <summary>Place a region-sized element raster (from <see cref="RenderElementToImage"/>) back at the
+    /// filter region — an identity mapping (the raster was rendered AT the region's size + offset).</summary>
+    private static SKImageFilter PlaceElementImage(SKImage image, FilterRegion? region)
+    {
+        var src = new SKRect(0, 0, image.Width, image.Height);
+        var dst = region is { Empty: false } r ? r.Rect : src;
         return SKImageFilter.CreateImage(image, src, dst, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None));
     }
 

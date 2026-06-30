@@ -14,8 +14,9 @@ namespace NetPdf.Svg;
 /// runs) onto the raster canvas using Skia's text shaping. Honors <c>x</c>/<c>y</c>, per-run
 /// <c>dx</c>/<c>dy</c> and absolute <c>x</c>/<c>y</c>, <c>text-anchor</c> (start/middle/end), the inherited
 /// font properties (family / size / weight / style), and fill / stroke incl. a gradient paint server.
-/// Out of scope (raster fallback): <c>textPath</c>, <c>rotate</c>, <c>textLength</c>, bidi/complex-script
-/// reordering, and per-glyph positioning lists.</summary>
+/// Also supports <c>textPath</c>, per-glyph <c>rotate</c>, and <c>textLength</c> / <c>lengthAdjust</c>
+/// (<c>spacing</c> + <c>spacingAndGlyphs</c>) on a single text chunk. Out of scope (raster fallback):
+/// <c>textLength</c> across multiple chunks (flagged), bidi/complex-script reordering.</summary>
 internal static class SvgText
 {
     private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy, float[]? Rotate);
@@ -36,6 +37,10 @@ internal static class SvgText
 
         var startX = HasLen(text, "x", state, style, LenAxis.X, out var sx) ? sx : 0f;
         var startY = HasLen(text, "y", state, style, LenAxis.Y, out var sy) ? sy : 0f;
+
+        // textLength / lengthAdjust (§10.5) fits the text to a target advance — handled on a single chunk; the
+        // default no-textLength path below is unchanged (byte-identical).
+        if (TryDrawTextLength(canvas, text, runs, startX, startY, style, state)) return;
 
         // A run with an absolute x establishes a new "text chunk" (SVG §10.5); text-anchor is resolved
         // independently PER chunk (PR-231 review [P2/P3]) — so multiple centered <tspan x=…> labels inside
@@ -77,6 +82,93 @@ internal static class SvgText
             }
             i = j;
         }
+    }
+
+    /// <summary>Fit a single text chunk to <c>textLength</c> (§10.5). <c>lengthAdjust="spacingAndGlyphs"</c>
+    /// applies a horizontal scale (positions AND glyph shapes stretch); the default <c>"spacing"</c> distributes
+    /// the slack as uniform extra advance across the inter-glyph gaps (glyph shapes unchanged). Returns
+    /// <see langword="false"/> (the caller renders normally) when there is no positive <c>textLength</c>; a
+    /// MULTI-chunk text (a <c>tspan</c> with an absolute <c>x</c>) is flagged + rendered normally. The
+    /// no-<c>textLength</c> default path never enters here, so it stays byte-identical.</summary>
+    private static bool TryDrawTextLength(SKCanvas canvas, XElement text, List<Run> runs, float startX, float startY,
+        SvgStyle style, SvgRenderState state)
+    {
+        if (!HasLen(text, "textLength", state, style, LenAxis.X, out var target) || !(target > 0)) return false;
+        for (var k = 1; k < runs.Count; k++)
+            if (runs[k].AbsX is not null) { state.SawUnsupported = true; return false; } // multi-chunk not modeled
+
+        var natural = 0f;
+        var glyphs = 0;
+        for (var k = 0; k < runs.Count; k++)
+        {
+            using var f = BuildFont(runs[k].Style);
+            natural += runs[k].Dx + MeasureRun(f, runs[k].Text, runs[k].Style);
+            glyphs += runs[k].Text.Length;
+        }
+        if (!(natural > 0)) return false;
+
+        var anchor = (runs[0].Style.TextAnchor?.Trim().ToLowerInvariant()) switch { "middle" => 0.5f, "end" => 1f, _ => 0f };
+        var penXStart = (runs[0].AbsX ?? startX) - anchor * target;
+        var spacingAndGlyphs = (SvgAttr.Get(text, "lengthAdjust") ?? "spacing").Trim()
+            .Equals("spacingAndGlyphs", StringComparison.OrdinalIgnoreCase);
+
+        if (spacingAndGlyphs)
+        {
+            // A horizontal scale about the chunk start stretches both positions and glyph shapes to the target.
+            var scaleX = target / natural;
+            var save = canvas.Save();
+            canvas.Translate(penXStart, 0);
+            canvas.Scale(scaleX, 1f);
+            var penX = 0f;
+            var penY = startY;
+            for (var k = 0; k < runs.Count; k++)
+            {
+                var run = runs[k];
+                using var font = BuildFont(run.Style);
+                if (run.AbsY is { } ay) penY = ay;
+                penX += run.Dx;
+                penY += run.Dy;
+                var baseline = penY + DominantBaselineOffset(run.Style.DominantBaseline, font.Metrics);
+                DrawSpacedOrWhole(canvas, run.Text, penX, baseline, font, run.Style, run.Rotate, state);
+                penX += MeasureRun(font, run.Text, run.Style);
+            }
+            canvas.RestoreToCount(save);
+            return true;
+        }
+
+        // spacing (default): one extra gap per inter-glyph boundary so the natural advance reaches the target.
+        var extra = glyphs > 1 ? (target - natural) / (glyphs - 1) : 0f;
+        var px = penXStart;
+        var py = startY;
+        var gi = 0;
+        for (var k = 0; k < runs.Count; k++)
+        {
+            var run = runs[k];
+            using var font = BuildFont(run.Style);
+            if (run.AbsY is { } ay) py = ay;
+            px += run.Dx;
+            py += run.Dy;
+            var baseline = py + DominantBaselineOffset(run.Style.DominantBaseline, font.Metrics);
+            for (var ci = 0; ci < run.Text.Length; ci++)
+            {
+                var glyph = run.Text[ci].ToString();
+                var gw = font.MeasureText(glyph);
+                var deg = run.Rotate is { Length: > 0 } r ? r[Math.Min(ci, r.Length - 1)] : 0f;
+                if (deg != 0f)
+                {
+                    var s = canvas.Save();
+                    canvas.Translate(px, baseline);
+                    canvas.RotateDegrees(deg);
+                    DrawRun(canvas, glyph, 0, 0, gw, font, run.Style, state);
+                    canvas.RestoreToCount(s);
+                }
+                else
+                    DrawRun(canvas, glyph, px, baseline, gw, font, run.Style, state);
+                px += gw + (ci < run.Text.Length - 1 ? run.Style.LetterSpacing : 0) + (run.Text[ci] == ' ' ? run.Style.WordSpacing : 0);
+                if (++gi < glyphs) px += extra; // a gap after every glyph except the very last in the chunk
+            }
+        }
+        return true;
     }
 
     /// <summary>The run's total advance: letter-spacing applies BETWEEN glyphs (n−1 gaps, NOT after the

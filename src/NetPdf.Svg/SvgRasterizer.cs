@@ -841,11 +841,18 @@ internal static class SvgRasterizer
         var sawUnsupported = HasAnyAttr(filter, "x", "y", "width", "height", "filterUnits", "primitiveUnits");
         foreach (var prim in filter.Elements())
         {
-            // A named result, a non-default input, or a primitive subregion implies a routing/region model
-            // this linear chain doesn't honor → flag (the chain still renders as a best effort).
-            if (HasAnyAttr(prim, "result", "x", "y", "width", "height")
-                || (Attr(prim, "in") is { } input && !input.Trim().Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase)))
+            // A named result, a primitive subregion, or an `in` we can't honor implies a routing/region model
+            // this linear chain doesn't model → flag (the chain still renders as a best effort). An explicit
+            // `in` is honored ONLY as the FIRST primitive's `in="SourceGraphic"` (≡ the implicit chain input);
+            // once a prior result exists we feed the chain regardless of `in`, so any `in` then is wrong
+            // (PR-244 review [P2] — e.g. <feGaussianBlur/><feDropShadow in="SourceGraphic"/>).
+            if (HasAnyAttr(prim, "result", "x", "y", "width", "height"))
                 sawUnsupported = true;
+            else if (Attr(prim, "in") is { } input)
+            {
+                var inIsSource = input.Trim().Equals("SourceGraphic", StringComparison.OrdinalIgnoreCase);
+                if (current is not null || !inIsSource) sawUnsupported = true;
+            }
 
             switch (prim.Name.LocalName.ToLowerInvariant())
             {
@@ -1164,7 +1171,10 @@ internal static class SvgRasterizer
 
     // ---- style cascade ----
 
-    private static SvgStyle ResolveStyle(XElement el, SvgStyle inherited, SvgRenderState state)
+    /// <summary>Resolve an element's presentation style over an inherited base. Internal so
+    /// <c>&lt;textPath&gt;</c> can resolve a referenced shape's OWN style before building its geometry
+    /// (PR-244 review [P3]).</summary>
+    internal static SvgStyle ResolveStyle(XElement el, SvgStyle inherited, SvgRenderState state)
     {
         // The `color` property (inherited) is what `currentColor` resolves to (PR-231 review [P3]).
         var currentColor = inherited.CurrentColor;

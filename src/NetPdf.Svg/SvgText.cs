@@ -26,7 +26,7 @@ internal static class SvgText
         foreach (var child in text.Elements())
             if (child.Name.LocalName.Equals("textPath", StringComparison.OrdinalIgnoreCase))
             {
-                DrawTextPath(canvas, child, style, state);
+                DrawTextPath(canvas, child, style, ParseRotate(SvgAttr.Get(text, "rotate")), state);
                 return;
             }
 
@@ -153,7 +153,7 @@ internal static class SvgText
     /// <c>startOffset</c> + the <c>text-anchor</c>) and rotated to the path tangent. Only a <c>&lt;path&gt;</c>
     /// reference is supported; a missing / non-path target is flagged. Glyphs whose midpoint falls off the
     /// path are dropped.</summary>
-    private static void DrawTextPath(SKCanvas canvas, XElement textPath, SvgStyle parentStyle, SvgRenderState state)
+    private static void DrawTextPath(SKCanvas canvas, XElement textPath, SvgStyle parentStyle, float[]? textRotate, SvgRenderState state)
     {
         var id = SvgAttr.HrefId(textPath);
         if (id is null || !state.Ids.TryGetValue(id, out var pathEl))
@@ -162,8 +162,11 @@ internal static class SvgText
             return;
         }
         var style = ResolveRunStyle(textPath, parentStyle);
-        // Any basic shape (path / line / rect / circle / ellipse / poly*) can be a textPath geometry.
-        using var path = SvgRasterizer.BuildShapePath(pathEl, style, state);
+        // Any basic shape (path / line / rect / circle / ellipse / poly*) can be a textPath geometry. Build it
+        // with the SHAPE's OWN resolved style (em/% geometry resolves against the shape, not the text font —
+        // PR-244 review [P3]).
+        var shapeStyle = SvgRasterizer.ResolveStyle(pathEl, SvgStyle.Initial, state);
+        using var path = SvgRasterizer.BuildShapePath(pathEl, shapeStyle, state);
         if (path is null || path.IsEmpty) { state.SawUnsupported = true; return; }
         // The referenced shape's own transform applies relative to the text coordinate system (SVG 1.1 §10.13).
         if (SvgTransform.Parse(pathEl.Attribute("transform")?.Value) is { } pm) path.Transform(pm);
@@ -179,6 +182,10 @@ internal static class SvgText
         var total = MeasureRun(font, content, style);
         var anchor = (style.TextAnchor ?? string.Empty).Trim().ToLowerInvariant();
         var distance = startOffset + anchor switch { "middle" => -total / 2f, "end" => -total, _ => 0f };
+        // dominant-baseline shifts glyphs perpendicular to the path; per-glyph `rotate` is SUPPLEMENTAL to the
+        // tangent rotation (PR-244 review [P2]). textPath's own rotate wins over the <text>'s.
+        var baselineShift = DominantBaselineOffset(style.DominantBaseline, font.Metrics);
+        var rotate = ParseRotate(SvgAttr.Get(textPath, "rotate")) ?? textRotate;
 
         using var fillShader = style.FillRef is { } fref ? state.ResolveShader(fref, path.Bounds, style.FillOpacity, style) : null;
         for (var i = 0; i < content.Length; i++)
@@ -191,7 +198,8 @@ internal static class SvgText
                 var save = canvas.Save();
                 canvas.Translate(pos.X, pos.Y);
                 canvas.RotateRadians((float)Math.Atan2(tan.Y, tan.X));
-                DrawPathGlyph(canvas, glyph, -adv / 2f, font, style, fillShader?.Shader, state);
+                if (rotate is { Length: > 0 }) canvas.RotateDegrees(rotate[Math.Min(i, rotate.Length - 1)]);
+                DrawPathGlyph(canvas, glyph, -adv / 2f, baselineShift, font, style, fillShader?.Shader, state);
                 canvas.RestoreToCount(save);
             }
             distance += adv + (i < content.Length - 1 ? style.LetterSpacing : 0) + (content[i] == ' ' ? style.WordSpacing : 0);
@@ -199,22 +207,22 @@ internal static class SvgText
     }
 
     private static void DrawPathGlyph(
-        SKCanvas canvas, string glyph, float x, SKFont font, SvgStyle style, SKShader? fillShader, SvgRenderState state)
+        SKCanvas canvas, string glyph, float x, float y, SKFont font, SvgStyle style, SKShader? fillShader, SvgRenderState state)
     {
         if (fillShader is not null)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = fillShader, IsAntialias = true };
-            canvas.DrawText(glyph, x, 0, font, p);
+            canvas.DrawText(glyph, x, y, font, p);
         }
         else if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Fill, Color = WithOpacity(style.Fill, style.FillOpacity), IsAntialias = true };
-            canvas.DrawText(glyph, x, 0, font, p);
+            canvas.DrawText(glyph, x, y, font, p);
         }
         if (style.StrokeWidth > 0 && style.Stroke is { } sc && style.StrokeRef is null)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Color = WithOpacity(sc, style.StrokeOpacity), IsAntialias = true };
-            canvas.DrawText(glyph, x, 0, font, p);
+            canvas.DrawText(glyph, x, y, font, p);
         }
     }
 

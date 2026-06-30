@@ -103,6 +103,8 @@ public sealed class SvgFilterRasterizerTests
     [InlineData("<filter id=\"f\" x=\"0\" y=\"0\" width=\"100\" height=\"100\"><feGaussianBlur stdDeviation=\"1\"/></filter>")] // filter region
     [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" x=\"0\" y=\"0\" width=\"10\" height=\"10\"/></filter>")]   // primitive subregion
     [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]        // primitiveUnits
+    // PR-244 review [P2] — in="SourceGraphic" AFTER a prior result is NOT the linear input → flag.
+    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\"/><feOffset dx=\"2\" in=\"SourceGraphic\"/></filter>")]
     public void Filter_routing_or_region_attributes_are_flagged(string filter)
     {
         var info = SvgRasterizer.TryRender(Svg(

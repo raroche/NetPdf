@@ -229,6 +229,45 @@ public sealed class TextShadowPaintTests
     }
 
     [Fact]
+    public void Justified_mixed_blurred_and_sharp_text_shadows_keep_global_layer_order()
+    {
+        // PR #247 [P2] — two layers: a first-listed BLURRED red (on top) + a second-listed SHARP green
+        // (bottom). On a justified line the blurred layer rasterizes once per slice (an image) while the
+        // sharp layer stays per-word glyphs, but GLOBAL order must hold: the sharp (bottom) paints BEFORE
+        // the blurred image, and both BEFORE the black text (top). Real font (synthetic glyphs are empty).
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<p style=\"width:160px;color:#000000;text-align:justify;"
+            + "text-shadow:3px 3px 3px #ff0000, 1px 1px #00ff00\">"
+            + "alpha bravo charlie delta echo foxtrot golf hotel</p>"
+            + "</body></html>"));
+
+        // First occurrences — all within the FIRST (justified) line, in paint order: green sharp (bottom),
+        // red blurred image (top), black text (topmost).
+        var sharp = text.IndexOf("0 1 0 rg", StringComparison.Ordinal);  // green sharp shadow (bottom layer)
+        var blurred = text.IndexOf(" Do", StringComparison.Ordinal);     // red blurred image (top layer)
+        var body = text.IndexOf("0 0 0 rg", StringComparison.Ordinal);   // black main text (topmost)
+        Assert.True(sharp >= 0 && blurred >= 0 && body >= 0, $"sharp={sharp} blurred={blurred} body={body}");
+        Assert.True(sharp < blurred, $"the sharp (bottom) layer must paint before the blurred (top) layer; sharp={sharp} blurred={blurred}");
+        Assert.True(blurred < body, $"both shadows must paint before the main text; blurred={blurred} body={body}");
+    }
+
+    [Fact]
+    public void Repeated_justified_blurred_text_shadow_reuses_the_positioned_cache()
+    {
+        // PR #247 [P3] — two identical justified paragraphs: the second slice hits the positioned raster
+        // cache. The output still contains the blurred shadow image (a cache hit produces a valid placement).
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<p style=\"width:160px;text-align:justify;text-shadow:2px 2px 3px #ff0000\">alpha bravo charlie delta echo foxtrot</p>"
+            + "<p style=\"width:160px;text-align:justify;text-shadow:2px 2px 3px #ff0000\">alpha bravo charlie delta echo foxtrot</p>"
+            + "</body></html>"));
+
+        Assert.Contains(" Do", text);
+        Assert.Contains("/SMask", text);
+    }
+
+    [Fact]
     public void None_paints_only_the_text_with_no_diagnostic()
     {
         var result = HtmlPdf.ConvertDetailed(Html("none"), Opts());

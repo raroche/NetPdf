@@ -10,10 +10,11 @@ namespace NetPdf.Pdf.Images;
 /// Phase 4 shadows — the Skia raster fallback for a BLURRED <c>text-shadow</c> (PDF has no native
 /// Gaussian-blur primitive, so a blurred shadow can't be a glyph-show in the shadow color). Builds an
 /// <see cref="SKTypeface"/> from the SAME font-program bytes the PDF embeds (so the glyph ids match
-/// HarfBuzz's shaping), unions the run's glyph OUTLINES at their natural advances, applies a Gaussian
-/// blur, and wraps the unpremultiplied RGBA8888 result as a PDF Image XObject (RGB plane + alpha
-/// <c>/SMask</c>) via <see cref="RasterImageXObject"/>. The caller places it UNDER the text at the
-/// shadow offset.
+/// HarfBuzz's shaping), unions the run's glyph OUTLINES — at their natural advances
+/// (<see cref="TryRasterizeGlyphRun"/>) or at explicit per-glyph positions for a justified line
+/// (<see cref="TryRasterizePositionedGlyphRun"/>) — applies a Gaussian blur, and wraps the
+/// unpremultiplied RGBA8888 result as a PDF Image XObject (RGB plane + alpha <c>/SMask</c>) via
+/// <see cref="RasterImageXObject"/>. The caller places it UNDER the text at the shadow offset.
 /// </summary>
 /// <remarks>Deterministic, like <see cref="ShadowRasterizer"/>: a CPU raster surface (no GPU context)
 /// + a pure Gaussian blur of the same glyph outlines yields the same bytes on a given platform

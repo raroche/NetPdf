@@ -97,6 +97,19 @@ public sealed class RepeatingGradientPaintTests
     }
 
     [Fact]
+    public void Off_center_repeating_radial_closest_side_repeats_to_the_farthest_corner()
+    {
+        // PR #247 [P3-coverage] — center at 25% 25% (off-center) on the 100×40 box: closest-side =
+        // min(25, 10) = 10px (15→7.5pt non-repeating); the farthest corner is the bottom-right at (75, 30) →
+        // √(75² + 30²) ≈ 80.8px → ≈ 60.6pt. The repeating gradient must reach that corner.
+        var rep = Latin1(HtmlPdf.Convert(Html("repeating-radial-gradient(circle closest-side at 25% 25%, red, blue 4px)")));
+        var plain = Latin1(HtmlPdf.Convert(Html("radial-gradient(circle closest-side at 25% 25%, red, blue 4px)")));
+        Assert.Equal(7.5, RadialShadingOuterRadius(plain), 1);
+        Assert.True(RadialShadingOuterRadius(rep) > 60.0,
+            $"off-center repeating closest-side must reach the farthest corner (~60.6pt); got {RadialShadingOuterRadius(rep)}");
+    }
+
+    [Fact]
     public void Repeating_radial_farthest_corner_is_unchanged_no_over_extension()
     {
         // farthest-corner already reaches the corner ⇒ coverExtent = 1 ⇒ the outer radius equals the

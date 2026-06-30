@@ -2403,9 +2403,9 @@ internal static class FragmentPainter
 
     /// <summary>Rasterize a blurred OUTSET shadow through the Skia bridge and place it. The bitmap
     /// pads the (spread-expanded) shape by ~3σ on each side (where σ = blur/2, the Chromium
-    /// convention) at <see cref="BoxShadowRasterScale"/>× resolution. Per-corner blur radii are a
-    /// documented first-cut approximation (a single representative radius drives the raster; the
-    /// sharp path is per-corner exact). An over-cap bitmap falls back to a sharp shadow.</summary>
+    /// convention) at <see cref="BoxShadowRasterScale"/>× resolution. Each corner's own elliptical radius
+    /// is passed through to the rasterizer (per-corner exact, like the sharp path). An over-cap bitmap
+    /// falls back to a sharp shadow.</summary>
     private static void PaintBlurredBoxShadow(
         PdfPage page, PdfDocument document,
         double shLeftPx, double shTopPx, double shWidthPx, double shHeightPx,
@@ -2633,6 +2633,12 @@ internal static class FragmentPainter
             {
                 ToPdfRect(holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, pageHeightPt, out var hx, out var hy, out var hw, out var hh);
                 page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), hx, hy, hw, hh, ToPt(holeRadii), r, g, b, alpha);
+            }
+            else
+            {
+                // The hole vanished (spread swallowed it) → the whole padding box is in shadow (matching the
+                // sharp inset path; PR #247 [P2] — the over-cap fallback previously painted nothing here).
+                page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), 0, 0, 0, 0, default, r, g, b, alpha);
             }
             page.RestoreGraphicsState();
             if (!capReported)

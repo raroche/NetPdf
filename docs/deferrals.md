@@ -2797,13 +2797,17 @@ flags the categories):
      (identity/table/discrete/linear/gamma → a per-channel 256-entry `SKColorFilter.CreateTable`),
      `feDisplacementMap` (`CreateDisplacementMapEffect`), `feConvolveMatrix` (`CreateMatrixConvolution`, the
      SVG kernel reversed 180° + target mirrored — orientation is a first cut), and `feTurbulence`
-     (turbulence/fractalNoise via `SKShader.CreatePerlinNoise*`). **SVG residuals (later):**
-     remaining filter primitives (feImage/feTile/feDiffuseLighting/feSpecularLighting; feTurbulence
-     `stitchTiles` + exact noise sums) + an EXPLICIT filter region / primitive
-     subregion / `*Units` + `BackgroundImage`/`FillPaint` inputs; exact curve tangents for path
+     (turbulence/fractalNoise via `SKShader.CreatePerlinNoise*`). **SVG part 9 shipped:** `feDiffuseLighting`
+     / `feSpecularLighting` (distant/point/spot lights → `SKImageFilter.Create*Lit*`), `feImage` (a `data:`
+     raster href → `CreateImage`; external + element refs flagged), the EXPLICIT filter region
+     (x/y/width/height + `filterUnits` objectBoundingBox/userSpaceOnUse → `ResolveFilterRegion`), and
+     `mask-type: alpha` (the mask uses its own alpha, not luminance). **SVG residuals (later):**
+     remaining filter primitives (feTile + feImage ELEMENT refs; feTurbulence
+     `stitchTiles` + exact noise sums) + primitive
+     subregions / `primitiveUnits` + `BackgroundImage`/`FillPaint` inputs; exact curve tangents for path
      markers (chord approximation); `rotate` global (cross-run) index + `textLength`/`lengthAdjust`;
      bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip
-     (`maskUnits` -10%..120% default region not clipped) + `mask-type: alpha`; pattern tile resolution under
+     (`maskUnits` -10%..120% default region not clipped); pattern tile resolution under
      heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),
      inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,

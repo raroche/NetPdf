@@ -156,7 +156,11 @@ internal static class SvgClipMask
                 return;
             }
         }
-        using var luma = SKColorFilter.CreateLumaColor();
+        // mask-type (CSS Masking §6.1) — the default `luminance` multiplies the element by the mask's LUMINANCE
+        // (a luma color filter); `alpha` multiplies by the mask's own ALPHA (no luma conversion).
+        var alphaMask = (SvgAttr.Presentation(mask, "mask-type") ?? "luminance").Trim()
+            .Equals("alpha", StringComparison.OrdinalIgnoreCase);
+        using var luma = alphaMask ? null : SKColorFilter.CreateLumaColor();
         using var maskPaint = new SKPaint { BlendMode = SKBlendMode.DstIn, ColorFilter = luma };
         canvas.SaveLayer(maskPaint);
         if (contentMatrix is { } cm) canvas.Concat(cm);

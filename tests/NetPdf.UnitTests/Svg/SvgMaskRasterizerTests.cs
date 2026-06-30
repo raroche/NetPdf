@@ -116,4 +116,31 @@ public sealed class SvgMaskRasterizerTests
         Assert.True(Px(info!, 10, 20).A > 200);    // left half revealed
         Assert.Equal(0, Px(info!, 30, 20).A);      // right half masked out
     }
+
+    [Fact]
+    public void Alpha_mask_type_uses_the_mask_alpha_not_its_luminance()
+    {
+        // SVG part 9 — `mask-type="alpha"`: a BLACK rect at 0.5 opacity has LUMINANCE 0 but ALPHA 0.5. A
+        // luminance mask would HIDE the element; an alpha mask shows it at ≈ half alpha.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<mask id=\"m\" mask-type=\"alpha\"><rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"black\" fill-opacity=\"0.5\"/></mask>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" mask=\"url(#m)\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.InRange(Px(info!, 20, 20).A, 100, 160);   // ≈ 128 (the mask's alpha, not its 0 luminance)
+    }
+
+    [Fact]
+    public void Luminance_mask_type_default_hides_a_black_translucent_mask()
+    {
+        // The DEFAULT (luminance) on the same black-0.5 mask → luminance 0 → the element is HIDDEN
+        // (byte-identical to before the mask-type change).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<mask id=\"m\"><rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"black\" fill-opacity=\"0.5\"/></mask>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" mask=\"url(#m)\"/></svg>"), out _);
+        Assert.NotNull(info);
+        Assert.Equal(0, Px(info!, 20, 20).A);            // luminance 0 → hidden
+    }
 }

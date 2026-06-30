@@ -8,6 +8,18 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: SVG part 8 (more filter primitives)
+
+Five more SVG `<filter>` primitives join the part-7 filter graph (`NetPdf.Svg.SvgFilters`), each backed by a native Skia `SKImageFilter`. Byte-identity safe (no corpus/snapshot uses inline SVG); each newly-supported primitive flips from flagged to rendered.
+
+- **`feMorphology`** — `operator="erode"`/`"dilate"` + `radius` → `SKImageFilter.CreateDilate`/`CreateErode` (a non-positive radius on EITHER axis disables the effect, §9.6; a fractional radius rounds to Skia's integer morphology radius).
+- **`feComponentTransfer`** — `feFuncR`/`G`/`B`/`A` with `type="identity"`/`"table"`/`"discrete"`/`"linear"`/`"gamma"` → a per-channel 256-entry `SKColorFilter.CreateTable` (table/discrete interpolate `tableValues`; linear = `slope·C + intercept`; gamma = `amplitude·Cᵉˣᵖ + offset`).
+- **`feDisplacementMap`** — `in`/`in2`/`scale`/`xChannelSelector`/`yChannelSelector` → `SKImageFilter.CreateDisplacementMapEffect` (a null `in2` = `SourceGraphic`).
+- **`feConvolveMatrix`** — `order`/`kernelMatrix`/`divisor`/`bias`/`targetX`/`targetY`/`edgeMode` (duplicate→clamp, wrap→repeat, none→decal)/`preserveAlpha` → `SKImageFilter.CreateMatrixConvolution` (the SVG kernel is reversed 180° + the target mirrored; an invalid kernel passes the input through + flags). Kernel orientation is a first cut.
+- **`feTurbulence`** — `type="turbulence"`/`"fractalNoise"` + `baseFrequency`/`numOctaves`/`seed` → `SKShader.CreatePerlinNoiseTurbulence`/`CreatePerlinNoiseFractalNoise` wrapped as a shader image filter (clipped to the default filter region). `stitchTiles` + the exact SVG noise sums are a residual.
+- **PR #248 review hardening:** (1) [P1] `feConvolveMatrix` validates `order`/`kernelMatrix` BEFORE the native Skia call — `order` must be 1–2 positive integers ≤ 100, the cell count is computed in `long` and capped (so `65536 65536` can't overflow the int product to 0 and slip an empty kernel through), and the kernel is strict-parsed to exactly `order_x · order_y` finite numbers. (2) [P2] a zero/negative/absent `feMorphology` `radius` on EITHER axis disables the primitive (was both-axis only). (3) [P2] a degenerate/omitted/malformed `feTurbulence` `baseFrequency` is now FLAGGED + an empty (transparent) result — a generator never silently passes the previous content through. (4) [P3] `order`/`kernelMatrix`/`tableValues`/`baseFrequency` use a STRICT number split (any non-numeric token → the value is rejected, not partial-parsed). +edge-case tests (huge/fractional/mismatched/empty kernels; morphology zero-axis; turbulence omitted/zero/one-axis; component-transfer discrete/gamma/alpha; displacement actually moves ink).
+- **Residuals:** `feImage`/`feTile`/`feDiffuseLighting`/`feSpecularLighting`; the EXPLICIT filter region + primitive subregions + `*Units`.
+
 ### Added — Phase 4 visual parity: transform / shadow / gradient residuals
 
 A batch of documented `deferrals.md` follow-ups for transforms, shadows, and gradients. Every change is gated so non-feature rendering stays byte-identical (no corpus/snapshot sample uses these).

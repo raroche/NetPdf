@@ -8,6 +8,18 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: SVG part 10 (filter-region edge cases + feImage placement)
+
+Discharges the part-9 review: filter-region correctness, `feImage` sizing/ownership, and flagged-not-ignored unsupported attributes. Byte-identity safe (no corpus/snapshot uses inline SVG).
+
+- **`feImage` region placement** — a `data:` raster is now PLACED into the filter primitive subregion (defaulted to the filter region) honoring `preserveAspectRatio` (default `xMidYMid meet`) via `SKImageFilter.CreateImage(image, src, dst, sampling)`, instead of rendering at natural pixel size near the origin. With no region available (a text/image target has no bbox) it falls back to natural size.
+- **`feImage` ownership** — the decoded `SKImage` is recorded and disposed only AFTER the filter layer composites (Skia refs the native image; an early managed dispose risked freeing it under the filter graph). Fixes a potential native-image leak on repeated SVG filters.
+- **Filter-region edge cases** — an EMPTY region (zero/negative `width`/`height`, §15.7.4) now renders the element as NOTHING (a distinct `FilterRegion.Empty` path), rather than leaving it unfiltered/unbounded. `filterUnits="userSpaceOnUse"` resolves each `x`/`y`/`width`/`height` INDEPENDENTLY with its §15 default (`-10%`/`120%` of the viewport) — a partial/omitted attribute stays in user space instead of falling back to bbox math. Percentage user-space lengths resolve against the viewport.
+- **Flagged, not silently ignored** — an unknown `filterUnits` value (→ `objectBoundingBox` behavior) and a lighting `kernelUnitLength` are now surfaced through `CSS-SVG-UNSUPPORTED-001`.
+- **`mask-type` via inline `style=`** — confirmed + tested (`SvgAttr.Presentation` already reads the inline style declaration, which wins per §6.4).
+- **Tests** — feImage meet-letterbox + none-stretch placement; lighting `lighting-color` tint, `diffuseConstant` + elevation intensity, specular highlight; empty/omitted/percentage/unknown-units regions; inline-style `mask-type`. Stale docs swept (`feTile` no longer claimed supported; compat-matrix `mask-type:alpha`; test summaries).
+- **PR #250 review hardening:** (1) [P2] the `objectBoundingBox` filter-region parser (`RegionFraction`) is now STRICT — a value is a bbox fraction (`%` or unitless), so a unit-suffixed length (`width="20px"`) is no longer stripped and reinterpreted as a `20×`-bbox multiplier (which would push the region far outside / make the filter vanish); it is FLAGGED (`CSS-SVG-UNSUPPORTED-001`) and falls back to the §15 default. (2) [P3] added a `feImage preserveAspectRatio="xMidYMid slice"` test (a wide image in a square region covers it and the overflow is cropped by the filter-region clip — no leak), plus unitless-fraction + unit-suffixed-flag regression tests.
+
 ### Added — Phase 4 visual parity: SVG part 9 (filter completion + mask-type)
 
 Rounds out the SVG `<filter>` graph and adds `mask-type`. Byte-identity safe (no corpus/snapshot uses inline SVG; the default `mask-type: luminance` path is unchanged).

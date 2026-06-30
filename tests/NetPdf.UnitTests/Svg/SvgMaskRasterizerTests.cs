@@ -132,6 +132,20 @@ public sealed class SvgMaskRasterizerTests
     }
 
     [Fact]
+    public void Alpha_mask_type_from_inline_style_uses_the_mask_alpha()
+    {
+        // `mask-type` is a presentation property — an inline `style="mask-type:alpha"` must work like the
+        // attribute (SVG §6.4, the style declaration wins). Same black-0.5 mask: alpha → the element shows.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<mask id=\"m\" style=\"mask-type:alpha\"><rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"black\" fill-opacity=\"0.5\"/></mask>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" mask=\"url(#m)\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.InRange(Px(info!, 20, 20).A, 100, 160);   // ≈ 128 (the mask's alpha via inline style)
+    }
+
+    [Fact]
     public void Luminance_mask_type_default_hides_a_black_translucent_mask()
     {
         // The DEFAULT (luminance) on the same black-0.5 mask → luminance 0 → the element is HIDDEN

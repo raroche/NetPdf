@@ -2801,7 +2801,13 @@ flags the categories):
      / `feSpecularLighting` (distant/point/spot lights → `SKImageFilter.Create*Lit*`), `feImage` (a `data:`
      raster href → `CreateImage`; external + element refs flagged), the EXPLICIT filter region
      (x/y/width/height + `filterUnits` objectBoundingBox/userSpaceOnUse → `ResolveFilterRegion`), and
-     `mask-type: alpha` (the mask uses its own alpha, not luminance). **SVG residuals (later):**
+     `mask-type: alpha` (the mask uses its own alpha, not luminance). **SVG part 10 refined part 9:** `feImage`
+     is now PLACED into the filter region via `preserveAspectRatio` (scaled/aligned, src→dst rects — not natural
+     size at the origin) and its decoded `SKImage` is held + disposed after the filter layer composites (no
+     native leak); the filter region distinguishes an EMPTY region (zero/negative width/height → the element
+     renders nothing, §15.7.4) from "no region", resolves `userSpaceOnUse` per-attribute with §15 defaults
+     (a partial/omitted attr stays in user space, not bbox math), and FLAGS an unknown `filterUnits` value;
+     lighting `kernelUnitLength` is FLAGGED; `mask-type` also reads an inline `style=`. **SVG residuals (later):**
      remaining filter primitives (feTile + feImage ELEMENT refs; feTurbulence
      `stitchTiles` + exact noise sums) + primitive
      subregions / `primitiveUnits` + `BackgroundImage`/`FillPaint` inputs; exact curve tangents for path

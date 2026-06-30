@@ -11,8 +11,10 @@ namespace NetPdf.UnitTests.Svg;
 /// filter over the element subtree. SVG part 7 models a filter GRAPH — <c>feFlood</c>/<c>feMerge</c>/
 /// <c>feComposite</c>/<c>feBlend</c> with <c>in</c>/<c>in2</c>/named-<c>result</c> routing are SUPPORTED; the
 /// composited result is clipped to the default filter region; only the primary (reachable) tree contributes.
-/// A non-filter target, an EXPLICIT filter region / primitive subregion / <c>*Units</c>, and unmodeled inputs
-/// (<c>BackgroundImage</c>/…) are flagged.</summary>
+/// SVG part 8 adds <c>feMorphology</c> / <c>feComponentTransfer</c> / <c>feDisplacementMap</c> /
+/// <c>feConvolveMatrix</c> / <c>feTurbulence</c>. A non-filter target, an EXPLICIT filter region / primitive
+/// subregion / <c>*Units</c>, the remaining primitives (<c>feImage</c>/<c>feTile</c>/lighting), and unmodeled
+/// inputs (<c>BackgroundImage</c>/…) are flagged.</summary>
 public sealed class SvgFilterRasterizerTests
 {
     private static byte[] Svg(string s) => Encoding.UTF8.GetBytes(s);
@@ -298,5 +300,146 @@ public sealed class SvgFilterRasterizerTests
         Assert.False(unsupported);
         var p = Px(info!, 15, 15);
         Assert.True(p.R > 150 && p.B < 80);        // red (top node) wins over the blue silhouette (bottom node)
+    }
+
+    // ---- SVG part 8: feMorphology / feComponentTransfer / feDisplacementMap / feConvolveMatrix / feTurbulence ----
+
+    [Fact]
+    public void Fe_morphology_dilate_grows_the_shape()
+    {
+        // dilate radius 4 spreads a 20×20 rect's ink outward — a pixel 3px outside the sharp edge (x=30)
+        // becomes painted (it was transparent without the filter).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\"><feMorphology operator=\"dilate\" radius=\"4\"/></filter>" +
+            "<rect x=\"30\" y=\"30\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 40, 40).A > 150);    // core still painted
+        Assert.True(Px(info!, 51, 40).A > 100);    // dilated past the sharp edge (x=50), inside the region (<52)
+    }
+
+    [Fact]
+    public void Fe_morphology_erode_shrinks_the_shape()
+    {
+        // erode radius 4 eats the edges — a pixel 2px inside the sharp edge is now transparent.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\"><feMorphology operator=\"erode\" radius=\"4\"/></filter>" +
+            "<rect x=\"30\" y=\"30\" width=\"20\" height=\"20\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 40, 40).A > 150);    // core survives
+        Assert.Equal(0, Px(info!, 31, 40).A);      // the 1px-inside edge is eaten away
+    }
+
+    [Fact]
+    public void Fe_component_transfer_linear_zeroes_a_channel()
+    {
+        // feFuncR type="linear" slope=0 intercept=0 → the red channel is forced to 0 (a red rect → no red).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feComponentTransfer><feFuncR type=\"linear\" slope=\"0\" intercept=\"0\"/></feComponentTransfer></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#ff0000\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var p = Px(info!, 20, 20);
+        Assert.True(p.A > 150 && p.R < 40);        // opaque, but the red channel is gone
+    }
+
+    [Fact]
+    public void Fe_component_transfer_table_inverts_a_channel()
+    {
+        // feFuncR type="table" tableValues="1 0" maps R=1 → 0 (inverts the channel): a red rect loses its red.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feComponentTransfer><feFuncR type=\"table\" tableValues=\"1 0\"/></feComponentTransfer></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#ff0000\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).R < 40);
+    }
+
+    [Fact]
+    public void Fe_displacement_map_is_supported_and_renders()
+    {
+        // The classic self-displacement: a turbulence map displaces the source. Just assert it's a SUPPORTED
+        // primitive (not flagged) and the source still contributes ink.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\">" +
+            "<feTurbulence type=\"turbulence\" baseFrequency=\"0.1\" numOctaves=\"2\" result=\"n\"/>" +
+            "<feDisplacementMap in=\"SourceGraphic\" in2=\"n\" scale=\"6\" xChannelSelector=\"R\" yChannelSelector=\"G\"/>" +
+            "</filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 30, 30).A > 100);    // the displaced source still has ink near the center
+    }
+
+    [Fact]
+    public void Fe_convolve_matrix_identity_kernel_is_supported_and_keeps_the_source()
+    {
+        // A 3×3 identity kernel (center 1, rest 0) leaves the source essentially unchanged — and is SUPPORTED.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feConvolveMatrix order=\"3\" kernelMatrix=\"0 0 0 0 1 0 0 0 0\"/></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        var p = Px(info!, 20, 20);
+        Assert.True(p.R > 150 && p.A > 150);       // the identity kernel preserves the red source
+    }
+
+    [Fact]
+    public void Fe_convolve_matrix_with_a_bad_kernel_is_flagged()
+    {
+        // A kernelMatrix whose length doesn't match the order is invalid → flagged (input passes through).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feConvolveMatrix order=\"3\" kernelMatrix=\"1 2 3\"/></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.True(unsupported);
+    }
+
+    [Fact]
+    public void Fe_turbulence_fills_the_region_with_noise()
+    {
+        // feTurbulence generates Perlin noise across the filter region (clipped to the default region). Assert
+        // it's SUPPORTED and the region has VARIED pixels (not a flat fill).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\"><feTurbulence type=\"fractalNoise\" baseFrequency=\"0.2\" numOctaves=\"3\"/></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        // Two interior pixels differ (noise is not a flat fill).
+        var a = Px(info!, 20, 20);
+        var b = Px(info!, 38, 34);
+        Assert.True(a.R != b.R || a.G != b.G || a.B != b.B || a.A != b.A);
+    }
+
+    [Fact]
+    public void Fe_turbulence_zero_frequency_passes_through_unflagged()
+    {
+        // A non-positive baseFrequency generates no noise → the primitive contributes nothing (the previous
+        // result passes through) and is NOT flagged.
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feTurbulence baseFrequency=\"0\"/></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 20, 20).R > 150);    // the source shows through (no noise generated)
     }
 }

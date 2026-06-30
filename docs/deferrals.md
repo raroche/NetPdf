@@ -2792,9 +2792,14 @@ flags the categories):
      (over/in/out/atop/xor/lighter/arithmetic) / `feBlend` (16 modes) primitives + named `in`/`in2`/`result`
      routing (incl. `SourceGraphic`/`SourceAlpha`); only the primary (reachable) tree contributes; forward/
      missing custom `result` refs are treated as unspecified; the result is clipped to the DEFAULT filter
-     region (bbox + 10%); the hand-built drop-shadow pattern works. **SVG residuals (later):**
-     remaining filter primitives (feImage/feTile/feTurbulence/feComponentTransfer/feDisplacementMap/
-     feMorphology/feConvolveMatrix/feDiffuseLighting/feSpecularLighting) + an EXPLICIT filter region / primitive
+     region (bbox + 10%); the hand-built drop-shadow pattern works. **SVG part 8 shipped 5 more filter
+     primitives:** `feMorphology` (erode/dilate via `CreateDilate`/`CreateErode`), `feComponentTransfer`
+     (identity/table/discrete/linear/gamma → a per-channel 256-entry `SKColorFilter.CreateTable`),
+     `feDisplacementMap` (`CreateDisplacementMapEffect`), `feConvolveMatrix` (`CreateMatrixConvolution`, the
+     SVG kernel reversed 180° + target mirrored — orientation is a first cut), and `feTurbulence`
+     (turbulence/fractalNoise via `SKShader.CreatePerlinNoise*`). **SVG residuals (later):**
+     remaining filter primitives (feImage/feTile/feDiffuseLighting/feSpecularLighting; feTurbulence
+     `stitchTiles` + exact noise sums) + an EXPLICIT filter region / primitive
      subregion / `*Units` + `BackgroundImage`/`FillPaint` inputs; exact curve tangents for path
      markers (chord approximation); `rotate` global (cross-run) index + `textLength`/`lengthAdjust`;
      bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip

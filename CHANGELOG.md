@@ -8,6 +8,17 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: SVG part 8 (more filter primitives)
+
+Five more SVG `<filter>` primitives join the part-7 filter graph (`NetPdf.Svg.SvgFilters`), each backed by a native Skia `SKImageFilter`. Byte-identity safe (no corpus/snapshot uses inline SVG); each newly-supported primitive flips from flagged to rendered.
+
+- **`feMorphology`** — `operator="erode"`/`"dilate"` + `radius` → `SKImageFilter.CreateDilate`/`CreateErode` (a non-positive radius disables the effect).
+- **`feComponentTransfer`** — `feFuncR`/`G`/`B`/`A` with `type="identity"`/`"table"`/`"discrete"`/`"linear"`/`"gamma"` → a per-channel 256-entry `SKColorFilter.CreateTable` (table/discrete interpolate `tableValues`; linear = `slope·C + intercept`; gamma = `amplitude·Cᵉˣᵖ + offset`).
+- **`feDisplacementMap`** — `in`/`in2`/`scale`/`xChannelSelector`/`yChannelSelector` → `SKImageFilter.CreateDisplacementMapEffect` (a null `in2` = `SourceGraphic`).
+- **`feConvolveMatrix`** — `order`/`kernelMatrix`/`divisor`/`bias`/`targetX`/`targetY`/`edgeMode` (duplicate→clamp, wrap→repeat, none→decal)/`preserveAlpha` → `SKImageFilter.CreateMatrixConvolution` (the SVG kernel is reversed 180° + the target mirrored; an invalid kernel passes the input through + flags). Kernel orientation is a first cut.
+- **`feTurbulence`** — `type="turbulence"`/`"fractalNoise"` + `baseFrequency`/`numOctaves`/`seed` → `SKShader.CreatePerlinNoiseTurbulence`/`CreatePerlinNoiseFractalNoise` wrapped as a shader image filter (clipped to the default filter region). `stitchTiles` + the exact SVG noise sums are a residual.
+- **Residuals:** `feImage`/`feTile`/`feDiffuseLighting`/`feSpecularLighting`; the EXPLICIT filter region + primitive subregions + `*Units`.
+
 ### Added — Phase 4 visual parity: transform / shadow / gradient residuals
 
 A batch of documented `deferrals.md` follow-ups for transforms, shadows, and gradients. Every change is gated so non-feature rendering stays byte-identical (no corpus/snapshot sample uses these).

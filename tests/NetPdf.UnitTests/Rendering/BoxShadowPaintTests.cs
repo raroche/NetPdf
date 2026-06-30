@@ -11,7 +11,8 @@ namespace NetPdf.UnitTests.Rendering;
 
 /// <summary>Phase 4 shadows — end-to-end <c>box-shadow</c> painting: a sharp (blur = 0) outset
 /// shadow paints as a native filled rect UNDER the background; a blurred shadow rasterizes via the
-/// Skia bridge and places an image; inset + unsupported forms surface a diagnostic. Page content is
+/// Skia bridge and places an image; INSET shadows paint (sharp ring / blurred band) OVER the
+/// background; an oversize blur and an unresolvable unit surface a diagnostic. Page content is
 /// uncompressed, so the operators are string-inspectable.</summary>
 public sealed class BoxShadowPaintTests
 {
@@ -102,6 +103,38 @@ public sealed class BoxShadowPaintTests
 
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowBlurRaster001);
+    }
+
+    [Fact]
+    public void Blurred_shadow_with_mixed_corner_radii_rasterizes_without_unsupported()
+    {
+        // A box with mixed per-corner border-radius + a blurred shadow rasterizes the shadow shape with
+        // each corner's own radius (no representative-radius collapse) and places it, no unsupported flag.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;border-radius:0 30px 0 30px;background-color:#3366cc;box-shadow:0 0 8px #cc3366\"></div>" +
+            "</body></html>");
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("/Subtype /Image", text);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowBlurRaster001);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+    }
+
+    [Fact]
+    public void Blurred_inset_over_cap_with_a_swallowed_hole_still_fills_the_padding_box()
+    {
+        // PR #247 [P2] — a blurred inset whose spread SWALLOWS the lit hole (holeWidth ≤ 0) AND whose
+        // padding box exceeds the raster cap (3000px → device 6000 > 4096) falls back to a SHARP inset that
+        // fills the WHOLE padding box. The over-cap fallback previously painted nothing when the hole vanished.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + "<div style=\"width:3000px;height:40px;background-color:#3366cc;box-shadow:inset 0 0 10px 2000px #ff0000\"></div>"
+            + "</body></html>");
+        var text = Latin1(result.Pdf);
+
+        Assert.Contains("1 0 0 rg", text);   // the red inset shadow fills the padding box (not nothing)
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001); // over-cap → sharp
     }
 
     [Fact]

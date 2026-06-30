@@ -10,10 +10,11 @@ namespace NetPdf.Pdf.Images;
 /// Phase 4 shadows — the Skia raster fallback for a BLURRED <c>text-shadow</c> (PDF has no native
 /// Gaussian-blur primitive, so a blurred shadow can't be a glyph-show in the shadow color). Builds an
 /// <see cref="SKTypeface"/> from the SAME font-program bytes the PDF embeds (so the glyph ids match
-/// HarfBuzz's shaping), unions the run's glyph OUTLINES at their natural advances, applies a Gaussian
-/// blur, and wraps the unpremultiplied RGBA8888 result as a PDF Image XObject (RGB plane + alpha
-/// <c>/SMask</c>) via <see cref="RasterImageXObject"/>. The caller places it UNDER the text at the
-/// shadow offset.
+/// HarfBuzz's shaping), unions the run's glyph OUTLINES — at their natural advances
+/// (<see cref="TryRasterizeGlyphRun"/>) or at explicit per-glyph positions for a justified line
+/// (<see cref="TryRasterizePositionedGlyphRun"/>) — applies a Gaussian blur, and wraps the
+/// unpremultiplied RGBA8888 result as a PDF Image XObject (RGB plane + alpha <c>/SMask</c>) via
+/// <see cref="RasterImageXObject"/>. The caller places it UNDER the text at the shadow offset.
 /// </summary>
 /// <remarks>Deterministic, like <see cref="ShadowRasterizer"/>: a CPU raster surface (no GPU context)
 /// + a pure Gaussian blur of the same glyph outlines yields the same bytes on a given platform
@@ -57,22 +58,70 @@ internal static class TextShadowRasterizer
         // up with the sharp ShowGlyphs text.
         var glyphArray = glyphIds.ToArray();
         var widths = font.GetGlyphWidths(glyphArray);
-
-        // Union the glyph outlines at their cumulative advances. SKFont.GetGlyphPath returns the
-        // outline at the font size with the baseline at y = 0 (Skia y-down, so ink above the baseline
-        // is negative-y), the glyph at x = 0.
-        using var fullPath = new SKPath();
+        var penXDevice = new float[glyphArray.Length];
         var penX = 0f;
+        for (var i = 0; i < glyphArray.Length; i++)
+        {
+            penXDevice[i] = penX;
+            if (i < widths.Length) penX += widths[i];
+        }
+
+        return RasterGlyphUnion(font, glyphArray, penXDevice, blurPx, r, g, b, a, scale,
+            out destOffsetXPx, out destOffsetYPx, out destWidthPx, out destHeightPx);
+    }
+
+    /// <summary>Rasterize a blurred text-shadow for a run of POSITIONED glyphs — each glyph
+    /// <paramref name="glyphIds"/>[i] is placed at <paramref name="glyphXPx"/>[i] (CSS px from the run
+    /// origin) instead of its natural advance, so a JUSTIFIED line's inter-word spacing is baked in and
+    /// the whole line's shadow blurs as ONE continuous layer (no per-word seams across the gaps).
+    /// Otherwise identical to <see cref="TryRasterizeGlyphRun"/> (same caps, determinism, and out
+    /// params relative to the run origin).</summary>
+    public static ImageXObjectResult? TryRasterizePositionedGlyphRun(
+        ReadOnlyMemory<byte> fontBytes, ReadOnlySpan<ushort> glyphIds, ReadOnlySpan<double> glyphXPx,
+        float fontSizePx, float blurPx, double r, double g, double b, double a, double scale,
+        out double destOffsetXPx, out double destOffsetYPx, out double destWidthPx, out double destHeightPx)
+    {
+        destOffsetXPx = destOffsetYPx = destWidthPx = destHeightPx = 0;
+        if (glyphIds.Length == 0 || glyphIds.Length != glyphXPx.Length
+            || fontSizePx <= 0 || scale <= 0 || a <= 0) return null;
+        if (glyphIds.Length > MaxGlyphsPerRun) return null;
+
+        using var data = SKData.CreateCopy(fontBytes.ToArray());
+        using var typeface = SKTypeface.FromData(data);
+        if (typeface is null) return null;
+
+        var deviceFontSize = (float)(fontSizePx * scale);
+        using var font = new SKFont(typeface, deviceFontSize);
+
+        var glyphArray = glyphIds.ToArray();
+        var penXDevice = new float[glyphArray.Length];
+        for (var i = 0; i < glyphArray.Length; i++) penXDevice[i] = (float)(glyphXPx[i] * scale);
+
+        return RasterGlyphUnion(font, glyphArray, penXDevice, blurPx, r, g, b, a, scale,
+            out destOffsetXPx, out destOffsetYPx, out destWidthPx, out destHeightPx);
+    }
+
+    /// <summary>Union the glyph outlines at the device-px pen positions <paramref name="penXDevice"/>,
+    /// apply the Gaussian blur, and wrap the result as an image XObject. Shared by the natural-advance
+    /// and positioned-glyph entry points. <c>SKFont.GetGlyphPath</c> returns the outline with the
+    /// baseline at y = 0 (Skia y-down) and the glyph at x = 0.</summary>
+    private static ImageXObjectResult? RasterGlyphUnion(
+        SKFont font, ushort[] glyphArray, float[] penXDevice, float blurPx,
+        double r, double g, double b, double a, double scale,
+        out double destOffsetXPx, out double destOffsetYPx, out double destWidthPx, out double destHeightPx)
+    {
+        destOffsetXPx = destOffsetYPx = destWidthPx = destHeightPx = 0;
+
+        using var fullPath = new SKPath();
         for (var i = 0; i < glyphArray.Length; i++)
         {
             using var glyphPath = font.GetGlyphPath(glyphArray[i]);
             if (glyphPath is not null && !glyphPath.IsEmpty)
             {
                 using var placed = new SKPath();
-                glyphPath.Transform(SKMatrix.CreateTranslation(penX, 0), placed);
+                glyphPath.Transform(SKMatrix.CreateTranslation(penXDevice[i], 0), placed);
                 fullPath.AddPath(placed);
             }
-            if (i < widths.Length) penX += widths[i];
         }
         if (fullPath.IsEmpty) return null; // an all-whitespace run paints no shadow.
 

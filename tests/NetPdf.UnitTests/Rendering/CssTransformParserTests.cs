@@ -140,6 +140,62 @@ public sealed class CssTransformParserTests
     }
 
     [Fact]
+    public void Translate_em_and_rem_resolve_with_font_context()
+    {
+        // 2em at font-size 10px = 20px; 3rem at root font-size 8px = 24px.
+        var t = CssTransform_Parser.TryParse("translate(2em, 3rem)", emPx: 10, remPx: 8)!;
+        Assert.Equal((1.0, 0.0, 0.0, 1.0, 20.0, 24.0), (t.A, t.B, t.C, t.D, t.E, t.F));
+    }
+
+    [Fact]
+    public void Translate_em_without_font_context_is_unsupported()
+    {
+        // No font context (the default NaN) → an em/rem offset can't resolve → the value is dropped.
+        Assert.Null(CssTransform_Parser.TryParse("translate(2em)"));
+        Assert.Null(CssTransform_Parser.TryParse("translate(0, 3rem)"));
+    }
+
+    [Fact]
+    public void Translate_percent_is_carried_and_resolved_against_the_box()
+    {
+        // translate(50%, 25%) parses with NO box (carried as a fraction), then resolves in ToPdfMatrix:
+        // on a 100×80 box → e = 50px (PxToPt = 37.5), f = 20px (−PxToPt = −15, CSS down → PDF down).
+        var t = CssTransform_Parser.TryParse("translate(50%, 25%)")!;
+        Assert.False(t.IsIdentity);
+        var cm = CssTransform_Parser.ToPdfMatrix(t, TransformOrigin.Center, 0, 0, 100, 80, 800);
+        Assert.Equal(37.5, cm.E, 4);
+        Assert.Equal(-15.0, cm.F, 4);
+    }
+
+    [Fact]
+    public void Translate_percent_composes_through_scale()
+    {
+        // translate(100%, 0) scale(2): scale applied first, then translate by 100% of the box width.
+        // On a 50px-wide box → e = 50px (PxToPt = 37.5); the matrix scale stays 2.
+        var t = CssTransform_Parser.TryParse("translate(100%, 0) scale(2)")!;
+        var cm = CssTransform_Parser.ToPdfMatrix(t, new TransformOrigin(0, 0, 0, 0), 0, 0, 50, 50, 800);
+        Assert.Equal(2.0, cm.A, 6);
+        Assert.Equal(37.5, cm.E, 4);
+    }
+
+    [Fact]
+    public void Transform_origin_em_offset_resolves_with_font_context()
+    {
+        // 2em at font-size 10px = 20px (X); 1em = 10px (Y) — absolute offsets, fraction 0.
+        var o = CssTransformOrigin_Parser.Parse("2em 1em", emPx: 10, remPx: 16);
+        Assert.Equal(0.0, o.XFraction, 4);
+        Assert.Equal(20.0, o.XPx, 4);
+        Assert.Equal(0.0, o.YFraction, 4);
+        Assert.Equal(10.0, o.YPx, 4);
+    }
+
+    [Fact]
+    public void Transform_origin_em_without_font_context_defaults_to_center()
+    {
+        Assert.Equal(TransformOrigin.Center, CssTransformOrigin_Parser.Parse("2em 1em"));
+    }
+
+    [Fact]
     public void ToPdfMatrix_translate_is_position_independent_and_y_flips()
     {
         // translate(20px, 30px): E = +PxToPt(20) = 15; F = -PxToPt(30) = -22.5 (CSS down → PDF down).

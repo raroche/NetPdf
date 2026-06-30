@@ -2711,21 +2711,32 @@ flags the categories):
      falls back to a single untiled paint. A box with no border/padding + initial size/position/repeat is
      byte-identical to the prior single-paint. **Remaining gradient residuals (Phase 4 follow-ups):**
      per-stop alpha on a NATIVE shading (a soft-mask alpha shading) so a translucent gradient need not
-     raster, and a repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default
-     farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
-     box-shadow per-corner blur radii (the blur raster uses one representative radius) + inset under
-     box-decoration-break:slice (painted per-slice); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
+     raster. (The **repeating-radial `closest-*` extent residual SHIPPED**: a `repeating-radial-gradient`
+     under a `closest-side`/`closest-corner` extent now keeps repeating PAST the ending shape out to the
+     box's farthest corner — the stop period is tiled + renormalized over the farthest-corner cover extent
+     and the shading radius grows by the same factor; a `farthest-*` extent already reaches the corner, so
+     `coverExtent = 1` and it's unchanged.) **Remaining shadow / transform residuals (Phase 4 follow-ups):**
+     (the **per-corner blur radii residual SHIPPED**: the outset + inset blur raster draws each corner's own
+     elliptical radius via `SKRoundRect.SetRectRadii`, not one representative radius; the **box-shadow inset
+     under box-decoration-break:slice residual SHIPPED**: an inset band is now computed over the WHOLE
+     composite padding box + clipped per slice — continuous across cuts, like the outset path — a blurred
+     inset on a slice falls back to a sharp ring); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
      (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`,
-     `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residuals are an
-     over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset, and PER-SEGMENT
-     rasterization (a justified line's blurred words don't bleed across the inter-word gaps, since each
-     glyph segment rasters independently); `transform` faithful 3D PROJECTION (genuinely-3D
+     `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residual is an
+     over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset. **PER-SEGMENT
+     rasterization on a JUSTIFIED line SHIPPED**: a justified line's BLURRED layers now rasterize ONCE per
+     slice over the whole line (the inter-word justify gaps baked into the glyph X positions via
+     `TextShadowRasterizer.TryRasterizePositionedGlyphRun`), so the blur is continuous instead of seamed at
+     the gaps; sharp layers stay per-word (they don't bleed), and a mixed blurred+sharp multi-layer line's
+     blurred-vs-sharp z-order is a minor sub-residual. `transform` faithful 3D PROJECTION (genuinely-3D
      functions flatten to identity, not an orthographic projection) + the transformed-element
      STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
      composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element
      transforms too — but each fragment still wraps that `cm` independently, NOT as one isolated
-     z-order group; a transformed ancestor split onto another page is also skipped) + `em`/`rem`/`%`
-     lengths in transform offsets / `transform-origin`. The `NetPdf.Paint` `DisplayCommand` IR still has no
+     z-order group; a transformed ancestor split onto another page is also skipped). **`em`/`rem`/`%`
+     lengths in transform offsets / `transform-origin` now RESOLVE** (em = the element font-size, rem =
+     the root element font-size, a translate % against the box border-box at paint time — carried as a
+     width/height fraction through matrix composition). The `NetPdf.Paint` `DisplayCommand` IR still has no
      fragment→command or command→PDF consumer — the bridge emits straight to `IContentStream`.
      **Phase 4 PR 2 (CSS filters) shipped — IMAGES only:** `filter` on an `<img>` applies via the Skia
      `ImageFilterApplier` (a composed `SKImageFilter` chain → raster XObject + `/SMask`,

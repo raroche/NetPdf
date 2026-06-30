@@ -954,6 +954,57 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void A_tall_block_with_an_inset_box_shadow_slices_and_paints_the_band_per_page()
+    {
+        // inline-only-block-line-splitting (box-decoration-break: slice) — an INSET box-shadow band is now
+        // computed over the WHOLE composite padding box + CLIPPED to each slice (continuous across cuts),
+        // not painted relative to each slice. A sharp inset is an even-odd ring (`1 0 0 rg ... re re f*`).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;box-shadow:inset 10px 10px #ff0000\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the inset-shadow block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+        // The red inset band ring is painted once per slice (clipped to each).
+        Assert.Equal(result.PageCount, CountOccurrences(pdf, "1 0 0 rg"));
+        // Continuity, not just count: the band's OUTER rect (the padding box) is the WHOLE composite box on
+        // every page (only the slice rect clips it), so the outer height is identical + spans past one slice.
+        var heights = RingOuterHeights(pdf, "1 0 0 rg");
+        Assert.Equal(result.PageCount, heights.Count);
+        Assert.All(heights, h => Assert.Equal(heights[0], h, precision: 1));
+        Assert.True(heights[0] >= (result.PageCount - 1) * 698.0,
+            $"the inset band must span the composite box; got {heights[0]}.");
+    }
+
+    [Fact]
+    public void A_blurred_inset_box_shadow_on_a_sliced_block_falls_back_to_a_sharp_band_diagnosed()
+    {
+        // A BLURRED inset on a block split across pages is painted SHARP (a ring) — rasterizing the whole
+        // composite band per slice would blow the raster cap. The approximation is surfaced.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var sb = new StringBuilder(
+            "<!DOCTYPE html><html><body style=\"margin:0\">"
+            + "<div style=\"margin:0;line-height:50px;box-shadow:inset 0 0 20px 8px #ff0000\">");
+        for (var i = 0; i < 200; i++) sb.Append('L').Append(i).Append("<br>");
+        sb.Append("L200</div></body></html>");
+
+        var result = HtmlPdf.ConvertDetailed(sb.ToString(), opts);
+        var pdf = Latin1(result.Pdf);
+
+        Assert.True(result.PageCount >= 2, $"the inset-shadow block must slice; got {result.PageCount}.");
+        Assert.Equal(201, TdCount(pdf));   // no line lost
+        Assert.True(CountOccurrences(pdf, "1 0 0 rg") >= result.PageCount, "a sharp inset band per slice");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssBoxShadowUnsupported001);
+    }
+
+    [Fact]
     public void A_tall_block_with_a_border_radius_slices_via_the_composite_rounded_box_clipped_per_page()
     {
         // inline-only-block-line-splitting (box-decoration-break: slice) — a tall inline-only block with a
@@ -2489,6 +2540,20 @@ public sealed class HtmlPdfConvertTests
         var list = new List<double>();
         foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
             pdf, @"0 1 0 rg\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+f\*"))
+        {
+            list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
+        }
+        return list;
+    }
+
+    /// <summary>The OUTER-rect height (pt) of each even-odd ring fill (<c>{colorOp}  ox oy ow oh re  ix iy
+    /// iw ih re  f*</c>) — used to assert a sliced inset box-shadow band is painted over the WHOLE composite
+    /// box (the slice only clips it), so its outer height is identical on every page.</summary>
+    private static List<double> RingOuterHeights(string pdf, string colorOp)
+    {
+        var list = new List<double>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+            pdf, colorOp + @"\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+f\*"))
         {
             list.Add(double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture));
         }

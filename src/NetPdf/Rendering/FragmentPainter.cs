@@ -395,7 +395,10 @@ internal static class FragmentPainter
                 {
                     PaintInsetBoxShadows(page, document, insetShadows, style, pageHeightPt,
                         leftPx, topPx, widthPx, heightPx, currentColorArgb, diagnostics,
-                        ref boxShadowRasterReported, ref boxShadowCapReported);
+                        ref boxShadowRasterReported, ref boxShadowCapReported,
+                        // box-decoration-break: slice — the band is computed over the WHOLE composite box
+                        // + clipped to this slice (continuous across cuts, like the outset path above).
+                        fragment.DecorationBlockExtentPx, fragment.DecorationBlockOffsetPx);
                 }
             }
 
@@ -2400,9 +2403,9 @@ internal static class FragmentPainter
 
     /// <summary>Rasterize a blurred OUTSET shadow through the Skia bridge and place it. The bitmap
     /// pads the (spread-expanded) shape by ~3σ on each side (where σ = blur/2, the Chromium
-    /// convention) at <see cref="BoxShadowRasterScale"/>× resolution. Per-corner blur radii are a
-    /// documented first-cut approximation (a single representative radius drives the raster; the
-    /// sharp path is per-corner exact). An over-cap bitmap falls back to a sharp shadow.</summary>
+    /// convention) at <see cref="BoxShadowRasterScale"/>× resolution. Each corner's own elliptical radius
+    /// is passed through to the rasterizer (per-corner exact, like the sharp path). An over-cap bitmap
+    /// falls back to a sharp shadow.</summary>
     private static void PaintBlurredBoxShadow(
         PdfPage page, PdfDocument document,
         double shLeftPx, double shTopPx, double shWidthPx, double shHeightPx,
@@ -2420,7 +2423,6 @@ internal static class FragmentPainter
         var bmpHeightPx = shHeightPx + 2 * marginPx;
         var deviceW = (int)Math.Ceiling(bmpWidthPx * BoxShadowRasterScale);
         var deviceH = (int)Math.Ceiling(bmpHeightPx * BoxShadowRasterScale);
-        var radiusPx = MaxCorner(shadowRadii);
 
         var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterize(
             deviceW, deviceH,
@@ -2428,7 +2430,7 @@ internal static class FragmentPainter
             shapeTop: (float)(marginPx * BoxShadowRasterScale),
             shapeWidth: (float)(shWidthPx * BoxShadowRasterScale),
             shapeHeight: (float)(shHeightPx * BoxShadowRasterScale),
-            radius: (float)(radiusPx * BoxShadowRasterScale),
+            radii: ScaleRadii(shadowRadii, BoxShadowRasterScale),
             blurSigma: (float)(sigmaPx * BoxShadowRasterScale),
             r, g, b, alpha);
 
@@ -2485,9 +2487,11 @@ internal static class FragmentPainter
             E(radii.BottomLeftX, spreadPx), E(radii.BottomLeftY, spreadPx));
     }
 
-    private static double MaxCorner(CornerRadii c) => Math.Max(
-        Math.Max(Math.Max(c.TopLeftX, c.TopLeftY), Math.Max(c.TopRightX, c.TopRightY)),
-        Math.Max(Math.Max(c.BottomRightX, c.BottomRightY), Math.Max(c.BottomLeftX, c.BottomLeftY)));
+    /// <summary>Scale every (elliptical, per-corner) radius by <paramref name="s"/> — used to map the
+    /// CSS-px corner radii into the shadow raster's DEVICE-px space (Task: per-corner blur radii).</summary>
+    private static CornerRadii ScaleRadii(CornerRadii c, double s) => new(
+        c.TopLeftX * s, c.TopLeftY * s, c.TopRightX * s, c.TopRightY * s,
+        c.BottomRightX * s, c.BottomRightY * s, c.BottomLeftX * s, c.BottomLeftY * s);
 
     /// <summary>Phase 4 shadows (PR 1 refinements) — paint a box's INSET <c>box-shadow</c> layers
     /// OVER the background, clipped to the PADDING box (CSS B&amp;B §7.2 — an inset shadow casts a
@@ -2495,21 +2499,32 @@ internal static class FragmentPainter
     /// contracted by the spread). A sharp (blur ≈ 0) layer is a native even-odd RING (padding box
     /// minus the hole); a blurred layer rasterizes the band via the Skia bridge (fill + a
     /// <c>DstOut</c> blurred hole) and places it. Layers paint in REVERSE list order (first listed on
-    /// top). Outset layers are skipped here (the under-background pass painted them). The box's OWN
-    /// (fragment) geometry is used — a box-decoration-break: slice fragment paints relative to the
-    /// slice (a documented residual; the common single-page box is exact).</summary>
+    /// top). Outset layers are skipped here (the under-background pass painted them).
+    /// <para>box-decoration-break: slice — when this fragment is one block-axis slice
+    /// (<paramref name="decorationBlockExtentPx"/> &gt; 0), the band is computed over the WHOLE
+    /// composite padding box (virtual top = <c>topPx − decorationBlockOffsetPx</c>, height = the full
+    /// extent, radii against the composite height) and an outer slice-rect clip limits the paint to
+    /// this fragment — so the band is CONTINUOUS across cuts (the block-start band shows only on the
+    /// first slice, the block-end only on the last, the side bands on every slice). A BLURRED inset on
+    /// a slice falls back to a SHARP ring (the whole-composite band raster would blow the cap), like the
+    /// outset path. Default 0 ⇒ the box's own padding box (byte-identical for a non-slice box).</para></summary>
     private static void PaintInsetBoxShadows(
         PdfPage page, PdfDocument document, IReadOnlyList<CssBoxShadow> shadows, ComputedStyle style,
         double pageHeightPt, double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool rasterReported, ref bool capReported,
+        double decorationBlockExtentPx = 0.0, double decorationBlockOffsetPx = 0.0)
     {
+        var isSlice = decorationBlockExtentPx > 0;
+        var boxTopPx = isSlice ? topPx - decorationBlockOffsetPx : topPx;
+        var boxHeightPx = isSlice ? decorationBlockExtentPx : heightPx;
+
         var (bt, br, bb, bl) = BackgroundAreaInset(style, "padding-box", defaultArea: 'p');
         var padLeftPx = leftPx + bl;
-        var padTopPx = topPx + bt;
+        var padTopPx = boxTopPx + bt;
         var padWidthPx = widthPx - bl - br;
-        var padHeightPx = heightPx - bt - bb;
+        var padHeightPx = boxHeightPx - bt - bb;
         if (padWidthPx <= 0 || padHeightPx <= 0) return;
-        var padRadii = InsetRadii(ReadCornerRadii(style, widthPx, heightPx), bt, br, bb, bl);
+        var padRadii = InsetRadii(ReadCornerRadii(style, widthPx, boxHeightPx), bt, br, bb, bl);
 
         for (var i = shadows.Count - 1; i >= 0; i--)
         {
@@ -2528,7 +2543,7 @@ internal static class FragmentPainter
             if (alpha <= 0) continue;
             ColorChannels(argb, out var r, out var g, out var b);
 
-            // The lit hole = the padding box offset by (x, y) and contracted by the spread.
+            // The lit hole = the (composite) padding box offset by (x, y) and contracted by the spread.
             var holeLeftPx = padLeftPx + s.OffsetXPx + s.SpreadPx;
             var holeTopPx = padTopPx + s.OffsetYPx + s.SpreadPx;
             var holeWidthPx = padWidthPx - 2 * s.SpreadPx;
@@ -2538,10 +2553,20 @@ internal static class FragmentPainter
             ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt,
                 out var px, out var py, out var pw, out var ph);
 
-            if (s.BlurPx <= BoxShadowBlurEpsilonPx)
+            // box-decoration-break: slice — limit the whole-composite band to THIS slice's border box.
+            var sliceClipped = false;
+            if (isSlice)
+            {
+                ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var scx, out var scy, out var scw, out var sch);
+                page.BeginRectangleClip(scx, scy, scw, sch);
+                sliceClipped = true;
+            }
+
+            if (s.BlurPx <= BoxShadowBlurEpsilonPx || isSlice)
             {
                 // Sharp inset → a native even-odd ring (padding box minus the hole), clipped to the
-                // padding box so the offset hole's overflow doesn't fill outside the box.
+                // padding box so the offset hole's overflow doesn't fill outside the box. A blurred inset
+                // on a SLICE falls back here (the whole-composite band raster would blow the cap).
                 page.BeginRoundedRectangleClip(px, py, pw, ph, ToPt(padRadii));
                 if (holeWidthPx > 0 && holeHeightPx > 0)
                 {
@@ -2556,6 +2581,15 @@ internal static class FragmentPainter
                     page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), 0, 0, 0, 0, default, r, g, b, alpha);
                 }
                 page.RestoreGraphicsState();
+                if (isSlice && s.BlurPx > BoxShadowBlurEpsilonPx && !capReported)
+                {
+                    diagnostics?.Emit(new Diagnostic(
+                        DiagnosticCodes.CssBoxShadowUnsupported001,
+                        "A blurred inset box-shadow on a block split across pages (box-decoration-break: slice) "
+                        + "was painted as a SHARP inset — the whole-box blur raster would exceed the cap.",
+                        DiagnosticSeverity.Warning));
+                    capReported = true;
+                }
             }
             else
             {
@@ -2563,6 +2597,8 @@ internal static class FragmentPainter
                     holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, holeRadii, s.BlurPx, pageHeightPt,
                     r, g, b, alpha, diagnostics, ref rasterReported, ref capReported);
             }
+
+            if (sliceClipped) page.RestoreGraphicsState();
         }
     }
 
@@ -2580,12 +2616,12 @@ internal static class FragmentPainter
         var deviceW = (int)Math.Ceiling(padWidthPx * BoxShadowRasterScale);
         var deviceH = (int)Math.Ceiling(padHeightPx * BoxShadowRasterScale);
         var result = NetPdf.Pdf.Images.ShadowRasterizer.TryRasterizeInset(
-            deviceW, deviceH, (float)(MaxCorner(padRadii) * BoxShadowRasterScale),
+            deviceW, deviceH, ScaleRadii(padRadii, BoxShadowRasterScale),
             holeLeft: (float)((holeLeftPx - padLeftPx) * BoxShadowRasterScale),
             holeTop: (float)((holeTopPx - padTopPx) * BoxShadowRasterScale),
             holeWidth: (float)(holeWidthPx * BoxShadowRasterScale),
             holeHeight: (float)(holeHeightPx * BoxShadowRasterScale),
-            holeRadius: (float)(MaxCorner(holeRadii) * BoxShadowRasterScale),
+            holeRadii: ScaleRadii(holeRadii, BoxShadowRasterScale),
             blurSigma: (float)(sigmaPx * BoxShadowRasterScale), r, g, b, alpha);
 
         ToPdfRect(padLeftPx, padTopPx, padWidthPx, padHeightPx, pageHeightPt, out var px, out var py, out var pw, out var ph);
@@ -2597,6 +2633,12 @@ internal static class FragmentPainter
             {
                 ToPdfRect(holeLeftPx, holeTopPx, holeWidthPx, holeHeightPx, pageHeightPt, out var hx, out var hy, out var hw, out var hh);
                 page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), hx, hy, hw, hh, ToPt(holeRadii), r, g, b, alpha);
+            }
+            else
+            {
+                // The hole vanished (spread swallowed it) → the whole padding box is in shadow (matching the
+                // sharp inset path; PR #247 [P2] — the over-cap fallback previously painted nothing here).
+                page.FillRoundedRectangleRing(px, py, pw, ph, ToPt(padRadii), 0, 0, 0, 0, default, r, g, b, alpha);
             }
             page.RestoreGraphicsState();
             if (!capReported)
@@ -2890,9 +2932,15 @@ internal static class FragmentPainter
     /// <c>last − first</c> specified position (NOT just the last); prior + next cycles are tiled so the
     /// whole [0, 1] line is covered, and a zero-width period collapses to the average color. Finally the
     /// covering stops are CLIPPED to [0, 1] by inserting boundary stops whose colors are interpolated from
-    /// the surrounding raw stops — so the visible PDF function / sweep only ever sees offsets in [0, 1].</summary>
+    /// the surrounding raw stops — so the visible PDF function / sweep only ever sees offsets in [0, 1].
+    /// <para><c>coverExtent</c> &gt; 1 (a REPEATING RADIAL under a <c>closest-*</c> extent, where the box
+    /// reaches past the ending shape) tiles the repeat out to that multiple of the period then renormalizes
+    /// so the shading's [0, 1] spans [0, coverExtent · ending-shape] — the pattern keeps repeating to the
+    /// box corners instead of clamping at the ending shape. 1.0 (the default — linear / conic / non-repeating
+    /// / farthest-* radial) is byte-identical.</para></summary>
     private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx,
+        bool repeating, double coverExtent = 1.0)
     {
         var n = gradientStops.Count;
         var col = new (double R, double G, double B, double A)[n];
@@ -2965,7 +3013,13 @@ internal static class FragmentPainter
         if (raw.Count == 1)
             return [raw[0] with { Offset = Math.Clamp(raw[0].Offset, 0.0, 1.0) }];
 
-        var covering = repeating ? TileRepeatingStops(raw) : raw;
+        var covering = repeating ? TileRepeatingStops(raw, coverExtent) : raw;
+        // Renormalize the extended cover range [0, coverExtent] back onto the shading's [0, 1] (the caller
+        // grows the shading radius by the same factor), so a repeating radial keeps repeating to the box
+        // corners. coverExtent == 1 → a no-op (byte-identical for linear / conic / non-extended radial).
+        if (coverExtent != 1.0)
+            for (var i = 0; i < covering.Count; i++)
+                covering[i] = covering[i] with { Offset = covering[i].Offset / coverExtent };
         return ClipStopsToUnitInterval(covering);
     }
 
@@ -2974,7 +3028,7 @@ internal static class FragmentPainter
     /// cycles before the first stop and after the last are present). A zero-width period (all stops
     /// coincident) collapses to the average color (CSS Images §3.4.3). Bounded by
     /// <see cref="GradientMaxReplicatedStops"/>.</summary>
-    private static List<ResolvedGradientStop> TileRepeatingStops(List<ResolvedGradientStop> raw)
+    private static List<ResolvedGradientStop> TileRepeatingStops(List<ResolvedGradientStop> raw, double hi = 1.0)
     {
         var first = raw[0].Offset;
         var last = raw[^1].Offset;
@@ -2984,10 +3038,10 @@ internal static class FragmentPainter
             double r = 0, g = 0, b = 0, a = 0;
             foreach (var s in raw) { r += s.R; g += s.G; b += s.B; a += s.A; }
             var avg = new ResolvedGradientStop(0, r / raw.Count, g / raw.Count, b / raw.Count, a / raw.Count);
-            return [avg, avg with { Offset = 1.0 }]; // a solid fill (two coincident-color endpoints)
+            return [avg, avg with { Offset = hi }]; // a solid fill (two coincident-color endpoints)
         }
         var kMin = (int)Math.Floor((0.0 - first) / period);
-        var kMax = (int)Math.Ceiling((1.0 - last) / period);
+        var kMax = (int)Math.Ceiling((hi - last) / period); // cover [0, hi] (hi > 1 → out to the box corners)
         var covering = new List<ResolvedGradientStop>((kMax - kMin + 1) * raw.Count);
         for (var k = kMin; k <= kMax && covering.Count < GradientMaxReplicatedStops; k++)
         {
@@ -3157,16 +3211,30 @@ internal static class FragmentPainter
         // placed stops too early on tall/narrow ellipses). rx is in pt, homogeneous degree 1, so
         // rxCssPx = rx / PointsPerPixel.
         var rxCssPx = rx / PdfUnits.PointsPerPixel;
+        // A REPEATING radial under a closest-* extent must keep repeating PAST the ending shape, out to the
+        // box's farthest corner (CSS Images §3.4 — the default farthest-corner already reaches the corner,
+        // so coverExtent = 1 there). t_far = the farthest-corner distance in ending-shape units; the stops
+        // are tiled + renormalized to cover it and the shading radius grows by the same factor.
+        var coverExtent = 1.0;
+        if (radial.Repeating && rx > 0 && ry > 0)
+        {
+            var fx = maxX / rx;
+            var fy = maxY / ry;
+            var tFar = Math.Sqrt(fx * fx + fy * fy);
+            if (tFar > 1.0) coverExtent = tFar;
+        }
         var normalized = ResolveAndNormalizeStops(
-            radial.Stops, currentColorArgb, rxCssPx, radial.Repeating);
+            radial.Stops, currentColorArgb, rxCssPx, radial.Repeating, coverExtent);
         if (normalized.Count < 2) return;
+        var outerRadius = baseRadius * coverExtent; // grown to the box corners for a repeating closest-* gradient
 
         // Per-stop alpha (gradient refinements) — a translucent stop falls back to a Skia raster (the
         // native radial shading is DeviceRGB); a fully-opaque gradient stays native (byte-identical).
         if (AnyTranslucent(normalized))
         {
             var painted = TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
-                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
+                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx,
+                rxCssPx * coverExtent, ry / PdfUnits.PointsPerPixel * coverExtent,
                 style, clipOverride);
             // false = over-cap → skip + warn (not a native fallback that would drop the alpha, PR #237
             // [P1]); null = degenerate origin → silent no-op (not over-cap, PR #238 [P3]).
@@ -3176,10 +3244,11 @@ internal static class FragmentPainter
 
         var stops = new List<PdfGradientStop>(normalized.Count);
         foreach (var s in normalized) stops.Add(new PdfGradientStop(s.Offset, s.R, s.G, s.B)); // native drops alpha
-        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
+        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, outerRadius, stops);
         (double, double, double, double, double, double)? shadingCtm = null;
         if (rx != ry)
         {
+            // The squash ratio is unchanged by coverExtent (both axes grow by it): sx = rx / baseRadius.
             var sx = rx / baseRadius;
             var sy = ry / baseRadius;
             shadingCtm = (sx, 0.0, 0.0, sy, pcx * (1 - sx), pcy * (1 - sy));

@@ -470,12 +470,17 @@ internal sealed class ImageResourceCache
             if (!string.IsNullOrWhiteSpace(transformRaw)
                 && !transformRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
-                var transform = CssTransform_Parser.TryParse(transformRaw);
+                // Font context for em/rem in the transform / transform-origin lengths (recovered raw, so the
+                // cascade hasn't resolved their units): em = this box's font-size, rem = the root element's.
+                // A translate % is resolved later against the box border-box (TransformResolver / ToPdfMatrix).
+                var emPx = box.Style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                var remPx = RootFontSizePx(box);
+                var transform = CssTransform_Parser.TryParse(transformRaw, emPx, remPx);
                 if (transform is not null)
                 {
                     if (!transform.IsIdentity)
                     {
-                        var origin = CssTransformOrigin_Parser.Parse(rules?.GetWinner("transform-origin")?.ResolvedValue);
+                        var origin = CssTransformOrigin_Parser.Parse(rules?.GetWinner("transform-origin")?.ResolvedValue, emPx, remPx);
                         transformBoxes[box] = new BoxTransform(transform, origin);
                     }
                     if (transform.Had3D) Report(diagnostics, ref transform3DReported,
@@ -768,6 +773,17 @@ internal sealed class ImageResourceCache
         if (reported) return;
         diagnostics.Emit(new Diagnostic(code, message, DiagnosticSeverity.Warning));
         reported = true;
+    }
+
+    /// <summary>The CSS <c>rem</c> basis — the root element's computed font-size (CSS Values §5.1.1).
+    /// Walks to the topmost element-backed ancestor (the <c>&lt;html&gt;</c> box, above the synthetic
+    /// document root which has no source element); defaults to 16px.</summary>
+    private static double RootFontSizePx(Box box)
+    {
+        var root = box;
+        for (Box? b = box; b is not null; b = b.Parent)
+            if (b.SourceElement is not null) root = b;
+        return root.Style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
     }
 
     private static void ReportBoxShadowUnsupported(IDiagnosticsSink diagnostics, ref bool reported)

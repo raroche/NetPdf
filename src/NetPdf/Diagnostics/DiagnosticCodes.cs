@@ -305,8 +305,9 @@ internal static class DiagnosticCodes
     /// <summary>
     /// Phase 4 — a CSS <c>transform</c> value could not be parsed into the supported 2D function
     /// set (<c>translate</c>/<c>scale</c>/<c>rotate</c>/<c>skew</c>/<c>matrix</c> + their axis
-    /// variants) — an unknown function or an offset/angle in an unresolvable unit. The element
-    /// painted UNTRANSFORMED. Surfaced once per render.
+    /// variants) — an unknown function, a malformed argument, or an angle in an unsupported unit.
+    /// (<c>em</c>/<c>rem</c>/<c>%</c> translate offsets and <c>transform-origin</c> lengths DO resolve.)
+    /// The element painted UNTRANSFORMED. Surfaced once per render.
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string CssTransformUnsupported001 = "CSS-TRANSFORM-UNSUPPORTED-001";

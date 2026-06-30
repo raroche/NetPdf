@@ -619,56 +619,109 @@ internal static class TextPainter
                     ?? lineBaselineTopPx - InlineVerticalAlign.TextRaisePx(runStyle, blockStyle, fontSizePx);
             }
 
+            // Walk the slice ONCE, advancing the GLOBAL pen / opportunity state (so the next slice stays
+            // positioned even when this run's font failed). Collect the per-word segments (for the text + any
+            // SHARP shadow) and the slice's positioned glyph ids + X (for a continuous BLURRED shadow raster).
+            var segments = new List<GlyphSegment>();
+            var collectGlyphs = fc is not null && shadows is { Count: > 0 };
+            var gids = collectGlyphs ? new ushort[slice.GlyphLength] : null;
+            var xRel = collectGlyphs ? new double[slice.GlyphLength] : null;
+            var originPen = penXPx + run.Glyphs[slice.GlyphStart].XOffset;
             var segStartG = 0;            // segment start glyph, relative to slice.GlyphStart.
             var segPenXPx = penXPx;       // painted x of the current segment's first glyph.
             for (var g = 0; g < slice.GlyphLength; g++)
             {
                 var glyph = run.Glyphs[slice.GlyphStart + g];
+                if (gids is not null) { gids[g] = glyph.GlyphId; xRel![g] = penXPx + glyph.XOffset - originPen; }
                 penXPx += glyph.XAdvance;
                 if (opportunitiesUsed >= gapCount
                     || !InlineJustify.IsJustifySpace(concatText, glyph.Cluster))
                     continue;
-                // Word boundary — flush [segStartG, g] (incl. the space) then open a gap after it.
+                // Word boundary — close [segStartG, g] (incl. the space) then open a gap after it.
                 opportunitiesUsed++;
-                if (fc is not null)
-                    EmitGlyphSegment(run, slice.GlyphStart + segStartG, g - segStartG + 1, fc, key!,
-                        fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                        baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache);
+                segments.Add(new GlyphSegment(segStartG, g - segStartG + 1,
+                    contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset));
                 penXPx += extraPerGapPx;
                 segStartG = g + 1;
                 segPenXPx = penXPx;
             }
             // Trailing segment after the slice's last opportunity (or the whole slice if none).
-            if (fc is not null && segStartG < slice.GlyphLength)
-                EmitGlyphSegment(run, slice.GlyphStart + segStartG, slice.GlyphLength - segStartG, fc, key!,
-                    fontSizePx, contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset,
-                    baselineTopPx, argb, pageHeightPt, clipPt, draws, shadows, transformCm, shadowCache);
+            if (segStartG < slice.GlyphLength)
+                segments.Add(new GlyphSegment(segStartG, slice.GlyphLength - segStartG,
+                    contentLeftPx + segPenXPx + run.Glyphs[slice.GlyphStart + segStartG].XOffset));
+
+            if (fc is not null)
+                EmitJustifiedSlice(run, slice, segments, gids, xRel, contentLeftPx + originPen, fc, key!,
+                    fontSizePx, baselineTopPx, argb, pageHeightPt, clipPt, transformCm, draws, shadows, shadowCache);
         }
     }
+
+    /// <summary>One per-word glyph segment of a justified slice: the glyph range
+    /// <c>[StartG, StartG + Count)</c> (relative to the slice's <c>GlyphStart</c>) and the content-relative
+    /// painted X of its first glyph.</summary>
+    private readonly record struct GlyphSegment(int StartG, int Count, double XPx);
 
     /// <summary>Device px per CSS px for the blurred text-shadow raster (matches the box-shadow scale).</summary>
     private const double TextShadowRasterScale = 2.0;
 
-    /// <summary>Emit one <see cref="DrawCommand"/> for a contiguous glyph segment
-    /// <c>[glyphStart, glyphStart+glyphCount)</c> of <paramref name="run"/> at the (already
-    /// content-relative) baseline origin <paramref name="xStartPx"/> / <paramref name="baselineTopPx"/>,
-    /// seeding the font's used-glyph set. Shared by the justify pass's per-word segments.</summary>
-    private static void EmitGlyphSegment(
-        ShapedRun run, int glyphStart, int glyphCount, FontCollect fc, string fontKey,
-        double fontSizePx, double xStartPx, double baselineTopPx, uint argb, double pageHeightPt,
-        (double X, double Y, double W, double H)? clipPt, List<DrawCommand> draws,
-        IReadOnlyList<ResolvedTextShadow>? shadows,
-        (double, double, double, double, double, double)? transformCm,
-        Dictionary<string, BlurredShadowRaster?>? shadowCache)
+    /// <summary>Emit a justified slice's <c>text-shadow</c> layers + its text. The layers are walked in a
+    /// SINGLE reverse pass (first-listed sits on top) so a BLURRED and a SHARP layer keep their global
+    /// z-order (PR #247 [P2]): per layer, either the whole-slice blurred raster (continuous across the
+    /// inter-word gaps; an over-cap / unreadable raster falls through to sharp) OR the per-word sharp
+    /// offset glyphs. The text glyphs (topmost) are emitted last, per word-segment.
+    /// <paramref name="gids"/>/<paramref name="xRel"/> (the slice's glyph ids + their X relative to the
+    /// slice origin) are non-null only when a shadow layer might blur.</summary>
+    private static void EmitJustifiedSlice(
+        ShapedRun run, ShapedRunSlice slice, List<GlyphSegment> segments, ushort[]? gids, double[]? xRel,
+        double sliceOriginXPx, FontCollect fc, string fontKey, double fontSizePx, double baselineTopPx,
+        uint runArgb, double pageHeightPt, (double X, double Y, double W, double H)? clipPt,
+        (double, double, double, double, double, double)? transformCm, List<DrawCommand> draws,
+        IReadOnlyList<ResolvedTextShadow>? shadows, Dictionary<string, BlurredShadowRaster?>? shadowCache)
     {
-        var ids = new ushort[glyphCount];
-        for (var i = 0; i < glyphCount; i++)
+        if (shadows is { Count: > 0 })
         {
-            var gid = run.Glyphs[glyphStart + i].GlyphId;
-            ids[i] = gid;
-            fc.Used.Add(gid);
+            for (var i = shadows.Count - 1; i >= 0; i--) // reverse → first-listed ends up on top among the layers
+            {
+                var s = shadows[i];
+                var argb = s.Argb ?? runArgb; // null = currentColor = the run's text color
+                if (FragmentPainter.Alpha(argb) == 0) continue;
+                if (s.BlurPx > 0 && gids is not null
+                    && TryBuildPositionedBlurredShadow(gids, xRel!, sliceOriginXPx, s, argb, fc, fontKey,
+                        fontSizePx, baselineTopPx, pageHeightPt, clipPt, transformCm, shadowCache, out var blurCmd))
+                {
+                    draws.Add(blurCmd);
+                    continue;
+                }
+                // Sharp (or a blurred layer that fell back): the same glyphs offset, per word-segment.
+                foreach (var seg in segments)
+                    draws.Add(SegmentGlyphCommand(run, slice, seg, fc, fontKey, fontSizePx,
+                        seg.XPx + s.DxPx, baselineTopPx + s.DyPx, argb, pageHeightPt, clipPt, transformCm, seedUsed: false));
+            }
         }
-        var command = new DrawCommand(
+        // The text itself (topmost), per word-segment.
+        foreach (var seg in segments)
+            draws.Add(SegmentGlyphCommand(run, slice, seg, fc, fontKey, fontSizePx,
+                seg.XPx, baselineTopPx, runArgb, pageHeightPt, clipPt, transformCm, seedUsed: true));
+    }
+
+    /// <summary>Build one <see cref="DrawCommand"/> for a word <paramref name="seg"/> at the content-relative
+    /// baseline origin <paramref name="xStartPx"/> / <paramref name="baselineTopPx"/>. Seeds the font's
+    /// used-glyph set only on the TEXT pass (<paramref name="seedUsed"/>) — a sharp shadow reuses the same
+    /// glyph ids, so the set is unchanged either way.</summary>
+    private static DrawCommand SegmentGlyphCommand(
+        ShapedRun run, ShapedRunSlice slice, GlyphSegment seg, FontCollect fc, string fontKey,
+        double fontSizePx, double xStartPx, double baselineTopPx, uint argb, double pageHeightPt,
+        (double X, double Y, double W, double H)? clipPt,
+        (double, double, double, double, double, double)? transformCm, bool seedUsed)
+    {
+        var ids = new ushort[seg.Count];
+        for (var i = 0; i < seg.Count; i++)
+        {
+            var gid = run.Glyphs[slice.GlyphStart + seg.StartG + i].GlyphId;
+            ids[i] = gid;
+            if (seedUsed) fc.Used.Add(gid);
+        }
+        return new DrawCommand(
             FontKey: fontKey,
             OriginalGlyphIds: ids,
             XPt: PdfUnits.PxToPt(xStartPx),
@@ -677,7 +730,84 @@ internal static class TextPainter
             ColorArgb: argb,
             ClipPt: clipPt,
             Transform: transformCm);
-        AddTextDrawWithShadows(draws, command, shadows, fc, fontSizePx, xStartPx, baselineTopPx, pageHeightPt, shadowCache);
+    }
+
+    /// <summary>Rasterize a justified slice's BLURRED <c>text-shadow</c> layer ONCE over the whole slice
+    /// (the glyphs at their justified positions <paramref name="xRel"/>, so the blur is continuous across
+    /// the inter-word gaps) and wrap it as an image <see cref="DrawCommand"/> placed under the text at the
+    /// slice origin + shadow offset. Caches the raster by font / size / blur / color / glyph ids +
+    /// canonicalized relative X (PR #247 [P3]) so a repeated identical justified slice reuses the pixels.
+    /// Returns <see langword="false"/> when the raster can't be built (over-cap / unreadable font) so the
+    /// caller falls back to per-word sharp offsets.</summary>
+    private static bool TryBuildPositionedBlurredShadow(
+        ushort[] gids, double[] xRel, double sliceOriginXPx, ResolvedTextShadow s, uint argb,
+        FontCollect fc, string fontKey, double fontSizePx, double baselineTopPx, double pageHeightPt,
+        (double X, double Y, double W, double H)? clipPt,
+        (double, double, double, double, double, double)? transformCm,
+        Dictionary<string, BlurredShadowRaster?>? shadowCache, out DrawCommand shadowCommand)
+    {
+        shadowCommand = default;
+        BlurredShadowRaster? cached;
+        string? key = null;
+        if (shadowCache is not null)
+        {
+            key = PositionedShadowCacheKey(fontKey, fontSizePx, s.BlurPx, argb, gids, xRel);
+            if (shadowCache.TryGetValue(key, out cached))
+            {
+                if (cached is null) return false; // known failure → per-word sharp fallback
+                return PlacePositionedBlurredShadow(cached, sliceOriginXPx, s, argb, fontKey, fontSizePx,
+                    baselineTopPx, pageHeightPt, clipPt, transformCm, out shadowCommand);
+            }
+        }
+
+        FragmentPainter.ColorChannels(argb, out var r, out var g, out var b);
+        var alpha = FragmentPainter.Alpha(argb) / 255.0;
+        var image = NetPdf.Pdf.Images.TextShadowRasterizer.TryRasterizePositionedGlyphRun(
+            fc.Font.FontBytes, gids, xRel, (float)fontSizePx, (float)s.BlurPx, r, g, b, alpha,
+            TextShadowRasterScale, out var offX, out var offY, out var w, out var h);
+        cached = image is null ? null : new BlurredShadowRaster(image, offX, offY, w, h);
+        if (key is not null) shadowCache![key] = cached;
+        if (cached is null) return false;
+        return PlacePositionedBlurredShadow(cached, sliceOriginXPx, s, argb, fontKey, fontSizePx,
+            baselineTopPx, pageHeightPt, clipPt, transformCm, out shadowCommand);
+    }
+
+    /// <summary>Place a (possibly cached) positioned blurred-shadow raster at the slice origin + shadow
+    /// offset + the raster's baseline-relative offset.</summary>
+    private static bool PlacePositionedBlurredShadow(
+        BlurredShadowRaster raster, double sliceOriginXPx, ResolvedTextShadow s, uint argb, string fontKey,
+        double fontSizePx, double baselineTopPx, double pageHeightPt,
+        (double X, double Y, double W, double H)? clipPt,
+        (double, double, double, double, double, double)? transformCm, out DrawCommand shadowCommand)
+    {
+        var leftPx = sliceOriginXPx + s.DxPx + raster.OffsetXPx;
+        var topPx = baselineTopPx + s.DyPx + raster.OffsetYPx;
+        FragmentPainter.ToPdfRect(leftPx, topPx, raster.WidthPx, raster.HeightPx, pageHeightPt,
+            out var ix, out var iy, out var iw, out var ih);
+        shadowCommand = new DrawCommand(
+            FontKey: fontKey, OriginalGlyphIds: System.Array.Empty<ushort>(),
+            XPt: 0, YPt: 0, SizePt: PdfUnits.PxToPt(fontSizePx), ColorArgb: argb, ClipPt: clipPt,
+            Transform: transformCm, ShadowImage: (raster.Image, ix, iy, iw, ih));
+        return true;
+    }
+
+    /// <summary>The cache key for a POSITIONED (justified-slice) blurred text-shadow raster — the natural
+    /// run key plus each glyph's relative X canonicalized to 1/1000 px (so float jitter collapses while
+    /// distinct justified spacings stay distinct). The <c>P|</c> prefix keeps it disjoint from the
+    /// natural-advance keys (<see cref="ShadowCacheKey"/>).</summary>
+    private static string PositionedShadowCacheKey(
+        string fontKey, double fontSizePx, double blurPx, uint argb, ushort[] ids, double[] xRel)
+    {
+        var sb = new System.Text.StringBuilder(fontKey.Length + 32 + ids.Length * 8);
+        sb.Append("P|").Append(fontKey).Append('|')
+          .Append(fontSizePx.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+          .Append(blurPx.ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+          .Append(argb).Append('|');
+        foreach (var id in ids) sb.Append(id).Append(',');
+        sb.Append('|');
+        foreach (var x in xRel)
+            sb.Append(Math.Round(x, 3).ToString("R", System.Globalization.CultureInfo.InvariantCulture)).Append(',');
+        return sb.ToString();
     }
 
     /// <summary>A cached rasterized blurred text-shadow (PR #236 review [P2]): the image + its top-left

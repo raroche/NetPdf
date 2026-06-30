@@ -136,6 +136,32 @@ public sealed class TransformPaintTests
         Assert.Contains("1 0 0 1 7.5 -15 cm", text);
     }
 
+    [Fact]
+    public void Translate_percent_resolves_against_the_box_border_box()
+    {
+        // translate(50%, 25%) on a 100×60 box ⇒ e = 50px, f = 15px ⇒ cm [1 0 0 1 37.5 -11.25].
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:60px;background-color:#3366cc;transform:translate(50%,25%)\"></div>" +
+            "</body></html>"));
+
+        Assert.Contains("1 0 0 1 37.5 -11.25 cm", text);
+        Assert.Contains("0.2 0.4 0.8 rg", text); // the background still paints inside the transform
+    }
+
+    [Fact]
+    public void Translate_em_and_rem_resolve_against_element_and_root_font_sizes()
+    {
+        // div font-size 20px (em), html font-size 10px (rem): translate(1em, 1rem) ⇒ e = 20px, f = 10px
+        // ⇒ cm [1 0 0 1 15 -7.5]. Proves em uses the element font-size and rem the root.
+        var text = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html style=\"font-size:10px\"><body>" +
+            "<div style=\"font-size:20px;width:50px;height:50px;background-color:red;transform:translate(1em,1rem)\"></div>" +
+            "</body></html>"));
+
+        Assert.Contains("1 0 0 1 15 -7.5 cm", text);
+    }
+
     private sealed class SynthFontResolver : IFontResolver
     {
         public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)

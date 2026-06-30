@@ -46,6 +46,32 @@ internal static class CssLengthParsing
         return TryFinite(lower, out var z) && z == 0.0;
     }
 
+    /// <summary>A CSS length to CSS px including the font-relative units <c>em</c> / <c>rem</c> (resolved
+    /// against <paramref name="emPx"/> / <paramref name="remPx"/>), plus everything <see cref="TryLengthPx"/>
+    /// accepts (<c>px</c> + absolute units + a finite zero). A percentage is NOT a length here (returns
+    /// false). When the font context is <see cref="double.NaN"/>, an <c>em</c> / <c>rem</c> token returns
+    /// false. Used for transform offsets / <c>transform-origin</c> lengths (Phase 4).</summary>
+    public static bool TryLengthPxEmRem(string token, double emPx, double remPx, out double px)
+    {
+        px = 0;
+        var t = token.Trim();
+        if (t.Length == 0) return false;
+        var lower = t.ToLowerInvariant();
+        if (lower.EndsWith("rem", StringComparison.Ordinal))
+            return double.IsFinite(remPx)
+                && TryFinite(lower.AsSpan(0, lower.Length - 3), out var rv) && SetFinite(rv * remPx, out px);
+        if (lower.EndsWith("em", StringComparison.Ordinal))
+            return double.IsFinite(emPx)
+                && TryFinite(lower.AsSpan(0, lower.Length - 2), out var ev) && SetFinite(ev * emPx, out px);
+        return TryLengthPx(t, out px);
+    }
+
+    private static bool SetFinite(double value, out double px)
+    {
+        px = value;
+        return double.IsFinite(px);
+    }
+
     /// <summary>Parse <paramref name="span"/> as an invariant float AND require it be finite —
     /// rejecting <c>NaN</c> / <c>Infinity</c> / overflowing exponents that would otherwise reach
     /// PDF emission and throw (PR #210 review [P2]).</summary>

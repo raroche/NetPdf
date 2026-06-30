@@ -136,10 +136,13 @@ internal static class SvgFilters
                     var (rx, ry) = ParseRadius(SvgRasterizer.Attr(prim, "radius"));
                     var op = (SvgRasterizer.Attr(prim, "operator") ?? "erode").Trim().ToLowerInvariant();
                     if (op != "erode" && op != "dilate") sawUnsupported = true; // unknown operator (default to erode)
+                    // §9.6 — a radius of 0 (or negative, or absent) on EITHER axis disables the primitive.
+                    // A positive FRACTIONAL radius is rounded to Skia's integer morphology radius (so a
+                    // value < 0.5 rounds to 0 → no visible effect — a documented approximation).
                     var irx = (int)Math.Round(rx);
                     var iry = (int)Math.Round(ry);
-                    output = irx <= 0 && iry <= 0
-                        ? input                                                  // a 0 radius disables the effect (§9.6)
+                    output = rx <= 0 || ry <= 0 || (irx <= 0 && iry <= 0)
+                        ? input
                         : op == "dilate"
                             ? SKImageFilter.CreateDilate(irx, iry, input)
                             : SKImageFilter.CreateErode(irx, iry, input);
@@ -172,9 +175,13 @@ internal static class SvgFilters
                 }
                 case "feturbulence":
                 {
+                    // A GENERATOR — it must never pass the previous content through (PR-248 review [P2]). A
+                    // degenerate (≤ 0) baseFrequency we can't faithfully produce is flagged + an EMPTY
+                    // (transparent) result, not a silent SourceGraphic pass-through.
                     var shader = BuildTurbulence(prim);
-                    if (shader is not null) { output = SKImageFilter.CreateShader(shader); shader.Dispose(); }
-                    else output = last;
+                    if (shader is null) { sawUnsupported = true; shader = SKShader.CreateColor(SKColors.Transparent); }
+                    output = SKImageFilter.CreateShader(shader);
+                    shader.Dispose();
                     break;
                 }
                 default:
@@ -418,6 +425,22 @@ internal static class SvgFilters
         return n == t.Length ? r : r[..n];
     }
 
+    /// <summary>STRICT split: every token must be a finite number, else <see langword="null"/> (so trailing
+    /// junk can't be silently ignored — PR-248 review [P3]). Used for <c>order</c> / <c>kernelMatrix</c> /
+    /// <c>tableValues</c> / <c>baseFrequency</c>, where a malformed value should flag, not partial-parse.
+    /// <paramref name="max"/> bounds the count (a hostile huge list returns null).</summary>
+    private static float[]? SplitNumbersStrict(string? raw, int max = 1024)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var t = raw.Split(new[] { ' ', ',', '\t', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+        if (t.Length == 0 || t.Length > max) return null;
+        var r = new float[t.Length];
+        for (var i = 0; i < t.Length; i++)
+            if (!float.TryParse(t[i], NumberStyles.Float, CultureInfo.InvariantCulture, out r[i]) || !float.IsFinite(r[i]))
+                return null;
+        return r;
+    }
+
     /// <summary><c>feMorphology radius</c> — one value (isotropic) or two (x then y); a non-positive radius
     /// disables the effect (§9.6 → 0).</summary>
     private static (float X, float Y) ParseRadius(string? raw)
@@ -474,8 +497,8 @@ internal static class SvgFilters
             case "table":
             case "discrete":
             {
-                var v = SplitNumbers(SvgRasterizer.Attr(fn, "tableValues"));
-                if (v.Length == 0) return null;
+                var v = SplitNumbersStrict(SvgRasterizer.Attr(fn, "tableValues"), max: 256);
+                if (v is null) return null; // empty / malformed tableValues → identity (no transform)
                 if (v.Length == 1) { var only = To255(Clamp01(v[0])); Array.Fill(t, only); return t; }
                 for (var i = 0; i < 256; i++)
                 {
@@ -517,19 +540,40 @@ internal static class SvgFilters
         }
     }
 
+    /// <summary>Max <c>feConvolveMatrix</c> kernel side / cell count — a hostile SVG can give a huge
+    /// <c>order</c> (or one that overflows an int product) and an empty kernel; bound it BEFORE the native
+    /// Skia call (PR-248 review [P1]). A real convolution kernel is tiny (≤ 7×7).</summary>
+    private const int MaxConvolveOrder = 100;
+    private const long MaxConvolveCells = 1024;
+
     /// <summary><c>feConvolveMatrix</c> → a Skia matrix convolution (Filter Effects §9.5). <c>order</c> is
-    /// the kernel size; <c>kernelMatrix</c> the row-major kernel (SVG applies it rotated 180° vs the raw
-    /// sum, so it's reversed for Skia); gain = 1/<c>divisor</c> (default = the kernel sum, else 1); plus
-    /// <c>bias</c>, the <c>targetX</c>/<c>targetY</c> origin, <c>edgeMode</c>
-    /// (duplicate→clamp / wrap→repeat / none→decal), and <c>preserveAlpha</c>. An invalid kernel passes the
-    /// input through + flags.</summary>
+    /// the kernel size (an integer-optional-integer, bounded — a fractional / non-positive / oversize /
+    /// overflowing order is rejected); <c>kernelMatrix</c> the row-major kernel, length == order_x · order_y
+    /// (SVG applies it rotated 180° vs the raw sum, so it's reversed for Skia); gain = 1/<c>divisor</c>
+    /// (default = the kernel sum, else 1); plus <c>bias</c>, the <c>targetX</c>/<c>targetY</c> origin,
+    /// <c>edgeMode</c> (duplicate→clamp / wrap→repeat / none→decal), and <c>preserveAlpha</c>. An invalid
+    /// order / kernel passes the input through + flags.</summary>
     private static SKImageFilter? BuildConvolveMatrix(XElement prim, SKImageFilter? input, ref bool sawUnsupported)
     {
-        var order = SplitNumbers(SvgRasterizer.Attr(prim, "order"));
-        var ox = order.Length > 0 ? (int)order[0] : 3;
-        var oy = order.Length > 1 ? (int)order[1] : ox;
-        var kernel = SplitNumbers(SvgRasterizer.Attr(prim, "kernelMatrix"));
-        if (ox <= 0 || oy <= 0 || kernel.Length != ox * oy)
+        // order = the kernel dimensions. Absent → 3×3. Present → exactly 1 or 2 POSITIVE INTEGERS in range;
+        // anything else (fractional, negative, oversize, or non-numeric) flags. The cell count is computed in
+        // `long` and capped, so a value like `65536 65536` can't overflow the int product to 0 and slip an
+        // empty kernel past the length check into native Skia.
+        var orderRaw = SvgRasterizer.Attr(prim, "order");
+        int ox, oy;
+        if (string.IsNullOrWhiteSpace(orderRaw)) { ox = oy = 3; }
+        else
+        {
+            var order = SplitNumbersStrict(orderRaw, max: 2);
+            if (order is null || !WholeOrder(order[0], out ox) || !WholeOrder(order.Length > 1 ? order[1] : order[0], out oy))
+            {
+                sawUnsupported = true;
+                return input;
+            }
+        }
+        var cells = (long)ox * oy;
+        var kernel = SplitNumbersStrict(SvgRasterizer.Attr(prim, "kernelMatrix"), max: (int)MaxConvolveCells);
+        if (cells > MaxConvolveCells || kernel is null || kernel.Length != cells)
         {
             sawUnsupported = true;
             return input;
@@ -557,16 +601,27 @@ internal static class SvgFilters
             new SKSizeI(ox, oy), k, 1f / divisor, bias, new SKPointI(offX, offY), tile, convolveAlpha: !preserveAlpha, input);
     }
 
+    /// <summary>A valid <c>feConvolveMatrix</c> <c>order</c> component: a POSITIVE WHOLE number ≤
+    /// <see cref="MaxConvolveOrder"/>.</summary>
+    private static bool WholeOrder(float f, out int v)
+    {
+        v = 0;
+        if (!(f >= 1) || f != MathF.Floor(f) || f > MaxConvolveOrder) return false;
+        v = (int)f;
+        return true;
+    }
+
     /// <summary><c>feTurbulence</c> → a Perlin-noise shader (Filter Effects §9.21): <c>type</c> =
-    /// fractalNoise / turbulence; <c>baseFrequency</c> (one or two), <c>numOctaves</c>, <c>seed</c>. Returns
-    /// <see langword="null"/> for a non-positive frequency (no noise). <c>stitchTiles</c> and the exact SVG
-    /// noise sums differ slightly from Skia's generator — a first cut.</summary>
+    /// fractalNoise / turbulence; <c>baseFrequency</c> (one or two ≥ 0), <c>numOctaves</c>, <c>seed</c>.
+    /// Returns <see langword="null"/> for a degenerate (≤ 0 on both axes, omitted, or malformed) frequency —
+    /// the caller flags it + emits an EMPTY result rather than passing content through. <c>stitchTiles</c>
+    /// and the exact SVG noise sums differ slightly from Skia's generator — a first cut.</summary>
     private static SKShader? BuildTurbulence(XElement prim)
     {
-        var freq = SplitNumbers(SvgRasterizer.Attr(prim, "baseFrequency"));
-        var fx = freq.Length > 0 ? freq[0] : 0f;
-        var fy = freq.Length > 1 ? freq[1] : fx;
-        if (fx <= 0 && fy <= 0) return null;
+        var freq = SplitNumbersStrict(SvgRasterizer.Attr(prim, "baseFrequency"), max: 2);
+        var fx = freq is { Length: > 0 } ? Math.Max(0f, freq[0]) : 0f;
+        var fy = freq is { Length: > 1 } ? Math.Max(0f, freq[1]) : fx;
+        if (fx <= 0 && fy <= 0) return null; // degenerate / omitted / malformed → no noise (caller flags)
         var octaves = SvgRasterizer.Attr(prim, "numOctaves") is { } no && int.TryParse(no, out var n) ? Math.Max(1, n) : 1;
         var seed = (float)SvgRasterizer.Num(prim, "seed");
         var type = (SvgRasterizer.Attr(prim, "type") ?? "turbulence").Trim().ToLowerInvariant();

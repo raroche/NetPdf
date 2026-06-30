@@ -2711,8 +2711,11 @@ flags the categories):
      falls back to a single untiled paint. A box with no border/padding + initial size/position/repeat is
      byte-identical to the prior single-paint. **Remaining gradient residuals (Phase 4 follow-ups):**
      per-stop alpha on a NATIVE shading (a soft-mask alpha shading) so a translucent gradient need not
-     raster, and a repeating-radial under a `closest-*` extent clamps beyond the ending shape (the default
-     farthest-corner is exact). **Remaining shadow / transform residuals (Phase 4 follow-ups):**
+     raster. (The **repeating-radial `closest-*` extent residual SHIPPED**: a `repeating-radial-gradient`
+     under a `closest-side`/`closest-corner` extent now keeps repeating PAST the ending shape out to the
+     box's farthest corner — the stop period is tiled + renormalized over the farthest-corner cover extent
+     and the shading radius grows by the same factor; a `farthest-*` extent already reaches the corner, so
+     `coverExtent = 1` and it's unchanged.) **Remaining shadow / transform residuals (Phase 4 follow-ups):**
      (the **per-corner blur radii residual SHIPPED**: the outset + inset blur raster draws each corner's own
      elliptical radius via `SKRoundRect.SetRectRadii`, not one representative radius; the **box-shadow inset
      under box-decoration-break:slice residual SHIPPED**: an inset band is now computed over the WHOLE

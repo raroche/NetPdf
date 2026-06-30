@@ -69,6 +69,43 @@ public sealed class RepeatingGradientPaintTests
         Assert.True(Count(rep, "/FunctionType 2") > Count(plain, "/FunctionType 2"));
     }
 
+    private static double RadialShadingOuterRadius(string pdf)
+    {
+        // ShadingType 3 /Coords = [x0 y0 r0 x1 y1 r1]; the 6th value is the outer radius (pt).
+        var m = Regex.Match(pdf, @"/Coords \[([^\]]*)\]");
+        Assert.True(m.Success, "a radial shading /Coords must be present");
+        var nums = m.Groups[1].Value.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => double.Parse(s, CultureInfo.InvariantCulture)).ToArray();
+        return nums[5];
+    }
+
+    [Fact]
+    public void Repeating_radial_closest_side_repeats_out_to_the_farthest_corner()
+    {
+        // On the 100×40 box, a centered circle closest-side ends at 20px (the half-height → 15pt). A
+        // NON-repeating gradient clamps there (the last color extends past it); the REPEATING one must keep
+        // repeating to the box's farthest corner (√(50² + 20²) ≈ 53.85px → ≈ 40.4pt), so its shading outer
+        // radius is the farthest corner, not the ending shape — and it tiles into more sub-functions.
+        var rep = Latin1(HtmlPdf.Convert(Html("repeating-radial-gradient(circle closest-side, red, blue 5px)")));
+        var plain = Latin1(HtmlPdf.Convert(Html("radial-gradient(circle closest-side, red, blue 5px)")));
+
+        Assert.Equal(15.0, RadialShadingOuterRadius(plain), 1);   // non-repeating clamps at the ending shape
+        var repR = RadialShadingOuterRadius(rep);
+        Assert.True(repR > 40.0 && repR < 41.0, $"repeating must reach the farthest corner (~40.4pt); got {repR}");
+        Assert.True(Count(rep, "/FunctionType 2") > Count(plain, "/FunctionType 2"),
+            "the repeat now spans the larger radius → more tiled sub-functions");
+    }
+
+    [Fact]
+    public void Repeating_radial_farthest_corner_is_unchanged_no_over_extension()
+    {
+        // farthest-corner already reaches the corner ⇒ coverExtent = 1 ⇒ the outer radius equals the
+        // non-repeating one (no spurious extension): the existing behavior is preserved.
+        var rep = Latin1(HtmlPdf.Convert(Html("repeating-radial-gradient(circle farthest-corner, red, blue 5px)")));
+        var plain = Latin1(HtmlPdf.Convert(Html("radial-gradient(circle farthest-corner, red, blue 5px)")));
+        Assert.Equal(RadialShadingOuterRadius(plain), RadialShadingOuterRadius(rep), 1);
+    }
+
     [Fact]
     public void Repeating_with_full_turn_period_matches_the_plain_gradient()
     {

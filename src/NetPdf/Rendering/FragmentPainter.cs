@@ -2926,9 +2926,15 @@ internal static class FragmentPainter
     /// <c>last − first</c> specified position (NOT just the last); prior + next cycles are tiled so the
     /// whole [0, 1] line is covered, and a zero-width period collapses to the average color. Finally the
     /// covering stops are CLIPPED to [0, 1] by inserting boundary stops whose colors are interpolated from
-    /// the surrounding raw stops — so the visible PDF function / sweep only ever sees offsets in [0, 1].</summary>
+    /// the surrounding raw stops — so the visible PDF function / sweep only ever sees offsets in [0, 1].
+    /// <para><c>coverExtent</c> &gt; 1 (a REPEATING RADIAL under a <c>closest-*</c> extent, where the box
+    /// reaches past the ending shape) tiles the repeat out to that multiple of the period then renormalizes
+    /// so the shading's [0, 1] spans [0, coverExtent · ending-shape] — the pattern keeps repeating to the
+    /// box corners instead of clamping at the ending shape. 1.0 (the default — linear / conic / non-repeating
+    /// / farthest-* radial) is byte-identical.</para></summary>
     private static List<ResolvedGradientStop> ResolveAndNormalizeStops(
-        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx, bool repeating)
+        IReadOnlyList<CssGradientStop> gradientStops, uint currentColorArgb, double lineLengthCssPx,
+        bool repeating, double coverExtent = 1.0)
     {
         var n = gradientStops.Count;
         var col = new (double R, double G, double B, double A)[n];
@@ -3001,7 +3007,13 @@ internal static class FragmentPainter
         if (raw.Count == 1)
             return [raw[0] with { Offset = Math.Clamp(raw[0].Offset, 0.0, 1.0) }];
 
-        var covering = repeating ? TileRepeatingStops(raw) : raw;
+        var covering = repeating ? TileRepeatingStops(raw, coverExtent) : raw;
+        // Renormalize the extended cover range [0, coverExtent] back onto the shading's [0, 1] (the caller
+        // grows the shading radius by the same factor), so a repeating radial keeps repeating to the box
+        // corners. coverExtent == 1 → a no-op (byte-identical for linear / conic / non-extended radial).
+        if (coverExtent != 1.0)
+            for (var i = 0; i < covering.Count; i++)
+                covering[i] = covering[i] with { Offset = covering[i].Offset / coverExtent };
         return ClipStopsToUnitInterval(covering);
     }
 
@@ -3010,7 +3022,7 @@ internal static class FragmentPainter
     /// cycles before the first stop and after the last are present). A zero-width period (all stops
     /// coincident) collapses to the average color (CSS Images §3.4.3). Bounded by
     /// <see cref="GradientMaxReplicatedStops"/>.</summary>
-    private static List<ResolvedGradientStop> TileRepeatingStops(List<ResolvedGradientStop> raw)
+    private static List<ResolvedGradientStop> TileRepeatingStops(List<ResolvedGradientStop> raw, double hi = 1.0)
     {
         var first = raw[0].Offset;
         var last = raw[^1].Offset;
@@ -3020,10 +3032,10 @@ internal static class FragmentPainter
             double r = 0, g = 0, b = 0, a = 0;
             foreach (var s in raw) { r += s.R; g += s.G; b += s.B; a += s.A; }
             var avg = new ResolvedGradientStop(0, r / raw.Count, g / raw.Count, b / raw.Count, a / raw.Count);
-            return [avg, avg with { Offset = 1.0 }]; // a solid fill (two coincident-color endpoints)
+            return [avg, avg with { Offset = hi }]; // a solid fill (two coincident-color endpoints)
         }
         var kMin = (int)Math.Floor((0.0 - first) / period);
-        var kMax = (int)Math.Ceiling((1.0 - last) / period);
+        var kMax = (int)Math.Ceiling((hi - last) / period); // cover [0, hi] (hi > 1 → out to the box corners)
         var covering = new List<ResolvedGradientStop>((kMax - kMin + 1) * raw.Count);
         for (var k = kMin; k <= kMax && covering.Count < GradientMaxReplicatedStops; k++)
         {
@@ -3193,16 +3205,30 @@ internal static class FragmentPainter
         // placed stops too early on tall/narrow ellipses). rx is in pt, homogeneous degree 1, so
         // rxCssPx = rx / PointsPerPixel.
         var rxCssPx = rx / PdfUnits.PointsPerPixel;
+        // A REPEATING radial under a closest-* extent must keep repeating PAST the ending shape, out to the
+        // box's farthest corner (CSS Images §3.4 — the default farthest-corner already reaches the corner,
+        // so coverExtent = 1 there). t_far = the farthest-corner distance in ending-shape units; the stops
+        // are tiled + renormalized to cover it and the shading radius grows by the same factor.
+        var coverExtent = 1.0;
+        if (radial.Repeating && rx > 0 && ry > 0)
+        {
+            var fx = maxX / rx;
+            var fy = maxY / ry;
+            var tFar = Math.Sqrt(fx * fx + fy * fy);
+            if (tFar > 1.0) coverExtent = tFar;
+        }
         var normalized = ResolveAndNormalizeStops(
-            radial.Stops, currentColorArgb, rxCssPx, radial.Repeating);
+            radial.Stops, currentColorArgb, rxCssPx, radial.Repeating, coverExtent);
         if (normalized.Count < 2) return;
+        var outerRadius = baseRadius * coverExtent; // grown to the box corners for a repeating closest-* gradient
 
         // Per-stop alpha (gradient refinements) — a translucent stop falls back to a Skia raster (the
         // native radial shading is DeviceRGB); a fully-opaque gradient stays native (byte-identical).
         if (AnyTranslucent(normalized))
         {
             var painted = TryPaintAlphaRadialGradientRaster(page, document, normalized, radial, pageHeightPt,
-                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx, rxCssPx, ry / PdfUnits.PointsPerPixel,
+                leftPx, axisTopPx ?? topPx, widthPx, clipHeightPx,
+                rxCssPx * coverExtent, ry / PdfUnits.PointsPerPixel * coverExtent,
                 style, clipOverride);
             // false = over-cap → skip + warn (not a native fallback that would drop the alpha, PR #237
             // [P1]); null = degenerate origin → silent no-op (not over-cap, PR #238 [P3]).
@@ -3212,10 +3238,11 @@ internal static class FragmentPainter
 
         var stops = new List<PdfGradientStop>(normalized.Count);
         foreach (var s in normalized) stops.Add(new PdfGradientStop(s.Offset, s.R, s.G, s.B)); // native drops alpha
-        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, baseRadius, stops);
+        var shadingRef = document.RegisterRadialShading(pcx, pcy, 0.0, outerRadius, stops);
         (double, double, double, double, double, double)? shadingCtm = null;
         if (rx != ry)
         {
+            // The squash ratio is unchanged by coverExtent (both axes grow by it): sx = rx / baseRadius.
             var sx = rx / baseRadius;
             var sy = ry / baseRadius;
             shadingCtm = (sx, 0.0, 0.0, sy, pcx * (1 - sx), pcy * (1 - sy));

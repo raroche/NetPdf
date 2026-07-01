@@ -46,12 +46,16 @@ public sealed class ReleaseVersionParityTests
     [Fact]
     public void Changelog_link_footer_bases_Unreleased_on_the_latest_release_and_links_it()
     {
-        // Per PR #258 review [P2] — the link-reference footer must be re-based when a release is staged, else
-        // "Unreleased" and the generated changelog links compare against the ENTIRE prior history instead of
-        // post-release work. Two invariants: (1) `[Unreleased]` compares FROM the latest staged release version,
-        // and (2) that latest version heading has its own `[<version>]:` compare-link reference.
+        // Per PR #258 review [P2] + PR #259 review [P3] — the link-reference footer must be re-based when a
+        // release is staged, else "Unreleased" and the generated changelog links compare against the ENTIRE
+        // prior history instead of post-release work. Three invariants: (1) `[Unreleased]` compares FROM the
+        // latest staged release version; (2) that latest version has its own `[<version>]:` compare-link; and
+        // (3) that link compares `previous...latest` (not a stale/arbitrary base).
         var path = Path.Combine(RepoRoot(), "CHANGELOG.md");
-        var latest = ReadLatestChangelogVersion(path); // e.g. "0.9.0-rc1"
+        var versions = ReadChangelogVersions(path); // newest-first, excluding [Unreleased]
+        Assert.True(versions.Count > 0, "No versioned heading found in CHANGELOG.md.");
+        var latest = versions[0];       // e.g. "0.9.0-rc1"
+        var previous = versions.Count > 1 ? versions[1] : null; // e.g. "0.7.0-beta"
         var text = File.ReadAllText(path);
 
         var unreleased = Regex.Match(text, @"(?m)^\[Unreleased\]:.*?/compare/(.+?)\.\.\.HEAD\s*$");
@@ -61,8 +65,27 @@ public sealed class ReleaseVersionParityTests
             $"CHANGELOG [Unreleased] compares from '{unreleased.Groups[1].Value}' but the latest staged release " +
             $"is '{latest}'. Re-base it on '{latest}...HEAD' when staging the release.");
 
-        Assert.True(Regex.IsMatch(text, $@"(?m)^\[{Regex.Escape(latest)}\]:\s*\S+"),
-            $"CHANGELOG.md is missing the `[{latest}]:` compare-link reference for the latest staged release.");
+        var release = Regex.Match(text, $@"(?m)^\[{Regex.Escape(latest)}\]:.*?/compare/(.+?)\.\.\.{Regex.Escape(latest)}\s*$");
+        Assert.True(release.Success,
+            $"CHANGELOG.md is missing a `[{latest}]: …/compare/<base>...{latest}` compare-link reference.");
+        if (previous is not null)
+            Assert.True(release.Groups[1].Value == previous,
+                $"CHANGELOG [{latest}] compares from '{release.Groups[1].Value}' but the previous release is " +
+                $"'{previous}'. The staged release link should compare '{previous}...{latest}'.");
+    }
+
+    /// <summary>All versioned `## [X] — …` headings in file order (newest first), excluding `[Unreleased]`.</summary>
+    private static System.Collections.Generic.List<string> ReadChangelogVersions(string path)
+    {
+        var versions = new System.Collections.Generic.List<string>();
+        foreach (var line in File.ReadLines(path))
+        {
+            var m = Regex.Match(line, @"^##\s*\[([^\]]+)\]");
+            if (!m.Success) continue;
+            var v = m.Groups[1].Value.Trim();
+            if (!string.Equals(v, "Unreleased", StringComparison.OrdinalIgnoreCase)) versions.Add(v);
+        }
+        return versions;
     }
 
     private static string ReadBuildPropsVersion(string path)

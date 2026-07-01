@@ -1,9 +1,9 @@
 # PR 8 — Visual-regression harness + `0.9.0-rc1` — session plan
 
-**Status:** ⏳ NEXT — the only remaining Phase-4 roadmap PR. All feature work (PRs 1–7 + micro-PRs 4.5–4.14) is merged.
-**Closes Phase-4 exit criteria:** 1 (visual diffs within tolerance), 2 (all corpus invoices match Chrome), 9 (Docker reproducible + documented regen), 10 (CHANGELOG + `0.9.0-rc1` tagged).
+**Status:** 🟢 MACHINERY SHIPPED — the harness landed across #254 (PDFium rasterizer), #255 (C# Chrome oracle), and #258 (`0.9.0-rc1` staged). Criteria **9 met** (Docker reproducible + documented regen) and **10 met** (`0.9.0-rc1` tagged at closeout). **The one remaining item is a maintainer/CI action:** generate the canonical per-page Chrome reference PNGs on **Linux** and commit them under `tests/NetPdf.RenderingCorpus/references/` — that flips criteria **1–2** green and `VisualGatePolicy` auto-activates the enforcing gate. (macOS-generated references drift on font hinting/AA → false diffs, so this must run on Linux/CI, not a dev machine.)
+**Closes Phase-4 exit criteria:** 1 (visual diffs within tolerance) + 2 (all corpus invoices match Chrome) — **pending the Linux reference commit**; 9 + 10 already met.
 **Phase-4 doc tasks:** 30–36 in [phase-4-visual-parity.md](phase-4-visual-parity.md).
-**Handoff:** `0.9.0-rc1` tagged → unblocks Phase 5 (packaging/release, [phase-5-packaging-and-release.md](phase-5-packaging-and-release.md)).
+**Handoff:** the enforcing visual gate goes live (and visual fidelity "locks") the moment the Linux references land — carried into early Phase 5 (packaging/release, [phase-5-packaging-and-release.md](phase-5-packaging-and-release.md)).
 
 ---
 

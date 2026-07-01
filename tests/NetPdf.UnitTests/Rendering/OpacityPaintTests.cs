@@ -76,7 +76,7 @@ public sealed class OpacityPaintTests
             if (IsPdfDelimiterOrSpace(c)) { i++; continue; }
             var start = i;                         // a regular token: an operator / number / keyword
             while (i < s.Length && !IsPdfDelimiterOrSpace(s[i])) i++;
-            if (string.CompareOrdinal(s, start, "Q", 0, i - start) == 0 && i - start == 1) return true;
+            if (i - start == 1 && s[start] == 'Q') return true; // a bare one-char `Q` operator token
         }
         return false;
     }

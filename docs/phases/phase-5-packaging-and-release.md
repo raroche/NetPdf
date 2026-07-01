@@ -10,9 +10,9 @@ Ship NetPdf 1.0. Lock cross-platform CI, finalize documentation, polish samples,
 
 ## Prerequisites
 
-- Phases 0–4 complete; `0.9.0-rc1` tagged.
-- Visual fidelity is locked from Phase 4.
-- Pinned-Chrome Docker image is reproducible; reference PNGs are committed.
+- Phases 0–4 feature-complete; `0.9.0-rc1` tagged.
+- Pinned-Chrome Docker image is reproducible + reference regeneration is a documented manual workflow (`tests/NetPdf.RenderingCorpus/docker/`).
+- **Carried-over Phase-4 closeout item (land early in Phase 5):** the visual-regression gate is *ready but inert* — the canonical per-page **Chrome reference PNGs must be generated on Linux and committed** under `tests/NetPdf.RenderingCorpus/references/` (macOS Chrome drifts on hinting/AA → false diffs, so this is a Linux/CI action). Once they land, `VisualGatePolicy` auto-activates the enforcing diff gate and Phase-4 exit criteria 1–2 flip green — i.e. **visual fidelity locks at that point, not before.** Wiring the Linux reference-generation CI job is part of Phase 5's cross-platform CI deliverable.
 
 ## Deliverables
 

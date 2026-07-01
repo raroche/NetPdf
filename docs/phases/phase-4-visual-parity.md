@@ -259,9 +259,9 @@ Phase 4 is complete when:
 7. ✅ Performance: no regression vs Phase 3 targets.
 8. ✅ AOT smoke + determinism still pass.
 9. ✅ Pinned-Chrome Docker image is reproducibly buildable; reference regeneration is a documented manual workflow (`tests/NetPdf.RenderingCorpus/docker/`).
-10. 🔶 CHANGELOG updated, `0.9.0-rc1` tagged. — CHANGELOG **updated + `0.9.0-rc1` staged** (`Directory.Build.props` + `build/version.json` + heading, guarded by `ReleaseVersionParityTests`); the annotated git tag is applied by the maintainer after the closeout PR merges (same protocol as `0.7.0-beta`).
+10. ✅ CHANGELOG updated, `0.9.0-rc1` tagged. — CHANGELOG updated + version surfaces bumped (`Directory.Build.props` + `build/version.json` + heading, guarded by `ReleaseVersionParityTests`); the annotated `0.9.0-rc1` git tag is applied at the closeout merge (2026-07-01), same protocol as `0.7.0-beta`.
 
-> **Closeout status (2026-07-01):** the rc1 release is STAGED (this doc + CHANGELOG + version surfaces). Criteria 3–9 are met in-code and CI-gated. The only work between here and a fully-green Phase 4 is the two **maintainer/CI** actions above: (a) generate + commit the Linux canonical reference PNGs → flips criteria 1–2 green + activates the enforcing gate, and (b) apply the `0.9.0-rc1` git tag → closes criterion 10. No further engine changes are required to exit the phase; the deferred IPaintTarget group-compositing epic and the native-SVG subset extension are post-rc1 quality work (`docs/deferrals.md`), not exit criteria.
+> **Closeout status (2026-07-01):** `0.9.0-rc1` is **TAGGED**; criteria 3–10 are met. The **one** remaining action to make the phase fully green is a **maintainer/CI** step: generate + commit the canonical Linux Chrome reference PNGs under `tests/NetPdf.RenderingCorpus/references/` → flips criteria **1–2** green + `VisualGatePolicy` auto-activates the enforcing gate (macOS Chrome drifts on hinting/AA → false diffs, so this must run on Linux/CI — it can't be produced from a dev machine, and is carried into early Phase 5). No engine changes are required to exit the phase; the deferred IPaintTarget group-compositing epic and the native-SVG subset extension are post-rc1 quality work (`docs/deferrals.md`), not exit criteria.
 
 ## Common pitfalls
 

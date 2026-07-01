@@ -8,6 +8,16 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual-regression harness: PDFium rasterizer wired (PR 8)
+
+The visual-regression harness's PDF→raster backend is now **live in-process** (previously an unwired maintainer-install stub). SkiaSharp can only WRITE PDF, so the NetPdf-side (and reference-side) PDF→raster goes through PDFium.
+
+- **`PdfiumRasterizer`** (`tests/NetPdf.RenderingCorpus/Visual/`) implements `IPdfRasterizer` via the test-only `PDFtoImage` package (which ships `bblanchon.PDFium` native assets for macOS / Linux / Windows — no separate install). It renders EVERY page at `VisualHarness.Dpi` (300) → one RGBA `RasterImage` per page (read via `SKBitmap.Pixels`, native-pixel-order-independent).
+- **`PdfRasterizers.TryCreateDefault`** now runs a cheap native-load probe (renders a trivial NetPdf PDF) and returns the wired rasterizer on success, or reports unavailable (the runner skips) if the native lib can't load on a platform — so the harness stays green either way. Combined with `VisualGatePolicy`, the visual gate goes live automatically the moment a Chrome reference PNG is committed (the one remaining maintainer step).
+- **Dependency isolation:** `PDFtoImage` requires SkiaSharp `3.119.2`; it's applied via a per-project `VersionOverride` in `NetPdf.RenderingCorpus.csproj` only — `src/` stays pinned at SkiaSharp `3.119.0`, so the byte-identity gates are untouched. Dossier entry added (`docs/legal/dependency-dossier.md`).
+- **Tests (+2):** the PDFium adapter renders a NetPdf PDF to RGBA pages (content-verified — a blue box on white), and a full-pipeline self-diff (rasterize the same PDF twice → `PixelDiff` maxΔ 0 / SSIM 1). Existing seam tests updated for the now-available backend.
+- **Docs:** the reference-generation runbook (`docker/README.md`) marks Step 1 (PDFium) done; only Chrome-reference generation + commit remain maintainer/CI tasks.
+
 ### Added — Phase 4 visual parity: SVG part 13 (paint-server filter inputs + lighting/text residuals)
 
 Closes five more flagged SVG residuals. Byte-identity safe (no corpus/snapshot uses inline SVG; the default text path is unchanged).

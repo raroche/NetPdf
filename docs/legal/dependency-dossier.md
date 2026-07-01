@@ -77,11 +77,12 @@ This file satisfies the clean-room policy (`docs/clean-room-policy.md` §4).
 - **Reviewed:** ✅ Apache-2.0; compatible.
 - **Used for:** Chromium reference renderer in `tests/NetPdf.TestKit/` for visual-regression comparison. Test-only — never linked into the runtime `NetPdf` package.
 
-### PDFium (test-only, via PdfiumViewer or similar wrapper)
-- **SPDX:** `BSD-3-Clause`
-- **Source:** https://pdfium.googlesource.com/pdfium/
-- **Reviewed:** ✅ BSD-3; compatible.
-- **Used for:** Independent PDF parser used in `tests/NetPdf.PdfValidation/` for structure validation. Test-only.
+### PDFium (test-only, via `PDFtoImage`)
+- **SPDX:** `BSD-3-Clause` (PDFium native, Google) + `MIT` (`PDFtoImage` managed wrapper) + `Apache-2.0` (bblanchon PDFium native-asset packaging)
+- **Source:** https://pdfium.googlesource.com/pdfium/ · https://github.com/sungaila/PDFtoImage · https://github.com/bblanchon/pdfium-binaries
+- **Reviewed:** ✅ BSD-3 / MIT / Apache-2.0 are all permissive + Apache-2.0-compatible. Test-only.
+- **Package:** `PDFtoImage` (pulls `bblanchon.PDFium.{macOS,Linux,Win32}` native assets — cross-platform, no separate install). Referenced only from `tests/NetPdf.RenderingCorpus/` via a per-project `VersionOverride` that bumps that project's SkiaSharp to `3.119.2` (PDFtoImage's floor); `src/` stays pinned at SkiaSharp `3.119.0`, so the byte-identity gates are untouched.
+- **Used for:** (1) the **visual-regression harness (PR 8)** — rasterizes the NetPdf PDF (and, on the maintainer box, the Chrome reference PDF) to RGBA at 300 DPI for `PixelDiff` (SkiaSharp only WRITES PDF, so a PDFium reader is required); (2) independent PDF-structure validation in `tests/NetPdf.PdfValidation/`. Never linked into the runtime `NetPdf` package.
 
 ### qpdf
 - **SPDX:** `Apache-2.0`

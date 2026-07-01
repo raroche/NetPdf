@@ -20,7 +20,14 @@
     <PackageReference Include="Microsoft.Playwright" />
     <!-- PR 8 visual-regression harness: SkiaSharp decodes the committed reference PNGs (it can READ raster
          formats; it canNOT read PDF — the NetPdf-side PDF→raster uses PDFium, a maintainer install). -->
-    <PackageReference Include="SkiaSharp" />
+    <!-- PR 8: PDFium (via PDFtoImage) rasterizes the NetPdf PDF -> RGBA in-process (SkiaSharp cannot read
+         PDF). PDFtoImage pulls SkiaSharp 3.119.2 native assets; VersionOverride bumps ONLY this test project
+         (src stays pinned at 3.119.0, so the byte-identity gates are untouched). Test-only dependency. -->
+    <PackageReference Include="SkiaSharp" VersionOverride="3.119.2" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" VersionOverride="3.119.2" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" VersionOverride="3.119.2" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" VersionOverride="3.119.2" />
+    <PackageReference Include="PDFtoImage" />
   </ItemGroup>
 
 </Project>

@@ -11,7 +11,7 @@ the maintainer steps below are done.
 | Piece | Where |
 |---|---|
 | `PixelDiff` — per-pixel RGBA Δ + mean SSIM, tolerance `Δ < 4`, `SSIM ≥ 0.98` | `../Visual/PixelDiff.cs` (+ tests) |
-| `IPdfRasterizer` seam + `PdfRasterizers.TryCreateDefault` (reports unavailable today) | `../Visual/IPdfRasterizer.cs` (+ tests) |
+| `IPdfRasterizer` seam + `PdfRasterizers.TryCreateDefault` (**PDFium backend WIRED** via `PDFtoImage`) | `../Visual/IPdfRasterizer.cs`, `../Visual/PdfiumRasterizer.cs` (+ tests) |
 | `VisualGatePolicy` — inert until a reference exists / the gate is forced; then a missing rasterizer FAILS | `../Visual/VisualGatePolicy.cs` (+ tests) |
 | `CorpusVisualRegressionTests` — per-page diff, or skip/FAIL per the policy | `../Visual/CorpusVisualRegressionTests.cs` |
 | `VisualHarness` — paths, `Dpi = 300`, self-contained corpus, diffable/excluded lists, remote-resource guard, PNG loader | `../Visual/VisualHarness.cs` (+ tests) |
@@ -33,17 +33,22 @@ makes the diff nondeterministic; vendor such assets as inline `data:` URIs (see 
 `01-classic-pure-css.html`). The upstream Anvil invoice (`04`) still carries remote images and is excluded
 until vendored.
 
-## Step 1 — install PDFium (NetPdf-side PDF → raster)
+## Step 1 — PDFium (NetPdf-side PDF → raster) — ✅ DONE (no install)
 
-SkiaSharp can **write** PDF but cannot **read** it, so the NetPdf-side rasterization needs PDFium.
+SkiaSharp can **write** PDF but cannot **read** it, so the NetPdf-side rasterization uses PDFium. This is now
+**wired in-process** via the `PDFtoImage` test dependency (which ships `bblanchon.PDFium` native assets for
+macOS / Linux / Windows — no separate install):
 
-1. Add a PDFium package to `NetPdf.RenderingCorpus.csproj` (e.g. `PDFiumCore` or `bblanchon.PDFium`), or use
-   `pdftoppm` (poppler) / Ghostscript as a CLI fallback.
-2. Implement `IPdfRasterizer.RasterizeAllPages` against it (render EVERY page at `VisualHarness.Dpi` → one
-   RGBA `RasterImage` per page) and return it from `PdfRasterizers.TryCreateDefault` instead of the current
-   `false`.
-3. The runner stops skipping on the "no PDF rasterizer configured" reason and starts rasterizing NetPdf output
-   page-for-page.
+- `PdfiumRasterizer` (`../Visual/PdfiumRasterizer.cs`) renders EVERY page at `VisualHarness.Dpi` (300) → one
+  RGBA `RasterImage` per page (read via `SKBitmap.Pixels`, native-order-independent).
+- `PdfRasterizers.TryCreateDefault` runs a cheap native-load probe (renders a trivial NetPdf PDF); it returns
+  the `PdfiumRasterizer` on success, or reports unavailable (the runner skips) if the native lib can't load.
+- The `PDFtoImage` SkiaSharp floor (`3.119.2`) is the **repo-wide** SkiaSharp pin, so the harness measures the
+  SAME renderer dependency set as production (no per-project version split). The byte-identity gates were
+  re-verified after the `3.119.0 → 3.119.2` patch bump.
+
+So the ONLY remaining maintainer step is generating + committing the Chrome reference PNGs (Step 2); the
+NetPdf-side rasterization is live and unit-tested (`PdfRasterizerTests`).
 
 ## Step 2 — generate + commit references (pinned Chrome, Linux/Docker)
 
@@ -59,9 +64,10 @@ docker run --rm -v "$PWD:/work" -w /work netpdf-visual-refs \
 git add tests/NetPdf.RenderingCorpus/references/*.png   # commit the regenerated references
 ```
 
-`generate-references.py` drives Playwright Chromium: for each diffable invoice it prints the page to PDF and
-rasterizes it at `VisualHarness.Dpi` (300) via `pypdfium2`, writing `references/<stem>.png`. Pin the
-Chromium revision via the Playwright version in the Dockerfile (never `latest`).
+`generate-references.py` drives Playwright Chromium: for each diffable invoice it prints to PDF and
+rasterizes EVERY page at `VisualHarness.Dpi` (300) via `pypdfium2`, writing one PNG per page —
+`references/<stem>-page-NNN.png` (1-based), matching the runner's per-page diff contract. Pin the Chromium
+revision via the Playwright version in the Dockerfile (never `latest`).
 
 > **Reference regeneration is a deliberate manual step — never run automatically in CI.** Upstream
 > Chrome / font drift must never silently change what the tests assert.

@@ -22,6 +22,22 @@ public sealed class OpacityPaintTests
         $"<div style=\"width:100px;height:60px;background:#3366cc;opacity:{opacity}\">hi</div>" +
         "</body></html>";
 
+    /// <summary>Assert the graphics-state selection <paramref name="gsName"/> (e.g. <c>/GSop0_5 gs</c>) is in
+    /// effect at <paramref name="marker"/> — it appears BEFORE the marker with no <c>Q</c> restore between them,
+    /// so the marked paint is INSIDE that alpha scope. Stronger than mere containment (which an ancestor
+    /// wrapper elsewhere in the stream could satisfy).</summary>
+    private static void AssertInAlphaScope(string content, string gsName, string marker)
+    {
+        var markIdx = content.IndexOf(marker, System.StringComparison.Ordinal);
+        Assert.True(markIdx >= 0, $"expected '{marker}' in the content stream");
+        // The NEAREST selection preceding the marker is the enclosing one (a faded but empty ancestor emits its
+        // own `q {gsName} Q` earlier — searching from the start would wrongly land on that closed scope).
+        var gsIdx = content.LastIndexOf(gsName, markIdx, System.StringComparison.Ordinal);
+        Assert.True(gsIdx >= 0, $"expected '{gsName}' selected before '{marker}'");
+        var between = content.Substring(gsIdx + gsName.Length, markIdx - (gsIdx + gsName.Length));
+        Assert.DoesNotContain("Q", between); // the alpha scope was NOT restored before the marked paint
+    }
+
     [Fact]
     public void Half_opacity_selects_a_constant_alpha_extgstate_with_both_ca_and_CA()
     {
@@ -103,8 +119,9 @@ public sealed class OpacityPaintTests
             "<p style=\"width:80px;height:40px;background:#cc0000\">child</p>" +
             "</div></body></html>";
         var text = Latin1(HtmlPdf.Convert(html));
-        Assert.Contains("/GSop0_5 gs", text); // the child's decoration is wrapped at the inherited alpha
-        Assert.Contains("0.8 0 0 rg", text);  // #cc0000 still fills, now faded
+        // The child's #cc0000 fill must paint INSIDE the inherited 0.5 alpha scope (not merely somewhere in the
+        // stream). The parent <div> has no background of its own, so the only fill is the child's.
+        AssertInAlphaScope(text, "/GSop0_5 gs", "0.8 0 0 rg");
     }
 
     [Fact]
@@ -144,7 +161,55 @@ public sealed class OpacityPaintTests
             $"<div style=\"opacity:0.5\"><img src=\"{img}\" style=\"width:32px;height:32px\"></div>" +
             "</body></html>";
         var text = Latin1(HtmlPdf.Convert(html));
-        Assert.Contains("/GSop0_5 gs", text); // the image draw is wrapped at the inherited alpha
+        // The image XObject invoke (` Do`) must sit inside the inherited 0.5 alpha scope.
+        AssertInAlphaScope(text, "/GSop0_5 gs", " Do");
+    }
+
+    // --- CSS-wide opacity keywords resolve locally (PR-256 review [P2]) ---
+
+    [Fact]
+    public void Opacity_inherit_takes_the_parent_computed_value_then_multiplies()
+    {
+        // The child's own `opacity: inherit` = the parent's COMPUTED opacity (0.5); its effective/rendered alpha
+        // is then that × the parent's subtree alpha (0.5) = 0.25.
+        var html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"opacity:0.5\">" +
+            "<p style=\"width:80px;height:40px;background:#3366cc;opacity:inherit\">x</p>" +
+            "</div></body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        Assert.Contains("/ca 0.25", text);
+        AssertInAlphaScope(text, "/GSop0_25 gs", "0.2 0.4 0.8 rg"); // #3366cc fill inside the 0.25 scope
+    }
+
+    [Fact]
+    public void Opacity_initial_under_a_faded_parent_resets_own_alpha_but_the_subtree_still_fades()
+    {
+        // `opacity: initial` resets the child's OWN opacity to 1 (opaque for itself), but the parent's group
+        // opacity (0.5) still fades the child's rendering → effective 0.5, NOT 0.25.
+        var html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"opacity:0.5\">" +
+            "<p style=\"width:80px;height:40px;background:#3366cc;opacity:initial\">x</p>" +
+            "</div></body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        AssertInAlphaScope(text, "/GSop0_5 gs", "0.2 0.4 0.8 rg");
+        Assert.DoesNotContain("/GSop0_25 gs", text); // initial is NOT the inherited 0.5, so no 0.25 multiply
+    }
+
+    [Fact]
+    public void Opacity_unset_under_a_faded_parent_behaves_like_initial()
+    {
+        // opacity is not an inherited property → `unset` = `initial` = 1 for the child's own value; the subtree
+        // fade (0.5) still applies → effective 0.5.
+        var html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"opacity:0.5\">" +
+            "<p style=\"width:80px;height:40px;background:#3366cc;opacity:unset\">x</p>" +
+            "</div></body></html>";
+        var text = Latin1(HtmlPdf.Convert(html));
+        AssertInAlphaScope(text, "/GSop0_5 gs", "0.2 0.4 0.8 rg");
+        Assert.DoesNotContain("/GSop0_25 gs", text);
     }
 
     [Fact]

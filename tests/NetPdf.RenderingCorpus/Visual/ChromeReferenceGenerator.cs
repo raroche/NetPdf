@@ -157,7 +157,10 @@ internal static class ChromeReferenceGenerator
                 throw new InvalidOperationException(
                     $"SKBitmap.InstallPixels failed for a {image.Width}x{image.Height} RGBA image writing '{path}'.");
             using var img = SKImage.FromBitmap(bitmap);
-            using var data = img.Encode(SKEncodedImageFormat.Png, 100);
+            // Encode returns null if the PNG encoder fails; guard it like InstallPixels rather than NRE on SaveTo.
+            using var data = img.Encode(SKEncodedImageFormat.Png, 100)
+                ?? throw new InvalidOperationException(
+                    $"PNG encoding failed for a {image.Width}x{image.Height} image writing '{path}'.");
             using var fs = File.Create(path);
             data.SaveTo(fs);
         }

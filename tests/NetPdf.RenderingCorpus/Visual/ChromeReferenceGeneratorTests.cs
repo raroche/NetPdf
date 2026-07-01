@@ -9,11 +9,12 @@ using Xunit.Abstractions;
 namespace NetPdf.RenderingCorpus.Visual;
 
 /// <summary>Phase 4 PR 8 — end-to-end validation of the C# Chrome reference generator: it drives Playwright
-/// Chromium → PDF → PDFium raster → PNG. When Chromium can't launch here (a headless/sandbox environment) the
-/// tests log + return (inert), exactly like the PDFium probe — they never fail for a missing oracle. When it
-/// CAN launch, they prove the whole oracle pipeline mechanics on a self-contained page. NOTE: the CANONICAL
-/// committed references are still generated on Linux/CI (macOS Chrome drifts on hinting/AA); this only
-/// validates the machinery.</summary>
+/// Chromium → PDF → PDFium raster → PNG. Behavior when the oracle can't launch here (a headless/sandbox
+/// environment) depends on the <c>NETPDF_REQUIRE_CHROME_ORACLE</c> gate: UNSET (local dev) the tests log +
+/// return (inert), exactly like the PDFium probe; SET (a designated CI job) they FAIL loudly so a misconfigured
+/// runner can't silently pass without exercising the pipeline. When the oracle CAN launch, they prove the whole
+/// oracle pipeline mechanics on a self-contained page. NOTE: the CANONICAL committed references are still
+/// generated on Linux/CI (macOS Chrome drifts on hinting/AA); this only validates the machinery.</summary>
 [Collection(PdfiumCollection.Name)]
 public sealed class ChromeReferenceGeneratorTests(ITestOutputHelper output)
 {
@@ -23,12 +24,14 @@ public sealed class ChromeReferenceGeneratorTests(ITestOutputHelper output)
         "html,body{margin:0} .box{width:200px;height:200px;background:#3366cc}" +
         "</style></head><body><div class=\"box\"></div></body></html>";
 
-    /// <summary>When <c>NETPDF_REQUIRE_CHROME_ORACLE</c> is set (to <c>1</c>/<c>true</c>), these tests must
-    /// exercise the real Chrome→PDFium pipeline — a designated CI job sets it so a misconfigured runner (no
-    /// Chrome / no PDFium) FAILS loudly instead of silently passing an inert test. Unset (local dev), the tests
-    /// stay inert-friendly and skip when the oracle is unavailable.</summary>
+    /// <summary>When <c>NETPDF_REQUIRE_CHROME_ORACLE</c> is set (to <c>1</c> or any casing of <c>true</c>),
+    /// these tests must exercise the real Chrome→PDFium pipeline — a designated CI job sets it so a misconfigured
+    /// runner (no Chrome / no PDFium) FAILS loudly instead of silently passing an inert test. Unset (local dev),
+    /// the tests stay inert-friendly and skip when the oracle is unavailable. Parsed case-insensitively so
+    /// <c>True</c> / <c>TRUE</c> (any casing a CI system emits) still activates the gate.</summary>
     private static bool RequireChromeOracle =>
-        System.Environment.GetEnvironmentVariable("NETPDF_REQUIRE_CHROME_ORACLE") is "1" or "true" or "TRUE";
+        System.Environment.GetEnvironmentVariable("NETPDF_REQUIRE_CHROME_ORACLE")?.Trim() is { } v
+        && (v == "1" || v.Equals("true", System.StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Report an unavailable oracle: <see cref="Assert.Fail"/> when the CI gate requires it, otherwise
     /// log a skip line and let the caller return inert.</summary>

@@ -308,6 +308,7 @@ internal sealed class ImageResourceCache
             ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
             inheritedTextShadow: null,
             inheritedOpacity: 1.0,
+            inheritedComputedOpacity: 1.0,
             ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
             ref borderImageReported, ref opacityApproximatedReported);
@@ -473,6 +474,9 @@ internal sealed class ImageResourceCache
         // threaded down (root = 1.0; children = this box's effective opacity). opacity doesn't INHERIT as a
         // computed value, but a faded group fades everything painted under it — see the effective store below.
         double inheritedOpacity,
+        // The parent element's COMPUTED opacity (root = 1.0), used to resolve a child's `opacity: inherit`.
+        // Distinct from inheritedOpacity: this is the parent's own value, NOT the multiplied subtree alpha.
+        double inheritedComputedOpacity,
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
         ref bool filterElementReported,
@@ -487,6 +491,10 @@ internal sealed class ImageResourceCache
         // This box's OWN opacity (default 1.0 = the initial + every anonymous box). Set from the element's
         // computed value below; multiplied with the ancestor product to get the effective subtree alpha.
         var ownOpacity = 1.0;
+        // The COMPUTED opacity threaded to children to resolve their `opacity: inherit` (the parent's computed
+        // value, NOT the multiplied subtree alpha). An anonymous box has no opacity of its own → it passes the
+        // ancestor's computed opacity straight through, since CSS inherits element-to-element.
+        var computedOpacityForChildren = inheritedComputedOpacity;
         if (box.SourceElement is { } element)
         {
             // transform (Phase 4) — the box's OWN declared value (transform doesn't inherit),
@@ -605,29 +613,28 @@ internal sealed class ImageResourceCache
             // initial) + an unrecognized keyword → no entry (composite normally).
             if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
                 blendModeBoxes[box] = bmName;
-            // opacity (Phase 4) — the box's OWN computed value (opacity doesn't inherit; CSS Color L4 §12.1).
-            // Parse to [0, 1]; only STORE a value strictly below 1 (opacity: 1, the initial, is a no-op → the
-            // decoration + text pass are byte-identical). The painter wraps the box's decoration in a constant
-            // /ca+/CA alpha and the text pass folds the same alpha into the box's glyphs. This is a PER-OBJECT
-            // alpha, not a true isolated transparency GROUP — so a box whose own painting self-overlaps (e.g. a
-            // translucent border over a translucent background of the same box) composites twice. That gap is
-            // diagnosed once per render (never a silent wrong composite); the faithful group needs a
-            // transparency-group Form XObject (the deferred IPaintTarget epic).
-            if (ParseOpacity(rules?.GetWinner("opacity")?.ResolvedValue) is { } op && op < 1.0)
+            // opacity (Phase 4) — the box's OWN computed value. opacity does NOT inherit (CSS Color L4 §12.1),
+            // but the CSS-wide keywords resolve explicitly (`inherit` → the parent's computed opacity,
+            // `initial`/`unset`/`revert`/`revert-layer` → 1) via ResolveOpacity. Only a value strictly below 1
+            // wraps the box in a constant /ca+/CA alpha (opacity: 1, the initial, is a no-op → the decoration +
+            // text pass stay byte-identical). This is a PER-OBJECT alpha, not a true isolated transparency
+            // GROUP — so a box whose own painting self-overlaps (e.g. a translucent border over a translucent
+            // background of the same box) composites twice. That gap is diagnosed once per render (never a
+            // silent wrong composite); the faithful group needs a transparency-group Form XObject (the deferred
+            // IPaintTarget epic). The resolved value is threaded to children for their `opacity: inherit`.
+            ownOpacity = ResolveOpacity(rules?.GetWinner("opacity")?.ResolvedValue, inheritedComputedOpacity);
+            computedOpacityForChildren = ownOpacity;
+            if (ownOpacity < 1.0 && !opacityApproximatedReported)
             {
-                ownOpacity = op;
-                if (!opacityApproximatedReported)
-                {
-                    diagnostics.Emit(new Diagnostic(
-                        DiagnosticCodes.CssOpacityGroupApproximated001,
-                        "An element with opacity < 1 was composited with a constant alpha applied per painting "
-                        + "operation, not as an isolated transparency group. This matches CSS for a "
-                        + "non-self-overlapping element (the common case); an element whose own background, "
-                        + "border, and text overlap will composite slightly differently than group opacity. "
-                        + "Faithful group isolation needs a transparency-group Form XObject.",
-                        DiagnosticSeverity.Info));
-                    opacityApproximatedReported = true;
-                }
+                diagnostics.Emit(new Diagnostic(
+                    DiagnosticCodes.CssOpacityGroupApproximated001,
+                    "An element with opacity < 1 was composited with a constant alpha applied per painting "
+                    + "operation, not as an isolated transparency group. This matches CSS for a "
+                    + "non-self-overlapping element (the common case); an element whose own background, "
+                    + "border, and text overlap will composite slightly differently than group opacity. "
+                    + "Faithful group isolation needs a transparency-group Form XObject.",
+                    DiagnosticSeverity.Info));
+                opacityApproximatedReported = true;
             }
             // text-shadow (Phase 4 shadows) — an INHERITED property (CSS Text Decoration L3 §3): a box's
             // OWN declared value REPLACES the inherited one, else it inherits the ancestor's. The CSS-wide
@@ -786,6 +793,7 @@ internal sealed class ImageResourceCache
                 ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
                 effectiveTextShadow,
                 effectiveOpacity,
+                computedOpacityForChildren,
                 ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
                 ref borderImageReported, ref opacityApproximatedReported);
@@ -844,6 +852,26 @@ internal sealed class ImageResourceCache
         if (isPercent) parsed /= 100.0;
         if (!double.IsFinite(parsed)) return null;
         return Math.Clamp(parsed, 0.0, 1.0);
+    }
+
+    /// <summary>Resolve a box's OWN computed <c>opacity</c> from the cascade winner, in [0, 1]. opacity is NOT
+    /// an inherited property, but the CSS-wide keywords (the cascade leaves them as the literal token for a
+    /// non-inherited property) resolve locally until a central cascade interceptor lands: <c>inherit</c> → the
+    /// parent's computed opacity (<paramref name="inheritedComputedOpacity"/>); <c>initial</c> / <c>unset</c> →
+    /// 1 (opacity's initial is 1, and <c>unset</c> on a non-inherited property = initial); <c>revert</c> /
+    /// <c>revert-layer</c> → 1 (NetPdf has no UA opacity rule). A <c>&lt;number&gt;</c>/<c>&lt;percentage&gt;</c>
+    /// parses + clamps; a missing/unparseable value → 1 (opaque).</summary>
+    private static double ResolveOpacity(string? value, double inheritedComputedOpacity)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 1.0;
+        var v = value.Trim();
+        if (v.Equals("inherit", StringComparison.OrdinalIgnoreCase)) return inheritedComputedOpacity;
+        if (v.Equals("initial", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("unset", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("revert", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("revert-layer", StringComparison.OrdinalIgnoreCase))
+            return 1.0;
+        return ParseOpacity(value) ?? 1.0; // number / percentage (clamped); unparseable → opaque
     }
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>

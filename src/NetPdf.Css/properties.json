@@ -86,6 +86,7 @@
     { "name": "min-width", "id": "MinWidth", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "object-fit", "id": "ObjectFit", "type": "Keyword", "default": "fill", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "object-position", "id": "ObjectPosition", "type": "Position", "default": "50% 50%", "inherit": false, "applies_to": "All", "computed": "Specified" },
+    { "name": "opacity", "id": "Opacity", "type": "Number", "default": "1", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "order", "id": "Order", "type": "Integer", "default": "0", "inherit": false, "applies_to": "FlexItems", "computed": "Specified" },
     { "name": "orphans", "id": "Orphans", "type": "Integer", "default": "2", "inherit": true, "applies_to": "BlockOnly", "computed": "Specified" },
     { "name": "outline-color", "id": "OutlineColor", "type": "Color", "default": "currentcolor", "inherit": false, "applies_to": "All", "computed": "AbsoluteColor" },

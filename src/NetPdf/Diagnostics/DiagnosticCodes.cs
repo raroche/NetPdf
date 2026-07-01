@@ -231,6 +231,16 @@ internal static class DiagnosticCodes
     public const string CssMaskElementUnsupported001 = "CSS-MASK-ELEMENT-UNSUPPORTED-001";
 
     /// <summary>
+    /// Phase 4 — an element with <c>opacity &lt; 1</c> was composited with a CONSTANT alpha applied per
+    /// painting operation (<c>/ca</c>+<c>/CA</c> ExtGState) rather than as an isolated transparency GROUP.
+    /// This is exact for a non-self-overlapping element (the common case); an element whose own background,
+    /// border, and text overlap composites slightly differently than true group opacity. Faithful group
+    /// isolation needs a transparency-group Form XObject (the deferred IPaintTarget epic). Surfaced once per
+    /// render. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssOpacityGroupApproximated001 = "CSS-OPACITY-GROUP-APPROXIMATED-001";
+
+    /// <summary>
     /// Phase 4 — an <c>&lt;a href&gt;</c> hyperlink was NOT emitted as a PDF <c>/Link</c> annotation because
     /// its URI scheme is not on the safe allowlist (<c>http</c> / <c>https</c> / <c>mailto</c>). Blocked
     /// schemes include <c>file:</c>, <c>data:</c>, <c>javascript:</c>, <c>ftp:</c>, custom schemes, and a

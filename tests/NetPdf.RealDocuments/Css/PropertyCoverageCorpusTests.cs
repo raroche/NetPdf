@@ -89,7 +89,9 @@ public sealed class PropertyCoverageCorpusTests
         // from this allowlist (CSS Fragmentation control PR) — registered in
         // properties.json + driven into the BreakResolver (forced breaks + orphans/widows).
         "z-index", "visibility",
-        "opacity",
+        // `opacity` REMOVED from this allowlist (Phase 4 opacity PR) — registered in properties.json +
+        // applied via a constant-alpha ExtGState (/ca+/CA) wrapping the element's decoration/image + folded
+        // into its glyph fill; the group-isolation gap is diagnosed (CSS-OPACITY-GROUP-APPROXIMATED-001).
         // `direction` REMOVED from this allowlist (PR 2 task 4 — the direction pipeline) — it's now
         // registered in properties.json + resolved by KeywordResolver; `unicode-bidi` stays deferred.
         "unicode-bidi",

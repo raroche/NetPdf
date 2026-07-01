@@ -174,6 +174,16 @@ internal static class FragmentPainter
                 && imageCache.BlendModeBoxes.TryGetValue(fragment.Box, out blendModeName);
             if (blended) page.BeginBlendMode(blendModeName!);
 
+            // opacity (Phase 4) — wrap this box's decoration in a constant fill+stroke alpha (/ca+/CA),
+            // INSIDE the blend-mode wrap (opacity composites the element's own painting; the blend mode
+            // then composites that against the backdrop). The text pass folds the SAME alpha into the box's
+            // glyphs (TextPainter). opacity: 1 → no entry → no wrap (byte-identical). This is a per-object
+            // alpha, not a true group; the group-isolation gap is diagnosed at collect time.
+            double boxOpacity = 1.0;
+            var faded = imageCache is not null
+                && imageCache.OpacityBoxes.TryGetValue(fragment.Box, out boxOpacity);
+            if (faded) page.BeginConstantAlpha(boxOpacity);
+
             (double A, double B, double C, double D, double E, double F) effCm = default;
             var transformed = effectiveTransforms is not null
                 && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
@@ -191,6 +201,7 @@ internal static class FragmentPainter
                 PaintColumnRule(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                     currentColorArgb, diagnostics, ref styleApproximationReported);
                 if (transformed) page.RestoreGraphicsState();
+                if (faded) page.RestoreGraphicsState();
                 if (blended) page.RestoreGraphicsState();
                 continue;
             }
@@ -441,6 +452,7 @@ internal static class FragmentPainter
 
             if (clipPathClipped) page.RestoreGraphicsState(); // balance BeginClipPath's q
             if (transformed) page.RestoreGraphicsState(); // balance BeginTransform's q
+            if (faded) page.RestoreGraphicsState(); // balance BeginConstantAlpha's q
             if (blended) page.RestoreGraphicsState(); // balance BeginBlendMode's q
         }
     }

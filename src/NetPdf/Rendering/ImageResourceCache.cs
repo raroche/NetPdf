@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using NetPdf.Css.Cascade;
@@ -54,6 +55,11 @@ internal sealed class ImageResourceCache
         /// XObject. (A minor retention cost on every image; a documented optimization is to keep it
         /// only when a filtered box references the URI.)</summary>
         public required byte[] SourceBytes { get; init; }
+
+        /// <summary>Phase 4 native SVG — the RAW SVG XML bytes (null for a non-SVG source). Retained so the
+        /// opt-in native emitter (<see cref="NetPdf.Svg.SvgNativeEmitter"/>) can draw the SVG as crisp native
+        /// PDF path ops at paint time instead of placing the rasterized XObject. Only set for an SVG source.</summary>
+        public byte[]? SvgSourceBytes { get; init; }
 
         /// <summary>Phase 4 filters — per-(filter-key) cache of the filtered XObject registration +
         /// its drop-shadow padding, so N <c>&lt;img&gt;</c>s with the same source + filter share one
@@ -186,6 +192,13 @@ internal sealed class ImageResourceCache
     /// boxes with a non-<c>normal</c>, recognized mode appear.</summary>
     public Dictionary<Box, string> BlendModeBoxes { get; } = new();
 
+    /// <summary>Phase 4 <c>opacity</c> — element-backed box → its computed opacity in [0, 1). The painter
+    /// wraps the box's decoration in a constant-alpha graphics state (<c>/ca</c>+<c>/CA</c>), and the text
+    /// pass folds the same alpha into the box's glyph runs. Only boxes with opacity STRICTLY below 1 appear
+    /// (opacity: 1, the initial, is a no-op → byte-identical). Opacity does not inherit (CSS Color L4 §12.1);
+    /// the value stored is the box's own.</summary>
+    public Dictionary<Box, double> OpacityBoxes { get; } = new();
+
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
     /// boxes' <c>background-image</c> urls (margin-box-bg-image cycle). Only successfully
     /// decoded references appear.</summary>
@@ -277,6 +290,7 @@ internal sealed class ImageResourceCache
         var clipPathUnsupportedReported = false;
         var maskElementReported = false;
         var borderImageReported = false;
+        var opacityApproximatedReported = false;
         CollectReferences(
             boxRoot, cascade, references, cache.BackgroundGradientBoxes,
             cache.BackgroundRadialGradientBoxes, cache.BackgroundConicGradientBoxes,
@@ -285,13 +299,13 @@ internal sealed class ImageResourceCache
             cache.BoxShadowBoxes, cache.TextShadowBoxes,
             cache.TransformBoxes, cache.ClipPathBoxes,
             collectBackgrounds: options.PrintBackgrounds,
-            diagnostics, borderImages, cache.BlendModeBoxes,
+            diagnostics, borderImages, cache.BlendModeBoxes, cache.OpacityBoxes,
             ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
             inheritedTextShadow: null,
             ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
-            ref borderImageReported);
+            ref borderImageReported, ref opacityApproximatedReported);
 
         var filterValueReported = false; // Phase 4 filters — once-per-render unparseable-value Warning.
         foreach (var (box, rawUrl, isBackground) in references)
@@ -441,6 +455,7 @@ internal sealed class ImageResourceCache
         IDiagnosticsSink diagnostics,
         List<(Box Box, CssBorderImage Spec)> borderImages,
         Dictionary<Box, string> blendModeBoxes,
+        Dictionary<Box, double> opacityBoxes,
         ref bool unsupportedBackgroundReported,
         ref bool boxShadowUnsupportedReported,
         ref bool textShadowUnsupportedReported,
@@ -454,7 +469,8 @@ internal sealed class ImageResourceCache
         ref bool filterElementReported,
         ref bool clipPathUnsupportedReported,
         ref bool maskElementReported,
-        ref bool borderImageReported)
+        ref bool borderImageReported,
+        ref bool opacityApproximatedReported)
     {
         // text-shadow inherits through this box (incl. anonymous boxes with no SourceElement) — default to
         // the ancestor's value; an element-backed box may REPLACE it below before passing it to children.
@@ -577,6 +593,30 @@ internal sealed class ImageResourceCache
             // initial) + an unrecognized keyword → no entry (composite normally).
             if (PdfBlendModeName(rules?.GetWinner("mix-blend-mode")?.ResolvedValue) is { } bmName)
                 blendModeBoxes[box] = bmName;
+            // opacity (Phase 4) — the box's OWN computed value (opacity doesn't inherit; CSS Color L4 §12.1).
+            // Parse to [0, 1]; only STORE a value strictly below 1 (opacity: 1, the initial, is a no-op → the
+            // decoration + text pass are byte-identical). The painter wraps the box's decoration in a constant
+            // /ca+/CA alpha and the text pass folds the same alpha into the box's glyphs. This is a PER-OBJECT
+            // alpha, not a true isolated transparency GROUP — so a box whose own painting self-overlaps (e.g. a
+            // translucent border over a translucent background of the same box) composites twice. That gap is
+            // diagnosed once per render (never a silent wrong composite); the faithful group needs a
+            // transparency-group Form XObject (the deferred IPaintTarget epic).
+            if (ParseOpacity(rules?.GetWinner("opacity")?.ResolvedValue) is { } op && op < 1.0)
+            {
+                opacityBoxes[box] = op;
+                if (!opacityApproximatedReported)
+                {
+                    diagnostics.Emit(new Diagnostic(
+                        DiagnosticCodes.CssOpacityGroupApproximated001,
+                        "An element with opacity < 1 was composited with a constant alpha applied per painting "
+                        + "operation, not as an isolated transparency group. This matches CSS for a "
+                        + "non-self-overlapping element (the common case); an element whose own background, "
+                        + "border, and text overlap will composite slightly differently than group opacity. "
+                        + "Faithful group isolation needs a transparency-group Form XObject.",
+                        DiagnosticSeverity.Info));
+                    opacityApproximatedReported = true;
+                }
+            }
             // text-shadow (Phase 4 shadows) — an INHERITED property (CSS Text Decoration L3 §3): a box's
             // OWN declared value REPLACES the inherited one, else it inherits the ancestor's. The CSS-wide
             // keywords resolve explicitly (the cascade leaves them as the literal token here): `none` /
@@ -720,13 +760,13 @@ internal sealed class ImageResourceCache
                 gradientGeometryBoxes,
                 multiLayerBoxes,
                 boxShadowBoxes, textShadowBoxes, transformBoxes, clipPathBoxes, collectBackgrounds, diagnostics,
-                borderImages, blendModeBoxes,
+                borderImages, blendModeBoxes, opacityBoxes,
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
                 effectiveTextShadow,
                 ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
-                ref borderImageReported);
+                ref borderImageReported, ref opacityApproximatedReported);
     }
 
     /// <summary>Extract the first <c>url(...)</c> target from a CSS value (mask-image / mask shorthand),
@@ -766,6 +806,23 @@ internal sealed class ImageResourceCache
         "luminosity" => "Luminosity",
         _ => null,
     };
+
+    /// <summary>Parse a CSS <c>opacity</c> value — a <c>&lt;number&gt;</c> or a <c>&lt;percentage&gt;</c>
+    /// (CSS Color L4 §12.1) — to a fraction, CLAMPED to [0, 1] (values outside the range are allowed but
+    /// clamped for compositing). Returns <see langword="null"/> for a missing/blank/unparseable value or a
+    /// CSS-wide keyword (<c>inherit</c>/<c>initial</c>/…), so the caller treats it as the initial (opaque).</summary>
+    private static double? ParseOpacity(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var v = value.Trim();
+        var isPercent = v.EndsWith('%');
+        var num = isPercent ? v[..^1].Trim() : v;
+        if (!double.TryParse(num, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            return null;
+        if (isPercent) parsed /= 100.0;
+        if (!double.IsFinite(parsed)) return null;
+        return Math.Clamp(parsed, 0.0, 1.0);
+    }
 
     /// <summary>Emit <paramref name="code"/> once per render (the <paramref name="reported"/> latch).</summary>
     private static void Report(IDiagnosticsSink diagnostics, ref bool reported, string code, string message)
@@ -1060,6 +1117,7 @@ internal sealed class ImageResourceCache
                 HeightPx = svgRaster.Height,
                 XObject = RasterImageXObject.Build(svgRaster),
                 SourceBytes = svgSource,
+                SvgSourceBytes = bytes, // the raw SVG XML — for the opt-in native emitter (crisp vector)
             };
         }
         var raster = RasterImageDecoder.Decode(bytes);

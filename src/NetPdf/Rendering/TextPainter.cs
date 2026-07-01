@@ -128,7 +128,8 @@ internal static class TextPainter
         double contentOriginLeftPx,
         double contentOriginTopPx,
         IDiagnosticsSink? diagnostics,
-        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null)
+        IReadOnlyDictionary<Box, IReadOnlyList<CssTextShadow>>? textShadows = null,
+        IReadOnlyDictionary<Box, double>? opacities = null)
     {
         private readonly Dictionary<string, FontCollect> _collects = new(StringComparer.Ordinal);
         private readonly List<string> _fontOrder = [];               // first-seen (across pages) → deterministic build order.
@@ -179,11 +180,25 @@ internal static class TextPainter
                     && effectiveTransforms.TryGetValue(fragment.Box, out var ecm))
                     fragmentTransformCm = ecm;
 
+                // opacity (Phase 4) — the box's own opacity (< 1) folds into every glyph run + text-shadow
+                // this fragment produces, so a faded element's TEXT fades in step with its decoration (which
+                // the FragmentPainter wraps in the same /ca+/CA alpha). Record the draw range this fragment
+                // appends, then stamp Opacity onto exactly those commands. opacity: 1 (no entry) is untouched
+                // → byte-identical.
+                var fragmentOpacity = 1.0;
+                var hasOpacity = opacities is not null
+                    && opacities.TryGetValue(fragment.Box, out fragmentOpacity) && fragmentOpacity < 1.0;
+                var drawStart = draws.Count;
+
                 CollectFragment(
                     fragment, inline, blockStyle,
                     originLeftPx, originTopPx, pageHeightPtForPage,
                     shaper, _collects, _fontOrder, _failed, _diagnosed, draws, diagnostics,
                     fragmentTextShadows, fragmentTransformCm, _textShadowRasterCache);
+
+                if (hasOpacity)
+                    for (var d = drawStart; d < draws.Count; d++)
+                        draws[d] = draws[d] with { Opacity = fragmentOpacity };
             }
             // Skip a page with no draws (a background/image-only, transparent-text, or font-size:0 page) —
             // it has no text to replay, so storing it would just no-op in Finish (Copilot — avoid retaining
@@ -269,8 +284,13 @@ internal static class TextPainter
                 {
                     TransitionClip(cmd.ClipPt);
                     if (cmd.Transform is { } sm) page.BeginTransform(sm.A, sm.B, sm.C, sm.D, sm.E, sm.F);
+                    // opacity (Phase 4) — fade the shadow image with its element via a constant-alpha wrap
+                    // (image XObjects honor /ca). 1.0 → no wrap (byte-identical).
+                    var shadowFaded = cmd.Opacity < 1.0;
+                    if (shadowFaded) page.BeginConstantAlpha(cmd.Opacity);
                     var shadowRef = document.RegisterImage(si.Image);
                     page.PlaceImage(shadowRef, si.X, si.Y, si.W, si.H);
+                    if (shadowFaded) page.RestoreGraphicsState();
                     if (cmd.Transform is not null) page.RestoreGraphicsState();
                     continue;
                 }
@@ -285,7 +305,7 @@ internal static class TextPainter
                 FragmentPainter.ColorChannels(cmd.ColorArgb, out var r, out var g2, out var b);
                 // Partial text alpha composites via ExtGState /ca, like fills (review P2) — fully
                 // transparent runs were already dropped at collect time.
-                var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0;
+                var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0 * cmd.Opacity;
                 // transform (Phase 4) — wrap the glyphs in the SAME cm the fragment's decoration
                 // used, so transformed text lands on its transformed box. ShowGlyphs is its own
                 // balanced q/Q, so nesting inside this q/cm…Q is balanced.
@@ -1051,5 +1071,10 @@ internal static class TextPainter
         // bottom-origin) instead of showing glyphs; OriginalGlyphIds is empty. Placed UNDER the text
         // (added before the glyph command, like a sharp shadow). The raster is independent of the font
         // subset, so it is built at collect time.
-        (NetPdf.Pdf.Images.ImageXObjectResult Image, double X, double Y, double W, double H)? ShadowImage = null);
+        (NetPdf.Pdf.Images.ImageXObjectResult Image, double X, double Y, double W, double H)? ShadowImage = null,
+        // Phase 4 opacity — the owning box's opacity in [0, 1], folded into this command's paint: the glyph
+        // run's fill alpha is multiplied by it, and a shadow-image is placed inside a constant-alpha wrap.
+        // 1.0 (the default) is a no-op. Applied uniformly to every command a fragment produced (glyphs +
+        // its text-shadows) so a faded element's text fades with its decoration.
+        double Opacity = 1.0);
 }

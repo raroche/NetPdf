@@ -174,10 +174,13 @@ sub-track**.
 
 ### Track A — Foundation & verification (do first)
 
-- [ ] **SEC-1 — Threat model + SECURITY.md + secure-usage guide.** Land *this* document; add a root
-  `SECURITY.md` (supported versions + a private vulnerability-disclosure channel, needed before the repo goes
-  public at 1.0); add a short "Secure usage for untrusted HTML" section to the README/API docs codifying the
-  §2 golden rule. **Accept:** the three docs exist, cross-linked; README shows the `UntrustedHtml` snippet.
+- [x] **SEC-1 — Threat model + SECURITY.md + secure-usage guide.** ✅ Done. This document is the threat model;
+  a root [`SECURITY.md`](../../SECURITY.md) (supported versions, GitHub-private-advisory disclosure channel,
+  in/out-of-scope, response targets) landed; the README's
+  [Running NetPdf on untrusted HTML](../../README.md#running-netpdf-on-untrusted-html) section codifies the §2
+  golden rule (full `UntrustedHtml` + `ResourceLoader = null` + `Timeout` snippet) and now links the threat
+  model + `SECURITY.md`. All three docs cross-link. (Also corrected a stale README note: `<a href>` → `/URI`
+  link annotations *did* ship in Phase 4, scheme-restricted by `LinkUriPolicy`.)
 - [ ] **SEC-2 — Security regression suite + fuzz expansion.** Consolidate a `SecurityHardeningTests` suite
   (SSRF/LFI/XXE/DoS/PDF-output as executable assertions) and expand `tests/NetPdf.Fuzz` to cover
   `HtmlPdf.Convert`, `SvgRasterizer`, `FontSafetyValidator`, `ImageSafetyValidator`, and `UriSafetyValidator`;

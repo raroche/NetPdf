@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Globalization;
 using System.Xml.Linq;
 using SkiaSharp;
 
@@ -133,6 +134,60 @@ internal static class SvgClipMask
         state.SawUnsupported = true;
         return null;
     }
+
+    /// <summary>The mask REGION (§14.4 — the <c>&lt;mask&gt;</c>'s <c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> +
+    /// <c>maskUnits</c>), the rect OUTSIDE which the mask value is 0 (the masked element is clipped away), in the
+    /// element's user space. <c>objectBoundingBox</c> (default) maps each value as a bbox fraction (§14 default
+    /// <c>-10% -10% 120% 120%</c>); <c>userSpaceOnUse</c> maps them as user-space lengths, each resolved with its
+    /// own default. A unit-suffixed objectBoundingBox value (a fraction is unitless) is flagged + falls back. A
+    /// zero / negative size is an EMPTY region (the element is fully masked out). Returns <see langword="null"/>
+    /// (no region clip) only when no bbox is available under objectBoundingBox.</summary>
+    public static SKRect? ResolveMaskRegion(XElement mask, XElement el, SvgStyle style, SvgRenderState state)
+    {
+        var userSpace = (SvgRasterizer.Attr(mask, "maskUnits") ?? "objectBoundingBox").Trim()
+            .Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+        if (userSpace)
+        {
+            var x = (float)MaskRegionLen(mask, "x", state, style, SvgRasterizer.LenAxis.X, -0.10);
+            var y = (float)MaskRegionLen(mask, "y", state, style, SvgRasterizer.LenAxis.Y, -0.10);
+            var w = (float)MaskRegionLen(mask, "width", state, style, SvgRasterizer.LenAxis.X, 1.20);
+            var h = (float)MaskRegionLen(mask, "height", state, style, SvgRasterizer.LenAxis.Y, 1.20);
+            return w > 0 && h > 0 ? new SKRect(x, y, x + w, y + h) : SKRect.Empty;
+        }
+        if (ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } b)
+        {
+            var fx = MaskRegionFraction(mask, "x", -0.1f, state);
+            var fy = MaskRegionFraction(mask, "y", -0.1f, state);
+            var fw = MaskRegionFraction(mask, "width", 1.2f, state);
+            var fh = MaskRegionFraction(mask, "height", 1.2f, state);
+            if (fw <= 0 || fh <= 0) return SKRect.Empty;
+            return new SKRect(b.Left + fx * b.Width, b.Top + fy * b.Height,
+                b.Left + (fx + fw) * b.Width, b.Top + (fy + fh) * b.Height);
+        }
+        return null;
+    }
+
+    private static double MaskRegionLen(XElement mask, string name, SvgRenderState state, SvgStyle style,
+        SvgRasterizer.LenAxis axis, double defaultFraction)
+    {
+        if (SvgRasterizer.HasAnyAttr(mask, name)) return SvgRasterizer.Len(mask, name, state, style, axis);
+        var basis = axis == SvgRasterizer.LenAxis.X ? state.ViewportW : state.ViewportH;
+        return defaultFraction * basis;
+    }
+
+    /// <summary>An objectBoundingBox mask-region value as a bbox FRACTION (a <c>%</c> → /100, a unitless number
+    /// → as-is, absent → the §14 default). A unit-suffixed / malformed value is flagged + falls back (a fraction
+    /// isn't a length, so it must not be reinterpreted as a bbox multiplier).</summary>
+    private static float MaskRegionFraction(XElement mask, string name, float fallback, SvgRenderState state)
+    {
+        var raw = SvgRasterizer.Attr(mask, name)?.Trim();
+        if (string.IsNullOrEmpty(raw)) return fallback;
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+            return float.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct) ? pct / 100f : Flag(state, fallback);
+        return float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : Flag(state, fallback);
+    }
+
+    private static float Flag(SvgRenderState state, float fallback) { state.SawUnsupported = true; return fallback; }
 
     /// <summary>Multiply the element-content layer's alpha by the LUMINANCE of the <c>&lt;mask&gt;</c>'s
     /// rendered content (default <c>mask-type: luminance</c>): render the mask content into a layer whose

@@ -49,20 +49,26 @@ internal static class SvgFilters
     /// <c>href="#id"</c> rendered like a <c>&lt;use&gt;</c>), and (SVG part 11) <c>feTile</c> + per-primitive
     /// SUBREGIONS (<c>x</c>/<c>y</c>/<c>width</c>/<c>height</c> → a crop). The filter region (x/y/width/height +
     /// filterUnits, objectBoundingBox / userSpaceOnUse) is honored by the caller's clip (see
-    /// <see cref="ResolveFilterRegion"/>). <c>primitiveUnits="objectBoundingBox"</c> (subregion fractions are
-    /// mapped, but the non-subregion remap is partial → flagged), <c>BackgroundImage</c>/<c>FillPaint</c>
-    /// inputs, an EXTERNAL <c>feImage</c> href, and lighting <c>kernelUnitLength</c> aren't modeled → flagged.
-    /// Returns <see langword="null"/> when no primitive contributes (the element renders
-    /// unfiltered).</summary>
+    /// <see cref="ResolveFilterRegion"/>). (SVG part 12) <c>primitiveUnits="objectBoundingBox"</c> remaps the
+    /// subregions PLUS the non-subregion lengths (feOffset <c>dx</c>/<c>dy</c>, blur / drop-shadow
+    /// <c>stdDeviation</c>, feMorphology <c>radius</c>, feDisplacementMap <c>scale</c>) into bbox units; a
+    /// lighting light-source position + <c>kernelUnitLength</c> remap stays partial → flagged. An EXTERNAL
+    /// <c>feImage</c> href isn't modeled → flagged (<c>BackgroundImage</c>/<c>FillPaint</c>/<c>StrokePaint</c>
+    /// inputs are handled — see <see cref="ResolveInput"/>). Returns <see langword="null"/> when no primitive
+    /// contributes (the element renders unfiltered).</summary>
     public static SKImageFilter? BuildImageFilter(XElement filter, XElement el, SvgStyle style, SvgRenderState state,
         FilterRegion? region, List<SKImage> ownedImages)
     {
-        // primitiveUnits=objectBoundingBox additionally remaps non-subregion primitive values (feOffset dx/dy,
-        // blur stdDeviation, …) into bbox units — only the SUBREGION mapping is modeled here, so its presence
-        // is still flagged as partial. The filter region itself is honored by the caller's clip.
+        // primitiveUnits=objectBoundingBox expresses non-subregion primitive lengths (feOffset dx/dy, blur /
+        // drop-shadow stdDeviation, feMorphology radius, feDisplacementMap scale) as bbox fractions — now
+        // REMAPPED. A lighting light-source position + feConvolveMatrix kernelUnitLength remap stays partial →
+        // flagged. The filter region itself is honored by the caller's clip.
         var primitiveBBox = (SvgRasterizer.Attr(filter, "primitiveUnits") ?? "userSpaceOnUse").Trim()
             .Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase);
-        var sawUnsupported = primitiveBBox;
+        var pbbox = primitiveBBox
+            ? (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } bb ? bb : (SKRect?)null)
+            : null;
+        var sawUnsupported = primitiveBBox && pbbox is null; // objectBoundingBox but no bbox → can't remap
 
         var prims = new List<XElement>();
         foreach (var e in filter.Elements()) prims.Add(e);
@@ -79,6 +85,7 @@ internal static class SvgFilters
         // disconnected tree contribute nothing and must not flag — only the primary tree is the filter result.
         var reachable = ComputeReachableTree(prims);
         var results = new Dictionary<string, SKImageFilter?>(StringComparer.Ordinal);
+        SeedStandardInputs(prims, results, style, ref sawUnsupported); // FillPaint/StrokePaint/BackgroundImage
         SKImageFilter? last = null; // null = SourceGraphic; tracks the previous primitive's output
 
         for (var idx = 0; idx < prims.Count; idx++)
@@ -100,11 +107,12 @@ internal static class SvgFilters
                 {
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
                     var (sx, sy) = ParseStdDeviation(SvgRasterizer.Attr(prim, "stdDeviation"));
+                    sx = Bx(sx, pbbox); sy = By(sy, pbbox);
                     output = sx > 0 || sy > 0 ? SKImageFilter.CreateBlur(sx, sy, input) : input;
                     break;
                 }
                 case "feoffset":
-                    output = SKImageFilter.CreateOffset((float)SvgRasterizer.Num(prim, "dx"), (float)SvgRasterizer.Num(prim, "dy"),
+                    output = SKImageFilter.CreateOffset(Bx((float)SvgRasterizer.Num(prim, "dx"), pbbox), By((float)SvgRasterizer.Num(prim, "dy"), pbbox),
                         ResolveInput(prim, "in", last, results, ref sawUnsupported));
                     break;
                 case "fedropshadow":
@@ -115,7 +123,7 @@ internal static class SvgFilters
                     if (bx == 0 && prim.Attribute("stdDeviation") is null) { bx = 2; by = 2; } // default σ=2
                     var dx = prim.Attribute("dx") is not null ? (float)SvgRasterizer.Num(prim, "dx") : 2f;
                     var dy = prim.Attribute("dy") is not null ? (float)SvgRasterizer.Num(prim, "dy") : 2f;
-                    output = SKImageFilter.CreateDropShadow(dx, dy, bx, by, FloodColor(prim), input);
+                    output = SKImageFilter.CreateDropShadow(Bx(dx, pbbox), By(dy, pbbox), Bx(bx, pbbox), By(by, pbbox), FloodColor(prim), input);
                     break;
                 }
                 case "fecolormatrix":
@@ -152,7 +160,9 @@ internal static class SvgFilters
                 case "femorphology":
                 {
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
-                    var (rx, ry) = ParseRadius(SvgRasterizer.Attr(prim, "radius"));
+                    var (rxRaw, ryRaw) = ParseRadius(SvgRasterizer.Attr(prim, "radius"));
+                    var rx = Bx(rxRaw, pbbox);
+                    var ry = By(ryRaw, pbbox);
                     var op = (SvgRasterizer.Attr(prim, "operator") ?? "erode").Trim().ToLowerInvariant();
                     if (op != "erode" && op != "dilate") sawUnsupported = true; // unknown operator (default to erode)
                     // §9.6 — a radius of 0 (or negative, or absent) on EITHER axis disables the primitive.
@@ -180,7 +190,7 @@ internal static class SvgFilters
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
                     var disp = CropInput(ResolveInput(prim, "in2", last, results, ref sawUnsupported), subregion)
                         ?? SKImageFilter.CreateOffset(0, 0, null); // null in2 = SourceGraphic → an identity filter
-                    var scale = (float)SvgRasterizer.Num(prim, "scale");
+                    var scale = Bdiag((float)SvgRasterizer.Num(prim, "scale"), pbbox);
                     var xs = ChannelSelector(SvgRasterizer.Attr(prim, "xChannelSelector"));
                     var ys = ChannelSelector(SvgRasterizer.Attr(prim, "yChannelSelector"));
                     output = SKImageFilter.CreateDisplacementMapEffect(xs, ys, scale, disp, input);
@@ -196,8 +206,9 @@ internal static class SvgFilters
                 {
                     // A GENERATOR — it must never pass the previous content through (PR-248 review [P2]). A
                     // degenerate (≤ 0) baseFrequency we can't faithfully produce is flagged + an EMPTY
-                    // (transparent) result, not a silent SourceGraphic pass-through.
-                    var shader = BuildTurbulence(prim);
+                    // (transparent) result, not a silent SourceGraphic pass-through. `stitchTiles=stitch`
+                    // seamlessly tiles the noise over the primitive subregion (effRect).
+                    var shader = BuildTurbulence(prim, effRect);
                     if (shader is null) { sawUnsupported = true; shader = SKShader.CreateColor(SKColors.Transparent); }
                     output = SKImageFilter.CreateShader(shader);
                     shader.Dispose();
@@ -236,12 +247,14 @@ internal static class SvgFilters
                 }
                 case "fediffuselighting":
                 {
+                    if (primitiveBBox) sawUnsupported = true; // light-source x/y/z aren't remapped to bbox units
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
                     output = BuildLighting(prim, input, specular: false, ref sawUnsupported);
                     break;
                 }
                 case "fespecularlighting":
                 {
+                    if (primitiveBBox) sawUnsupported = true; // light-source x/y/z aren't remapped to bbox units
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
                     output = BuildLighting(prim, input, specular: true, ref sawUnsupported);
                     break;
@@ -490,6 +503,53 @@ internal static class SvgFilters
         if (results.TryGetValue(name, out var r)) return r;
         if (IsStandardInput(name)) sawUnsupported = true; // BackgroundImage/BackgroundAlpha/FillPaint/StrokePaint
         return last;                                       // else a dangling / forward custom name → previous result
+    }
+
+    /// <summary>Pre-seed the <c>result</c> map with the standard NON-source inputs a primitive can reference:
+    /// <c>FillPaint</c>/<c>StrokePaint</c> = an infinite plane of the element's fill/stroke paint (a solid
+    /// shader; a gradient paint reference flags + transparent); <c>BackgroundImage</c>/<c>BackgroundAlpha</c> =
+    /// the accumulated background, which is EMPTY/transparent (<c>enable-background</c> is deprecated + not
+    /// modeled). Only the inputs actually referenced are built.</summary>
+    private static void SeedStandardInputs(List<XElement> prims, Dictionary<string, SKImageFilter?> results, SvgStyle style, ref bool sawUnsupported)
+    {
+        if (Referenced(prims, "FillPaint"))
+            results["FillPaint"] = PaintInput(style.Fill, style.FillOpacity, style.FillRef, ref sawUnsupported);
+        if (Referenced(prims, "StrokePaint"))
+            results["StrokePaint"] = PaintInput(style.Stroke ?? SKColors.Transparent, style.StrokeOpacity, style.StrokeRef, ref sawUnsupported);
+        if (Referenced(prims, "BackgroundImage")) results["BackgroundImage"] = TransparentInput();
+        if (Referenced(prims, "BackgroundAlpha")) results["BackgroundAlpha"] = TransparentInput();
+    }
+
+    /// <summary>True if any primitive's <c>in</c>/<c>in2</c> (or a <c>feMergeNode in</c>) references
+    /// <paramref name="name"/>.</summary>
+    private static bool Referenced(List<XElement> prims, string name)
+    {
+        foreach (var p in prims)
+        {
+            if (NameEq(SvgRasterizer.Attr(p, "in"), name) || NameEq(SvgRasterizer.Attr(p, "in2"), name)) return true;
+            foreach (var node in p.Elements())
+                if (node.Name.LocalName.Equals("feMergeNode", StringComparison.OrdinalIgnoreCase)
+                    && NameEq(SvgRasterizer.Attr(node, "in"), name)) return true;
+        }
+        return false;
+    }
+
+    private static bool NameEq(string? a, string b) => a?.Trim().Equals(b, StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>An infinite plane of a solid paint (the SVG <c>FillPaint</c>/<c>StrokePaint</c> input). A
+    /// gradient/pattern paint reference isn't modeled → flagged + transparent.</summary>
+    private static SKImageFilter PaintInput(SKColor color, float opacity, string? paintRef, ref bool sawUnsupported)
+    {
+        if (paintRef is not null) { sawUnsupported = true; return TransparentInput(); }
+        var a = (byte)Math.Round(Math.Clamp(opacity, 0f, 1f) * color.Alpha);
+        using var shader = SKShader.CreateColor(color.WithAlpha(a));
+        return SKImageFilter.CreateShader(shader);
+    }
+
+    private static SKImageFilter TransparentInput()
+    {
+        using var shader = SKShader.CreateColor(SKColors.Transparent);
+        return SKImageFilter.CreateShader(shader);
     }
 
     /// <summary>An <see cref="SKImageFilter"/> producing the ALPHA of <c>SourceGraphic</c> with black RGB
@@ -802,11 +862,13 @@ internal static class SvgFilters
     }
 
     /// <summary><c>feTurbulence</c> → a Perlin-noise shader (Filter Effects §9.21): <c>type</c> =
-    /// fractalNoise / turbulence; <c>baseFrequency</c> (one or two ≥ 0), <c>numOctaves</c>, <c>seed</c>.
-    /// Returns <see langword="null"/> for a degenerate (≤ 0 on both axes, omitted, or malformed) frequency —
-    /// the caller flags it + emits an EMPTY result rather than passing content through. <c>stitchTiles</c>
-    /// and the exact SVG noise sums differ slightly from Skia's generator — a first cut.</summary>
-    private static SKShader? BuildTurbulence(XElement prim)
+    /// fractalNoise / turbulence; <c>baseFrequency</c> (one or two ≥ 0), <c>numOctaves</c>, <c>seed</c>. When
+    /// <c>stitchTiles="stitch"</c> the noise TILES SEAMLESSLY over the primitive subregion
+    /// (<paramref name="tileRect"/>) via Skia's stitched Perlin generator (the tile size = the subregion). The
+    /// exact SVG noise sums still differ slightly from Skia's generator — a first cut. Returns
+    /// <see langword="null"/> for a degenerate (≤ 0 on both axes, omitted, or malformed) frequency — the caller
+    /// flags it + emits an EMPTY result rather than passing content through.</summary>
+    private static SKShader? BuildTurbulence(XElement prim, SKRect? tileRect)
     {
         var freq = SplitNumbersStrict(SvgRasterizer.Attr(prim, "baseFrequency"), max: 2);
         var fx = freq is { Length: > 0 } ? Math.Max(0f, freq[0]) : 0f;
@@ -815,7 +877,16 @@ internal static class SvgFilters
         var octaves = SvgRasterizer.Attr(prim, "numOctaves") is { } no && int.TryParse(no, out var n) ? Math.Max(1, n) : 1;
         var seed = (float)SvgRasterizer.Num(prim, "seed");
         var type = (SvgRasterizer.Attr(prim, "type") ?? "turbulence").Trim().ToLowerInvariant();
-        return type == "fractalnoise"
+        var stitch = (SvgRasterizer.Attr(prim, "stitchTiles") ?? "noStitch").Trim().Equals("stitch", StringComparison.OrdinalIgnoreCase);
+        var fractal = type == "fractalnoise";
+        if (stitch && tileRect is { Width: > 0, Height: > 0 } tr)
+        {
+            var tile = new SKSizeI(Math.Max(1, (int)Math.Round(tr.Width)), Math.Max(1, (int)Math.Round(tr.Height)));
+            return fractal
+                ? SKShader.CreatePerlinNoiseFractalNoise(fx, fy, octaves, seed, tile)
+                : SKShader.CreatePerlinNoiseTurbulence(fx, fy, octaves, seed, tile);
+        }
+        return fractal
             ? SKShader.CreatePerlinNoiseFractalNoise(fx, fy, octaves, seed)
             : SKShader.CreatePerlinNoiseTurbulence(fx, fy, octaves, seed);
     }
@@ -880,6 +951,14 @@ internal static class SvgFilters
     /// default subregion is the whole filter region).</summary>
     private static SKImageFilter? CropInput(SKImageFilter? input, SKRect? subregion) =>
         subregion is { } r ? SKImageFilter.CreateOffset(0f, 0f, input, r) : input;
+
+    // primitiveUnits=objectBoundingBox: an x-direction length is a fraction of the bbox width, a y-direction
+    // length a fraction of the height, and a diagonal length (feDisplacementMap scale) normalizes by
+    // √((w²+h²)/2). A null bbox (userSpaceOnUse, the default) passes the value through unchanged.
+    private static float Bx(float v, SKRect? bbox) => bbox is { } r ? v * r.Width : v;
+    private static float By(float v, SKRect? bbox) => bbox is { } r ? v * r.Height : v;
+    private static float Bdiag(float v, SKRect? bbox) =>
+        bbox is { } r ? v * (float)Math.Sqrt((r.Width * r.Width + r.Height * r.Height) / 2.0) : v;
 
     /// <summary><c>feDiffuseLighting</c> / <c>feSpecularLighting</c> (Filter Effects §9.16/§9.17) → a Skia
     /// lighting image filter. The input ALPHA is the height field; a single light-source child

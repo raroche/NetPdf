@@ -154,7 +154,19 @@ internal static class SvgRasterizer
         // is multiplied into its alpha (DstIn).
         var mask = SvgClipMask.ResolveMask(el, state);
         var maskLayer = mask is not null;
-        if (maskLayer) canvas.SaveLayer(null);
+        var maskRegionClipped = false;
+        if (maskLayer)
+        {
+            // The mask REGION (§14.4 — maskUnits x/y/width/height, default -10%..120% of the bbox) hard-clips
+            // the masked element: outside the region the mask value is 0 (the element is clipped away).
+            if (SvgClipMask.ResolveMaskRegion(mask!, el, style, state) is { } mrect)
+            {
+                canvas.Save();
+                canvas.ClipRect(mrect);
+                maskRegionClipped = true;
+            }
+            canvas.SaveLayer(null);
+        }
         var opacityLayer = opacity < 1f;
         if (opacityLayer)
         {
@@ -230,6 +242,7 @@ internal static class SvgRasterizer
         if (ownedImages is not null) foreach (var img in ownedImages) img.Dispose(); // feImage rasters, now safe
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
         if (mask is not null) SvgClipMask.ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
+        if (maskRegionClipped) canvas.Restore();     // pop the mask-region clip
         canvas.RestoreToCount(restore);
     }
 

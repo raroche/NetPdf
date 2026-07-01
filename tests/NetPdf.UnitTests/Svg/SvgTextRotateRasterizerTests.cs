@@ -61,4 +61,22 @@ public sealed class SvgTextRotateRasterizerTests
         Assert.NotNull(listRot);
         Assert.True(InkBox(listRot!).H > InkBox(plain!).H + 4);   // the rotated 'L' adds vertical extent
     }
+
+    [Fact]
+    public void Rotate_list_indexes_glyphs_globally_across_tspans()
+    {
+        // rotate on <text> addresses ALL glyphs GLOBALLY (§10.5): "0 0 90 90" over "LL"+<tspan>"LL" rotates the
+        // two TSPAN glyphs (global indices 2,3). A run-LOCAL index would give the tspan run indices 0,1 → 0°/0°
+        // (no rotation), so the tspan text gaining vertical extent proves the index is global.
+        var plain = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"90\">" +
+            "<text x=\"15\" y=\"50\" font-size=\"26\" fill=\"black\">LL<tspan>LL</tspan></text></svg>"), out _);
+        var rot = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"160\" height=\"90\">" +
+            "<text x=\"15\" y=\"50\" font-size=\"26\" fill=\"black\" rotate=\"0 0 90 90\">LL<tspan>LL</tspan></text></svg>"), out var unsupported);
+        Assert.NotNull(plain);
+        Assert.NotNull(rot);
+        Assert.False(unsupported);
+        Assert.True(InkBox(rot!).H > InkBox(plain!).H + 4);       // the tspan glyphs (global idx 2,3) rotated 90°
+    }
 }

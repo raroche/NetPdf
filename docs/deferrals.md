@@ -2813,12 +2813,16 @@ flags the categories):
      `<use>`); per-primitive SUBREGIONS (`x`/`y`/`width`/`height` → a `CreateOffset` crop; `primitiveUnits=
      objectBoundingBox` maps the subregion fractions, non-subregion remap stays partial→flagged); EXACT curve
      tangents for path markers (from the segment control points, not the chord); `textLength`/`lengthAdjust`
-     (`spacing` + `spacingAndGlyphs`, single chunk — multi-chunk flagged). **SVG residuals (later):**
-     `feTurbulence` `stitchTiles` + exact noise sums; `primitiveUnits` non-subregion remap +
-     `BackgroundImage`/`FillPaint` inputs + an external `feImage` href;
-     `rotate` global (cross-run) index; `textLength` across multiple chunks;
-     bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip
-     (`maskUnits` -10%..120% default region not clipped); pattern tile resolution under
+     (`spacing` + `spacingAndGlyphs`, single chunk — multi-chunk flagged). **SVG part 12 closed 5 residuals:**
+     the `mask` region clip (`maskUnits` objectBoundingBox[-10%..120%]/userSpaceOnUse hard-clips the element);
+     `primitiveUnits=objectBoundingBox` non-subregion remap (feOffset dx/dy, blur/drop-shadow stdDeviation,
+     feMorphology radius, feDisplacementMap scale scaled by the bbox — lighting position + `kernelUnitLength`
+     stay partial→flagged); `FillPaint`/`StrokePaint` (a solid-paint plane; gradient ref flagged) +
+     `BackgroundImage`/`BackgroundAlpha` (transparent) inputs; per-glyph `rotate` GLOBAL (cross-tspan) index;
+     `feTurbulence` `stitchTiles` (Skia stitched Perlin over the subregion). **SVG residuals (later):**
+     `feTurbulence` exact noise sums; a gradient `FillPaint`/`StrokePaint` + an external `feImage` href +
+     lighting position/`kernelUnitLength` under `primitiveUnits`; `textLength` across multiple chunks;
+     bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); pattern tile resolution under
      heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),
      inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,

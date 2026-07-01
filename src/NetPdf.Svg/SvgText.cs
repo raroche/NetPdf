@@ -135,9 +135,10 @@ internal static class SvgText
     /// <summary>Fit a single text chunk to <c>textLength</c> (§10.5). <c>lengthAdjust="spacingAndGlyphs"</c>
     /// applies a horizontal scale (positions AND glyph shapes stretch); the default <c>"spacing"</c> distributes
     /// the slack as uniform extra advance across the inter-glyph gaps (glyph shapes unchanged). Returns
-    /// <see langword="false"/> (the caller renders normally) when there is no positive <c>textLength</c>; a
-    /// MULTI-chunk text (a <c>tspan</c> with an absolute <c>x</c>) is flagged + rendered normally. The
-    /// no-<c>textLength</c> default path never enters here, so it stays byte-identical.</summary>
+    /// <see langword="false"/> (WITHOUT flagging) when there is no positive <c>textLength</c> OR the text spans
+    /// MULTIPLE chunks (a <c>tspan</c> with an absolute <c>x</c>) — the caller then applies a whole-text scale
+    /// (see <see cref="MeasureTextExtent"/>). The no-<c>textLength</c> default path never enters here, so it
+    /// stays byte-identical.</summary>
     private static bool TryDrawTextLength(SKCanvas canvas, XElement text, List<Run> runs, float startX, float startY,
         SvgStyle style, SvgRenderState state)
     {

@@ -52,6 +52,14 @@ NetPdf-side rasterization is live and unit-tested (`PdfRasterizerTests`).
 
 ## Step 2 — generate + commit references (pinned Chrome, Linux/Docker)
 
+> **This is the ONE thing standing between here and a fully-green Phase 4** (`0.9.0-rc1` is already tagged;
+> exit criteria 3–10 are met). Generating + committing the canonical Chrome reference PNGs is **genuinely not
+> producible from a macOS dev environment**: Linux CI drifts against macOS font hinting / anti-aliasing (→ false
+> diffs), and a dev box may have no container runtime at all to run the pinned-Linux image. **Do not commit
+> macOS-generated references** — they would poison the gate. This step must run on **Linux/CI**; once the PNGs
+> land under `../references/`, `VisualGatePolicy` auto-activates the enforcing diff gate and Phase-4 exit
+> criteria 1–2 flip green. It is carried into early Phase 5's cross-platform-CI deliverable.
+
 Generate references from a **pinned Chrome on Linux** so CI (Linux) does not drift against macOS fonts /
 anti-aliasing. A **pinned font pack** used by BOTH Chrome and NetPdf (wire a `FontResolver` on the NetPdf
 side) is essential — otherwise system Helvetica/Segoe substitution makes the diff noisy.

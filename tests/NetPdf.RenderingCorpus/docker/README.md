@@ -3,8 +3,8 @@
 The visual-regression gate (`Visual/CorpusVisualRegressionTests`) diffs NetPdf's render of each diffable
 corpus invoice against a **committed Chrome reference PNG**. This directory holds the maintainer tooling to
 generate those references reproducibly. The diff core (`PixelDiff`), the runner, and the rasterizer seam
-(`IPdfRasterizer`) already ship and are unit-tested; the gate stays **inert (green, skipping)** until both of
-the maintainer steps below are done.
+(`IPdfRasterizer`) already ship and are unit-tested; the gate stays **inert (green, skipping)** until the
+reference-generation step below is done (Step 1 / PDFium is already complete, and `0.9.0-rc1` is already tagged).
 
 ## What the agent already landed (managed core)
 
@@ -52,6 +52,14 @@ NetPdf-side rasterization is live and unit-tested (`PdfRasterizerTests`).
 
 ## Step 2 — generate + commit references (pinned Chrome, Linux/Docker)
 
+> **This is the ONE thing standing between here and a fully-green Phase 4** (`0.9.0-rc1` is already tagged;
+> exit criteria 3–10 are met). Generating + committing the canonical Chrome reference PNGs is **genuinely not
+> producible from a macOS dev environment**: Linux CI drifts against macOS font hinting / anti-aliasing (→ false
+> diffs), and a dev box may have no container runtime at all to run the pinned-Linux image. **Do not commit
+> macOS-generated references** — they would poison the gate. This step must run on **Linux/CI**; once the PNGs
+> land under `../references/`, `VisualGatePolicy` auto-activates the enforcing diff gate and Phase-4 exit
+> criteria 1–2 flip green. It is carried into early Phase 5's cross-platform-CI deliverable.
+
 Generate references from a **pinned Chrome on Linux** so CI (Linux) does not drift against macOS fonts /
 anti-aliasing. A **pinned font pack** used by BOTH Chrome and NetPdf (wire a `FontResolver` on the NetPdf
 side) is essential — otherwise system Helvetica/Segoe substitution makes the diff noisy.
@@ -77,12 +85,15 @@ revision via the Playwright version in the Dockerfile (never `latest`).
 Add a GitHub Actions job that runs the Docker image and executes the visual gate on Linux for every PR
 (`dotnet test tests/NetPdf.RenderingCorpus`). Keep reference regeneration in a SEPARATE manual workflow.
 
-## Step 4 — close deltas, then release
+## Step 4 — close deltas
 
 Run the now-live gate; above-tolerance mismatches are real engine bugs (gradient stepping, shadow blur σ,
 font metrics, default margins, sub-pixel placement) — fix them, don't chase sub-threshold pixels
-(`Δ < 4` is the contract). Then add the CHANGELOG `0.9.0-rc1` entry + version bump and apply the annotated
-`0.9.0-rc1` tag (internal — the public flip + NuGet happen at `1.0.0` in Phase 5).
+(`Δ < 4` is the contract).
+
+> **Release plumbing is already done.** The CHANGELOG `0.9.0-rc1` entry, the version bump, and the annotated
+> `0.9.0-rc1` tag (→ `73493ad`) all landed at the Phase-4 closeout — do **not** redo them. The public flip +
+> NuGet publication happen at `1.0.0` in Phase 5.
 
 ## Excluded invoices (no silent caps)
 

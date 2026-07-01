@@ -188,4 +188,17 @@ public sealed class SvgMaskRasterizerTests
         Assert.True(unsupported);                        // unit-suffixed objectBoundingBox value flagged
         Assert.True(Px(info!, 20, 20).R > 150);          // default region (bbox ±10%) → element still shown
     }
+
+    [Fact]
+    public void Unknown_mask_units_value_is_flagged()
+    {
+        // An unknown maskUnits value → objectBoundingBox behavior, FLAGGED (parity with filterUnits).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<mask id=\"m\" maskUnits=\"garbage\"><rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"white\"/></mask>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" mask=\"url(#m)\"/></svg>"), out var unsupported);
+        Assert.NotNull(info);
+        Assert.True(unsupported);
+        Assert.True(Px(info!, 20, 20).R > 150);          // default (objectBoundingBox) region → element shown
+    }
 }

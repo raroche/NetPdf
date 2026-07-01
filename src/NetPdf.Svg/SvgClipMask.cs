@@ -144,8 +144,10 @@ internal static class SvgClipMask
     /// (no region clip) only when no bbox is available under objectBoundingBox.</summary>
     public static SKRect? ResolveMaskRegion(XElement mask, XElement el, SvgStyle style, SvgRenderState state)
     {
-        var userSpace = (SvgRasterizer.Attr(mask, "maskUnits") ?? "objectBoundingBox").Trim()
-            .Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+        var unitsRaw = (SvgRasterizer.Attr(mask, "maskUnits") ?? "objectBoundingBox").Trim();
+        var userSpace = unitsRaw.Equals("userSpaceOnUse", StringComparison.OrdinalIgnoreCase);
+        if (!userSpace && !unitsRaw.Equals("objectBoundingBox", StringComparison.OrdinalIgnoreCase))
+            state.SawUnsupported = true; // an unknown maskUnits value → objectBoundingBox behavior, flagged
         if (userSpace)
         {
             var x = (float)MaskRegionLen(mask, "x", state, style, SvgRasterizer.LenAxis.X, -0.10);

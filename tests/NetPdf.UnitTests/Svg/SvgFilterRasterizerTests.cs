@@ -1072,4 +1072,51 @@ public sealed class SvgFilterRasterizerTests
         var q = Px(stitched, 30, 30);
         Assert.True(p.R != q.R || p.G != q.G || p.B != q.B);
     }
+
+    [Fact]
+    public void Disconnected_branch_referencing_gradient_fill_paint_does_not_flag()
+    {
+        // PR-252 review [P2] — a DISCONNECTED primitive referencing a gradient FillPaint must NOT flag (only
+        // the primary reachable tree renders + flags). The last (reachable) primitive is a supported feFlood.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"red\"/></linearGradient>" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"blue\" in=\"FillPaint\" result=\"dead\"/>" +   // disconnected (not fed forward)
+            "<feFlood flood-color=\"lime\"/></filter>" +                           // the reachable result
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"url(#g)\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // the dead FillPaint branch neither renders nor flags
+        Assert.True(Px(info, 20, 20).G > 150);     // the reachable lime feFlood
+    }
+
+    [Theory]
+    [InlineData("<filter id=\"f\" primitiveUnits=\"garbage\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]
+    public void Unknown_primitive_units_value_is_flagged(string filter)
+    {
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" + filter +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.True(unsupported);                  // an unknown primitiveUnits value → flagged (like filterUnits)
+    }
+
+    [Fact]
+    public void Primitive_units_object_bounding_box_offset_accepts_percent_and_unitless_equivalently()
+    {
+        // PR-252 review [P2] — under primitiveUnits=objectBoundingBox a length is a bbox FRACTION: dx="0.5" and
+        // dx="50%" must be equivalent (both 0.5 × the 10-wide bbox = 5px), not 0 for the percent form.
+        string Doc(string dx) =>
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\" primitiveUnits=\"objectBoundingBox\"><feOffset dx=\"{dx}\" dy=\"0\"/></filter>" +
+            "<rect x=\"5\" y=\"15\" width=\"10\" height=\"10\" fill=\"blue\" filter=\"url(#f)\"/></svg>";
+        var frac = Render(Doc("0.5"), out var u1);
+        var pct = Render(Doc("50%"), out var u2);
+        Assert.False(u1);
+        Assert.False(u2);
+        // Both shift the rect right by 5px (x=5..15 → 10..20): the same pixels are painted.
+        for (var y = 15; y < 25; y++)
+            for (var x = 0; x < 40; x++)
+                Assert.Equal(Px(frac, x, y).A > 40, Px(pct, x, y).A > 40);
+        Assert.Equal(0, Px(pct, 6, 20).A);         // percent form actually shifted (not 0 → unshifted at x=6)
+        Assert.True(Px(pct, 18, 20).B > 150);      // shifted into x=10..20
+    }
 }

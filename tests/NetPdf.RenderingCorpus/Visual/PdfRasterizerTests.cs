@@ -17,18 +17,12 @@ public sealed class PdfRasterizerTests
     public void TryCreateDefault_returns_the_wired_pdfium_rasterizer()
     {
         var ok = PdfRasterizers.TryCreateDefault(out var rasterizer, out var reason);
-        // PDFium ships native assets for macOS/Linux/Windows, so the probe should succeed on our targets. If a
-        // platform ever lacks the native lib, the factory reports unavailable with a reason (the runner skips).
-        if (ok)
-        {
-            Assert.NotNull(rasterizer);
-            Assert.True(string.IsNullOrEmpty(reason));
-        }
-        else
-        {
-            Assert.Null(rasterizer);
-            Assert.Contains("PDFium", reason);
-        }
+        // PDFium ships native assets for macOS / Linux / Windows — ALL our test targets — so the probe MUST
+        // succeed. Asserting it (rather than tolerating unavailable) makes CI fail on a broken native-asset
+        // setup instead of silently going green with the visual backend effectively unwired.
+        Assert.True(ok, $"PDFium backend should be available on this platform but wasn't: {reason}");
+        Assert.NotNull(rasterizer);
+        Assert.True(string.IsNullOrEmpty(reason));
     }
 
     [Fact]

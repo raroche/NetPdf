@@ -30,8 +30,9 @@ public sealed class PdfRasterizationUnavailableException(string message) : Excep
 /// dependency that ships PDFium native assets for macOS/Linux/Windows) is now wired, so
 /// <see cref="TryCreateDefault"/> returns a working <see cref="PdfiumRasterizer"/> once a cheap native-load
 /// probe succeeds — the diff-runner then enforces the visual gate as soon as a committed reference exists. If
-/// PDFium fails to load on some platform, the probe reports unavailable and the runner skips (rather than
-/// crashing), so the harness stays green.</summary>
+/// PDFium fails to load, the probe reports unavailable; per <see cref="VisualGatePolicy"/> the runner then
+/// SKIPS while the gate is inert (no reference committed and not forced), but FAILS once a reference exists /
+/// the gate is required — so a broken native backend can't silently pass an active gate.</summary>
 public static class PdfRasterizers
 {
     // The native-load probe runs ONCE per test process (PDFium is not thread-safe and a probe render isn't
@@ -48,8 +49,10 @@ public static class PdfRasterizers
                 _ = rasterizer.RasterizeAllPages(probe, dpi: 24);
                 return (rasterizer, "");
             }
-            catch (System.Exception ex)
+            catch (System.Exception ex) when (ex is not System.OutOfMemoryException)
             {
+                // A DllNotFoundException / BadImageFormatException / PDFium error → "unavailable". A fatal
+                // process-level failure (OOM) is NOT swallowed — it rethrows so genuine failures surface.
                 return (null, $"PDFium backend unavailable ({ex.GetType().Name}: {ex.Message})");
             }
         });

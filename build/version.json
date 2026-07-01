@@ -1,8 +1,8 @@
 {
-  "version": "0.7.0-beta",
-  "phase": 3,
-  "phaseDescription": "Fragmentainer-aware layout + pagination",
+  "version": "0.9.0-rc1",
+  "phase": 4,
+  "phaseDescription": "Visual parity (gradients, shadows, filters, SVG)",
   "publicApiFrozen": true,
-  "lastUpdated": "2026-06-21",
+  "lastUpdated": "2026-07-01",
   "_note": "Informational only. The MSBuild source-of-truth is Directory.Build.props (VersionPrefix + VersionSuffix). When bumping versions, update BOTH files together, then create the git tag. ReleaseVersionParityTests guards that this file, Directory.Build.props, and the CHANGELOG's latest version heading agree. Phase 5 will introduce a small MSBuild task that reads this file directly."
 }

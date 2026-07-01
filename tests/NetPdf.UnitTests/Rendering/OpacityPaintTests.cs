@@ -35,7 +35,10 @@ public sealed class OpacityPaintTests
         var gsIdx = content.LastIndexOf(gsName, markIdx, System.StringComparison.Ordinal);
         Assert.True(gsIdx >= 0, $"expected '{gsName}' selected before '{marker}'");
         var between = content.Substring(gsIdx + gsName.Length, markIdx - (gsIdx + gsName.Length));
-        Assert.DoesNotContain("Q", between); // the alpha scope was NOT restored before the marked paint
+        // No `Q` graphics-state RESTORE between them. Match `Q` as a whitespace-delimited operator TOKEN so a
+        // literal 'Q' inside a PDF string/name can't false-positive (PR-257 Copilot).
+        var tokens = between.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        Assert.DoesNotContain("Q", tokens); // the alpha scope was NOT restored before the marked paint
     }
 
     [Fact]

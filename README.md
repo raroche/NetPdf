@@ -68,9 +68,9 @@ See [`docs/compatibility-matrix.md`](docs/compatibility-matrix.md) for the suppo
 See [`docs/diagnostics-codes.md`](docs/diagnostics-codes.md) for the stable diagnostic code registry.
 See [`docs/phases/`](docs/phases/) for per-phase execution guides — what to build, in what order, with exit criteria.
 
-## What's actually shipped at `0.7.0-beta`
+## What's actually shipped (current: `0.9.0-rc1`)
 
-These columns are the honest answer to "what does NetPdf do today?" Phase 5 wired the facade, so `HtmlPdf.Convert(html)` now runs the full HTML → CSS → layout → paginate → paint → PDF pipeline. The "Reachable through public `HtmlPdf` API now" column is ✅ for the Phase 1–3 feature set; the remaining ❌ are the Phase 4 visual-parity items (gradients, shadows, filters, full SVG).
+These columns are the honest answer to "what does NetPdf do today?" `HtmlPdf.Convert(html)` runs the full HTML → CSS → layout → paginate → paint → PDF pipeline. The Phase 1–3 feature set is live (public since `0.7.0-beta`), and **Phase 4 visual parity — gradients, shadows, filters, full SVG — is feature-complete and shipped at `0.9.0-rc1`** (tagged; the only remaining Phase-4 item is committing the CI visual-regression reference images). The remaining ❌ below is post-v1 tagged-PDF emission.
 
 | Capability | Implemented internally now | Reachable through public `HtmlPdf` API now | Wired in |
 |---|:---:|:---:|---|
@@ -91,11 +91,11 @@ These columns are the honest answer to "what does NetPdf do today?" Phase 5 wire
 | Performance baseline + +25%-tolerance regression gate | ✅ | n/a (gate, not API) | Phase 1 ships `scripts/benchmark-gate.sh` |
 | `HtmlPdf.Convert(html)` — public facade end-to-end | ✅ | ✅ | Phase 5 wired at `0.7.0-beta` |
 | Layout (block/inline/flex/grid/table/multicol/absolute) + fragmentainer-aware pagination | ✅ | ✅ | Phase 3 (`0.7.0-beta`) |
-| Visual-parity hardening (filters via Skia raster fallback, gradients, shadows, full SVG) | ❌ | ❌ | Phase 4 (`0.9.0-rc1`) |
+| Visual-parity hardening (filters via Skia raster fallback, gradients, shadows, transforms, borders/clip-path, opacity, full SVG parts 1–13) | ✅ | ✅ | Phase 4; public ✅ at `0.9.0-rc1` |
 
 ## v1 capability targets (when `1.0.0` ships)
 
-Below is the v1 contract — what `HtmlPdf.Convert(html)` supports. The Phase 1–3 rows are live at `0.7.0-beta`; the Phase 4 visual-parity rows (gradients, shadows, filters, SVG) land at `0.9.0-rc1` on the way to `1.0.0`.
+Below is the v1 contract — what `HtmlPdf.Convert(html)` supports. The Phase 1–3 rows are live since `0.7.0-beta`; the Phase 4 visual-parity rows (gradients, shadows, filters, SVG) are live since `0.9.0-rc1`, on the way to `1.0.0`.
 
 **Targeted for v1 support:**
 - Block & inline layout, lists, tables (with `<thead>`/`<tfoot>` repetition across pages)
@@ -128,8 +128,9 @@ Below is the v1 contract — what `HtmlPdf.Convert(html)` supports. The Phase 1�
 ## Running NetPdf on untrusted HTML
 
 > **See also:** the full threat model + class-by-class analysis + hardening roadmap in
-> [`docs/security/security-hardening-plan.md`](docs/security/security-hardening-plan.md), and how to report a
-> vulnerability in [`SECURITY.md`](SECURITY.md).
+> [`docs/security/security-hardening-plan.md`](https://github.com/raroche/NetPdf/blob/main/docs/security/security-hardening-plan.md),
+> and how to report a vulnerability in [`SECURITY.md`](https://github.com/raroche/NetPdf/blob/main/SECURITY.md).
+> (Absolute links so they resolve from the packaged NuGet README as well as on GitHub.)
 
 Library-level guards (Phases A–D security hardening) protect against the
 known HTML-to-PDF attack classes documented in the threat-model corpus
@@ -146,17 +147,21 @@ var options = new HtmlPdfOptions
 {
     SecurityPolicy = SecurityPolicy.UntrustedHtml, // Phase D D-2: no file/http/data, tight budgets
     ResourceLoader = null,                         // no ambient network/file fetch at all
-    Timeout = TimeSpan.FromSeconds(10),            // bound render time (also honors a CancellationToken)
+    Timeout = TimeSpan.FromSeconds(10),            // bound a pathological render
     Diagnostics = sink,
     // BaseUri: leave null — nothing to resolve relative refs against
 };
 var pdf = HtmlPdf.Convert(untrustedHtml, options);
+// For caller cancellation, use the async overload:
+//   await HtmlPdf.ConvertAsync(untrustedHtml, options, cancellationToken);
 ```
 
 `UntrustedHtml` disables every URL-fetching surface (file://, http(s),
 data:) + tightens per-render fetch budgets. Leaving `ResourceLoader`
 null means no loader is even available, and `Timeout` bounds a
-pathological render. Use `TrustedTemplate` only for HTML you authored;
+pathological render (the synchronous `Convert` takes no token —
+external cancellation is available on the `ConvertAsync` overloads).
+Use `TrustedTemplate` only for HTML you authored;
 the default `SafeDefault` is a middle-ground for desktop / batch use
 cases.
 
@@ -193,8 +198,12 @@ container / process boundary:
   + libwebp (CVE-2023-4863 class) + libjpeg-turbo + libpng. NetPdf's
   pre-decode validators (Phase C C-1, Phase D D-4) bound the attack
   surface but don't fix decoder bugs.
-- The `NetPdf.BannedAnalyzer` Roslyn analyzer enforces the dependency
-  allowlist at compile time. Do not disable it in your service build.
+- NetPdf keeps a deliberately small, vetted dependency set (a clean-room
+  policy documented in [`docs/legal/dependency-dossier.md`](https://github.com/raroche/NetPdf/blob/main/docs/legal/dependency-dossier.md));
+  adding a dependency requires a reviewed dossier entry. A compile-time
+  banned-API analyzer to *enforce* the allowlist automatically is planned
+  (security task **SEC-10**) but is not yet shipped — do not rely on it as
+  a build-time guard in your service today.
 
 ### 4. Resource allowlist
 

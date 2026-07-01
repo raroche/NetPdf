@@ -1,7 +1,8 @@
 # Security Policy
 
-NetPdf is a pure-C# HTML+CSS-to-PDF engine that renders **attacker-influenceable input** (HTML, CSS, SVG,
-images, fonts) server-side. Security is a first-class concern. This document covers how to report a
+NetPdf is a **browserless, non-subprocess** HTML+CSS-to-PDF engine — a managed C# layer over a small set of
+vetted native libraries (HarfBuzz shaping, Skia raster) — that renders **attacker-influenceable input** (HTML,
+CSS, SVG, images, fonts) server-side. Security is a first-class concern. This document covers how to report a
 vulnerability and what is in scope; the full threat model + hardening roadmap lives in
 [`docs/security/security-hardening-plan.md`](docs/security/security-hardening-plan.md), and operational
 guidance for running NetPdf on untrusted HTML is in the
@@ -9,8 +10,8 @@ guidance for running NetPdf on untrusted HTML is in the
 
 ## Supported versions
 
-NetPdf is **private and pre-1.0 through Phase 5**; there is no public NuGet release yet (the public flip +
-package ship at `1.0.0`). Until then, security fixes land on the latest development version only
+NetPdf is **private and pre-1.0**; there is no public NuGet release yet — the public repository and the NuGet
+package are both published at `1.0.0`. Until then, security fixes land on the latest development version only
 (`main` / the most recent `-rc`). A formal supported-version matrix begins at `1.0.0`.
 
 | Version | Supported |

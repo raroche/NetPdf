@@ -226,10 +226,15 @@ sub-track**.
 
 ### Track C — Process & documented residuals
 
-- [ ] **SEC-10 (G10, INFO) — Native-dependency CVE policy.** Document a version floor + a
-  monitoring/patch cadence for SkiaSharp / HarfBuzzSharp / PDFium(test-only) / AngleSharp in
-  `docs/legal/dependency-dossier.md` (link the libwebp CVE-2023-4863 / neodyme lessons); consider a CI
-  advisory-scan (`dotnet list package --vulnerable`). **Accept:** policy documented; CI check added.
+- [ ] **SEC-10 (G10, INFO) — Native-dependency CVE policy + banned-API enforcement.** Document a version floor
+  + a monitoring/patch cadence for SkiaSharp / HarfBuzzSharp / PDFium(test-only) / AngleSharp in
+  `docs/legal/dependency-dossier.md` (link the libwebp CVE-2023-4863 / neodyme lessons); add a CI
+  advisory-scan (`dotnet list package --vulnerable`). **Also:** `CLAUDE.md` (and, until PR #262, the README)
+  claim a `NetPdf.BannedAnalyzer` Roslyn analyzer enforces the dependency allowlist at compile time — **it does
+  not exist** (only `NetPdf.SourceGen` ships). Either build the banned-API analyzer (e.g.
+  `Microsoft.CodeAnalysis.BannedApiAnalyzers` + a `BannedSymbols.txt`) or correct the remaining doc claim in
+  `CLAUDE.md`. **Accept:** policy documented; CI check added; the allowlist is either machine-enforced or the
+  docs stop asserting it is.
 - [ ] **SEC-11 (G8, INFO) — Document accepted residuals + deployment hardening.** In this doc + a deployment
   guide, state the accepted residuals (symlink TOCTOU, `AllowedHosts` single-label wildcard scope) and **strongly recommend
   container isolation** (no egress, read-only FS, memory/CPU/pids limits, seccomp) for the untrusted-HTML API

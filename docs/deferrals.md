@@ -2845,7 +2845,9 @@ flags the categories):
      the decoration/image + the alpha folded into glyph fill). Its rendering effect now applies to the whole
      DESCENDANT SUBTREE [PR-255 review [P1]] — the product of ancestor opacities is threaded down the box tree so
      a faded parent fades a child's decoration / image / text even when the child declares no opacity (nested
-     opacity multiplies). RESIDUAL: it's a PER-OBJECT constant alpha multiplied down the tree, not an isolated
+     opacity multiplies). The CSS-wide keywords resolve locally [PR-256 review [P2]] — `inherit` → the parent's
+     computed opacity, `initial`/`unset`/`revert`/`revert-layer` → 1 (`ResolveOpacity`), until a central cascade
+     interceptor lands. RESIDUAL: it's a PER-OBJECT constant alpha multiplied down the tree, not an isolated
      transparency GROUP, so a self-overlapping element composites slightly differently than group opacity
      (`CSS-OPACITY-GROUP-APPROXIMATED-001`); the faithful group needs a transparency-group Form XObject —
      the IPaintTarget seam.

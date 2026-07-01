@@ -56,7 +56,7 @@ var pdf = HtmlPdf.Convert(untrustedHtml, new HtmlPdfOptions
 ```
 
 Even with all in-process guards, deployment #2 SHOULD additionally run in a **network-egress-restricted,
-filesystem-restricted, memory/CPU-capped container** (defense-in-depth; see task **C2**). The library cannot
+filesystem-restricted, memory/CPU-capped container** (defense-in-depth; see task **SEC-11**). The library cannot
 substitute for OS-level isolation against native-decoder 0-days (V5).
 
 ---
@@ -66,15 +66,16 @@ substitute for OS-level isolation against native-decoder 0-days (V5).
 NetPdf's architecture removes several whole bug classes that plague browser-backed converters. These are the
 project's biggest security wins and MUST be preserved:
 
-- **No JavaScript engine, no browser.** Pure C# layout/paint. → **eliminates V6 (V8 RCE), server-side XSS,
-  JS-driven SSRF, and JS infinite-loop DoS.** `<script>` is stripped at parse; `on*` handlers are inert.
+- **No JavaScript engine, no browser.** Pure C# layout/paint. → **eliminates V6 (browser JS-engine RCE, e.g. the V8 CVEs), server-side XSS,
+  JS-driven SSRF, and JS infinite-loop DoS.** `<script>` and `on*` event-handler attributes are both stripped
+  at parse (`HTML-SCRIPT-IGNORED-001` / `HTML-EVENT-HANDLER-IGNORED-001`), and no PDF reader would dispatch them anyway.
 - **No process spawning at render time** (a hard CLAUDE.md rule; verified — zero `Process.Start`). →
   **eliminates the Apryse-class argument-injection RCE (V6).**
-- **AOT-clean, no reflection / no `Activator` / no runtime deserialization.** → **eliminates the
+- **AOT-clean: no reflection-driven type activation / plugin loading / deserialization over untrusted input, no `Activator.CreateInstance`, no runtime deserialization.** (Fixed reflection over trusted, compile-time-known targets — reading the assembly's own `AssemblyInformationalVersion`, loading embedded hyphenation resources — is fine; the invariant is that *no attacker-controlled input selects a type, assembly, or serialized graph*.) → **eliminates the
   deserialization gadget class (V9).**
-- **We own the PDF byte writer** and validate the object graph before emit. → tight control over V8.
+- **We own the PDF byte writer** and validate the object graph before emit. → tight control over **V8 (malicious PDF output)**.
 - **Clean-room, minimal vetted dependency set** (AngleSharp, AngleSharp.Css, HarfBuzzSharp, SkiaSharp). →
-  smaller supply-chain surface, but see V5 / task **C1** (native deps are the residual RCE surface).
+  smaller supply-chain surface, but see V5 / task **SEC-10** (native deps are the residual RCE surface).
 
 ---
 
@@ -154,12 +155,12 @@ Nothing critical is *open* in the shipped surface — the strongest finding is t
 |---|---|---|---|
 | **G1** | **HIGH** | Phase-5 CSS/font resource loading (`@import`, `@font-face src:url()`, CSS `url()` props, `<link rel=stylesheet>`) is *extracted but not fetched* today. When wired, it MUST route through `SafeResourceLoader` with kind-specific MIME — otherwise it reintroduces V1/V2 wholesale. There is no *enforced invariant* preventing a future fetch from bypassing the choke point. | `CssImportRule`, `CssResourceExtractor`, `HtmlParsingHost` |
 | **G2** | MED | No DNS-resolution timeout — `Dns.GetHostAddressesAsync` can hang the render thread (a slow-resolver DoS, V7). | `SafeHttpResourceLoader.ResolveAndValidateAsync` |
-| **G3** | MED | No explicit **output-PDF size / page-count cap** — HTML can amplify into a huge PDF (many pages / huge image cascades). Bounded indirectly by per-render byte budget, not by a hard output cap. (V7) | pagination / writer |
-| **G4** | MED | WOFF/WOFF2 decompression is deferred; when added it MUST re-run sfnt validation on the *decompressed* bytes + enforce a decompression-ratio cap (font-bomb / V4/V7). | `FontFace`, `FontSafetyValidator` |
+| **G3** | MED | HTML can amplify into a huge PDF (many pages / huge image cascades). A hard `PdfRenderPipeline.MaxPages = 20_000` **emergency backstop** exists, but it is **not configurable / policy-driven**, is far too high for untrusted input, and there is **no output-byte budget**. (V7) | `PdfRenderPipeline`, writer |
+| **G4** | MED | WOFF/WOFF2 **decoder infrastructure exists**, but the `FontFace` / `@font-face` render path currently **rejects wrapped WOFF/WOFF2 before parsing** (safe). Wiring the existing decoder in MUST add a decompression-ratio + absolute-size cap and **re-run sfnt validation on the *decompressed* bytes** before HarfBuzz (font-bomb / V4/V7). | `FontFace`, WOFF decoder, `FontSafetyValidator` |
 | **G5** | MED | `data:` URI with a missing/empty mediatype passes the MIME gate (relies on downstream magic-byte). `data:text/html` is a known SSRF/polyglot sneak-path; disabled under `UntrustedHtml`, but `SafeDefault` accepts `data:`. (V1/V8) | `SafeResourceLoader` data: path |
 | **G6** | LOW | `MaxCharactersFromEntities = 1024` may false-reject valid SVG; parse failure is a silent `catch (Exception) { return null }` with no diagnostic (observability — can't tell an attack from a malformed doc). (V3) | `SvgRasterizer`, `SvgNativeEmitter` |
 | **G7** | LOW | CSS `repeat()` / counter / grid-track counts not *explicitly* capped (bounded only by calc-depth + layout recursion). Defense-in-depth for CSS-amplification DoS. (V7) | grid track sizing |
-| **G8** | LOW | Accepted residuals to *document*, not fix: symlink TOCTOU, `AllowedHosts` single-label wildcard, `on*` attributes left in the DOM. | various |
+| **G8** | LOW | Accepted residuals to *document*, not fix: symlink TOCTOU (OS-level), `AllowedHosts` single-label wildcard scope. | various |
 | **G9** | INFO | **No formal threat-model / SECURITY.md / secure-usage doc** existed before this file. Security decisions live in code comments only. Several audits flagged this as the top weakness. | docs |
 | **G10** | INFO | No documented **native-dependency CVE-monitoring / patch policy**. V5 (Skia/HarfBuzz/PDFium memory-safety) is the residual RCE surface and is mitigated primarily by staying patched. | process |
 
@@ -196,17 +197,22 @@ sub-track**.
 - [ ] **SEC-4 (G2, MED) — DNS-resolution timeout.** Bound `Dns.GetHostAddressesAsync` with an explicit
   timeout (≈5 s, or `min(ResourceTimeout, 5s)`), linked to the render token. **Accept:** a non-responding
   resolver fails fast with a typed diagnostic, not a hung thread; regression test with a stub resolver.
-- [ ] **SEC-5 (G3, MED) — Output-size & page-count caps.** Add configurable `MaxOutputBytes` and `MaxPages`
-  to `HtmlPdfOptions`/`SecurityPolicy` (sane defaults; tighter under `UntrustedHtml`); abort with a stable
-  diagnostic when exceeded. **Accept:** a page-amplification / huge-image HTML aborts within the cap; test.
+- [ ] **SEC-5 (G3, MED) — Configurable output-size & page-count caps.** Add a configurable `MaxOutputBytes`
+  (new — there is no output-byte budget today) and a configurable, much-tighter `MaxPages` to
+  `HtmlPdfOptions`/`SecurityPolicy` (sane defaults; tighter under `UntrustedHtml`), **layered above** the
+  existing `PdfRenderPipeline.MaxPages = 20_000` emergency backstop (keep that as the loop guard); abort with a
+  stable diagnostic when exceeded. **Accept:** a page-amplification / huge-image HTML aborts within the
+  *configured* cap well before the 20k backstop; the byte budget aborts an oversized output; tests.
 - [ ] **SEC-6 (G5, MED) — `data:` URI MIME hardening.** Require an explicit, allowlisted mediatype for `data:`
   (reject missing/empty and non-allowlisted, esp. `text/html`) under `SafeDefault`; keep `data:` fully off
   under `UntrustedHtml`. **Accept:** `data:text/html,…` and bare `data:,…` rejected everywhere they could reach
   a consumer; image `data:` still works; tests.
-- [ ] **SEC-7 (G4, MED) — WOFF/WOFF2 safe-decompression design.** When implementing WOFF/WOFF2, decompress
-  with a hard **decompression-ratio + absolute-size cap**, then re-run `FontSafetyValidator` on the
-  decompressed sfnt before HarfBuzz. Ship the guard + tests even ahead of full support (a font-bomb fixture must
-  be rejected). **Accept:** an over-ratio WOFF2 is rejected pre-HarfBuzz; decompressed sfnt re-validated.
+- [ ] **SEC-7 (G4, MED) — Safely wire the existing WOFF/WOFF2 decoder into the font path.** The decoder
+  infrastructure already exists but the render path rejects wrapped fonts before parsing. When enabling it,
+  decompress with a hard **decompression-ratio + absolute-size cap**, then re-run `FontSafetyValidator` on the
+  decompressed sfnt before HarfBuzz. Ship the guard + a font-bomb rejection test with the wiring. (Also fix the
+  stale `FontFaceData` XML doc that still lists WOFF as supported in v1.) **Accept:** an over-ratio WOFF2 is
+  rejected pre-HarfBuzz; decompressed sfnt re-validated; the doc reflects the real support state.
 - [ ] **SEC-8 (G6, LOW) — SVG parser observability + tuning.** Replace the silent `catch` with a stable
   diagnostic (distinguish "entity/size limit exceeded" from "malformed"); re-evaluate
   `MaxCharactersFromEntities` (raise to a documented value with a diagnostic when hit). **Accept:** a
@@ -222,7 +228,7 @@ sub-track**.
   `docs/legal/dependency-dossier.md` (link the libwebp CVE-2023-4863 / neodyme lessons); consider a CI
   advisory-scan (`dotnet list package --vulnerable`). **Accept:** policy documented; CI check added.
 - [ ] **SEC-11 (G8, INFO) — Document accepted residuals + deployment hardening.** In this doc + a deployment
-  guide, state the accepted residuals (symlink TOCTOU, wildcard scope, `on*` attrs) and **strongly recommend
+  guide, state the accepted residuals (symlink TOCTOU, `AllowedHosts` single-label wildcard scope) and **strongly recommend
   container isolation** (no egress, read-only FS, memory/CPU/pids limits, seccomp) for the untrusted-HTML API
   use case — the OS-level backstop against native-decoder 0-days (V5). **Accept:** deployment guide published.
 
@@ -240,7 +246,7 @@ sub-track**.
 | V6 JS / arg-injection RCE | **Eliminated by design** (no browser, no JS, no process spawn) | preserve the invariant |
 | V7 DoS | **Strong** (layered caps + timeout) | SEC-4, SEC-5, SEC-9 |
 | V8 Malicious PDF output | **Strong** (preflight denylist, link-URI allowlist, string escaping) | negative tests in SEC-2 |
-| V9 Deserialization/traversal | **Eliminated by design** (AOT, no reflection/deserialization) | preserve the invariant |
+| V9 Deserialization/traversal | **Eliminated by design** (no untrusted-input-driven type activation / deserialization; no `Activator`) | preserve the invariant |
 
 **Bottom line:** NetPdf is already substantially hardened and structurally immune to several whole classes.
 The plan closes the remaining ranked gaps and — most importantly — installs the **SSRF choke-point invariant

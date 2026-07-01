@@ -35,10 +35,11 @@ namespace NetPdf;
 ///   leading C0-control + space stripped, embedded tab/CR/LF/FF stripped, scheme matched
 ///   case-insensitively. Other URL-bearing attributes (<c>src</c>, <c>action</c>, etc.) are
 ///   not scanned because no Phase 1–4 emission consumer interprets them as actionable URLs.</description></item>
-///   <item><description><c>on*</c> event-handler attributes: left in place. They are inert
-///   without a JS engine, no PDF reader can dispatch them, and stripping them adds DOM churn
-///   for no security benefit. If a future phase emits tagged-PDF metadata that surfaces
-///   attribute values, this decision is revisited then.</description></item>
+///   <item><description><c>on*</c> event-handler attributes: <b>stripped</b> by
+///   <see cref="StripEventHandlerAttributes"/> (any element, ASCII case-insensitive <c>on</c> prefix),
+///   emitting <c>HTML-EVENT-HANDLER-IGNORED-001</c> and retaining the element + text. They are inert without a
+///   JS engine and no PDF reader dispatches them, but they are removed anyway so an inert-but-suspicious
+///   handler value can't leak into any future tagged-PDF metadata surface.</description></item>
 /// </list>
 /// <para>
 /// <b>Resource loading.</b> AngleSharp's loader is configured with

@@ -5,7 +5,9 @@ namespace NetPdf;
 
 /// <summary>
 /// Raw font-file bytes plus optional metadata. NetPdf parses the bytes to extract metrics,
-/// glyph outlines, and OpenType tables. Supported formats in v1: TTF, OTF, WOFF.
+/// glyph outlines, and OpenType tables. Accepted formats in v1: bare sfnt TTF / OTF. Wrapped WOFF / WOFF2 are
+/// currently REJECTED at load (<see cref="NetPdf.Text.Fonts.FontFace"/>) pending safe decompression wiring
+/// (decoder infrastructure exists under <c>NetPdf.Text.Fonts.Woff</c>; see security task SEC-7).
 /// </summary>
 public sealed class FontFaceData
 {

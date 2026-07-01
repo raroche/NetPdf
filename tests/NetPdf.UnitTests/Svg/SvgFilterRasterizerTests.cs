@@ -947,4 +947,58 @@ public sealed class SvgFilterRasterizerTests
         Assert.True(Px(info, 5, 5).B > 150);       // tile origin: blue
         Assert.True(Px(info, 35, 35).B > 150);     // far corner filled by tiling (transparent without feTile)
     }
+
+    [Fact]
+    public void Primitive_subregion_bounds_a_blur_input_so_outside_content_does_not_bleed_in()
+    {
+        // PR-251 review [P1] — the subregion restricts a sampling primitive's CALCULATION, not just its output.
+        // A blur with a subregion covering ONLY the left half must not sample the RED shape sitting just outside
+        // the subregion and bleed its halo across the boundary. (A pure output crop would let the red halo in.)
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"80\" height=\"80\">" +
+            "<feGaussianBlur stdDeviation=\"6\" x=\"0\" y=\"0\" width=\"35\" height=\"80\"/></filter>" +
+            "<g filter=\"url(#f)\">" +
+            "<rect x=\"5\" y=\"30\" width=\"20\" height=\"20\" fill=\"blue\"/>" +   // inside the subregion (x < 35)
+            "<rect x=\"36\" y=\"30\" width=\"20\" height=\"20\" fill=\"red\"/>" +   // just OUTSIDE the subregion
+            "</g></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 40).B > 80);      // the blurred blue rect (inside the subregion) is present
+        Assert.True(Px(info, 30, 40).R < 40);      // NO red bleed near the boundary (red was cropped from the input)
+        Assert.Equal(0, Px(info, 50, 40).A);       // outside the subregion entirely: nothing
+    }
+
+    [Fact]
+    public void Fe_image_scales_into_the_primitive_subregion_not_the_whole_region_then_cropped()
+    {
+        // PR-251 review [P1] — a data feImage with an explicit subregion (x/y/width/height) must be SCALED +
+        // ALIGNED into that subregion, not placed into the full filter region and then cropped. A WIDE 20×10
+        // image + xMidYMid meet into a 10×10 subregion → letterboxed to y∈[2.5,7.5] INSIDE the subregion (its
+        // center paints). Region-placement-then-crop would land the image at y≥10 → nothing in the subregion.
+        var png = "data:image/png;base64," + Convert.ToBase64String(SyntheticPng.BuildOpaqueRgb8(20, 10, 0x00, 0x00, 0xFF));
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feImage preserveAspectRatio=\"xMidYMid meet\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" href=\"{png}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 5, 5).B > 150);       // image center, scaled into the 10×10 subregion: blue
+        Assert.Equal(0, Px(info, 5, 1).A);         // letterbox within the subregion (above the fitted image)
+        Assert.Equal(0, Px(info, 20, 20).A);       // outside the subregion: transparent
+    }
+
+    [Fact]
+    public void Fe_tile_destination_is_its_own_subregion()
+    {
+        // PR-251 review [P2] — feTile with its OWN x/y/width/height tiles into THAT subregion (the destination),
+        // not the whole filter region. Content fills the feTile subregion and is transparent outside it.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\">" +
+            "<feFlood flood-color=\"blue\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" result=\"t\"/>" +
+            "<feTile in=\"t\" x=\"0\" y=\"0\" width=\"20\" height=\"20\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 15, 15).B > 150);     // inside the feTile subregion (0..20): tiled blue
+        Assert.Equal(0, Px(info, 30, 30).A);       // inside the filter region but OUTSIDE the feTile subregion
+    }
 }

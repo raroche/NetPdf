@@ -419,7 +419,8 @@ Finishes the #209/#210 residuals — five tasks, each gated so non-gradient / no
 - **`flex-basis: content` / `max-content` / `min-content`** (CSS Flexbox L1 §7.2 + §9.2.3) — intrinsic flex base sizing on the nowrap ROW main axis: the item is measured to its max-content (no wrap pressure) or min-content (maximal wrap pressure) inline extent, fed through the §9.7 flexibility resolution. The keyword (which AngleSharp.Css drops) is recovered through `CssPreprocessor`; the FlexLayouter emission and the BlockLayouter row-flex pre-measure build the base sizes via one shared helper so they stay in lockstep. WRAP rows + `fit-content` remain deferred.
 - The `flex` shorthand (§7.4) was already shipped (`FlexShorthandExpander`); a flex-item-level integration test now pins `flex: 1` → grow 1 / shrink 1 / basis 0 end-to-end.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...HEAD
+[0.9.0-rc1]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...0.9.0-rc1
 
 ## [0.7.0-beta] — staged for 2026-06-21 (tag pending PR merge)
 

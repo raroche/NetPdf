@@ -709,6 +709,99 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>Append a path construction (<c>m</c>/<c>l</c>/<c>c</c>/<c>h</c>) for <paramref name="segments"/>
+    /// to <paramref name="sb"/>; returns <see langword="true"/> if at least one <c>MoveTo</c> was emitted (an
+    /// empty / move-less path paints nothing). Shared by <see cref="FillPath"/>/<see cref="StrokePath"/>/the
+    /// clip path so the construction bytes are identical across them.</summary>
+    private bool AppendPathConstruction(StringBuilder sb, IReadOnlyList<PdfPathSegment> segments)
+    {
+        var any = false;
+        foreach (var s in segments)
+        {
+            switch (s.Verb)
+            {
+                case PdfPathVerb.MoveTo:
+                    AppendNumber(sb, s.X1); sb.Append(' '); AppendNumber(sb, s.Y1); sb.Append(" m "); any = true; break;
+                case PdfPathVerb.LineTo:
+                    AppendNumber(sb, s.X1); sb.Append(' '); AppendNumber(sb, s.Y1); sb.Append(" l "); break;
+                case PdfPathVerb.CurveTo:
+                    AppendNumber(sb, s.X1); sb.Append(' '); AppendNumber(sb, s.Y1); sb.Append(' ');
+                    AppendNumber(sb, s.X2); sb.Append(' '); AppendNumber(sb, s.Y2); sb.Append(' ');
+                    AppendNumber(sb, s.X3); sb.Append(' '); AppendNumber(sb, s.Y3); sb.Append(" c "); break;
+                case PdfPathVerb.Close:
+                    sb.Append("h "); break;
+            }
+        }
+        return any;
+    }
+
+    /// <summary>Phase 4 native SVG — FILL an arbitrary path (<paramref name="segments"/>, PDF points,
+    /// bottom-left origin) with a solid RGB colour (ISO 32000-2 §8.5.3): <c>q [/GSca gs] r g b rg …path… f|f* Q</c>.
+    /// <paramref name="evenOdd"/> selects the even-odd fill rule (<c>f*</c>) over the nonzero winding default
+    /// (<c>f</c>). A sub-1 <paramref name="alpha"/> selects the per-page fill constant-alpha ExtGState (<c>/ca</c>).
+    /// An empty / move-less path or a fully transparent alpha paints nothing. Callers do NOT balance — the method
+    /// is self-contained (its own <c>q … Q</c>).</summary>
+    public void FillPath(
+        IReadOnlyList<PdfPathSegment> segments,
+        double r, double g, double b, double alpha = 1.0, bool evenOdd = false)
+    {
+        ThrowIfFinalized();
+        ArgumentNullException.ThrowIfNull(segments);
+        if (!double.IsFinite(alpha)) throw new ArgumentException($"FillPath alpha must be finite; got {alpha}.");
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        if (alpha == 0.0 || segments.Count == 0) return;
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        var sb = new StringBuilder(32 + segments.Count * 24);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        AppendNumber(sb, r); sb.Append(' '); AppendNumber(sb, g); sb.Append(' '); AppendNumber(sb, b); sb.Append(" rg ");
+        if (!AppendPathConstruction(sb, segments)) return; // nothing to fill (no move) → skip the whole op
+        sb.Append(evenOdd ? "f* Q\n" : "f Q\n");
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Phase 4 native SVG — STROKE an arbitrary path (<paramref name="segments"/>, PDF points,
+    /// bottom-left origin) with line-width <paramref name="width"/>, a solid RGB colour, and optional
+    /// alpha/dash/cap/join/miter (ISO 32000-2 §8.5.3): <c>q [/GSCA gs] w w [J] [j] [M] [dash] R G B RG …path… S Q</c>.
+    /// A sub-1 <paramref name="alpha"/> selects the per-page STROKE constant-alpha ExtGState (<c>/CA</c>, not the
+    /// fill <c>/ca</c>). A non-positive width or empty/move-less path paints nothing. Self-contained (own
+    /// <c>q … Q</c>).</summary>
+    public void StrokePath(
+        IReadOnlyList<PdfPathSegment> segments, double width,
+        double r, double g, double b, double alpha = 1.0,
+        double[]? dash = null, double dashPhase = 0.0, int lineCap = 0, int lineJoin = 0, double miterLimit = 10.0)
+    {
+        ThrowIfFinalized();
+        ArgumentNullException.ThrowIfNull(segments);
+        if (!double.IsFinite(width) || !double.IsFinite(alpha) || !double.IsFinite(dashPhase) || !double.IsFinite(miterLimit))
+            throw new ArgumentException($"StrokePath args must be finite; got w={width} alpha={alpha} phase={dashPhase} miter={miterLimit}.");
+        if (!(width > 0) || segments.Count == 0) return;
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
+        if (alpha == 0.0) return;
+        r = Math.Clamp(r, 0.0, 1.0); g = Math.Clamp(g, 0.0, 1.0); b = Math.Clamp(b, 0.0, 1.0);
+        var sb = new StringBuilder(64 + segments.Count * 24);
+        sb.Append("q ");
+        if (alpha < 1.0) sb.Append('/').Append(GetOrAddConstantAlpha(alpha, stroke: true).Value).Append(" gs ");
+        AppendNumber(sb, width); sb.Append(" w ");
+        if (lineCap is 1 or 2) { sb.Append(lineCap); sb.Append(" J "); }
+        if (lineJoin is 1 or 2) { sb.Append(lineJoin); sb.Append(" j "); }
+        if (lineJoin == 0 && miterLimit is > 0 and not 10.0) { AppendNumber(sb, miterLimit); sb.Append(" M "); }
+        if (dash is { Length: > 0 })
+        {
+            sb.Append('[');
+            for (var i = 0; i < dash.Length; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                AppendNumber(sb, Math.Max(0, dash[i]));
+            }
+            sb.Append("] "); AppendNumber(sb, dashPhase); sb.Append(" d ");
+        }
+        AppendNumber(sb, r); sb.Append(' '); AppendNumber(sb, g); sb.Append(' '); AppendNumber(sb, b); sb.Append(" RG ");
+        if (!AppendPathConstruction(sb, segments)) return;
+        sb.Append("S Q\n");
+        AppendContent(sb.ToString());
+    }
+
     /// <summary>Phase 4 clip-path (PR 3) — push the graphics state and intersect the clip with an
     /// ELLIPSE centered (<paramref name="cx"/>, <paramref name="cy"/>) with radii
     /// (<paramref name="rx"/>, <paramref name="ry"/>) via four cubic-Bézier quadrants (k ≈ 0.5523) —
@@ -793,6 +886,35 @@ internal sealed class PdfPage
             _extGStateResource.Set(name, new PdfDictionary()
                 .Set(PdfNames.Type, PdfNames.ExtGState)
                 .Set(PdfNames.BM, new PdfName(blendMode)));
+        }
+        AppendContent("q /" + name.Value + " gs\n");
+    }
+
+    /// <summary>Phase 4 <c>opacity</c> — push the graphics state and select a constant alpha that applies to
+    /// BOTH fill and stroke painting (<c>q /GSop&lt;alpha&gt; gs</c>: one ExtGState carrying <c>/ca</c> AND
+    /// <c>/CA</c>, ISO 32000-2 §11.6.4.4). Subsequent painting composites at <paramref name="alpha"/> against
+    /// the backdrop. The ExtGState is deduped by the alpha value; callers MUST balance with
+    /// <see cref="RestoreGraphicsState"/>. NOTE: constant alpha applies per painting operation, not to the
+    /// element's rendering as an isolated GROUP — so self-overlapping content within one element double-composites
+    /// (CSS <c>opacity</c> would composite the group once). A faithful group result needs a transparency-group
+    /// Form XObject; this first cut is exact for non-self-overlapping elements (the common case) and the caller
+    /// emits a diagnostic for the group-isolation gap.</summary>
+    public void BeginConstantAlpha(double alpha)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(alpha) || alpha < 0 || alpha > 1)
+            throw new ArgumentOutOfRangeException(nameof(alpha), alpha, "Constant alpha must be in [0, 1].");
+        // Deduped by the EXACT serialized value (same canonical format PdfReal emits), like
+        // GetOrAddConstantAlpha — but a SINGLE ExtGState sets both /ca (fill) and /CA (stroke) so wrapping an
+        // element covers its background/text fills AND its stroked borders in one graphics-state push.
+        var canonical = alpha.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var name = new PdfName("GSop" + canonical.Replace('.', '_'));
+        if (!_extGStateResource.ContainsKey(name))
+        {
+            _extGStateResource.Set(name, new PdfDictionary()
+                .Set(PdfNames.Type, PdfNames.ExtGState)
+                .Set(PdfNames.ca, new PdfReal(alpha))
+                .Set(PdfNames.CA, new PdfReal(alpha)));
         }
         AppendContent("q /" + name.Value + " gs\n");
     }

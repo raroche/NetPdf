@@ -830,7 +830,7 @@ internal static class SvgRasterizer
         return double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
     }
 
-    private static double ParseLengthPx(string? raw, double fallback) =>
+    internal static double ParseLengthPx(string? raw, double fallback) =>
         double.TryParse(TrimUnit(raw), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : fallback;
 
     internal static string? TrimUnit(string? s)

@@ -2827,14 +2827,23 @@ flags the categories):
      horizontal scale about the start x). **SVG residuals (later):** `feTurbulence` exact noise sums; an external
      `feImage` href + lighting `kernelUnitLength`; the exact color space (`color-interpolation-filters` linearRGB
      vs the sRGB approximation); bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); pattern tile resolution under
-     heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),
-     inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
+     heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (a first cut SHIPPED —
+     opt-in `HtmlPdfOptions.NativeSvgRendering` draws a supported document [basic shapes + `<path>` + `<g>` +
+     `transform`s + solid fill/stroke + `fill-rule` + root `viewBox`/`preserveAspectRatio`] as native PDF path
+     ops via `SvgNativeEmitter`, all-or-nothing falling back to raster for gradients/text/`<use>`/filters/masks;
+     RESIDUAL = extend the native subset to those + object-fit:fill stretching [it uses the SVG's own
+     preserveAspectRatio meet]), inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't
      depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow
      expands the raster bounds); (4) filters on BACKGROUND images (the tiler path) aren't filtered;
-     (5) `filter: opacity()` → native PDF `/ca` ExtGState + native `opacity` + `mix-blend-mode` (a
-     compositing PR); (6) `url()` SVG-filter references.
+     (5) `filter: opacity()` → native PDF `/ca` ExtGState (native element `opacity` + `mix-blend-mode` SHIPPED;
+     `filter: opacity()` as a filter-function still routes through the raster path); (6) `url()` SVG-filter
+     references. **Native element `opacity` SHIPPED** (`PdfPage.BeginConstantAlpha` — a `/ca`+`/CA` ExtGState on
+     the decoration/image + the alpha folded into glyph fill). RESIDUAL: it's a PER-OBJECT constant alpha, not an
+     isolated transparency GROUP, so a self-overlapping element composites slightly differently than group
+     opacity (`CSS-OPACITY-GROUP-APPROXIMATED-001`); the faithful group needs a transparency-group Form XObject —
+     the IPaintTarget seam.
      **Phase 4 PR 3 (borders + clip-path) shipped — 4 of 5 tasks:** faithful `dashed`/`dotted` borders
      (a new `PdfPage.StrokeLine` dash-stroke primitive), `double` + the 3D `groove`/`ridge`/`inset`/
      `outset` styles (dark ×0.5 + light shades), and `clip-path` basic shapes (`inset`/`circle`/

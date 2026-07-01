@@ -815,6 +815,12 @@ internal static class CssPreprocessor
                   // stops, §3.4.2) or a DOUBLE-POSITION stop (`<color> <pos> <pos>`, §3.4); recover the
                   // raw value so the painter's parser sees them (last-wins; benign if AngleSharp kept a copy).
                   || (lowerName == "background-image" && ContainsDroppedStopSyntax(rawValue))
+                  // Phase 4 opacity — AngleSharp.Css 1.0.0-beta.144 accepts `opacity: <number>` but DROPS the
+                  // `opacity: <percentage>` form (CSS Color L4 §12.1; its grammar predates the % form), so
+                  // `opacity: 50%` never reaches the cascade even though the painter maps it. Recover ONLY the
+                  // % form verbatim (the number form AngleSharp keeps isn't duplicate-recovered) — same
+                  // value-gated precedent as the intrinsic `flex-basis` / recto-verso `break-*` keywords.
+                  || (lowerName == "opacity" && IsPercentageValue(rawValue))
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
@@ -1513,6 +1519,16 @@ internal static class CssPreprocessor
         return v.Equals("content", StringComparison.OrdinalIgnoreCase)
             || v.Equals("max-content", StringComparison.OrdinalIgnoreCase)
             || v.Equals("min-content", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Phase 4 opacity — <see langword="true"/> when <paramref name="rawValue"/> is a
+    /// <c>&lt;percentage&gt;</c> (ends with <c>%</c>). AngleSharp.Css 1.0.0-beta.144 drops
+    /// <c>opacity: &lt;percentage&gt;</c> (CSS Color L4 §12.1) but keeps the <c>&lt;number&gt;</c> form, so
+    /// only the % form is recovered — the number form reaches the cascade unaided (no duplicate recovery).</summary>
+    private static bool IsPercentageValue(string rawValue)
+    {
+        var (clean, _) = ImportantParser.Strip(rawValue);
+        return clean.Trim().EndsWith('%');
     }
 
     /// <summary>fragmentation-control-residuals — <see langword="true"/> for the three

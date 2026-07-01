@@ -459,7 +459,7 @@ internal static class PdfRenderPipeline
         // Finish() appends AFTER it, preserving the "text over backgrounds" layering.
         var textSession = new TextPainter.TextPaintSession(
             shaper, mediaBox.HeightPts, margins.LeftPx, margins.TopPx, diagnostics,
-            imageCache.TextShadowBoxes);
+            imageCache.TextShadowBoxes, imageCache.OpacityBoxes);
         // Phase 4 outlines (PR 4): <h1>–<h6> → the document outline. Collected in page order (= document
         // order) so the level-nesting builds the right tree; the seen-set dedups a split heading.
         var seenHeadings = new System.Collections.Generic.HashSet<AngleSharp.Dom.IElement>();
@@ -512,7 +512,8 @@ internal static class PdfRenderPipeline
             // decoded XObject at its content box — over every band/border, under the glyphs.
             ImagePainter.PaintImages(
                 bodyFragments, page, document, imageCache, ppMediaBox.HeightPts,
-                ppMargins.LeftPx, ppMargins.TopPx, diagnostics, effectiveTransforms);
+                ppMargins.LeftPx, ppMargins.TopPx, diagnostics, effectiveTransforms,
+                options.NativeSvgRendering);
 
             // Hyperlinks (Phase 4 PR 4): <a href> elements → PDF /Link annotations over their fragments.
             // The href scheme is allowlisted (http/https/mailto) before emitting (PR-229 review [P1]).

@@ -38,7 +38,10 @@ internal static class ImagePainter
         IDiagnosticsSink? diagnostics = null,
         // Phase 4 transforms (review [P1]): box → effective cm. A transformed <img> wraps its
         // image XObject placement in the matrix (not just decoration). Null = nothing transformed.
-        IReadOnlyDictionary<Box, (double A, double B, double C, double D, double E, double F)>? effectiveTransforms = null)
+        IReadOnlyDictionary<Box, (double A, double B, double C, double D, double E, double F)>? effectiveTransforms = null,
+        // Phase 4 native SVG (opt-in): draw a supported SVG <img> as crisp native PDF path ops instead of the
+        // rasterized XObject. Falls back to raster for anything outside the emitter's supported subset.
+        bool nativeSvg = false)
     {
         if (cache.ImageBoxes.Count == 0) return;
         var unknownPositionReported = false;   // object-position cycle — once per render.
@@ -107,8 +110,16 @@ internal static class ImagePainter
                 objTopPx = topPx + (heightPx - objHPx) / 2.0;
             }
 
-            var (imageRef, filterPad) = ResolveImageRef(document, style, spec, entry, cache, diagnostics,
-                ref filterRasterReported, ref maskRasterReported);
+            // Native vector SVG is eligible only for an SVG source with NO CSS filter/mask on the <img> (the
+            // emitter draws geometry, not those effects). When eligible, defer resolving (registering) the
+            // raster XObject — if native emission succeeds the raster is never built into the PDF.
+            var goNative = nativeSvg && entry.SvgSourceBytes is not null
+                && spec.Filter is null && spec.MaskUriKey is null;
+            PdfIndirectRef? imageRef = null;
+            NetPdf.Pdf.Images.FilterPadding filterPad = default;
+            if (!goNative)
+                (imageRef, filterPad) = ResolveImageRef(document, style, spec, entry, cache, diagnostics,
+                    ref filterRasterReported, ref maskRasterReported);
             // A drop-shadow filter pads the raster outward (the shadow extends past the image box);
             // the image CONTENT still maps to the object box, so expand the placement by the padding
             // fractions of the content size. Zero for colour / blur filters (byte-identical).
@@ -118,6 +129,10 @@ internal static class ImagePainter
             var placeHPx = objHPx * (1 + filterPad.TopFrac + filterPad.BottomFrac);
             // transform (Phase 4, review [P1]) — a transformed <img> wraps its XObject placement
             // (and the overflow clip) in the box's effective cm, so the image moves with the box.
+            // opacity (Phase 4) — fade the whole <img> (the box decoration faded in FragmentPainter with the
+            // same alpha). Outermost, so the image + its clip composite at the box opacity. 1.0 → no wrap.
+            var faded = cache.OpacityBoxes.TryGetValue(fragment.Box, out var imgOpacity) && imgOpacity < 1.0;
+            if (faded) page.BeginConstantAlpha(imgOpacity);
             (double A, double B, double C, double D, double E, double F) effCm = default;
             var transformed = effectiveTransforms is not null
                 && effectiveTransforms.TryGetValue(fragment.Box, out effCm);
@@ -148,10 +163,22 @@ internal static class ImagePainter
             FragmentPainter.ToPdfRect(
                 placeLeftPx, placeTopPx, placeWPx, placeHPx, pageHeightPt,
                 out var x, out var y, out var w, out var h);
-            page.PlaceImage(imageRef, x, y, w, h);
+            // Native vector SVG (opt-in) — draw the SVG as crisp native path ops into the SAME rect the raster
+            // XObject would occupy (inside the transform/clip/opacity wraps). Only when the whole document is
+            // supported; otherwise TryEmit leaves the page untouched and we place the rasterized XObject.
+            var emittedNative = goNative
+                && NetPdf.Svg.SvgNativeEmitter.TryEmit(entry.SvgSourceBytes!, page, x, y, w, h, out _);
+            if (!emittedNative)
+            {
+                if (goNative) // native bailed → resolve the raster XObject now (no filter → padding irrelevant)
+                    (imageRef, _) = ResolveImageRef(document, style, spec, entry, cache, diagnostics,
+                        ref filterRasterReported, ref maskRasterReported);
+                page.PlaceImage(imageRef!, x, y, w, h);
+            }
             if (clips) page.RestoreGraphicsState();
             if (clipPathClipped) page.RestoreGraphicsState(); // balance BeginClipPath's q
             if (transformed) page.RestoreGraphicsState();
+            if (faded) page.RestoreGraphicsState(); // balance BeginConstantAlpha's q
         }
     }
 

@@ -51,6 +51,17 @@ public sealed class HtmlPdfOptions
     /// </summary>
     public bool ExactColors { get; init; } = true;
 
+    /// <summary>
+    /// Phase 4 native vector SVG (opt-in, first cut). When <c>true</c>, an <c>&lt;img&gt;</c> whose source is
+    /// SVG is drawn as native PDF vector operators (crisp at any zoom) IF the whole document is within the
+    /// supported subset (basic shapes + <c>&lt;path&gt;</c>, <c>&lt;g&gt;</c>, element <c>transform</c>s, solid
+    /// fill/stroke, <c>fill-rule</c>, root <c>viewBox</c>/<c>preserveAspectRatio</c>); otherwise it falls back
+    /// to the raster path. Default <c>false</c> → SVG always rasterizes, so output is byte-identical to before.
+    /// The native path uses the SVG's own <c>preserveAspectRatio</c> (meet), so it doesn't apply
+    /// <c>object-fit: fill</c> stretching.
+    /// </summary>
+    public bool NativeSvgRendering { get; init; }
+
     /// <summary>Resolves images / fonts / stylesheets referenced via URL.</summary>
     public IResourceLoader? ResourceLoader { get; init; }
 

@@ -107,11 +107,11 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Theory]
-    // An external feImage href and a lighting primitive under primitiveUnits (positions not remapped) still
-    // aren't modeled → flagged. (Filter region — part 9; in/result routing — part 7; primitive SUBREGIONS —
-    // part 11; primitiveUnits non-subregion remap + FillPaint/BackgroundImage inputs — part 12; are supported.)
+    // An external feImage href and a lighting kernelUnitLength still aren't modeled → flagged. (Filter region —
+    // part 9; in/result routing + FillPaint/pattern paint servers — part 7/12/13; primitive SUBREGIONS — part
+    // 11; primitiveUnits non-subregion remap incl. lighting positions + currentColor — part 12/13; supported.)
     [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // external, non-data/non-#id href
-    [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feDiffuseLighting><feDistantLight azimuth=\"0\" elevation=\"90\"/></feDiffuseLighting></filter>")] // lighting position not remapped
+    [InlineData("<filter id=\"f\"><feDiffuseLighting kernelUnitLength=\"2\"><feDistantLight azimuth=\"0\" elevation=\"90\"/></feDiffuseLighting></filter>")] // kernelUnitLength not modeled
     public void Filter_region_or_unsupported_input_is_flagged(string filter)
     {
         var info = SvgRasterizer.TryRender(Svg(
@@ -1118,5 +1118,142 @@ public sealed class SvgFilterRasterizerTests
                 Assert.Equal(Px(frac, x, y).A > 40, Px(pct, x, y).A > 40);
         Assert.Equal(0, Px(pct, 6, 20).A);         // percent form actually shifted (not 0 → unshifted at x=6)
         Assert.True(Px(pct, 18, 20).B > 150);      // shifted into x=10..20
+    }
+
+    [Fact]
+    public void Fill_paint_input_renders_a_gradient_paint_server()
+    {
+        // FillPaint = the element's fill as an infinite plane — a GRADIENT fill now renders (not flagged). A
+        // red→blue horizontal gradient over the bbox fills the region: left red, right blue.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\"><stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feMerge><feMergeNode in=\"FillPaint\"/></feMerge></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"url(#g)\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // gradient FillPaint no longer flagged
+        Assert.True(Px(info, 4, 20).R > Px(info, 4, 20).B);    // left: red-dominant
+        Assert.True(Px(info, 36, 20).B > Px(info, 36, 20).R);  // right: blue-dominant
+    }
+
+    [Fact]
+    public void Fill_paint_input_renders_a_pattern_paint_server()
+    {
+        // A PATTERN FillPaint also renders (not flagged): a 10×10 tile with a blue left-half fills the plane.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<pattern id=\"p\" width=\"10\" height=\"10\" patternUnits=\"userSpaceOnUse\"><rect x=\"0\" y=\"0\" width=\"5\" height=\"10\" fill=\"blue\"/></pattern>" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feMerge><feMergeNode in=\"FillPaint\"/></feMerge></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"url(#p)\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // pattern FillPaint no longer flagged
+        Assert.True(Px(info, 2, 20).B > 150);      // the blue half of a tile
+        Assert.Equal(0, Px(info, 7, 20).A);        // the transparent half of a tile
+    }
+
+    [Fact]
+    public void Lighting_position_under_object_bounding_box_units_renders_not_flagged()
+    {
+        // PR-13 — a fePointLight position under primitiveUnits=objectBoundingBox is remapped into the bbox
+        // coordinate system, so lighting is now SUPPORTED (previously flagged).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feDiffuseLighting surfaceScale=\"2\" diffuseConstant=\"1\" lighting-color=\"white\">" +
+            "<fePointLight x=\"0.5\" y=\"0.5\" z=\"0.5\"/></feDiffuseLighting></filter>" +
+            "<rect x=\"15\" y=\"15\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // lighting position remapped → not flagged
+        Assert.True(Px(info, 30, 30).A > 80);      // the lit surface renders
+    }
+
+    [Fact]
+    public void Flood_color_current_color_resolves_to_the_primitive_color()
+    {
+        // flood-color="currentColor" resolves to the PRIMITIVE's own `color` (blue on the feFlood), NOT the
+        // filtered rect's color (red) — color is a presentation attribute on the primitive (Filter Effects).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feFlood color=\"blue\" flood-color=\"currentColor\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"none\" color=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 20).B > 150);     // currentColor → the primitive's blue, not the rect's red
+        Assert.True(Px(info, 20, 20).R < 80);      // not black, not red
+    }
+
+    [Fact]
+    public void Flood_color_current_color_inherits_color_from_the_filter_ancestor()
+    {
+        // currentColor walks the PRIMITIVE's own ancestor chain — a `color` on the <filter> is inherited by its
+        // feFlood child (still independent of the filtered rect's red color).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" color=\"blue\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feFlood flood-color=\"currentColor\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"none\" color=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 20).B > 150);     // inherited from the filter's color=blue
+    }
+
+    [Fact]
+    public void Flood_color_current_color_reads_an_inline_style_color()
+    {
+        // The primitive's color can come from an inline style="color:…" (presentation, §6.4).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feFlood style=\"color:blue\" flood-color=\"currentColor\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"none\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 20).B > 150);     // style color → blue
+    }
+
+    [Fact]
+    public void Lighting_color_current_color_resolves_to_the_primitive_color()
+    {
+        // lighting-color="currentColor" tints the lit surface with the primitive's own color (green here).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\"><feDiffuseLighting color=\"lime\" surfaceScale=\"1\" diffuseConstant=\"1\" lighting-color=\"currentColor\">" +
+            "<feDistantLight azimuth=\"0\" elevation=\"90\"/></feDiffuseLighting></filter>" +
+            "<rect x=\"15\" y=\"15\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        var p = Px(info, 30, 30);
+        Assert.True(p.G > 120 && p.R < 90 && p.B < 90); // lit green (the primitive's currentColor)
+    }
+
+    [Fact]
+    public void Stroke_paint_input_renders_a_gradient_paint_server()
+    {
+        // StrokePaint (like FillPaint) renders the element's stroke paint server — a red→blue gradient stroke.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\"><stop offset=\"0\" stop-color=\"red\"/><stop offset=\"1\" stop-color=\"blue\"/></linearGradient>" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feMerge><feMergeNode in=\"StrokePaint\"/></feMerge></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"black\" stroke=\"url(#g)\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // gradient StrokePaint no longer flagged
+        Assert.True(Px(info, 4, 20).R > Px(info, 4, 20).B);    // left: red-dominant
+        Assert.True(Px(info, 36, 20).B > Px(info, 36, 20).R);  // right: blue-dominant
+    }
+
+    [Fact]
+    public void Stroke_paint_input_renders_a_pattern_paint_server()
+    {
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<pattern id=\"p\" width=\"10\" height=\"10\" patternUnits=\"userSpaceOnUse\"><rect x=\"0\" y=\"0\" width=\"5\" height=\"10\" fill=\"blue\"/></pattern>" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feMerge><feMergeNode in=\"StrokePaint\"/></feMerge></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"black\" stroke=\"url(#p)\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // pattern StrokePaint no longer flagged
+        Assert.True(Px(info, 2, 20).B > 150);      // the blue half of a tile
+        Assert.Equal(0, Px(info, 7, 20).A);        // the transparent half of a tile
+    }
+
+    [Fact]
+    public void Spot_light_position_under_object_bounding_box_units_renders_not_flagged()
+    {
+        // A feSpotLight position + pointsAt under primitiveUnits=objectBoundingBox is remapped into the bbox
+        // coord system → supported (not flagged).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feDiffuseLighting surfaceScale=\"2\" diffuseConstant=\"1\" lighting-color=\"white\">" +
+            "<feSpotLight x=\"0.5\" y=\"0.5\" z=\"0.8\" pointsAtX=\"0.5\" pointsAtY=\"0.5\" pointsAtZ=\"0\"/></feDiffuseLighting></filter>" +
+            "<rect x=\"15\" y=\"15\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // spot-light position remapped → not flagged
+        Assert.True(Px(info, 30, 30).A > 60);      // the lit surface renders
     }
 }

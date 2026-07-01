@@ -14,9 +14,9 @@ namespace NetPdf.Svg;
 /// runs) onto the raster canvas using Skia's text shaping. Honors <c>x</c>/<c>y</c>, per-run
 /// <c>dx</c>/<c>dy</c> and absolute <c>x</c>/<c>y</c>, <c>text-anchor</c> (start/middle/end), the inherited
 /// font properties (family / size / weight / style), and fill / stroke incl. a gradient paint server.
-/// Also supports <c>textPath</c>, per-glyph <c>rotate</c>, and <c>textLength</c> / <c>lengthAdjust</c>
-/// (<c>spacing</c> + <c>spacingAndGlyphs</c>) on a single text chunk. Out of scope (raster fallback):
-/// <c>textLength</c> across multiple chunks (flagged), bidi/complex-script reordering.</summary>
+/// Also supports <c>textPath</c>, per-glyph <c>rotate</c> (a global cross-tspan index), and <c>textLength</c> /
+/// <c>lengthAdjust</c> (<c>spacing</c> + <c>spacingAndGlyphs</c> on a single chunk; a whole-text horizontal
+/// scale across multiple chunks). Out of scope (raster fallback): bidi/complex-script reordering.</summary>
 internal static class SvgText
 {
     private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy, float[]? Rotate, int RotateStart);
@@ -39,9 +39,26 @@ internal static class SvgText
         var startX = HasLen(text, "x", state, style, LenAxis.X, out var sx) ? sx : 0f;
         var startY = HasLen(text, "y", state, style, LenAxis.Y, out var sy) ? sy : 0f;
 
-        // textLength / lengthAdjust (§10.5) fits the text to a target advance — handled on a single chunk; the
+        // textLength / lengthAdjust (§10.5) fits the text to a target advance — SINGLE chunk handled here; the
         // default no-textLength path below is unchanged (byte-identical).
         if (TryDrawTextLength(canvas, text, runs, startX, startY, style, state)) return;
+
+        // textLength across MULTIPLE chunks (an absolute-x tspan) is fitted by a whole-text horizontal scale
+        // (spacingAndGlyphs semantics — a per-chunk spacing distribution is ambiguous). The scale is about the
+        // text's LEFTMOST rendered edge, so an anchored (middle/end) or left-of-x chunk stays inside the span.
+        var textLenSave = -1;
+        if (HasLen(text, "textLength", state, style, LenAxis.X, out var mcTarget) && mcTarget > 0)
+        {
+            var (extentLeft, extentWidth) = MeasureTextExtent(runs, startX);
+            if (extentWidth > 0)
+            {
+                var scale = mcTarget / extentWidth;
+                textLenSave = canvas.Save();
+                canvas.Translate(extentLeft, 0f);
+                canvas.Scale(scale, 1f);
+                canvas.Translate(-extentLeft, 0f);
+            }
+        }
 
         // A run with an absolute x establishes a new "text chunk" (SVG §10.5); text-anchor is resolved
         // independently PER chunk (PR-231 review [P2/P3]) — so multiple centered <tspan x=…> labels inside
@@ -83,20 +100,51 @@ internal static class SvgText
             }
             i = j;
         }
+        if (textLenSave >= 0) canvas.RestoreToCount(textLenSave); // pop the multi-chunk textLength scale
+    }
+
+    /// <summary>The natural horizontal extent of the whole text (all chunks): the LEFTMOST rendered edge and the
+    /// total width to the rightmost edge — the origin + denominator for a multi-chunk <c>textLength</c> scale.
+    /// Tracks BOTH edges so an anchored (middle/end) chunk or a <c>&lt;tspan x&gt;</c> left of the root x is
+    /// accounted for. Mirrors the chunk positioning of the main draw loop (absolute-x chunks + per-chunk
+    /// text-anchor).</summary>
+    private static (float Left, float Width) MeasureTextExtent(List<Run> runs, float startX)
+    {
+        var minLeft = float.MaxValue;
+        var maxRight = float.MinValue;
+        var i = 0;
+        while (i < runs.Count)
+        {
+            var j = i + 1;
+            while (j < runs.Count && runs[j].AbsX is null) j++;
+            var chunkWidth = 0f;
+            for (var k = i; k < j; k++)
+            {
+                using var f = BuildFont(runs[k].Style);
+                chunkWidth += runs[k].Dx + MeasureRun(f, runs[k].Text, runs[k].Style);
+            }
+            var anchorFactor = (runs[i].Style.TextAnchor?.Trim().ToLowerInvariant()) switch { "middle" => 0.5f, "end" => 1f, _ => 0f };
+            var left = (runs[i].AbsX ?? startX) - anchorFactor * chunkWidth;
+            if (left < minLeft) minLeft = left;
+            if (left + chunkWidth > maxRight) maxRight = left + chunkWidth;
+            i = j;
+        }
+        return maxRight > minLeft ? (minLeft, maxRight - minLeft) : (startX, 0f);
     }
 
     /// <summary>Fit a single text chunk to <c>textLength</c> (§10.5). <c>lengthAdjust="spacingAndGlyphs"</c>
     /// applies a horizontal scale (positions AND glyph shapes stretch); the default <c>"spacing"</c> distributes
     /// the slack as uniform extra advance across the inter-glyph gaps (glyph shapes unchanged). Returns
-    /// <see langword="false"/> (the caller renders normally) when there is no positive <c>textLength</c>; a
-    /// MULTI-chunk text (a <c>tspan</c> with an absolute <c>x</c>) is flagged + rendered normally. The
-    /// no-<c>textLength</c> default path never enters here, so it stays byte-identical.</summary>
+    /// <see langword="false"/> (WITHOUT flagging) when there is no positive <c>textLength</c> OR the text spans
+    /// MULTIPLE chunks (a <c>tspan</c> with an absolute <c>x</c>) — the caller then applies a whole-text scale
+    /// (see <see cref="MeasureTextExtent"/>). The no-<c>textLength</c> default path never enters here, so it
+    /// stays byte-identical.</summary>
     private static bool TryDrawTextLength(SKCanvas canvas, XElement text, List<Run> runs, float startX, float startY,
         SvgStyle style, SvgRenderState state)
     {
         if (!HasLen(text, "textLength", state, style, LenAxis.X, out var target) || !(target > 0)) return false;
         for (var k = 1; k < runs.Count; k++)
-            if (runs[k].AbsX is not null) { state.SawUnsupported = true; return false; } // multi-chunk not modeled
+            if (runs[k].AbsX is not null) return false; // multi-chunk → the caller applies a whole-text scale
 
         var natural = 0f;
         var glyphs = 0;

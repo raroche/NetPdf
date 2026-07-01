@@ -57,7 +57,7 @@ internal static class SvgFilters
     /// inputs are handled — see <see cref="ResolveInput"/>). Returns <see langword="null"/> when no primitive
     /// contributes (the element renders unfiltered).</summary>
     public static SKImageFilter? BuildImageFilter(XElement filter, XElement el, SvgStyle style, SvgRenderState state,
-        FilterRegion? region, List<SKImage> ownedImages)
+        FilterRegion? region, List<IDisposable> owned)
     {
         // primitiveUnits=objectBoundingBox expresses non-subregion primitive lengths (feOffset dx/dy, blur /
         // drop-shadow stdDeviation, feMorphology radius, feDisplacementMap scale) as bbox fractions — now
@@ -88,7 +88,7 @@ internal static class SvgFilters
         // disconnected tree contribute nothing and must not flag — only the primary tree is the filter result.
         var reachable = ComputeReachableTree(prims);
         var results = new Dictionary<string, SKImageFilter?>(StringComparer.Ordinal);
-        SeedStandardInputs(prims, reachable, results, style, ref sawUnsupported); // FillPaint/StrokePaint/BackgroundImage
+        SeedStandardInputs(prims, reachable, results, el, style, state, owned, ref sawUnsupported); // FillPaint/StrokePaint/BackgroundImage
         SKImageFilter? last = null; // null = SourceGraphic; tracks the previous primitive's output
 
         for (var idx = 0; idx < prims.Count; idx++)
@@ -230,13 +230,13 @@ internal static class SvgFilters
                     if (href is not null && href.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
                         && SvgRasterizer.DecodeDataUriImage(href) is { } image)
                     {
-                        ownedImages.Add(image);
+                        owned.Add(image);
                         output = BuildFeImage(prim, image, effRect); // placed into the primitive subregion
                     }
                     else if (elemId is not null && state.Ids.TryGetValue(elemId, out var refEl)
                         && RenderElementToImage(refEl, effRect, state) is { } rendered)
                     {
-                        ownedImages.Add(rendered);
+                        owned.Add(rendered);
                         output = PlaceElementImage(rendered, effRect);
                     }
                     else
@@ -249,16 +249,14 @@ internal static class SvgFilters
                 }
                 case "fediffuselighting":
                 {
-                    if (primitiveBBox) sawUnsupported = true; // light-source x/y/z aren't remapped to bbox units
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
-                    output = BuildLighting(prim, input, specular: false, ref sawUnsupported);
+                    output = BuildLighting(prim, input, specular: false, pbbox, ref sawUnsupported);
                     break;
                 }
                 case "fespecularlighting":
                 {
-                    if (primitiveBBox) sawUnsupported = true; // light-source x/y/z aren't remapped to bbox units
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
-                    output = BuildLighting(prim, input, specular: true, ref sawUnsupported);
+                    output = BuildLighting(prim, input, specular: true, pbbox, ref sawUnsupported);
                     break;
                 }
                 case "fetile":
@@ -508,16 +506,16 @@ internal static class SvgFilters
     }
 
     /// <summary>Pre-seed the <c>result</c> map with the standard NON-source inputs a primitive can reference:
-    /// <c>FillPaint</c>/<c>StrokePaint</c> = an infinite plane of the element's fill/stroke paint (a solid
-    /// shader; a gradient paint reference flags + transparent); <c>BackgroundImage</c>/<c>BackgroundAlpha</c> =
-    /// the accumulated background, which is EMPTY/transparent (<c>enable-background</c> is deprecated + not
-    /// modeled). Only the inputs actually referenced are built.</summary>
-    private static void SeedStandardInputs(List<XElement> prims, bool[] reachable, Dictionary<string, SKImageFilter?> results, SvgStyle style, ref bool sawUnsupported)
+    /// <c>FillPaint</c>/<c>StrokePaint</c> = an infinite plane of the element's fill/stroke paint (a solid color,
+    /// OR a GRADIENT / PATTERN paint server resolved over the element bbox);
+    /// <c>BackgroundImage</c>/<c>BackgroundAlpha</c> = the accumulated background, which is EMPTY/transparent
+    /// (<c>enable-background</c> is deprecated + not modeled). Only the inputs actually referenced are built.</summary>
+    private static void SeedStandardInputs(List<XElement> prims, bool[] reachable, Dictionary<string, SKImageFilter?> results, XElement el, SvgStyle style, SvgRenderState state, List<IDisposable> owned, ref bool sawUnsupported)
     {
         if (Referenced(prims, reachable, "FillPaint"))
-            results["FillPaint"] = PaintInput(style.Fill, style.FillOpacity, style.FillRef, ref sawUnsupported);
+            results["FillPaint"] = PaintInput(el, style, state, owned, style.Fill, style.FillOpacity, style.FillRef, ref sawUnsupported);
         if (Referenced(prims, reachable, "StrokePaint"))
-            results["StrokePaint"] = PaintInput(style.Stroke ?? SKColors.Transparent, style.StrokeOpacity, style.StrokeRef, ref sawUnsupported);
+            results["StrokePaint"] = PaintInput(el, style, state, owned, style.Stroke ?? SKColors.Transparent, style.StrokeOpacity, style.StrokeRef, ref sawUnsupported);
         if (Referenced(prims, reachable, "BackgroundImage")) results["BackgroundImage"] = TransparentInput();
         if (Referenced(prims, reachable, "BackgroundAlpha")) results["BackgroundAlpha"] = TransparentInput();
     }
@@ -542,11 +540,25 @@ internal static class SvgFilters
 
     private static bool NameEq(string? a, string b) => a?.Trim().Equals(b, StringComparison.OrdinalIgnoreCase) == true;
 
-    /// <summary>An infinite plane of a solid paint (the SVG <c>FillPaint</c>/<c>StrokePaint</c> input). A
-    /// gradient/pattern paint reference isn't modeled → flagged + transparent.</summary>
-    private static SKImageFilter PaintInput(SKColor color, float opacity, string? paintRef, ref bool sawUnsupported)
+    /// <summary>An infinite plane of the SVG <c>FillPaint</c>/<c>StrokePaint</c> input: a solid color, or — when
+    /// the paint is a <c>url(#id)</c> GRADIENT or PATTERN — the resolved paint-server shader over the element's
+    /// bbox (fill/stroke-opacity folds in). The resolved shader (which may own a backing tile image for a
+    /// pattern) is recorded in <paramref name="owned"/> and disposed after the filter composites. An unresolved
+    /// / degenerate paint server → flagged + transparent.</summary>
+    private static SKImageFilter PaintInput(XElement el, SvgStyle style, SvgRenderState state, List<IDisposable> owned, SKColor color, float opacity, string? paintRef, ref bool sawUnsupported)
     {
-        if (paintRef is not null) { sawUnsupported = true; return TransparentInput(); }
+        if (paintRef is not null)
+        {
+            // FillRef / StrokeRef hold the bare paint-server id (already unwrapped from url(#…)).
+            if (SvgClipMask.ComputeBBox(el, style, state, depth: 0, SKMatrix.Identity, isRoot: true) is { Width: > 0, Height: > 0 } bb
+                && state.ResolveShader(paintRef, bb, Math.Clamp(opacity, 0f, 1f), style) is { } resolved)
+            {
+                owned.Add(resolved); // keep the shader (+ any pattern backing image) alive until the layer composites
+                return SKImageFilter.CreateShader(resolved.Shader);
+            }
+            sawUnsupported = true; // an unresolved / degenerate paint server → transparent
+            return TransparentInput();
+        }
         var a = (byte)Math.Round(Math.Clamp(opacity, 0f, 1f) * color.Alpha);
         using var shader = SKShader.CreateColor(color.WithAlpha(a));
         return SKImageFilter.CreateShader(shader);
@@ -637,8 +649,7 @@ internal static class SvgFilters
     /// (default black, fully opaque).</summary>
     private static SKColor FloodColor(XElement prim)
     {
-        var color = SKColors.Black;
-        if (SvgAttr.Presentation(prim, "flood-color") is { } fc) SvgColor.TryParse(fc, out color);
+        var color = ResolveColor(prim, SvgAttr.Presentation(prim, "flood-color"), SKColors.Black);
         var floodOpacity = ParseFloodOpacity(SvgAttr.Presentation(prim, "flood-opacity"));
         return color.WithAlpha((byte)Math.Clamp((int)Math.Round(color.Alpha / 255f * floodOpacity * 255f), 0, 255));
     }
@@ -1004,7 +1015,7 @@ internal static class SvgFilters
     /// (<c>feDistantLight</c> / <c>fePointLight</c> / <c>feSpotLight</c>) lights it with the
     /// <c>lighting-color</c>, <c>surfaceScale</c>, and <c>diffuseConstant</c> / (<c>specularConstant</c> +
     /// <c>specularExponent</c>). A missing / unknown light source flags + passes the input through.</summary>
-    private static SKImageFilter? BuildLighting(XElement prim, SKImageFilter? input, bool specular, ref bool sawUnsupported)
+    private static SKImageFilter? BuildLighting(XElement prim, SKImageFilter? input, bool specular, SKRect? pbbox, ref bool sawUnsupported)
     {
         var surfaceScale = ReadFloat(prim, "surfaceScale", 1f);
         // kernelUnitLength (§15.7.5) changes the surface-normal sampling grid; Skia's lighting filters sample
@@ -1016,6 +1027,8 @@ internal static class SvgFilters
             if (c.Name.LocalName.ToLowerInvariant() is "fedistantlight" or "fepointlight" or "fespotlight") { light = c; break; }
         if (light is null) { sawUnsupported = true; return input; }
 
+        // Under primitiveUnits=objectBoundingBox (pbbox set) a fePointLight/feSpotLight position is a point in
+        // the bbox coordinate system (§15.7); feDistantLight (an angle) is unaffected.
         if (specular)
         {
             var ks = ReadFloat(prim, "specularConstant", 1f);
@@ -1023,8 +1036,8 @@ internal static class SvgFilters
             return light.Name.LocalName.ToLowerInvariant() switch
             {
                 "fedistantlight" => SKImageFilter.CreateDistantLitSpecular(DistantDirection(light), color, surfaceScale, ks, shininess, input),
-                "fepointlight" => SKImageFilter.CreatePointLitSpecular(PointLocation(light), color, surfaceScale, ks, shininess, input),
-                "fespotlight" => SKImageFilter.CreateSpotLitSpecular(PointLocation(light), SpotTarget(light), ReadFloat(light, "specularExponent", 1f), SpotCutoff(light), color, surfaceScale, ks, shininess, input),
+                "fepointlight" => SKImageFilter.CreatePointLitSpecular(PointLocation(light, pbbox), color, surfaceScale, ks, shininess, input),
+                "fespotlight" => SKImageFilter.CreateSpotLitSpecular(PointLocation(light, pbbox), SpotTarget(light, pbbox), ReadFloat(light, "specularExponent", 1f), SpotCutoff(light), color, surfaceScale, ks, shininess, input),
                 _ => Flag(ref sawUnsupported, input),
             };
         }
@@ -1032,20 +1045,43 @@ internal static class SvgFilters
         return light.Name.LocalName.ToLowerInvariant() switch
         {
             "fedistantlight" => SKImageFilter.CreateDistantLitDiffuse(DistantDirection(light), color, surfaceScale, kd, input),
-            "fepointlight" => SKImageFilter.CreatePointLitDiffuse(PointLocation(light), color, surfaceScale, kd, input),
-            "fespotlight" => SKImageFilter.CreateSpotLitDiffuse(PointLocation(light), SpotTarget(light), ReadFloat(light, "specularExponent", 1f), SpotCutoff(light), color, surfaceScale, kd, input),
+            "fepointlight" => SKImageFilter.CreatePointLitDiffuse(PointLocation(light, pbbox), color, surfaceScale, kd, input),
+            "fespotlight" => SKImageFilter.CreateSpotLitDiffuse(PointLocation(light, pbbox), SpotTarget(light, pbbox), ReadFloat(light, "specularExponent", 1f), SpotCutoff(light), color, surfaceScale, kd, input),
             _ => Flag(ref sawUnsupported, input),
         };
     }
 
     private static SKImageFilter? Flag(ref bool sawUnsupported, SKImageFilter? input) { sawUnsupported = true; return input; }
 
-    /// <summary>The <c>lighting-color</c> presentation property (default white).</summary>
-    private static SKColor LightingColor(XElement prim)
+    /// <summary>The <c>lighting-color</c> presentation property (default white; <c>currentColor</c> resolves to
+    /// the PRIMITIVE's own computed <c>color</c>).</summary>
+    private static SKColor LightingColor(XElement prim) =>
+        ResolveColor(prim, SvgAttr.Presentation(prim, "lighting-color"), SKColors.White);
+
+    /// <summary>Resolve a filter-primitive color keyword: <c>currentColor</c> → the primitive element's own
+    /// computed <c>color</c> (§ Filter Effects — color/flood-color/lighting-color are presentation attributes on
+    /// the PRIMITIVE, so <c>currentColor</c> comes from the primitive's color cascade, NOT the filtered
+    /// element); else parse (default <paramref name="fallback"/> when absent / unparseable).</summary>
+    private static SKColor ResolveColor(XElement prim, string? raw, SKColor fallback)
     {
-        var color = SKColors.White;
-        if (SvgAttr.Presentation(prim, "lighting-color") is { } lc) SvgColor.TryParse(lc, out color);
-        return color;
+        if (raw is null) return fallback;
+        raw = raw.Trim();
+        if (raw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) return PrimitiveCurrentColor(prim);
+        return SvgColor.TryParse(raw, out var c) ? c : fallback;
+    }
+
+    /// <summary>The computed <c>color</c> of a filter primitive: the first <c>color</c> presentation value
+    /// (an attribute or an inline <c>style="color:…"</c>) found walking UP the primitive's own ancestor chain
+    /// (primitive → <c>&lt;filter&gt;</c> → … → root), else the initial value black. This is the primitive's
+    /// document-tree cascade — independent of the element that references the filter.</summary>
+    private static SKColor PrimitiveCurrentColor(XElement prim)
+    {
+        for (var e = prim; e is not null; e = e.Parent)
+            if (SvgAttr.Presentation(e, "color") is { } c
+                && !c.Trim().Equals("currentColor", StringComparison.OrdinalIgnoreCase)
+                && SvgColor.TryParse(c, out var col))
+                return col;
+        return SKColors.Black; // the initial `color`
     }
 
     /// <summary>An <c>feDistantLight</c> direction from <c>azimuth</c>/<c>elevation</c> (degrees): the unit
@@ -1057,11 +1093,20 @@ internal static class SvgFilters
         return new SKPoint3((float)(Math.Cos(az) * Math.Cos(el)), (float)(Math.Sin(az) * Math.Cos(el)), (float)Math.Sin(el));
     }
 
-    private static SKPoint3 PointLocation(XElement light) =>
-        new(ReadFloat(light, "x", 0f), ReadFloat(light, "y", 0f), ReadFloat(light, "z", 0f));
+    // A light-source position. Under objectBoundingBox (bbox set) x/y are points in the bbox coordinate system
+    // (origin + fraction × axis) and z is a fraction of the bbox diagonal; else plain user-space coordinates.
+    private static SKPoint3 PointLocation(XElement light, SKRect? bbox) =>
+        bbox is { } b
+            ? new SKPoint3(b.Left + LightFrac(light, "x") * b.Width, b.Top + LightFrac(light, "y") * b.Height, LightFrac(light, "z") * BBoxDiagonal(b))
+            : new SKPoint3(ReadFloat(light, "x", 0f), ReadFloat(light, "y", 0f), ReadFloat(light, "z", 0f));
 
-    private static SKPoint3 SpotTarget(XElement light) =>
-        new(ReadFloat(light, "pointsAtX", 0f), ReadFloat(light, "pointsAtY", 0f), ReadFloat(light, "pointsAtZ", 0f));
+    private static SKPoint3 SpotTarget(XElement light, SKRect? bbox) =>
+        bbox is { } b
+            ? new SKPoint3(b.Left + LightFrac(light, "pointsAtX") * b.Width, b.Top + LightFrac(light, "pointsAtY") * b.Height, LightFrac(light, "pointsAtZ") * BBoxDiagonal(b))
+            : new SKPoint3(ReadFloat(light, "pointsAtX", 0f), ReadFloat(light, "pointsAtY", 0f), ReadFloat(light, "pointsAtZ", 0f));
+
+    private static float LightFrac(XElement light, string attr) => FracToken((SvgRasterizer.Attr(light, attr) ?? "0").Trim());
+    private static float BBoxDiagonal(SKRect b) => (float)Math.Sqrt((b.Width * b.Width + b.Height * b.Height) / 2.0);
 
     /// <summary>The <c>feSpotLight limitingConeAngle</c> in degrees (absent → 90° = effectively no cone
     /// restriction).</summary>

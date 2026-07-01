@@ -8,6 +8,18 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: SVG part 13 (paint-server filter inputs + lighting/text residuals)
+
+Closes five more flagged SVG residuals. Byte-identity safe (no corpus/snapshot uses inline SVG; the default text path is unchanged).
+
+- **Gradient `FillPaint`/`StrokePaint`** — a `FillPaint`/`StrokePaint` filter input whose paint is a `url(#id)` GRADIENT now renders the resolved gradient shader over the element's bbox (fill/stroke-opacity folds in), instead of flagging.
+- **Pattern `FillPaint`/`StrokePaint`** — a PATTERN paint server likewise renders (via the shared `state.ResolveShader`); the resolved shader + its backing tile image are tracked in the filter's owned-disposables list and freed after the layer composites.
+- **Lighting light-source positions under `primitiveUnits="objectBoundingBox"`** — a `fePointLight`/`feSpotLight` `x`/`y`/`z` + `pointsAt` position is now remapped into the bbox coordinate system (x→origin+fraction·width, y→height, z→fraction·diagonal), so lighting is SUPPORTED under objectBoundingBox (previously flagged). `kernelUnitLength` stays flagged.
+- **`flood-color` / `lighting-color` `currentColor`** — `feFlood`/`feDropShadow` flood-color and `feDiffuseLighting`/`feSpecularLighting` lighting-color now resolve the `currentColor` keyword to the PRIMITIVE's own computed `color` (its `color` attribute / inline `style="color:…"`, inherited down the primitive's own ancestor chain — NOT the filtered element's color, per Filter Effects).
+- **`textLength` across multiple chunks** — a `textLength` on a text containing an absolute-`x` `<tspan>` (a second chunk) is now fitted by a whole-text horizontal scale about the text's LEFTMOST rendered edge (tracking both left + right chunk edges so an anchored / left-of-x chunk is accounted for), instead of being flagged.
+- **Tests (+16)** — gradient + pattern FillPaint + StrokePaint render; point + spot lighting positions under objectBoundingBox render unflagged; flood/lighting-color currentColor from the primitive (attr, ancestor, inline style); multi-chunk textLength scales to the target incl. end/middle-anchored chunks. Docs swept.
+- **PR #253 review hardening (2× P2 + P3):** (1) filter-primitive `currentColor` resolves the PRIMITIVE's own `color` cascade (`PrimitiveCurrentColor` walks the primitive's ancestor chain), not the filtered element's color. (2) multi-chunk `textLength` `MeasureTextExtent` tracks both the leftmost and rightmost chunk edges (was rightward-only from `startX`) and scales about the leftmost edge. (3) `SvgText` class summary refreshed (multi-chunk textLength now supported).
+
 ### Added — Phase 4 visual parity: SVG part 12 (mask/filter units + text residuals)
 
 Closes five more flagged SVG residuals. Byte-identity safe (no corpus/snapshot uses inline SVG; default text/mask paths unchanged).

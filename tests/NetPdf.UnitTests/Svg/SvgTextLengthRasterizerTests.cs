@@ -63,14 +63,53 @@ public sealed class SvgTextLengthRasterizerTests
     }
 
     [Fact]
-    public void Text_length_across_multiple_chunks_is_flagged_and_renders_normally()
+    public void Text_length_across_multiple_chunks_scales_the_whole_text_to_the_target()
     {
-        // textLength over a text containing an absolute-x tspan (a second chunk) isn't modeled → flagged, and
-        // the text still renders (at its natural advance).
+        // textLength over a text with an absolute-x tspan (a second chunk) is fitted by a whole-text horizontal
+        // scale about the start x. A target of 60 (narrower than the natural span reaching x≈100) pulls the
+        // rightmost ink in toward x = 5 + 60 = 65. Not flagged.
         var info = Render(
-            "<text x=\"5\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"120\">Hi<tspan x=\"80\">Yo</tspan></text>",
+            "<text x=\"5\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"60\">Hi<tspan x=\"80\">Yo</tspan></text>",
             out var unsupported);
-        Assert.True(unsupported);
-        Assert.True(MaxInkX(info) > 0); // still rendered
+        Assert.False(unsupported);
+        Assert.InRange(MaxInkX(info), 40, 72);   // rightmost ink near x = 5 + 60 (was ≈ 80+ naturally)
+    }
+
+    private static int MinInkX(NetPdf.Pdf.Images.RasterImageInfo info)
+    {
+        var minX = int.MaxValue;
+        for (var y = 0; y < info.Height; y++)
+            for (var x = 0; x < info.Width; x++)
+                if (info.PixelBytes[(y * info.Width + x) * 4 + 3] > 40 && x < minX) minX = x;
+        return minX == int.MaxValue ? -1 : minX;
+    }
+
+    [Fact]
+    public void Text_length_multi_chunk_accounts_for_an_end_anchored_chunk_left_of_x()
+    {
+        // A second chunk with text-anchor="end" at x=90 extends LEFT of x=90; the extent tracks both edges, so
+        // the whole span (leftmost of chunk 1 to rightmost of chunk 2) scales to textLength — the ink stays
+        // within a bounded window, not runaway. Not flagged.
+        var info = Render(
+            "<text x=\"10\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"70\">Hi<tspan x=\"90\" text-anchor=\"end\">Yo</tspan></text>",
+            out var unsupported);
+        Assert.False(unsupported);
+        var lo = MinInkX(info);
+        var hi = MaxInkX(info);
+        Assert.True(lo >= 0);
+        Assert.InRange(hi - lo, 40, 90);         // the total rendered span ≈ textLength (70), edges both tracked
+    }
+
+    [Fact]
+    public void Text_length_multi_chunk_with_a_middle_anchored_chunk_stays_bounded()
+    {
+        // A middle-anchored second chunk centers on x=80 (extends both ways). The scale about the leftmost edge
+        // keeps the whole text within a bounded span ≈ textLength.
+        var info = Render(
+            "<text x=\"10\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"60\">Hi<tspan x=\"80\" text-anchor=\"middle\">Yo</tspan></text>",
+            out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(MinInkX(info) >= 0);
+        Assert.InRange(MaxInkX(info) - MinInkX(info), 35, 80);
     }
 }

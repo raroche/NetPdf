@@ -174,10 +174,13 @@ sub-track**.
 
 ### Track A — Foundation & verification (do first)
 
-- [ ] **SEC-1 — Threat model + SECURITY.md + secure-usage guide.** Land *this* document; add a root
-  `SECURITY.md` (supported versions + a private vulnerability-disclosure channel, needed before the repo goes
-  public at 1.0); add a short "Secure usage for untrusted HTML" section to the README/API docs codifying the
-  §2 golden rule. **Accept:** the three docs exist, cross-linked; README shows the `UntrustedHtml` snippet.
+- [x] **SEC-1 — Threat model + SECURITY.md + secure-usage guide.** ✅ Done. This document is the threat model;
+  a root [`SECURITY.md`](../../SECURITY.md) (supported versions, GitHub-private-advisory disclosure channel,
+  in/out-of-scope, response targets) landed; the README's
+  [Running NetPdf on untrusted HTML](../../README.md#running-netpdf-on-untrusted-html) section codifies the §2
+  golden rule (full `UntrustedHtml` + `ResourceLoader = null` + `Timeout` snippet) and now links the threat
+  model + `SECURITY.md`. All three docs cross-link. (Also corrected a stale README note: `<a href>` → `/URI`
+  link annotations *did* ship in Phase 4, scheme-restricted by `LinkUriPolicy`.)
 - [ ] **SEC-2 — Security regression suite + fuzz expansion.** Consolidate a `SecurityHardeningTests` suite
   (SSRF/LFI/XXE/DoS/PDF-output as executable assertions) and expand `tests/NetPdf.Fuzz` to cover
   `HtmlPdf.Convert`, `SvgRasterizer`, `FontSafetyValidator`, `ImageSafetyValidator`, and `UriSafetyValidator`;
@@ -223,10 +226,15 @@ sub-track**.
 
 ### Track C — Process & documented residuals
 
-- [ ] **SEC-10 (G10, INFO) — Native-dependency CVE policy.** Document a version floor + a
-  monitoring/patch cadence for SkiaSharp / HarfBuzzSharp / PDFium(test-only) / AngleSharp in
-  `docs/legal/dependency-dossier.md` (link the libwebp CVE-2023-4863 / neodyme lessons); consider a CI
-  advisory-scan (`dotnet list package --vulnerable`). **Accept:** policy documented; CI check added.
+- [ ] **SEC-10 (G10, INFO) — Native-dependency CVE policy + banned-API enforcement.** Document a version floor
+  + a monitoring/patch cadence for SkiaSharp / HarfBuzzSharp / PDFium(test-only) / AngleSharp in
+  `docs/legal/dependency-dossier.md` (link the libwebp CVE-2023-4863 / neodyme lessons); add a CI
+  advisory-scan (`dotnet list package --vulnerable`). **Also:** `CLAUDE.md` (and, until PR #262, the README)
+  claim a `NetPdf.BannedAnalyzer` Roslyn analyzer enforces the dependency allowlist at compile time — **it does
+  not exist** (only `NetPdf.SourceGen` ships). Either build the banned-API analyzer (e.g.
+  `Microsoft.CodeAnalysis.BannedApiAnalyzers` + a `BannedSymbols.txt`) or correct the remaining doc claim in
+  `CLAUDE.md`. **Accept:** policy documented; CI check added; the allowlist is either machine-enforced or the
+  docs stop asserting it is.
 - [ ] **SEC-11 (G8, INFO) — Document accepted residuals + deployment hardening.** In this doc + a deployment
   guide, state the accepted residuals (symlink TOCTOU, `AllowedHosts` single-label wildcard scope) and **strongly recommend
   container isolation** (no egress, read-only FS, memory/CPU/pids limits, seccomp) for the untrusted-HTML API

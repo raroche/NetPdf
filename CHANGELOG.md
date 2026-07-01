@@ -8,6 +8,18 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
 
+### Added — Phase 4 visual parity: SVG part 12 (mask/filter units + text residuals)
+
+Closes five more flagged SVG residuals. Byte-identity safe (no corpus/snapshot uses inline SVG; default text/mask paths unchanged).
+
+- **`maskUnits` region clip** — a `<mask>`'s `x`/`y`/`width`/`height` + `maskUnits` (objectBoundingBox default region `-10% -10% 120% 120%`; userSpaceOnUse lengths) now hard-clips the masked element: outside the region the mask value is 0 (the element is clipped away). A unit-suffixed objectBoundingBox value is flagged (a fraction isn't a length). `SvgClipMask.ResolveMaskRegion`.
+- **`primitiveUnits="objectBoundingBox"` non-subregion remap** — feOffset `dx`/`dy`, blur / drop-shadow `stdDeviation`, feMorphology `radius`, and feDisplacementMap `scale` are now scaled by the bbox (x→width, y→height, diagonal→√((w²+h²)/2)) instead of being blanket-flagged. A lighting light-source position + `kernelUnitLength` remap stays partial → flagged.
+- **`FillPaint` / `StrokePaint` / `BackgroundImage` / `BackgroundAlpha` filter inputs** — modeled instead of flagged: FillPaint/StrokePaint are an infinite plane of the element's resolved fill/stroke paint (a gradient paint reference stays flagged); BackgroundImage/BackgroundAlpha are the (empty) accumulated background → transparent (`enable-background` is deprecated). Seeded into the `result` map only when referenced.
+- **Per-glyph `rotate` global index** — the `rotate` list on `<text>` addresses ALL glyphs globally across `<tspan>` runs (SVG §10.5), not run-local; a `<tspan>` with its own `rotate` re-indexes from its first glyph while still advancing the parent addressing. `Run.RotateStart`.
+- **`feTurbulence stitchTiles="stitch"`** — seamlessly tiles the noise over the primitive subregion via Skia's stitched Perlin generator (tile size = the subregion), instead of ignoring the attribute.
+- **Tests (+7)** — maskUnits region clip + unit-suffixed flag; primitiveUnits offset bbox remap; FillPaint flood + BackgroundImage transparent; rotate global cross-tspan index; feTurbulence stitch differs from noStitch. Docs swept (compat-matrix, deferrals, diagnostics-codes, `SvgText`/`SvgClipMask` summaries).
+- **PR #252 review hardening (3× P2):** (1) `SeedStandardInputs` scans only the REACHABLE tree, so a disconnected primitive referencing a gradient `FillPaint` no longer flags (matching the graph's disconnected-branch rule). (2) An unknown `maskUnits`/`primitiveUnits` value is now FLAGGED (parity with `filterUnits`) instead of silently defaulting. (3) `primitiveUnits="objectBoundingBox"` non-subregion lengths (feOffset `dx`/`dy`, blur/drop-shadow `stdDeviation`, feMorphology `radius`, feDisplacementMap `scale`) accept `%` AND unitless fractions via a units-aware parser (`PrimLen`/`PrimPair`) — a `%` form no longer resolves to 0. +4 regression tests.
+
 ### Added — Phase 4 visual parity: SVG part 11 (filter-graph completion + marker/text accuracy)
 
 Closes five long-deferred SVG residuals. Byte-identity safe (no corpus/snapshot uses inline SVG; the default text/marker paths are unchanged).

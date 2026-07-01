@@ -107,12 +107,11 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Theory]
-    // primitiveUnits (the non-subregion remap), an external feImage href, and BackgroundImage/FillPaint inputs
-    // still aren't modeled → flagged. (Filter region — part 9; in/result routing — part 7; primitive
-    // SUBREGIONS — part 11; are all supported now.)
-    [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]        // primitiveUnits
-    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // unsupported primitive (non-data, non-#id href)
-    [InlineData("<filter id=\"f\"><feOffset dx=\"2\" in=\"BackgroundImage\"/></filter>")]                                     // unsupported input
+    // An external feImage href and a lighting primitive under primitiveUnits (positions not remapped) still
+    // aren't modeled → flagged. (Filter region — part 9; in/result routing — part 7; primitive SUBREGIONS —
+    // part 11; primitiveUnits non-subregion remap + FillPaint/BackgroundImage inputs — part 12; are supported.)
+    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // external, non-data/non-#id href
+    [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feDiffuseLighting><feDistantLight azimuth=\"0\" elevation=\"90\"/></feDiffuseLighting></filter>")] // lighting position not remapped
     public void Filter_region_or_unsupported_input_is_flagged(string filter)
     {
         var info = SvgRasterizer.TryRender(Svg(
@@ -918,16 +917,16 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Fact]
-    public void Primitive_subregion_object_bounding_box_units_clips_and_is_flagged()
+    public void Primitive_subregion_object_bounding_box_units_clips_to_the_bbox_fraction()
     {
-        // primitiveUnits=objectBoundingBox maps the subregion as a bbox fraction (0..0.5 → top-left quadrant);
-        // the clip is modeled, but primitiveUnits' non-subregion remap is partial → flagged.
+        // primitiveUnits=objectBoundingBox maps the subregion as a bbox fraction (0..0.5 → top-left quadrant).
+        // A feFlood has no non-subregion length, so this is fully modeled → NOT flagged.
         var info = Render(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
             "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\" primitiveUnits=\"objectBoundingBox\">" +
             "<feFlood flood-color=\"blue\" x=\"0\" y=\"0\" width=\"0.5\" height=\"0.5\"/></filter>" +
             "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
-        Assert.True(unsupported);                  // primitiveUnits is partial → flagged
+        Assert.False(unsupported);
         Assert.True(Px(info, 10, 10).B > 150);     // bbox top-left quadrant (0..20): blue
         Assert.Equal(0, Px(info, 30, 30).A);       // outside the quadrant: transparent
     }
@@ -1000,5 +999,124 @@ public sealed class SvgFilterRasterizerTests
         Assert.False(unsupported);
         Assert.True(Px(info, 15, 15).B > 150);     // inside the feTile subregion (0..20): tiled blue
         Assert.Equal(0, Px(info, 30, 30).A);       // inside the filter region but OUTSIDE the feTile subregion
+    }
+
+    [Fact]
+    public void Primitive_units_object_bounding_box_remaps_offset_to_bbox_units()
+    {
+        // primitiveUnits=objectBoundingBox: feOffset dx=1 on a 10-wide bbox → a 10px shift (NOT a 1px user-unit
+        // shift). The blue rect (x=5..15) shifts right by 10 → x=15..25. Not flagged (the offset remap is modeled).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\" primitiveUnits=\"objectBoundingBox\">" +
+            "<feOffset dx=\"1\" dy=\"0\"/></filter>" +
+            "<rect x=\"5\" y=\"15\" width=\"10\" height=\"10\" fill=\"blue\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.Equal(0, Px(info, 8, 20).A);        // original position now empty (shifted away — proves bbox units)
+        Assert.True(Px(info, 20, 20).B > 150);     // shifted right ~10px into x=15..25
+    }
+
+    [Fact]
+    public void Fill_paint_input_floods_the_element_paint()
+    {
+        // FillPaint is the element's fill as an infinite plane — a modeled input (no longer flagged). Merging
+        // FillPaint under SourceGraphic paints the whole filter region blue behind the shape.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\">" +
+            "<feMerge><feMergeNode in=\"FillPaint\"/><feMergeNode in=\"SourceGraphic\"/></feMerge></filter>" +
+            "<rect x=\"10\" y=\"10\" width=\"10\" height=\"10\" fill=\"blue\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // FillPaint no longer flagged
+        Assert.True(Px(info, 30, 30).B > 120);     // FillPaint floods the whole region blue (beyond the shape)
+    }
+
+    [Fact]
+    public void Background_image_input_is_transparent_not_flagged()
+    {
+        // BackgroundImage is the (empty) accumulated background → transparent, and no longer flagged
+        // (enable-background is deprecated). The source composited over a transparent background is unchanged.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\"><feMerge><feMergeNode in=\"BackgroundImage\"/><feMergeNode in=\"SourceGraphic\"/></feMerge></filter>" +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"blue\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // BackgroundImage no longer flagged
+        Assert.True(Px(info, 20, 20).B > 150);     // the source still renders over the transparent background
+    }
+
+    [Fact]
+    public void Fe_turbulence_stitch_tiles_renders_and_differs_from_no_stitch()
+    {
+        // stitchTiles="stitch" seamlessly tiles the noise over the primitive subregion (Skia's stitched Perlin
+        // generator rounds baseFrequency to an integer cycle count over the tile). baseFrequency 0.07 × 40px =
+        // 2.8 cycles → stitching adjusts it → the output differs from noStitch. Both render noise, neither flags.
+        string Doc(string stitch) =>
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feTurbulence type=\"fractalNoise\" baseFrequency=\"0.07\" numOctaves=\"2\" seed=\"1\" stitchTiles=\"{stitch}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>";
+        var stitched = Render(Doc("stitch"), out var u1);
+        var noStitch = Render(Doc("noStitch"), out var u2);
+        Assert.False(u1);
+        Assert.False(u2);
+        // The stitch adjustment changes the noise field → at least one pixel differs from noStitch.
+        var differs = false;
+        for (var y = 0; y < 40 && !differs; y++)
+            for (var x = 0; x < 40; x++)
+            {
+                var a = Px(stitched, x, y);
+                var b = Px(noStitch, x, y);
+                if (Math.Abs(a.R - b.R) > 8 || Math.Abs(a.G - b.G) > 8 || Math.Abs(a.B - b.B) > 8) { differs = true; break; }
+            }
+        Assert.True(differs);
+        // Stitched output is still noise (varied), not a flat fill.
+        var p = Px(stitched, 10, 10);
+        var q = Px(stitched, 30, 30);
+        Assert.True(p.R != q.R || p.G != q.G || p.B != q.B);
+    }
+
+    [Fact]
+    public void Disconnected_branch_referencing_gradient_fill_paint_does_not_flag()
+    {
+        // PR-252 review [P2] — a DISCONNECTED primitive referencing a gradient FillPaint must NOT flag (only
+        // the primary reachable tree renders + flags). The last (reachable) primitive is a supported feFlood.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<linearGradient id=\"g\"><stop offset=\"0\" stop-color=\"red\"/></linearGradient>" +
+            "<filter id=\"f\">" +
+            "<feFlood flood-color=\"blue\" in=\"FillPaint\" result=\"dead\"/>" +   // disconnected (not fed forward)
+            "<feFlood flood-color=\"lime\"/></filter>" +                           // the reachable result
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"url(#g)\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);                 // the dead FillPaint branch neither renders nor flags
+        Assert.True(Px(info, 20, 20).G > 150);     // the reachable lime feFlood
+    }
+
+    [Theory]
+    [InlineData("<filter id=\"f\" primitiveUnits=\"garbage\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]
+    public void Unknown_primitive_units_value_is_flagged(string filter)
+    {
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" + filter +
+            "<rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.True(unsupported);                  // an unknown primitiveUnits value → flagged (like filterUnits)
+    }
+
+    [Fact]
+    public void Primitive_units_object_bounding_box_offset_accepts_percent_and_unitless_equivalently()
+    {
+        // PR-252 review [P2] — under primitiveUnits=objectBoundingBox a length is a bbox FRACTION: dx="0.5" and
+        // dx="50%" must be equivalent (both 0.5 × the 10-wide bbox = 5px), not 0 for the percent form.
+        string Doc(string dx) =>
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\" primitiveUnits=\"objectBoundingBox\"><feOffset dx=\"{dx}\" dy=\"0\"/></filter>" +
+            "<rect x=\"5\" y=\"15\" width=\"10\" height=\"10\" fill=\"blue\" filter=\"url(#f)\"/></svg>";
+        var frac = Render(Doc("0.5"), out var u1);
+        var pct = Render(Doc("50%"), out var u2);
+        Assert.False(u1);
+        Assert.False(u2);
+        // Both shift the rect right by 5px (x=5..15 → 10..20): the same pixels are painted.
+        for (var y = 15; y < 25; y++)
+            for (var x = 0; x < 40; x++)
+                Assert.Equal(Px(frac, x, y).A > 40, Px(pct, x, y).A > 40);
+        Assert.Equal(0, Px(pct, 6, 20).A);         // percent form actually shifted (not 0 → unshifted at x=6)
+        Assert.True(Px(pct, 18, 20).B > 150);      // shifted into x=10..20
     }
 }

@@ -19,7 +19,7 @@ namespace NetPdf.Svg;
 /// <c>textLength</c> across multiple chunks (flagged), bidi/complex-script reordering.</summary>
 internal static class SvgText
 {
-    private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy, float[]? Rotate);
+    private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy, float[]? Rotate, int RotateStart);
 
     public static void Draw(SKCanvas canvas, XElement text, SvgStyle style, SvgRenderState state)
     {
@@ -32,7 +32,8 @@ internal static class SvgText
             }
 
         var runs = new List<Run>();
-        CollectRuns(text, style, runs, state, topLevel: true, ParseRotate(SvgAttr.Get(text, "rotate")));
+        var rotateGlyphIndex = 0;
+        CollectRuns(text, style, runs, state, topLevel: true, ParseRotate(SvgAttr.Get(text, "rotate")), ref rotateGlyphIndex);
         if (runs.Count == 0) return;
 
         var startX = HasLen(text, "x", state, style, LenAxis.X, out var sx) ? sx : 0f;
@@ -77,7 +78,7 @@ internal static class SvgText
                 var width = MeasureRun(font, run.Text, run.Style);
                 // dominant-baseline shifts the drawn baseline relative to the pen Y (not accumulated).
                 var baseline = penY + DominantBaselineOffset(run.Style.DominantBaseline, font.Metrics);
-                DrawSpacedOrWhole(canvas, run.Text, penX, baseline, font, run.Style, run.Rotate, state);
+                DrawSpacedOrWhole(canvas, run.Text, penX, baseline, font, run.Style, run.Rotate, run.RotateStart, state);
                 penX += width;
             }
             i = j;
@@ -129,7 +130,7 @@ internal static class SvgText
                 penX += run.Dx;
                 penY += run.Dy;
                 var baseline = penY + DominantBaselineOffset(run.Style.DominantBaseline, font.Metrics);
-                DrawSpacedOrWhole(canvas, run.Text, penX, baseline, font, run.Style, run.Rotate, state);
+                DrawSpacedOrWhole(canvas, run.Text, penX, baseline, font, run.Style, run.Rotate, run.RotateStart, state);
                 penX += MeasureRun(font, run.Text, run.Style);
             }
             canvas.RestoreToCount(save);
@@ -153,7 +154,7 @@ internal static class SvgText
             {
                 var glyph = run.Text[ci].ToString();
                 var gw = font.MeasureText(glyph);
-                var deg = run.Rotate is { Length: > 0 } r ? r[Math.Min(ci, r.Length - 1)] : 0f;
+                var deg = run.Rotate is { Length: > 0 } r ? r[Math.Min(run.RotateStart + ci, r.Length - 1)] : 0f;
                 if (deg != 0f)
                 {
                     var s = canvas.Save();
@@ -186,9 +187,10 @@ internal static class SvgText
     /// <summary>Draw a run honoring letter-/word-spacing and the per-glyph <c>rotate</c> list. With no spacing
     /// AND no rotation it's a single whole-string draw (byte-identical default); otherwise each glyph is drawn
     /// at its own pen position (letter-spacing added only in the gaps, so the advance matches
-    /// <see cref="MeasureRun"/>) and rotated by <paramref name="rotate"/>[min(i, last)] about its baseline
-    /// origin (SVG §10.5 — the rotate index is run-local this cut).</summary>
-    private static void DrawSpacedOrWhole(SKCanvas canvas, string text, float x, float baseline, SKFont font, SvgStyle style, float[]? rotate, SvgRenderState state)
+    /// <see cref="MeasureRun"/>) and rotated by <paramref name="rotate"/>[min(<paramref name="rotateStart"/> + i,
+    /// last)] about its baseline origin (SVG §10.5 — the rotate index is GLOBAL across the text; this run's
+    /// glyphs start at <paramref name="rotateStart"/>).</summary>
+    private static void DrawSpacedOrWhole(SKCanvas canvas, string text, float x, float baseline, SKFont font, SvgStyle style, float[]? rotate, int rotateStart, SvgRenderState state)
     {
         if (style.LetterSpacing == 0 && style.WordSpacing == 0 && rotate is null)
         {
@@ -200,7 +202,7 @@ internal static class SvgText
         {
             var glyph = text[i].ToString();
             var gw = font.MeasureText(glyph);
-            if (rotate is { Length: > 0 } && rotate[Math.Min(i, rotate.Length - 1)] is var deg and not 0f)
+            if (rotate is { Length: > 0 } && rotate[Math.Min(rotateStart + i, rotate.Length - 1)] is var deg and not 0f)
             {
                 var save = canvas.Save();
                 canvas.Translate(gx, baseline);
@@ -381,7 +383,7 @@ internal static class SvgText
     /// <summary>Flatten the text content into drawable runs: direct text nodes plus one level of
     /// <c>&lt;tspan&gt;</c> (each with its own overrides + dx/dy/x/y). Whitespace is collapsed (the SVG
     /// default).</summary>
-    private static void CollectRuns(XElement el, SvgStyle inherited, List<Run> runs, SvgRenderState state, bool topLevel, float[]? rotate)
+    private static void CollectRuns(XElement el, SvgStyle inherited, List<Run> runs, SvgRenderState state, bool topLevel, float[]? rotate, ref int rotateGlyphIndex)
     {
         foreach (var node in el.Nodes())
         {
@@ -389,7 +391,13 @@ internal static class SvgText
             {
                 case XText t:
                     var s = Collapse(t.Value);
-                    if (s.Length > 0) runs.Add(new Run(s, inherited, AbsX: null, AbsY: null, Dx: 0, Dy: 0, Rotate: rotate));
+                    if (s.Length > 0)
+                    {
+                        // Per-glyph `rotate` is indexed GLOBALLY across the text (§10.5) — this run's glyphs
+                        // start at rotateGlyphIndex in the active rotate list; advance the counter past them.
+                        runs.Add(new Run(s, inherited, AbsX: null, AbsY: null, Dx: 0, Dy: 0, Rotate: rotate, RotateStart: rotateGlyphIndex));
+                        rotateGlyphIndex += s.Length;
+                    }
                     break;
                 case XElement child when child.Name.LocalName.Equals("tspan", StringComparison.OrdinalIgnoreCase):
                     var childStyle = ResolveRunStyle(child, inherited);
@@ -399,10 +407,19 @@ internal static class SvgText
                     var ay = HasLen(child, "y", state, childStyle, LenAxis.Y, out var yv) ? (float?)yv : null;
                     var dx = HasLen(child, "dx", state, childStyle, LenAxis.X, out var dxv) ? dxv : 0f;
                     var dy = HasLen(child, "dy", state, childStyle, LenAxis.Y, out var dyv) ? dyv : 0f;
-                    var childRotate = ParseRotate(SvgAttr.Get(child, "rotate")) ?? rotate; // own rotate else inherited
+                    var ownRotate = ParseRotate(SvgAttr.Get(child, "rotate"));
                     // A tspan can hold its own text + nested tspans; flatten the text, apply the offset to the first run.
                     var before = runs.Count;
-                    CollectRuns(child, childStyle, runs, state, topLevel: false, childRotate);
+                    if (ownRotate is not null)
+                    {
+                        // The tspan's OWN rotate re-indexes from its first glyph (index 0); its characters still
+                        // advance the PARENT's addressing (they're part of the enclosing text).
+                        var childIndex = 0;
+                        CollectRuns(child, childStyle, runs, state, topLevel: false, ownRotate, ref childIndex);
+                        rotateGlyphIndex += childIndex;
+                    }
+                    else
+                        CollectRuns(child, childStyle, runs, state, topLevel: false, rotate, ref rotateGlyphIndex);
                     if (runs.Count > before && (ax is not null || ay is not null || dx != 0 || dy != 0))
                         runs[before] = runs[before] with { AbsX = ax, AbsY = ay, Dx = dx, Dy = dy };
                     break;

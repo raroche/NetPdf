@@ -104,7 +104,6 @@ internal static class ChromeReferenceGenerator
 
         // Prefer the lighter headless shell; fall back to the full browser. Newest revision (highest suffix)
         // first, so a matching-ish build is chosen when several are present.
-        string? best = null;
         foreach (var (prefix, exeNames) in new[]
                  {
                      ("chromium_headless_shell", new[] { "chrome-headless-shell", "headless_shell" }),
@@ -114,12 +113,19 @@ internal static class ChromeReferenceGenerator
             foreach (var dir in SortByRevisionDescending(Directory.GetDirectories(cacheRoot, prefix + "-*")))
                 foreach (var exe in Directory.GetFiles(dir, "*", SearchOption.AllDirectories))
                 {
+                    // Match case-insensitively against the file name WITH and WITHOUT its extension, so a
+                    // Windows binary (chrome.exe / chrome-headless-shell.exe) matches the same target names as
+                    // the extension-less Unix/macOS binary. Ordinal comparison of "chrome" vs "chrome.exe"
+                    // would otherwise miss every Windows install and wrongly report the oracle unavailable.
                     var name = Path.GetFileName(exe);
-                    if (System.Array.Exists(exeNames, n => string.Equals(n, name, System.StringComparison.Ordinal)))
+                    var stem = Path.GetFileNameWithoutExtension(exe);
+                    if (System.Array.Exists(exeNames, n =>
+                            string.Equals(n, name, System.StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(n, stem, System.StringComparison.OrdinalIgnoreCase)))
                         return exe; // first match at the highest revision wins
                 }
         }
-        return best;
+        return null;
     }
 
     private static string[] SortByRevisionDescending(string[] dirs)
@@ -145,7 +151,11 @@ internal static class ChromeReferenceGenerator
         var handle = System.Runtime.InteropServices.GCHandle.Alloc(image.Rgba, System.Runtime.InteropServices.GCHandleType.Pinned);
         try
         {
-            bitmap.InstallPixels(info, handle.AddrOfPinnedObject(), info.RowBytes);
+            // InstallPixels returns false on an incompatible info/stride; ignoring it would encode an
+            // empty/invalid PNG (or throw later with a less actionable error) — fail fast with the dimensions.
+            if (!bitmap.InstallPixels(info, handle.AddrOfPinnedObject(), info.RowBytes))
+                throw new InvalidOperationException(
+                    $"SKBitmap.InstallPixels failed for a {image.Width}x{image.Height} RGBA image writing '{path}'.");
             using var img = SKImage.FromBitmap(bitmap);
             using var data = img.Encode(SKEncodedImageFormat.Png, 100);
             using var fs = File.Create(path);

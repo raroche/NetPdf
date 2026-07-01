@@ -16,8 +16,9 @@ namespace NetPdf.Svg;
 /// handles the tractable subset (the basic shapes + <c>&lt;path&gt;</c>, <c>&lt;g&gt;</c> nesting, element
 /// <c>transform</c>s, solid <c>fill</c>/<c>stroke</c> with opacity/dash/cap/join, the <c>fill-rule</c>, and the
 /// root <c>viewBox</c>/<c>preserveAspectRatio</c> mapping). Anything richer — gradient/pattern paint servers,
-/// <c>&lt;text&gt;</c>, <c>&lt;image&gt;</c>, <c>&lt;use&gt;</c>, clip/mask/filter/marker refs, nested viewports
-/// — makes <see cref="TryEmit"/> return <see langword="false"/> so the caller falls back to the raster path.
+/// <c>&lt;text&gt;</c>, <c>&lt;image&gt;</c>, <c>&lt;use&gt;</c>, element <c>opacity</c> below 1,
+/// clip/mask/filter/marker refs, nested viewports — makes <see cref="TryEmit"/> return
+/// <see langword="false"/> so the caller falls back to the raster path.
 /// The walk is ALL-OR-NOTHING: it collects the paint ops into a buffer and only writes them to the page if the
 /// whole document is supported, so a partial document never leaves half-drawn native ops on the page.</summary>
 internal static class SvgNativeEmitter
@@ -94,6 +95,9 @@ internal static class SvgNativeEmitter
         var state = new SvgRenderState { ViewportW = vpW, ViewportH = vpH };
         var ops = new List<NativeOp>();
         var rootStyle = SvgRasterizer.ResolveStyle(root, SvgStyle.Initial, state);
+        // A compositing feature on the root <svg> (opacity / clip-path / mask / filter) fades or clips the
+        // WHOLE drawing — the native path can't reproduce it, so bail to raster (which does).
+        if (HasUnsupportedCompositing(root)) { sawUnsupported = true; return false; }
         var supported = true;
         foreach (var child in root.Elements())
         {
@@ -141,9 +145,17 @@ internal static class SvgNativeEmitter
     /// the moment an unsupported feature is hit (the caller aborts the whole document to the raster path).</summary>
     private static bool Walk(XElement el, SKMatrix ctm, SvgStyle inherited, List<NativeOp> ops, SvgRenderState state, int depth)
     {
-        if (depth > SvgRasterizer.MaxDepth) return false;
+        // DoS guards: share the rasterizer's depth AND element budget so a huge flat SVG bails to raster
+        // instead of allocating an unbounded native-op buffer (parity with SvgRasterizer.RenderElement).
+        if (depth > SvgRasterizer.MaxDepth || ++state.Elements > SvgRasterizer.MaxElements) return false;
         var name = el.Name.LocalName.ToLowerInvariant();
         if (NonRendering.Contains(name)) return true; // definition — renders nothing
+
+        // Compositing features the native path can't reproduce — opacity (an isolated transparency group),
+        // clip-path / mask / filter (subtree effects) — force the WHOLE document to the raster path, which DOES
+        // implement them. Checked on every rendered element (group or shape): the all-or-nothing contract means
+        // over-rejecting to raster is always safe, but native output that silently ignores these is not.
+        if (HasUnsupportedCompositing(el)) return false;
 
         // Compose this element's own transform onto the CTM (child coords → parent coords → … → PDF).
         var local = ctm;
@@ -164,6 +176,11 @@ internal static class SvgNativeEmitter
             // A gradient / pattern paint server is out of scope for the native first cut → fall back to raster.
             if (style.FillRef is not null || style.StrokeRef is not null) return false;
 
+            // Marker refs (marker-start / -mid / -end, cascaded via the resolved style) draw extra vertex
+            // symbols the native cut doesn't place — the raster path does. Fall back so they aren't dropped.
+            if (style.MarkerStart is not null || style.MarkerMid is not null || style.MarkerEnd is not null)
+                return false;
+
             using var path = SvgRasterizer.BuildShapePath(el, style, state);
             if (path is null) return true; // a degenerate shape (e.g. zero radius) paints nothing — supported
             using var devicePath = new SKPath(path);
@@ -172,8 +189,10 @@ internal static class SvgNativeEmitter
             if (segments.Count == 0) return true;
 
             var scale = Math.Sqrt(Math.Abs(local.ScaleX * local.ScaleY - local.SkewX * local.SkewY));
+            // fill-rule via the presentation accessor so an inline `style="fill-rule:evenodd"` wins over the
+            // attribute (SVG §6.4), matching the raster path's style resolution.
             var evenOdd = string.Equals(
-                SvgRasterizer.Attr(el, "fill-rule")?.Trim(), "evenodd", StringComparison.OrdinalIgnoreCase);
+                SvgAttr.Presentation(el, "fill-rule")?.Trim(), "evenodd", StringComparison.OrdinalIgnoreCase);
 
             // Fill: a visible (non-none, non-transparent) fill at fill-opacity. FillRef was ruled out above.
             if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
@@ -249,6 +268,41 @@ internal static class SvgNativeEmitter
             }
         }
         return segs;
+    }
+
+    /// <summary>True when <paramref name="el"/> carries a compositing feature the native cut can't reproduce
+    /// faithfully — element <c>opacity</c> below 1 (an isolated transparency group), or a live
+    /// <c>clip-path</c> / <c>mask</c> / <c>filter</c> reference (subtree effects). Any of these forces the
+    /// whole document to the raster path. Reads via the presentation accessor so an inline <c>style="…"</c>
+    /// declaration is honored (SVG §6.4).</summary>
+    private static bool HasUnsupportedCompositing(XElement el)
+    {
+        if (ParseOpacityValue(SvgAttr.Presentation(el, "opacity")) is { } op && op < 1f) return true;
+        return IsActiveReference(SvgAttr.Presentation(el, "clip-path"))
+            || IsActiveReference(SvgAttr.Presentation(el, "mask"))
+            || IsActiveReference(SvgAttr.Presentation(el, "filter"));
+    }
+
+    /// <summary>A <c>clip-path</c> / <c>mask</c> / <c>filter</c> value is "active" when it's set to anything
+    /// other than <c>none</c> (i.e. a <c>url(#id)</c> or basic-shape reference that changes rendering).</summary>
+    private static bool IsActiveReference(string? raw)
+    {
+        if (raw is null) return false;
+        raw = raw.Trim();
+        return raw.Length > 0 && !raw.Equals("none", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Parse an SVG <c>opacity</c> value (a number or percentage, clamped to [0, 1]); returns
+    /// <see langword="null"/> when absent or unparseable (treated as the initial 1). Mirrors the rasterizer's
+    /// <c>ReadOpacity</c> parse.</summary>
+    private static float? ParseOpacityValue(string? raw)
+    {
+        if (raw is null) return null;
+        raw = raw.Trim();
+        if (raw.EndsWith('%') && double.TryParse(raw[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+            return (float)Math.Clamp(pct / 100.0, 0, 1);
+        return double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)
+            ? (float)Math.Clamp(v, 0, 1) : null;
     }
 
     /// <summary>Raise a quadratic Bézier (p0→p1(control)→p2) to a cubic (2/3 rule) and append it.</summary>

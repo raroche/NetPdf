@@ -192,11 +192,15 @@ internal sealed class ImageResourceCache
     /// boxes with a non-<c>normal</c>, recognized mode appear.</summary>
     public Dictionary<Box, string> BlendModeBoxes { get; } = new();
 
-    /// <summary>Phase 4 <c>opacity</c> — element-backed box → its computed opacity in [0, 1). The painter
-    /// wraps the box's decoration in a constant-alpha graphics state (<c>/ca</c>+<c>/CA</c>), and the text
-    /// pass folds the same alpha into the box's glyph runs. Only boxes with opacity STRICTLY below 1 appear
-    /// (opacity: 1, the initial, is a no-op → byte-identical). Opacity does not inherit (CSS Color L4 §12.1);
-    /// the value stored is the box's own.</summary>
+    /// <summary>Phase 4 <c>opacity</c> — box → its EFFECTIVE opacity in [0, 1): the box's own computed value
+    /// multiplied by every ancestor's opacity. The painter wraps the box's decoration in a constant-alpha
+    /// graphics state (<c>/ca</c>+<c>/CA</c>), and the text pass folds the same alpha into the box's glyph runs.
+    /// Only boxes whose effective opacity is STRICTLY below 1 appear (opacity: 1 everywhere is a no-op →
+    /// byte-identical). Opacity does not INHERIT as a computed value (CSS Color L4 §12.1), but its rendering
+    /// effect fades the whole descendant subtree — so a descendant that declares no opacity of its own still
+    /// gets an entry when an ancestor is faded (element-backed AND anonymous boxes both appear). This multiplies
+    /// the per-object alpha down the tree, approximating the isolated transparency group (exact for the common
+    /// non-self-overlapping case).</summary>
     public Dictionary<Box, double> OpacityBoxes { get; } = new();
 
     /// <summary>RAW url → resolved URI key for EXTRA (non-box) references — the page margin
@@ -303,6 +307,7 @@ internal sealed class ImageResourceCache
             ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
             ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
             inheritedTextShadow: null,
+            inheritedOpacity: 1.0,
             ref transform3DReported, ref transformUnsupportedReported,
             ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
             ref borderImageReported, ref opacityApproximatedReported);
@@ -464,6 +469,10 @@ internal sealed class ImageResourceCache
         // the recursion so a descendant box without its own value inherits it. Passed explicitly at both
         // call sites (root = null; children = the box's effective list).
         IReadOnlyList<CssTextShadow>? inheritedTextShadow,
+        // opacity's rendering effect fades the whole subtree, so the PRODUCT of every ancestor's opacity is
+        // threaded down (root = 1.0; children = this box's effective opacity). opacity doesn't INHERIT as a
+        // computed value, but a faded group fades everything painted under it — see the effective store below.
+        double inheritedOpacity,
         ref bool transform3DReported,
         ref bool transformUnsupportedReported,
         ref bool filterElementReported,
@@ -475,6 +484,9 @@ internal sealed class ImageResourceCache
         // text-shadow inherits through this box (incl. anonymous boxes with no SourceElement) — default to
         // the ancestor's value; an element-backed box may REPLACE it below before passing it to children.
         var effectiveTextShadow = inheritedTextShadow;
+        // This box's OWN opacity (default 1.0 = the initial + every anonymous box). Set from the element's
+        // computed value below; multiplied with the ancestor product to get the effective subtree alpha.
+        var ownOpacity = 1.0;
         if (box.SourceElement is { } element)
         {
             // transform (Phase 4) — the box's OWN declared value (transform doesn't inherit),
@@ -603,7 +615,7 @@ internal sealed class ImageResourceCache
             // transparency-group Form XObject (the deferred IPaintTarget epic).
             if (ParseOpacity(rules?.GetWinner("opacity")?.ResolvedValue) is { } op && op < 1.0)
             {
-                opacityBoxes[box] = op;
+                ownOpacity = op;
                 if (!opacityApproximatedReported)
                 {
                     diagnostics.Emit(new Diagnostic(
@@ -754,6 +766,15 @@ internal sealed class ImageResourceCache
                 }
             }
         }
+        // The effective subtree alpha = this box's own opacity × the ancestor product. opacity's rendering
+        // effect applies to the element AND its whole descendant subtree, so we store the EFFECTIVE value on
+        // every box (element-backed OR anonymous) whose effective alpha is < 1 — a descendant that declares no
+        // opacity of its own still gets a faded entry from a faded ancestor. The painters look this up by
+        // fragment box, so the box's decoration / image / text all fade. Multiplying the per-object alpha down
+        // the tree approximates the isolated transparency group (exact for the common non-self-overlapping
+        // case), consistent with the per-object diagnostic emitted once at the declaring box.
+        var effectiveOpacity = inheritedOpacity * ownOpacity;
+        if (effectiveOpacity < 1.0) opacityBoxes[box] = effectiveOpacity;
         foreach (var child in box.Children)
             CollectReferences(
                 child, cascade, references, gradientBoxes, radialGradientBoxes, conicGradientBoxes,
@@ -764,6 +785,7 @@ internal sealed class ImageResourceCache
                 ref unsupportedBackgroundReported, ref boxShadowUnsupportedReported,
                 ref textShadowUnsupportedReported, ref textShadowBlurRasterReported,
                 effectiveTextShadow,
+                effectiveOpacity,
                 ref transform3DReported, ref transformUnsupportedReported,
                 ref filterElementReported, ref clipPathUnsupportedReported, ref maskElementReported,
                 ref borderImageReported, ref opacityApproximatedReported);

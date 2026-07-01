@@ -250,16 +250,18 @@ Both NetPdf and the Chrome reference renderer use **only** these fonts. Common s
 
 Phase 4 is complete when:
 
-1. ✅ All visual-regression diffs against pinned-Chrome references pass within tolerance (per-pixel < 4, SSIM > 0.98).
-2. ✅ All 4 invoice corpus files match Chrome reference PNGs within tolerance.
+1. 🔶 All visual-regression diffs against pinned-Chrome references pass within tolerance (per-pixel < 4, SSIM > 0.98). — **Gate machinery complete** (PDFium rasterizer + `PixelDiff` + `VisualGatePolicy`, which auto-activates once references exist); **MAINTAINER STEP**: commit the canonical per-page reference PNGs generated on Linux (see criterion 9) under `tests/NetPdf.RenderingCorpus/references/`. Inert until they land.
+2. 🔶 All 4 invoice corpus files match Chrome reference PNGs within tolerance. — Same maintainer step as (1); the C# oracle (`ChromeReferenceGenerator`) is validated end-to-end in-sandbox (a solid box pixel-matches Chrome, maxΔ 0 / SSIM 1).
 3. ✅ Conic gradients, blurred shadows, all filters, complex clip-path, masks all engage raster fallback with the correct diagnostic codes.
 4. ✅ Static SVG corpus renders correctly.
 5. ✅ Hyperlinks survive a round-trip through PDFium.
 6. ✅ Optional outlines materialize as PDF bookmarks.
 7. ✅ Performance: no regression vs Phase 3 targets.
 8. ✅ AOT smoke + determinism still pass.
-9. ✅ Pinned-Chrome Docker image is reproducibly buildable; reference regeneration is a documented manual workflow.
-10. ✅ CHANGELOG updated, `0.9.0-rc1` tagged.
+9. ✅ Pinned-Chrome Docker image is reproducibly buildable; reference regeneration is a documented manual workflow (`tests/NetPdf.RenderingCorpus/docker/`).
+10. 🔶 CHANGELOG updated, `0.9.0-rc1` tagged. — CHANGELOG **updated + `0.9.0-rc1` staged** (`Directory.Build.props` + `build/version.json` + heading, guarded by `ReleaseVersionParityTests`); the annotated git tag is applied by the maintainer after the closeout PR merges (same protocol as `0.7.0-beta`).
+
+> **Closeout status (2026-07-01):** the rc1 release is STAGED (this doc + CHANGELOG + version surfaces). Criteria 3–9 are met in-code and CI-gated. The only work between here and a fully-green Phase 4 is the two **maintainer/CI** actions above: (a) generate + commit the Linux canonical reference PNGs → flips criteria 1–2 green + activates the enforcing gate, and (b) apply the `0.9.0-rc1` git tag → closes criterion 10. No further engine changes are required to exit the phase; the deferred IPaintTarget group-compositing epic and the native-SVG subset extension are post-rc1 quality work (`docs/deferrals.md`), not exit criteria.
 
 ## Common pitfalls
 

@@ -6,7 +6,23 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 ## [Unreleased]
 
-The `0.7.0-beta` entry below is **prepared for tagging** — version bumped, CHANGELOG written, exit criteria signed off — but the git tag is created by the maintainer after PR merge. Until tagged, treat the section as the staged contents of the next release. (The earlier `0.3.0-alpha` entry is staged the same way.) Post-`0.7.0-beta` improvements accumulate under **Unreleased** below until the next release is cut.
+Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
+
+## [0.9.0-rc1] — staged for 2026-07-01 (tag pending PR merge)
+
+Phase 4 — **visual parity**. NetPdf now renders the full v1-scoped set of CSS *visual* features to PDF: gradients (linear / radial / conic), box- and text-shadows (sharp + blurred), 2D transforms, CSS filters on images, faithful borders + `clip-path`, `border-image`, masks + `mix-blend-mode` on images, `opacity` (incl. descendant-subtree propagation + the CSS-wide keywords), hyperlink Link annotations, document outlines, multi-layer backgrounds, and static SVG (parts 1–13 + an opt-in native-vector path). Native PDF is the default; a Skia raster fallback (with a stable diagnostic) engages only where a feature can't be expressed natively. The repository remains **private through Phase 5**; this is a git-tag-only milestone (no NuGet — that lands at v1.0).
+
+**Exit-criteria sign-off** (`docs/phases/phase-4-visual-parity.md` §Exit criteria):
+
+- ✅ **(3)** Conic gradients, blurred shadows, all filters, complex clip-path, and masks engage the raster fallback with the correct diagnostic codes — gated by the unit + rendering-corpus suites.
+- ✅ **(4)** Static SVG corpus renders correctly (SVG parts 1–13; `<img>`-sourced + XXE-hardened).
+- ✅ **(5)** Hyperlinks survive a round-trip through PDFium; ✅ **(6)** optional outlines materialize as PDF bookmarks.
+- ✅ **(7)** No performance regression vs Phase 3 targets; ✅ **(8)** AOT smoke + determinism still pass (`2942DD1E…`).
+- ✅ **(9)** The pinned-Chrome Docker image is reproducibly buildable and reference regeneration is a documented manual workflow (`tests/NetPdf.RenderingCorpus/docker/`); the C# in-process oracle (`ChromeReferenceGenerator`) is validated end-to-end in-sandbox.
+- 🔶 **(1)/(2)** The visual-regression **diff gate machinery is complete** — PDFium rasterizer, the Chrome oracle (with the `NETPDF_REQUIRE_CHROME_ORACLE` CI gate), `PixelDiff`, and `VisualGatePolicy` (which auto-activates the moment references exist). The remaining step is a **maintainer/CI action**: generate the canonical per-page reference PNGs on **Linux** (macOS Chrome drifts on font hinting/AA → false diffs) and commit them under `tests/NetPdf.RenderingCorpus/references/`. Until they land the gate is inert (no references to diff against).
+- 🔶 **(10)** CHANGELOG updated + `0.9.0-rc1` staged here; the annotated git tag is applied by the maintainer after this PR merges (same protocol as `0.7.0-beta`).
+
+**Known approximations carried into rc1** (diagnosed, never silently wrong — full list in `docs/deferrals.md`): `opacity` is a per-object constant alpha, not a true isolated transparency group (`CSS-OPACITY-GROUP-APPROXIMATED-001`); general-element (non-image) filters / masks / isolated blend + `clip-path` subtree await the IPaintTarget / Form-XObject seam; the native-vector-SVG opt-in covers a shapes/paths subset and falls back to raster for the rest; `revert`/`revert-layer` on `opacity` resolve to the initial `1` until a central cascade interceptor exists.
 
 ### Added — Phase 4: native `opacity`, native vector SVG (opt-in), C# Chrome reference generator
 

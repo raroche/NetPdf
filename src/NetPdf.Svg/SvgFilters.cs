@@ -126,7 +126,7 @@ internal static class SvgFilters
                         : PrimPair(SvgRasterizer.Attr(prim, "stdDeviation"), pbbox, ParseStdDeviation);
                     var dx = prim.Attribute("dx") is not null ? PrimLen(SvgRasterizer.Attr(prim, "dx"), pbbox?.Width) : DefaultLen(2f, pbbox?.Width);
                     var dy = prim.Attribute("dy") is not null ? PrimLen(SvgRasterizer.Attr(prim, "dy"), pbbox?.Height) : DefaultLen(2f, pbbox?.Height);
-                    output = SKImageFilter.CreateDropShadow(dx, dy, bx, by, FloodColor(prim, style), input);
+                    output = SKImageFilter.CreateDropShadow(dx, dy, bx, by, FloodColor(prim), input);
                     break;
                 }
                 case "fecolormatrix":
@@ -143,7 +143,7 @@ internal static class SvgFilters
                 }
                 case "feflood":
                 {
-                    using var shader = SKShader.CreateColor(FloodColor(prim, style));
+                    using var shader = SKShader.CreateColor(FloodColor(prim));
                     output = SKImageFilter.CreateShader(shader);
                     break;
                 }
@@ -250,13 +250,13 @@ internal static class SvgFilters
                 case "fediffuselighting":
                 {
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
-                    output = BuildLighting(prim, input, specular: false, pbbox, style, ref sawUnsupported);
+                    output = BuildLighting(prim, input, specular: false, pbbox, ref sawUnsupported);
                     break;
                 }
                 case "fespecularlighting":
                 {
                     var input = CropInput(ResolveInput(prim, "in", last, results, ref sawUnsupported), subregion);
-                    output = BuildLighting(prim, input, specular: true, pbbox, style, ref sawUnsupported);
+                    output = BuildLighting(prim, input, specular: true, pbbox, ref sawUnsupported);
                     break;
                 }
                 case "fetile":
@@ -647,9 +647,9 @@ internal static class SvgFilters
 
     /// <summary>The <c>flood-color</c> × <c>flood-opacity</c> for <c>feFlood</c> / <c>feDropShadow</c>
     /// (default black, fully opaque).</summary>
-    private static SKColor FloodColor(XElement prim, SvgStyle style)
+    private static SKColor FloodColor(XElement prim)
     {
-        var color = ResolveColor(SvgAttr.Presentation(prim, "flood-color"), SKColors.Black, style);
+        var color = ResolveColor(prim, SvgAttr.Presentation(prim, "flood-color"), SKColors.Black);
         var floodOpacity = ParseFloodOpacity(SvgAttr.Presentation(prim, "flood-opacity"));
         return color.WithAlpha((byte)Math.Clamp((int)Math.Round(color.Alpha / 255f * floodOpacity * 255f), 0, 255));
     }
@@ -1015,13 +1015,13 @@ internal static class SvgFilters
     /// (<c>feDistantLight</c> / <c>fePointLight</c> / <c>feSpotLight</c>) lights it with the
     /// <c>lighting-color</c>, <c>surfaceScale</c>, and <c>diffuseConstant</c> / (<c>specularConstant</c> +
     /// <c>specularExponent</c>). A missing / unknown light source flags + passes the input through.</summary>
-    private static SKImageFilter? BuildLighting(XElement prim, SKImageFilter? input, bool specular, SKRect? pbbox, SvgStyle style, ref bool sawUnsupported)
+    private static SKImageFilter? BuildLighting(XElement prim, SKImageFilter? input, bool specular, SKRect? pbbox, ref bool sawUnsupported)
     {
         var surfaceScale = ReadFloat(prim, "surfaceScale", 1f);
         // kernelUnitLength (§15.7.5) changes the surface-normal sampling grid; Skia's lighting filters sample
         // at device resolution, so an explicit value alters the result we can't reproduce → flagged.
         if (SvgRasterizer.HasAnyAttr(prim, "kernelUnitLength")) sawUnsupported = true;
-        var color = LightingColor(prim, style);
+        var color = LightingColor(prim);
         XElement? light = null;
         foreach (var c in prim.Elements())
             if (c.Name.LocalName.ToLowerInvariant() is "fedistantlight" or "fepointlight" or "fespotlight") { light = c; break; }
@@ -1054,18 +1054,34 @@ internal static class SvgFilters
     private static SKImageFilter? Flag(ref bool sawUnsupported, SKImageFilter? input) { sawUnsupported = true; return input; }
 
     /// <summary>The <c>lighting-color</c> presentation property (default white; <c>currentColor</c> resolves to
-    /// the inherited <c>color</c>).</summary>
-    private static SKColor LightingColor(XElement prim, SvgStyle style) =>
-        ResolveColor(SvgAttr.Presentation(prim, "lighting-color"), SKColors.White, style);
+    /// the PRIMITIVE's own computed <c>color</c>).</summary>
+    private static SKColor LightingColor(XElement prim) =>
+        ResolveColor(prim, SvgAttr.Presentation(prim, "lighting-color"), SKColors.White);
 
-    /// <summary>Resolve a filter color keyword: <c>currentColor</c> → the inherited <c>color</c>; else parse
-    /// (default <paramref name="fallback"/> when absent / unparseable).</summary>
-    private static SKColor ResolveColor(string? raw, SKColor fallback, SvgStyle style)
+    /// <summary>Resolve a filter-primitive color keyword: <c>currentColor</c> → the primitive element's own
+    /// computed <c>color</c> (§ Filter Effects — color/flood-color/lighting-color are presentation attributes on
+    /// the PRIMITIVE, so <c>currentColor</c> comes from the primitive's color cascade, NOT the filtered
+    /// element); else parse (default <paramref name="fallback"/> when absent / unparseable).</summary>
+    private static SKColor ResolveColor(XElement prim, string? raw, SKColor fallback)
     {
         if (raw is null) return fallback;
         raw = raw.Trim();
-        if (raw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) return style.CurrentColor;
+        if (raw.Equals("currentColor", StringComparison.OrdinalIgnoreCase)) return PrimitiveCurrentColor(prim);
         return SvgColor.TryParse(raw, out var c) ? c : fallback;
+    }
+
+    /// <summary>The computed <c>color</c> of a filter primitive: the first <c>color</c> presentation value
+    /// (an attribute or an inline <c>style="color:…"</c>) found walking UP the primitive's own ancestor chain
+    /// (primitive → <c>&lt;filter&gt;</c> → … → root), else the initial value black. This is the primitive's
+    /// document-tree cascade — independent of the element that references the filter.</summary>
+    private static SKColor PrimitiveCurrentColor(XElement prim)
+    {
+        for (var e = prim; e is not null; e = e.Parent)
+            if (SvgAttr.Presentation(e, "color") is { } c
+                && !c.Trim().Equals("currentColor", StringComparison.OrdinalIgnoreCase)
+                && SvgColor.TryParse(c, out var col))
+                return col;
+        return SKColors.Black; // the initial `color`
     }
 
     /// <summary>An <c>feDistantLight</c> direction from <c>azimuth</c>/<c>elevation</c> (degrees): the unit

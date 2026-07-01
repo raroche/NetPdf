@@ -14,9 +14,9 @@ namespace NetPdf.Svg;
 /// runs) onto the raster canvas using Skia's text shaping. Honors <c>x</c>/<c>y</c>, per-run
 /// <c>dx</c>/<c>dy</c> and absolute <c>x</c>/<c>y</c>, <c>text-anchor</c> (start/middle/end), the inherited
 /// font properties (family / size / weight / style), and fill / stroke incl. a gradient paint server.
-/// Also supports <c>textPath</c>, per-glyph <c>rotate</c>, and <c>textLength</c> / <c>lengthAdjust</c>
-/// (<c>spacing</c> + <c>spacingAndGlyphs</c>) on a single text chunk. Out of scope (raster fallback):
-/// <c>textLength</c> across multiple chunks (flagged), bidi/complex-script reordering.</summary>
+/// Also supports <c>textPath</c>, per-glyph <c>rotate</c> (a global cross-tspan index), and <c>textLength</c> /
+/// <c>lengthAdjust</c> (<c>spacing</c> + <c>spacingAndGlyphs</c> on a single chunk; a whole-text horizontal
+/// scale across multiple chunks). Out of scope (raster fallback): bidi/complex-script reordering.</summary>
 internal static class SvgText
 {
     private readonly record struct Run(string Text, SvgStyle Style, float? AbsX, float? AbsY, float Dx, float Dy, float[]? Rotate, int RotateStart);
@@ -44,16 +44,20 @@ internal static class SvgText
         if (TryDrawTextLength(canvas, text, runs, startX, startY, style, state)) return;
 
         // textLength across MULTIPLE chunks (an absolute-x tspan) is fitted by a whole-text horizontal scale
-        // about the start x (spacingAndGlyphs semantics — a per-chunk spacing distribution is ambiguous).
+        // (spacingAndGlyphs semantics — a per-chunk spacing distribution is ambiguous). The scale is about the
+        // text's LEFTMOST rendered edge, so an anchored (middle/end) or left-of-x chunk stays inside the span.
         var textLenSave = -1;
-        if (HasLen(text, "textLength", state, style, LenAxis.X, out var mcTarget) && mcTarget > 0
-            && MeasureTextExtent(runs, startX) is var extent && extent > 0)
+        if (HasLen(text, "textLength", state, style, LenAxis.X, out var mcTarget) && mcTarget > 0)
         {
-            var scale = mcTarget / extent;
-            textLenSave = canvas.Save();
-            canvas.Translate(startX, 0f);
-            canvas.Scale(scale, 1f);
-            canvas.Translate(-startX, 0f);
+            var (extentLeft, extentWidth) = MeasureTextExtent(runs, startX);
+            if (extentWidth > 0)
+            {
+                var scale = mcTarget / extentWidth;
+                textLenSave = canvas.Save();
+                canvas.Translate(extentLeft, 0f);
+                canvas.Scale(scale, 1f);
+                canvas.Translate(-extentLeft, 0f);
+            }
         }
 
         // A run with an absolute x establishes a new "text chunk" (SVG §10.5); text-anchor is resolved
@@ -99,12 +103,15 @@ internal static class SvgText
         if (textLenSave >= 0) canvas.RestoreToCount(textLenSave); // pop the multi-chunk textLength scale
     }
 
-    /// <summary>The natural horizontal extent of the whole text (all chunks) from <paramref name="startX"/> to
-    /// the rightmost chunk edge — the denominator for a multi-chunk <c>textLength</c> scale. Mirrors the chunk
-    /// positioning of the main draw loop (absolute-x chunks + per-chunk text-anchor).</summary>
-    private static float MeasureTextExtent(List<Run> runs, float startX)
+    /// <summary>The natural horizontal extent of the whole text (all chunks): the LEFTMOST rendered edge and the
+    /// total width to the rightmost edge — the origin + denominator for a multi-chunk <c>textLength</c> scale.
+    /// Tracks BOTH edges so an anchored (middle/end) chunk or a <c>&lt;tspan x&gt;</c> left of the root x is
+    /// accounted for. Mirrors the chunk positioning of the main draw loop (absolute-x chunks + per-chunk
+    /// text-anchor).</summary>
+    private static (float Left, float Width) MeasureTextExtent(List<Run> runs, float startX)
     {
-        var maxRight = startX;
+        var minLeft = float.MaxValue;
+        var maxRight = float.MinValue;
         var i = 0;
         while (i < runs.Count)
         {
@@ -117,11 +124,12 @@ internal static class SvgText
                 chunkWidth += runs[k].Dx + MeasureRun(f, runs[k].Text, runs[k].Style);
             }
             var anchorFactor = (runs[i].Style.TextAnchor?.Trim().ToLowerInvariant()) switch { "middle" => 0.5f, "end" => 1f, _ => 0f };
-            var right = (runs[i].AbsX ?? startX) - anchorFactor * chunkWidth + chunkWidth;
-            if (right > maxRight) maxRight = right;
+            var left = (runs[i].AbsX ?? startX) - anchorFactor * chunkWidth;
+            if (left < minLeft) minLeft = left;
+            if (left + chunkWidth > maxRight) maxRight = left + chunkWidth;
             i = j;
         }
-        return maxRight - startX;
+        return maxRight > minLeft ? (minLeft, maxRight - minLeft) : (startX, 0f);
     }
 
     /// <summary>Fit a single text chunk to <c>textLength</c> (§10.5). <c>lengthAdjust="spacingAndGlyphs"</c>

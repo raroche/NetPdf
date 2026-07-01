@@ -74,4 +74,42 @@ public sealed class SvgTextLengthRasterizerTests
         Assert.False(unsupported);
         Assert.InRange(MaxInkX(info), 40, 72);   // rightmost ink near x = 5 + 60 (was ≈ 80+ naturally)
     }
+
+    private static int MinInkX(NetPdf.Pdf.Images.RasterImageInfo info)
+    {
+        var minX = int.MaxValue;
+        for (var y = 0; y < info.Height; y++)
+            for (var x = 0; x < info.Width; x++)
+                if (info.PixelBytes[(y * info.Width + x) * 4 + 3] > 40 && x < minX) minX = x;
+        return minX == int.MaxValue ? -1 : minX;
+    }
+
+    [Fact]
+    public void Text_length_multi_chunk_accounts_for_an_end_anchored_chunk_left_of_x()
+    {
+        // A second chunk with text-anchor="end" at x=90 extends LEFT of x=90; the extent tracks both edges, so
+        // the whole span (leftmost of chunk 1 to rightmost of chunk 2) scales to textLength — the ink stays
+        // within a bounded window, not runaway. Not flagged.
+        var info = Render(
+            "<text x=\"10\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"70\">Hi<tspan x=\"90\" text-anchor=\"end\">Yo</tspan></text>",
+            out var unsupported);
+        Assert.False(unsupported);
+        var lo = MinInkX(info);
+        var hi = MaxInkX(info);
+        Assert.True(lo >= 0);
+        Assert.InRange(hi - lo, 40, 90);         // the total rendered span ≈ textLength (70), edges both tracked
+    }
+
+    [Fact]
+    public void Text_length_multi_chunk_with_a_middle_anchored_chunk_stays_bounded()
+    {
+        // A middle-anchored second chunk centers on x=80 (extends both ways). The scale about the leftmost edge
+        // keeps the whole text within a bounded span ≈ textLength.
+        var info = Render(
+            "<text x=\"10\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"60\">Hi<tspan x=\"80\" text-anchor=\"middle\">Yo</tspan></text>",
+            out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(MinInkX(info) >= 0);
+        Assert.InRange(MaxInkX(info) - MinInkX(info), 35, 80);
+    }
 }

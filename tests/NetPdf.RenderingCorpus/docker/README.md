@@ -43,8 +43,9 @@ macOS / Linux / Windows — no separate install):
   RGBA `RasterImage` per page (read via `SKBitmap.Pixels`, native-order-independent).
 - `PdfRasterizers.TryCreateDefault` runs a cheap native-load probe (renders a trivial NetPdf PDF); it returns
   the `PdfiumRasterizer` on success, or reports unavailable (the runner skips) if the native lib can't load.
-- The `PDFtoImage` SkiaSharp floor (`3.119.2`) is applied via a per-project `VersionOverride` in
-  `NetPdf.RenderingCorpus.csproj` — `src/` stays pinned at `3.119.0`, so the byte-identity gates are untouched.
+- The `PDFtoImage` SkiaSharp floor (`3.119.2`) is the **repo-wide** SkiaSharp pin, so the harness measures the
+  SAME renderer dependency set as production (no per-project version split). The byte-identity gates were
+  re-verified after the `3.119.0 → 3.119.2` patch bump.
 
 So the ONLY remaining maintainer step is generating + committing the Chrome reference PNGs (Step 2); the
 NetPdf-side rasterization is live and unit-tested (`PdfRasterizerTests`).
@@ -63,9 +64,10 @@ docker run --rm -v "$PWD:/work" -w /work netpdf-visual-refs \
 git add tests/NetPdf.RenderingCorpus/references/*.png   # commit the regenerated references
 ```
 
-`generate-references.py` drives Playwright Chromium: for each diffable invoice it prints the page to PDF and
-rasterizes it at `VisualHarness.Dpi` (300) via `pypdfium2`, writing `references/<stem>.png`. Pin the
-Chromium revision via the Playwright version in the Dockerfile (never `latest`).
+`generate-references.py` drives Playwright Chromium: for each diffable invoice it prints to PDF and
+rasterizes EVERY page at `VisualHarness.Dpi` (300) via `pypdfium2`, writing one PNG per page —
+`references/<stem>-page-NNN.png` (1-based), matching the runner's per-page diff contract. Pin the Chromium
+revision via the Playwright version in the Dockerfile (never `latest`).
 
 > **Reference regeneration is a deliberate manual step — never run automatically in CI.** Upstream
 > Chrome / font drift must never silently change what the tests assert.

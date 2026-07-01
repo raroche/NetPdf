@@ -4,7 +4,8 @@
 #
 # Visual-regression REFERENCE generator (maintainer task — runs in the pinned-Chrome Docker image, see
 # README.md). For each diffable corpus invoice it drives Playwright Chromium to print the page to PDF, then
-# rasterizes page 1 at the harness DPI via PDFium (pypdfium2) and writes references/<stem>.png.
+# rasterizes EVERY page at the harness DPI via PDFium (pypdfium2) and writes one PNG per page,
+# references/<stem>-page-NNN.png (1-based), matching the runner's per-page diff contract.
 #
 # This is the Chrome ORACLE side only; NetPdf never bundles a browser. Run it deliberately, then commit the
 # regenerated PNGs — never wire it into CI (upstream Chrome/font drift must not silently change references).

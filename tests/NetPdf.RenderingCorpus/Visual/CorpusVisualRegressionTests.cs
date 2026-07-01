@@ -20,6 +20,7 @@ namespace NetPdf.RenderingCorpus.Visual;
 /// a reference exists — or the gate is required — a missing / unconfigured PDFium backend is a hard FAILURE,
 /// so CI can't go green by silently never rasterizing (PR-242 review [P1]). Diffable invoices live in the
 /// harness's own self-contained corpus and carry no remote resources (guarded below).</para></summary>
+[Collection(PdfiumCollection.Name)]
 public sealed class CorpusVisualRegressionTests(ITestOutputHelper output)
 {
     private readonly ITestOutputHelper _output = output;

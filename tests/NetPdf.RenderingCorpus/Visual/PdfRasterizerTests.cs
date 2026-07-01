@@ -10,6 +10,7 @@ namespace NetPdf.RenderingCorpus.Visual;
 /// so the factory returns a working rasterizer once the native-load probe succeeds; the placeholder still
 /// throws a clear message where a rasterizer is structurally required but none configured. The interface
 /// round-trips (a fake + the real PDFium adapter both satisfy it).</summary>
+[Collection(PdfiumCollection.Name)]
 public sealed class PdfRasterizerTests
 {
     [Fact]
@@ -50,6 +51,40 @@ public sealed class PdfRasterizerTests
         }
         Assert.True(blue > 100);   // the blue box rendered
         Assert.True(white > blue); // on a mostly-white page
+    }
+
+    [Fact]
+    public void Pdfium_rasterizer_renders_every_page_of_a_multi_page_pdf()
+    {
+        // The multi-page contract (page-for-page visual regression): a forced page break yields 2 pages, and
+        // the adapter must return BOTH — sized, and with DISTINCT content (blue on page 1, red on page 2).
+        // Guards against a page-indexing / PDFtoImage regression dropping or duplicating later pages.
+        var pdf = NetPdf.HtmlPdf.Convert(
+            "<html><body style=\"margin:0\">" +
+            "<div style=\"width:200px;height:120px;background:blue\"></div>" +
+            "<div style=\"break-before:page;width:200px;height:120px;background:red\"></div>" +
+            "</body></html>");
+        var pages = new PdfiumRasterizer().RasterizeAllPages(pdf, dpi: 96);
+        Assert.True(pages.Count >= 2, $"expected 2+ pages from the forced break, got {pages.Count}");
+        foreach (var p in pages)
+        {
+            p.EnsureValid();
+            Assert.True(p.Width > 50 && p.Height > 50);
+        }
+        Assert.True(CountColor(pages[0], red: false) > 100);          // page 1: the blue box
+        Assert.True(CountColor(pages[1], red: true) > 100);           // page 2: the red box (distinct content)
+        Assert.True(CountColor(pages[0], red: true) < CountColor(pages[1], red: true)); // pages differ
+    }
+
+    private static int CountColor(RasterImage img, bool red)
+    {
+        var n = 0;
+        for (var i = 0; i < img.Rgba.Length; i += 4)
+        {
+            var (r, g, b) = (img.Rgba[i], img.Rgba[i + 1], img.Rgba[i + 2]);
+            if (red ? (r > 150 && g < 90 && b < 90) : (b > 150 && r < 90 && g < 90)) n++;
+        }
+        return n;
     }
 
     [Fact]

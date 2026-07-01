@@ -17,11 +17,10 @@
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.1" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="8.3.1.1" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="8.3.1.1" />
-    <PackageVersion Include="SkiaSharp" Version="3.119.0" />
-    <PackageVersion Include="PDFtoImage" Version="5.2.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.0" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="3.119.0" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="3.119.0" />
+    <PackageVersion Include="SkiaSharp" Version="3.119.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="3.119.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="3.119.2" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
@@ -33,6 +32,11 @@
     <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
     <PackageVersion Include="SharpFuzz" Version="2.1.1" />
     <PackageVersion Include="Microsoft.Playwright" Version="1.49.0" />
+    <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
+         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. Its SkiaSharp floor is
+         3.119.2 — the repo-wide SkiaSharp pin above matches it, so the harness measures the same renderer
+         dependency set as production. See docs/legal/dependency-dossier.md. -->
+    <PackageVersion Include="PDFtoImage" Version="5.2.1" />
   </ItemGroup>
 
   <!-- Roslyn / source generator infrastructure. -->

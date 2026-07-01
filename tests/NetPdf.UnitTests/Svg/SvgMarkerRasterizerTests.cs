@@ -148,4 +148,22 @@ public sealed class SvgMarkerRasterizerTests
         Assert.NotNull(info);
         Assert.True(unsupported);
     }
+
+    [Fact]
+    public void Path_marker_orients_to_the_exact_curve_tangent_not_the_chord()
+    {
+        // The cubic M10,40 C10,10 40,10 40,40 ARRIVES at (40,40) travelling straight DOWN (tangent from the
+        // last control (40,10) → end = +90°), although the start→end CHORD is horizontal (0°). An end marker
+        // bar with orient=auto must rotate to the exact tangent (extend downward), not the chord (extend right).
+        var info = SvgRasterizer.TryRender(Svg(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\">" +
+            "<marker id=\"m\" markerWidth=\"8\" markerHeight=\"2\" markerUnits=\"userSpaceOnUse\" refX=\"0\" refY=\"1\" orient=\"auto\">" +
+            "<rect x=\"0\" y=\"0\" width=\"8\" height=\"2\" fill=\"red\"/></marker>" +
+            "<path d=\"M10,40 C10,10 40,10 40,40\" fill=\"none\" stroke=\"black\" marker-end=\"url(#m)\"/></svg>"),
+            out var unsupported);
+        Assert.NotNull(info);
+        Assert.False(unsupported);
+        Assert.True(Px(info!, 40, 46).R > 200);    // bar extends DOWN from (40,40) per the exact tangent (+90°)
+        Assert.Equal(0, Px(info!, 46, 40).A);      // NOT extending right along the chord (the old approximation)
+    }
 }

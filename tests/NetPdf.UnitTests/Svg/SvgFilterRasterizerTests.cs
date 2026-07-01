@@ -107,11 +107,11 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Theory]
-    // A primitive subregion / primitiveUnits still aren't modeled → flagged. (The EXPLICIT filter region is
-    // now honored — SVG part 9; in/result routing is supported — SVG part 7.)
-    [InlineData("<filter id=\"f\"><feGaussianBlur stdDeviation=\"1\" x=\"0\" y=\"0\" width=\"10\" height=\"10\"/></filter>")]   // primitive subregion
+    // primitiveUnits (the non-subregion remap), an external feImage href, and BackgroundImage/FillPaint inputs
+    // still aren't modeled → flagged. (Filter region — part 9; in/result routing — part 7; primitive
+    // SUBREGIONS — part 11; are all supported now.)
     [InlineData("<filter id=\"f\" primitiveUnits=\"objectBoundingBox\"><feGaussianBlur stdDeviation=\"1\"/></filter>")]        // primitiveUnits
-    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // unsupported primitive (non-data href)
+    [InlineData("<filter id=\"f\"><feImage href=\"x.png\"/></filter>")]                                                       // unsupported primitive (non-data, non-#id href)
     [InlineData("<filter id=\"f\"><feOffset dx=\"2\" in=\"BackgroundImage\"/></filter>")]                                     // unsupported input
     public void Filter_region_or_unsupported_input_is_flagged(string filter)
     {
@@ -625,11 +625,12 @@ public sealed class SvgFilterRasterizerTests
     }
 
     [Theory]
-    // An EXTERNAL href and an ELEMENT reference aren't modeled → flagged + an empty (transparent) result, NOT
-    // a content pass-through (feImage is a generator).
+    // An EXTERNAL href (no fetch) and a DANGLING element reference (the id doesn't resolve) → flagged + an
+    // empty (transparent) result, NOT a content pass-through (feImage is a generator). A RESOLVING element
+    // reference is supported (see Fe_image_element_reference_renders_the_referenced_subtree).
     [InlineData("<feImage href=\"http://example.com/x.png\"/>")]
     [InlineData("<feImage href=\"#other\"/>")]
-    public void Fe_image_external_or_element_reference_is_flagged(string prim)
+    public void Fe_image_external_or_dangling_reference_is_flagged(string prim)
     {
         var info = SvgRasterizer.TryRender(Svg(
             "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
@@ -882,5 +883,122 @@ public sealed class SvgFilterRasterizerTests
         Assert.True(unsupported);                  // a unit-suffixed objectBoundingBox value is flagged
         Assert.True(Px(info, 30, 30).B > 150);     // inside the default region (10..58): blue
         Assert.Equal(0, Px(info, 70, 30).A);       // x=70 is outside the default region — NOT the 20×-bbox bug
+    }
+
+    [Fact]
+    public void Fe_image_element_reference_renders_the_referenced_subtree()
+    {
+        // feImage href="#id" referencing an EXISTING element renders that subtree into the filter region (like
+        // a <use>), no longer flagged. A small blue rect at (5,5)-(15,15) is rendered + positioned inside the
+        // region and REPLACES the red source.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<defs><rect id=\"src\" x=\"5\" y=\"5\" width=\"10\" height=\"10\" fill=\"blue\"/></defs>" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feImage href=\"#src\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 10, 10).B > 150);     // the referenced blue rect, rendered + positioned in-region
+        Assert.True(Px(info, 10, 10).R < 100);     // not the red source (feImage REPLACES it)
+        Assert.Equal(0, Px(info, 30, 30).A);       // region area the small rect doesn't cover: transparent
+    }
+
+    [Fact]
+    public void Primitive_subregion_clips_a_flood_to_its_own_rect()
+    {
+        // A feFlood with an explicit subregion (x/y/width/height) fills ONLY that rect, not the whole filter
+        // region (userSpaceOnUse default units).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\">" +
+            "<feFlood flood-color=\"blue\" x=\"0\" y=\"0\" width=\"20\" height=\"20\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 10, 10).B > 150);     // inside the subregion: blue
+        Assert.Equal(0, Px(info, 30, 30).A);       // inside the filter region but OUTSIDE the subregion: transparent
+    }
+
+    [Fact]
+    public void Primitive_subregion_object_bounding_box_units_clips_and_is_flagged()
+    {
+        // primitiveUnits=objectBoundingBox maps the subregion as a bbox fraction (0..0.5 → top-left quadrant);
+        // the clip is modeled, but primitiveUnits' non-subregion remap is partial → flagged.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\" primitiveUnits=\"objectBoundingBox\">" +
+            "<feFlood flood-color=\"blue\" x=\"0\" y=\"0\" width=\"0.5\" height=\"0.5\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.True(unsupported);                  // primitiveUnits is partial → flagged
+        Assert.True(Px(info, 10, 10).B > 150);     // bbox top-left quadrant (0..20): blue
+        Assert.Equal(0, Px(info, 30, 30).A);       // outside the quadrant: transparent
+    }
+
+    [Fact]
+    public void Fe_tile_replicates_a_subregion_across_the_filter_region()
+    {
+        // A feFlood confined to a 10×10 subregion, then feTile → the tile fills the whole 40×40 filter region.
+        // Without feTile the flood would only cover its own subregion (the far corner would be transparent).
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\">" +
+            "<feFlood flood-color=\"blue\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" result=\"t\"/>" +
+            "<feTile in=\"t\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 5, 5).B > 150);       // tile origin: blue
+        Assert.True(Px(info, 35, 35).B > 150);     // far corner filled by tiling (transparent without feTile)
+    }
+
+    [Fact]
+    public void Primitive_subregion_bounds_a_blur_input_so_outside_content_does_not_bleed_in()
+    {
+        // PR-251 review [P1] — the subregion restricts a sampling primitive's CALCULATION, not just its output.
+        // A blur with a subregion covering ONLY the left half must not sample the RED shape sitting just outside
+        // the subregion and bleed its halo across the boundary. (A pure output crop would let the red halo in.)
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"80\" height=\"80\">" +
+            "<feGaussianBlur stdDeviation=\"6\" x=\"0\" y=\"0\" width=\"35\" height=\"80\"/></filter>" +
+            "<g filter=\"url(#f)\">" +
+            "<rect x=\"5\" y=\"30\" width=\"20\" height=\"20\" fill=\"blue\"/>" +   // inside the subregion (x < 35)
+            "<rect x=\"36\" y=\"30\" width=\"20\" height=\"20\" fill=\"red\"/>" +   // just OUTSIDE the subregion
+            "</g></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 20, 40).B > 80);      // the blurred blue rect (inside the subregion) is present
+        Assert.True(Px(info, 30, 40).R < 40);      // NO red bleed near the boundary (red was cropped from the input)
+        Assert.Equal(0, Px(info, 50, 40).A);       // outside the subregion entirely: nothing
+    }
+
+    [Fact]
+    public void Fe_image_scales_into_the_primitive_subregion_not_the_whole_region_then_cropped()
+    {
+        // PR-251 review [P1] — a data feImage with an explicit subregion (x/y/width/height) must be SCALED +
+        // ALIGNED into that subregion, not placed into the full filter region and then cropped. A WIDE 20×10
+        // image + xMidYMid meet into a 10×10 subregion → letterboxed to y∈[2.5,7.5] INSIDE the subregion (its
+        // center paints). Region-placement-then-crop would land the image at y≥10 → nothing in the subregion.
+        var png = "data:image/png;base64," + Convert.ToBase64String(SyntheticPng.BuildOpaqueRgb8(20, 10, 0x00, 0x00, 0xFF));
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            $"<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\"><feImage preserveAspectRatio=\"xMidYMid meet\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" href=\"{png}\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 5, 5).B > 150);       // image center, scaled into the 10×10 subregion: blue
+        Assert.Equal(0, Px(info, 5, 1).A);         // letterbox within the subregion (above the fitted image)
+        Assert.Equal(0, Px(info, 20, 20).A);       // outside the subregion: transparent
+    }
+
+    [Fact]
+    public void Fe_tile_destination_is_its_own_subregion()
+    {
+        // PR-251 review [P2] — feTile with its OWN x/y/width/height tiles into THAT subregion (the destination),
+        // not the whole filter region. Content fills the feTile subregion and is transparent outside it.
+        var info = Render(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">" +
+            "<filter id=\"f\" filterUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"40\" height=\"40\">" +
+            "<feFlood flood-color=\"blue\" x=\"0\" y=\"0\" width=\"10\" height=\"10\" result=\"t\"/>" +
+            "<feTile in=\"t\" x=\"0\" y=\"0\" width=\"20\" height=\"20\"/></filter>" +
+            "<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"red\" filter=\"url(#f)\"/></svg>", out var unsupported);
+        Assert.False(unsupported);
+        Assert.True(Px(info, 15, 15).B > 150);     // inside the feTile subregion (0..20): tiled blue
+        Assert.Equal(0, Px(info, 30, 30).A);       // inside the filter region but OUTSIDE the feTile subregion
     }
 }

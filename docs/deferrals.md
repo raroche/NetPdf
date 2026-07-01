@@ -2807,11 +2807,16 @@ flags the categories):
      native leak); the filter region distinguishes an EMPTY region (zero/negative width/height → the element
      renders nothing, §15.7.4) from "no region", resolves `userSpaceOnUse` per-attribute with §15 defaults
      (a partial/omitted attr stays in user space, not bbox math), and FLAGS an unknown `filterUnits` value;
-     lighting `kernelUnitLength` is FLAGGED; `mask-type` also reads an inline `style=`. **SVG residuals (later):**
-     remaining filter primitives (feTile + feImage ELEMENT refs; feTurbulence
-     `stitchTiles` + exact noise sums) + primitive
-     subregions / `primitiveUnits` + `BackgroundImage`/`FillPaint` inputs; exact curve tangents for path
-     markers (chord approximation); `rotate` global (cross-run) index + `textLength`/`lengthAdjust`;
+     lighting `kernelUnitLength` is FLAGGED; `mask-type` also reads an inline `style=`. **SVG part 11 closed 5
+     residuals:** `feTile` (`CreateTile` — tiles the input primitive's subregion across the region); `feImage`
+     ELEMENT references (`href="#id"` → the referenced subtree rendered to a region-sized raster, placed like a
+     `<use>`); per-primitive SUBREGIONS (`x`/`y`/`width`/`height` → a `CreateOffset` crop; `primitiveUnits=
+     objectBoundingBox` maps the subregion fractions, non-subregion remap stays partial→flagged); EXACT curve
+     tangents for path markers (from the segment control points, not the chord); `textLength`/`lengthAdjust`
+     (`spacing` + `spacingAndGlyphs`, single chunk — multi-chunk flagged). **SVG residuals (later):**
+     `feTurbulence` `stitchTiles` + exact noise sums; `primitiveUnits` non-subregion remap +
+     `BackgroundImage`/`FillPaint` inputs + an external `feImage` href;
+     `rotate` global (cross-run) index; `textLength` across multiple chunks;
      bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); `mask` region clip
      (`maskUnits` -10%..120% default region not clipped); pattern tile resolution under
      heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),

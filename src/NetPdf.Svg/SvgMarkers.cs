@@ -21,8 +21,8 @@ internal static class SvgMarkers
     /// the outgoing segment), end at the last (incoming), mid at the interior vertices (bisector). Honors
     /// <c>markerWidth</c>/<c>Height</c>, <c>refX</c>/<c>refY</c>, <c>markerUnits</c> (strokeWidth default /
     /// userSpaceOnUse), <c>orient</c> (auto / auto-start-reverse / angle), and the marker's
-    /// <c>viewBox</c>/<c>preserveAspectRatio</c>. Path tangents use chord directions (curve tangents
-    /// approximated).</summary>
+    /// <c>viewBox</c>/<c>preserveAspectRatio</c>. Path markers orient to the EXACT curve tangent at each
+    /// vertex (from the segment's control points), not the chord between endpoints.</summary>
     public static void DrawMarkers(SKCanvas canvas, XElement el, SvgStyle style, SvgRenderState state)
     {
         var startRef = style.MarkerStart;
@@ -107,47 +107,85 @@ internal static class SvgMarkers
     /// line / polyline / polygon use their points; a path uses its on-path verb endpoints (chord tangents).</summary>
     private static List<MarkerVertex> ExtractVertices(XElement el, SvgStyle style, SvgRenderState state)
     {
-        var pts = new List<SKPoint>();
         switch (el.Name.LocalName.ToLowerInvariant())
         {
             case "line":
-                pts.Add(new SKPoint((float)SvgRasterizer.Len(el, "x1", state, style, SvgRasterizer.LenAxis.X), (float)SvgRasterizer.Len(el, "y1", state, style, SvgRasterizer.LenAxis.Y)));
-                pts.Add(new SKPoint((float)SvgRasterizer.Len(el, "x2", state, style, SvgRasterizer.LenAxis.X), (float)SvgRasterizer.Len(el, "y2", state, style, SvgRasterizer.LenAxis.Y)));
-                break;
+            {
+                var pts = new List<SKPoint>
+                {
+                    new((float)SvgRasterizer.Len(el, "x1", state, style, SvgRasterizer.LenAxis.X), (float)SvgRasterizer.Len(el, "y1", state, style, SvgRasterizer.LenAxis.Y)),
+                    new((float)SvgRasterizer.Len(el, "x2", state, style, SvgRasterizer.LenAxis.X), (float)SvgRasterizer.Len(el, "y2", state, style, SvgRasterizer.LenAxis.Y)),
+                };
+                return ToVertices(pts);
+            }
             case "polyline":
             case "polygon":
-                pts.AddRange(SvgRasterizer.ParsePoints(SvgRasterizer.Attr(el, "points")));
+            {
+                var pts = new List<SKPoint>(SvgRasterizer.ParsePoints(SvgRasterizer.Attr(el, "points")));
                 if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase) && pts.Count > 0) pts.Add(pts[0]);
-                break;
+                return ToVertices(pts);
+            }
             case "path":
                 using (var p = SvgRasterizer.BuildShapePath(el, style, state))
-                    if (p is not null) pts.AddRange(PathVertices(p));
-                break;
+                    return p is not null ? PathVertices(p) : new List<MarkerVertex>();
         }
-        return ToVertices(pts);
+        return new List<MarkerVertex>();
     }
 
-    private static List<SKPoint> PathVertices(SKPath path)
+    /// <summary>Marker vertices for a <c>&lt;path&gt;</c> with EXACT curve tangents (SVG §11.6.2): a vertex's
+    /// orientation follows the curve's tangent at that point, computed from the segment's control points
+    /// (the first control distinct from the start for the OUTGOING direction; the last control distinct from
+    /// the end for the INCOMING direction) rather than the straight chord between on-path endpoints. A line /
+    /// close segment's tangent IS its chord. A shared vertex carries the incoming tangent of the arriving
+    /// segment and the outgoing tangent of the leaving segment (the mid-marker bisects them).</summary>
+    private static List<MarkerVertex> PathVertices(SKPath path)
     {
-        var pts = new List<SKPoint>();
+        var result = new List<MarkerVertex>();
         using var it = path.CreateRawIterator();
         var buf = new SKPoint[4];
         SKPathVerb verb;
         var subpathStart = new SKPoint();
-        var haveStart = false;
+
+        // Append the segment's END vertex (incoming tangent = arriveDir) and back-fill the PREVIOUS vertex's
+        // outgoing tangent (leaveDir) — the previous vertex is where this segment starts.
+        void Segment(double leaveDir, double arriveDir, SKPoint end)
+        {
+            if (result.Count > 0) result[^1] = result[^1] with { OutDeg = leaveDir };
+            result.Add(new MarkerVertex(end, arriveDir, arriveDir));
+        }
+
         while ((verb = it.Next(buf)) != SKPathVerb.Done)
         {
             switch (verb)
             {
-                case SKPathVerb.Move: subpathStart = buf[0]; haveStart = true; pts.Add(buf[0]); break;
-                case SKPathVerb.Line: pts.Add(buf[1]); break;
+                case SKPathVerb.Move: subpathStart = buf[0]; result.Add(new MarkerVertex(buf[0], 0, 0)); break;
+                case SKPathVerb.Line: { var d = Dir(buf[0], buf[1]); Segment(d, d, buf[1]); break; }
                 case SKPathVerb.Quad:
-                case SKPathVerb.Conic: pts.Add(buf[2]); break;
-                case SKPathVerb.Cubic: pts.Add(buf[3]); break;
-                case SKPathVerb.Close: if (haveStart) pts.Add(subpathStart); break; // closing segment back to the start
+                case SKPathVerb.Conic: Segment(LeaveDir(buf[0], buf[1], buf[2]), ArriveDir(buf[0], buf[1], buf[2]), buf[2]); break;
+                case SKPathVerb.Cubic: Segment(LeaveDir(buf[0], buf[1], buf[2], buf[3]), ArriveDir(buf[0], buf[1], buf[2], buf[3]), buf[3]); break;
+                case SKPathVerb.Close: { var d = Dir(buf[0], subpathStart); Segment(d, d, subpathStart); break; } // closing segment
             }
         }
-        return pts;
+        return result;
+    }
+
+    private static bool Near(SKPoint a, SKPoint b) => Math.Abs(a.X - b.X) < 1e-4f && Math.Abs(a.Y - b.Y) < 1e-4f;
+
+    /// <summary>The OUTGOING tangent leaving <c>pts[0]</c>: the direction to the first later point distinct
+    /// from it (a control point, else the segment end) — the curve's tangent at its start.</summary>
+    private static double LeaveDir(params SKPoint[] pts)
+    {
+        for (var i = 1; i < pts.Length; i++) if (!Near(pts[0], pts[i])) return Dir(pts[0], pts[i]);
+        return 0;
+    }
+
+    /// <summary>The INCOMING tangent arriving at the last point: the direction from the last earlier point
+    /// distinct from it (a control point, else the segment start) — the curve's tangent at its end.</summary>
+    private static double ArriveDir(params SKPoint[] pts)
+    {
+        var to = pts[^1];
+        for (var i = pts.Length - 2; i >= 0; i--) if (!Near(pts[i], to)) return Dir(pts[i], to);
+        return 0;
     }
 
     private static List<MarkerVertex> ToVertices(List<SKPoint> pts)

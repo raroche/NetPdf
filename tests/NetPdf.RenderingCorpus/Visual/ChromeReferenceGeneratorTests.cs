@@ -23,12 +23,28 @@ public sealed class ChromeReferenceGeneratorTests(ITestOutputHelper output)
         "html,body{margin:0} .box{width:200px;height:200px;background:#3366cc}" +
         "</style></head><body><div class=\"box\"></div></body></html>";
 
+    /// <summary>When <c>NETPDF_REQUIRE_CHROME_ORACLE</c> is set (to <c>1</c>/<c>true</c>), these tests must
+    /// exercise the real Chrome→PDFium pipeline — a designated CI job sets it so a misconfigured runner (no
+    /// Chrome / no PDFium) FAILS loudly instead of silently passing an inert test. Unset (local dev), the tests
+    /// stay inert-friendly and skip when the oracle is unavailable.</summary>
+    private static bool RequireChromeOracle =>
+        System.Environment.GetEnvironmentVariable("NETPDF_REQUIRE_CHROME_ORACLE") is "1" or "true" or "TRUE";
+
+    /// <summary>Report an unavailable oracle: <see cref="Assert.Fail"/> when the CI gate requires it, otherwise
+    /// log a skip line and let the caller return inert.</summary>
+    private void FailOrSkip(string reason)
+    {
+        if (RequireChromeOracle)
+            Assert.Fail($"NETPDF_REQUIRE_CHROME_ORACLE is set but the Chrome oracle pipeline could not run: {reason}");
+        output.WriteLine($"SKIP: {reason}");
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task Generator_produces_valid_reference_pngs_or_skips_when_chromium_is_unavailable()
     {
         if (!PdfRasterizers.TryCreateDefault(out var rasterizer, out var rasterReason))
         {
-            output.WriteLine($"SKIP: PDF rasterizer unavailable ({rasterReason}).");
+            FailOrSkip($"PDF rasterizer unavailable ({rasterReason}).");
             return;
         }
 
@@ -41,7 +57,7 @@ public sealed class ChromeReferenceGeneratorTests(ITestOutputHelper output)
         }
         catch (ChromeReferenceGenerator.OracleUnavailableException ex)
         {
-            output.WriteLine($"SKIP: Chrome oracle unavailable ({ex.Message}).");
+            FailOrSkip($"Chrome oracle unavailable ({ex.Message}).");
             return;
         }
 
@@ -77,7 +93,7 @@ public sealed class ChromeReferenceGeneratorTests(ITestOutputHelper output)
         // decode failure) early.
         if (!PdfRasterizers.TryCreateDefault(out var rasterizer, out var rasterReason))
         {
-            output.WriteLine($"SKIP: PDF rasterizer unavailable ({rasterReason}).");
+            FailOrSkip($"PDF rasterizer unavailable ({rasterReason}).");
             return;
         }
 
@@ -92,7 +108,7 @@ public sealed class ChromeReferenceGeneratorTests(ITestOutputHelper output)
             }
             catch (ChromeReferenceGenerator.OracleUnavailableException ex)
             {
-                output.WriteLine($"SKIP: Chrome oracle unavailable ({ex.Message}).");
+                FailOrSkip($"Chrome oracle unavailable ({ex.Message}).");
                 return;
             }
 

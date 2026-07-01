@@ -38,7 +38,9 @@ internal static class SvgRasterizer
     // burn CPU. Cap the recursion DEPTH (a hard depth cap is sufficient + far below the stack limit), the
     // total ELEMENT count, and the parsed CHARACTER count.
     internal const int MaxDepth = 80;
-    private const int MaxElements = 50_000;
+    // Shared with SvgNativeEmitter so the native walk enforces the SAME element budget (a huge flat SVG must
+    // bail to raster instead of allocating an unbounded native-op buffer).
+    internal const int MaxElements = 50_000;
     private const long MaxCharactersInDocument = 8L * 1024 * 1024; // 8M chars
 
     /// <summary>Parse + rasterize <paramref name="svgBytes"/>. Returns <see langword="null"/> on a parse

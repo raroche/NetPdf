@@ -43,6 +43,28 @@ public sealed class ReleaseVersionParityTests
             "package version.");
     }
 
+    [Fact]
+    public void Changelog_link_footer_bases_Unreleased_on_the_latest_release_and_links_it()
+    {
+        // Per PR #258 review [P2] — the link-reference footer must be re-based when a release is staged, else
+        // "Unreleased" and the generated changelog links compare against the ENTIRE prior history instead of
+        // post-release work. Two invariants: (1) `[Unreleased]` compares FROM the latest staged release version,
+        // and (2) that latest version heading has its own `[<version>]:` compare-link reference.
+        var path = Path.Combine(RepoRoot(), "CHANGELOG.md");
+        var latest = ReadLatestChangelogVersion(path); // e.g. "0.9.0-rc1"
+        var text = File.ReadAllText(path);
+
+        var unreleased = Regex.Match(text, @"(?m)^\[Unreleased\]:.*?/compare/(.+?)\.\.\.HEAD\s*$");
+        Assert.True(unreleased.Success,
+            "CHANGELOG.md is missing an `[Unreleased]: …/compare/<base>...HEAD` link-reference.");
+        Assert.True(unreleased.Groups[1].Value == latest,
+            $"CHANGELOG [Unreleased] compares from '{unreleased.Groups[1].Value}' but the latest staged release " +
+            $"is '{latest}'. Re-base it on '{latest}...HEAD' when staging the release.");
+
+        Assert.True(Regex.IsMatch(text, $@"(?m)^\[{Regex.Escape(latest)}\]:\s*\S+"),
+            $"CHANGELOG.md is missing the `[{latest}]:` compare-link reference for the latest staged release.");
+    }
+
     private static string ReadBuildPropsVersion(string path)
     {
         var xml = File.ReadAllText(path);

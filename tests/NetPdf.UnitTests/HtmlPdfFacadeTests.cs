@@ -39,8 +39,9 @@ public sealed class HtmlPdfFacadeTests
         // When this assertion fails on a legitimate version bump, update the expectation.
         // ReleaseVersionParityTests guards that this matches Directory.Build.props +
         // build/version.json + the CHANGELOG's latest version heading.
-        Assert.Contains("0.9.0", version, StringComparison.Ordinal);
-        Assert.Contains("rc1", version, StringComparison.Ordinal);
+        // Pin the EXACT prerelease (start + a `+build` metadata boundary or end) — a loose Contains would also
+        // pass `0.9.0-rc10` or an unrelated string carrying both fragments (PR-258 Copilot).
+        Assert.Matches(@"^0\.9\.0-rc1(\+.*)?$", version);
     }
 
     [Fact]

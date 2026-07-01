@@ -35,10 +35,73 @@ public sealed class OpacityPaintTests
         var gsIdx = content.LastIndexOf(gsName, markIdx, System.StringComparison.Ordinal);
         Assert.True(gsIdx >= 0, $"expected '{gsName}' selected before '{marker}'");
         var between = content.Substring(gsIdx + gsName.Length, markIdx - (gsIdx + gsName.Length));
-        // No `Q` graphics-state RESTORE between them. Match `Q` as a whitespace-delimited operator TOKEN so a
-        // literal 'Q' inside a PDF string/name can't false-positive (PR-257 Copilot).
-        var tokens = between.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
-        Assert.DoesNotContain("Q", tokens); // the alpha scope was NOT restored before the marked paint
+        // No `Q` graphics-state RESTORE operator between them. Scanned as a real content-stream token — literal
+        // `( … )` strings, `< … >` hex strings, `% …` comments, and `/names` are skipped, so a `Q` inside a PDF
+        // string (e.g. `( Q ) Tj`) can't false-positive (PR-258 review [P3] / Copilot).
+        Assert.False(ContainsRestoreOperator(between),
+            $"a `Q` graphics-state restore appears between '{gsName}' and '{marker}' — the marked paint is not in scope");
+    }
+
+    /// <summary>True if the content-stream fragment contains a bare <c>Q</c> operator token, skipping over PDF
+    /// literal strings (<c>( … )</c>, honoring <c>\</c> escapes + nested parens), hex strings (<c>&lt; … &gt;</c>),
+    /// comments (<c>% …</c>), and names (<c>/…</c>) — the tokens that can carry a stray 'Q' that is not an
+    /// operator.</summary>
+    private static bool ContainsRestoreOperator(string s)
+    {
+        for (var i = 0; i < s.Length;)
+        {
+            var c = s[i];
+            if (c == '%') { while (i < s.Length && s[i] != '\n' && s[i] != '\r') i++; continue; }
+            if (c == '(')
+            {
+                var depth = 1; i++;
+                while (i < s.Length && depth > 0)
+                {
+                    var d = s[i++];
+                    if (d == '\\') i++;            // escape — skip the next char
+                    else if (d == '(') depth++;
+                    else if (d == ')') depth--;
+                }
+                continue;
+            }
+            if (c == '<')                          // hex string < … > (or a `<<` dict open — just step past it)
+            {
+                i++;
+                if (i < s.Length && s[i] == '<') { i++; continue; }
+                while (i < s.Length && s[i] != '>') i++;
+                if (i < s.Length) i++;
+                continue;
+            }
+            if (c == '/') { i++; while (i < s.Length && !IsPdfDelimiterOrSpace(s[i])) i++; continue; } // name
+            if (IsPdfDelimiterOrSpace(c)) { i++; continue; }
+            var start = i;                         // a regular token: an operator / number / keyword
+            while (i < s.Length && !IsPdfDelimiterOrSpace(s[i])) i++;
+            if (string.CompareOrdinal(s, start, "Q", 0, i - start) == 0 && i - start == 1) return true;
+        }
+        return false;
+    }
+
+    private static bool IsPdfDelimiterOrSpace(char c) =>
+        char.IsWhiteSpace(c) || c is '(' or ')' or '<' or '>' or '[' or ']' or '{' or '}' or '/' or '%';
+
+    // --- AssertInAlphaScope robustness (PR-258 review [P3] / Copilot) ---
+
+    [Fact]
+    public void AssertInAlphaScope_ignores_a_Q_inside_a_pdf_string_literal()
+    {
+        // A `Q` inside a `( … )` text-show operand is NOT a graphics-state restore — the helper must not treat
+        // it as one, so the marked paint still counts as inside the alpha scope.
+        const string content = "q\n/GSop0_5 gs\n( Q ) Tj\n0.2 0.4 0.8 rg\nf\nQ\n";
+        AssertInAlphaScope(content, "/GSop0_5 gs", "0.2 0.4 0.8 rg"); // must NOT throw
+    }
+
+    [Fact]
+    public void AssertInAlphaScope_detects_a_real_Q_restore_operator()
+    {
+        // A genuine `Q` restore between the selection and the marker breaks the scope → the helper must fail.
+        const string content = "q\n/GSop0_5 gs\nQ\n0.2 0.4 0.8 rg\nf\n";
+        Assert.ThrowsAny<Xunit.Sdk.XunitException>(() =>
+            AssertInAlphaScope(content, "/GSop0_5 gs", "0.2 0.4 0.8 rg"));
     }
 
     [Fact]

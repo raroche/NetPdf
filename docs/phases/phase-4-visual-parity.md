@@ -1,8 +1,8 @@
 # Phase 4 — Visual Parity Hardening
 
-**Status:** ⏳ pending (after Phase 3).
+**Status:** 🏁 feature-complete; `0.9.0-rc1` STAGED (2026-07-01). Visual enforcement locks only after the maintainer commits the canonical Linux Chrome reference PNGs and applies the tag (exit criteria 1/2/10 below).
 **Time:** team estimate 10 wk → Claude Opus 4.7 high: **3–5 wk**.
-**Tagged release:** `0.9.0-rc1` — visual fidelity locked.
+**Tagged release:** `0.9.0-rc1` — STAGED (version + CHANGELOG + sign-off); the annotated tag is applied by the maintainer after the closeout PR merges. Visual fidelity is *lockable* (the harness is ready) but not yet *locked* — that happens when the canonical references land.
 
 ## Goal
 
@@ -280,9 +280,8 @@ Phase 4 is complete when:
 
 ## Hand-off to Phase 5
 
-State of the repo at end of Phase 4:
-- Visual fidelity is locked. The 4 corpus files render within Chrome diff tolerance.
-- All v1-scoped CSS visual features work.
-- Static SVG renders correctly.
-- Pinned visual-regression harness is in place; references committed.
-- Phase 5 ships the package: cross-platform CI, language packs, documentation site, sample apps polished, BenchmarkDotNet baselines locked.
+State of the repo at end of Phase 4 (rc1 STAGED — 2026-07-01):
+- All v1-scoped CSS visual features work; static SVG renders correctly.
+- The pinned visual-regression harness is in place and READY (PDFium rasterizer + `PixelDiff` + `VisualGatePolicy` + the `ChromeReferenceGenerator` oracle), but the canonical Linux reference PNGs are **not yet committed** — so visual fidelity is not yet *locked* by an enforcing diff gate. It locks the moment the maintainer commits them under `tests/NetPdf.RenderingCorpus/references/` (`VisualGatePolicy` auto-activates) and applies the `0.9.0-rc1` tag.
+- Until then the 4 corpus files render, and are validated against Chrome in-sandbox (maxΔ 0 / SSIM 1 on the self-contained cases), but the committed-reference tolerance gate is inert.
+- Phase 5 ships the package: cross-platform CI (incl. wiring the Linux reference-generation job so the gate becomes enforcing), language packs, documentation site, sample apps polished, BenchmarkDotNet baselines locked.

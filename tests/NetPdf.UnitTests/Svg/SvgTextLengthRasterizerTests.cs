@@ -63,14 +63,15 @@ public sealed class SvgTextLengthRasterizerTests
     }
 
     [Fact]
-    public void Text_length_across_multiple_chunks_is_flagged_and_renders_normally()
+    public void Text_length_across_multiple_chunks_scales_the_whole_text_to_the_target()
     {
-        // textLength over a text containing an absolute-x tspan (a second chunk) isn't modeled → flagged, and
-        // the text still renders (at its natural advance).
+        // textLength over a text with an absolute-x tspan (a second chunk) is fitted by a whole-text horizontal
+        // scale about the start x. A target of 60 (narrower than the natural span reaching x≈100) pulls the
+        // rightmost ink in toward x = 5 + 60 = 65. Not flagged.
         var info = Render(
-            "<text x=\"5\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"120\">Hi<tspan x=\"80\">Yo</tspan></text>",
+            "<text x=\"5\" y=\"30\" font-size=\"20\" fill=\"black\" textLength=\"60\">Hi<tspan x=\"80\">Yo</tspan></text>",
             out var unsupported);
-        Assert.True(unsupported);
-        Assert.True(MaxInkX(info) > 0); // still rendered
+        Assert.False(unsupported);
+        Assert.InRange(MaxInkX(info), 40, 72);   // rightmost ink near x = 5 + 60 (was ≈ 80+ naturally)
     }
 }

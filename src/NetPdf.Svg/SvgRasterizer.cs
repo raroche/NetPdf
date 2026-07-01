@@ -179,11 +179,12 @@ internal static class SvgRasterizer
         var filterEl = el.Name.LocalName.Equals("filter", StringComparison.OrdinalIgnoreCase) ? null : SvgFilters.ResolveFilter(el, state);
         // The filter region (§15) — resolved ONCE: it both clips the result AND positions a feImage primitive.
         var filterRegion = filterEl is not null ? SvgFilters.ResolveFilterRegion(filterEl, el, style, state) : null;
-        // feImage decodes a raster the composed filter references; the managed SKImage is held alive in this
-        // list and disposed only AFTER the filter layer is composited (Skia refs the native image, so an early
-        // managed dispose would risk freeing it out from under the filter graph).
-        var ownedImages = filterEl is not null ? new List<SKImage>() : null;
-        var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, el, style, state, filterRegion, ownedImages!) : null;
+        // Resources the composed filter references (a feImage raster, a FillPaint/StrokePaint paint-server
+        // shader + its pattern backing image) are held alive in this list and disposed only AFTER the filter
+        // layer is composited — Skia refs the native objects, so an early managed dispose would risk freeing
+        // one out from under the filter graph.
+        var owned = filterEl is not null ? new List<IDisposable>() : null;
+        var imageFilter = filterEl is not null ? SvgFilters.BuildImageFilter(filterEl, el, style, state, filterRegion, owned!) : null;
         SKPaint? filterPaint = null;
         var filterRegionClipped = false;
         // The filter region (§15) clips the whole filter result, applied as a HARD canvas clip — a blur halo
@@ -239,7 +240,7 @@ internal static class SvgRasterizer
             imageFilter.Dispose();   // releases the native filter graph's ref to any feImage raster
         }
         if (filterRegionClipped) canvas.Restore();   // pop the filter-region clip
-        if (ownedImages is not null) foreach (var img in ownedImages) img.Dispose(); // feImage rasters, now safe
+        if (owned is not null) foreach (var d in owned) d.Dispose(); // feImage rasters + paint-server shaders, now safe
         if (opacityLayer) canvas.Restore();          // composite the opacity layer into the element layer
         if (mask is not null) SvgClipMask.ApplyMask(canvas, mask, el, style, state, depth); // multiply the mask luminance in
         if (maskRegionClipped) canvas.Restore();     // pop the mask-region clip

@@ -39,9 +39,22 @@ internal static class SvgText
         var startX = HasLen(text, "x", state, style, LenAxis.X, out var sx) ? sx : 0f;
         var startY = HasLen(text, "y", state, style, LenAxis.Y, out var sy) ? sy : 0f;
 
-        // textLength / lengthAdjust (§10.5) fits the text to a target advance — handled on a single chunk; the
+        // textLength / lengthAdjust (§10.5) fits the text to a target advance — SINGLE chunk handled here; the
         // default no-textLength path below is unchanged (byte-identical).
         if (TryDrawTextLength(canvas, text, runs, startX, startY, style, state)) return;
+
+        // textLength across MULTIPLE chunks (an absolute-x tspan) is fitted by a whole-text horizontal scale
+        // about the start x (spacingAndGlyphs semantics — a per-chunk spacing distribution is ambiguous).
+        var textLenSave = -1;
+        if (HasLen(text, "textLength", state, style, LenAxis.X, out var mcTarget) && mcTarget > 0
+            && MeasureTextExtent(runs, startX) is var extent && extent > 0)
+        {
+            var scale = mcTarget / extent;
+            textLenSave = canvas.Save();
+            canvas.Translate(startX, 0f);
+            canvas.Scale(scale, 1f);
+            canvas.Translate(-startX, 0f);
+        }
 
         // A run with an absolute x establishes a new "text chunk" (SVG §10.5); text-anchor is resolved
         // independently PER chunk (PR-231 review [P2/P3]) — so multiple centered <tspan x=…> labels inside
@@ -83,6 +96,32 @@ internal static class SvgText
             }
             i = j;
         }
+        if (textLenSave >= 0) canvas.RestoreToCount(textLenSave); // pop the multi-chunk textLength scale
+    }
+
+    /// <summary>The natural horizontal extent of the whole text (all chunks) from <paramref name="startX"/> to
+    /// the rightmost chunk edge — the denominator for a multi-chunk <c>textLength</c> scale. Mirrors the chunk
+    /// positioning of the main draw loop (absolute-x chunks + per-chunk text-anchor).</summary>
+    private static float MeasureTextExtent(List<Run> runs, float startX)
+    {
+        var maxRight = startX;
+        var i = 0;
+        while (i < runs.Count)
+        {
+            var j = i + 1;
+            while (j < runs.Count && runs[j].AbsX is null) j++;
+            var chunkWidth = 0f;
+            for (var k = i; k < j; k++)
+            {
+                using var f = BuildFont(runs[k].Style);
+                chunkWidth += runs[k].Dx + MeasureRun(f, runs[k].Text, runs[k].Style);
+            }
+            var anchorFactor = (runs[i].Style.TextAnchor?.Trim().ToLowerInvariant()) switch { "middle" => 0.5f, "end" => 1f, _ => 0f };
+            var right = (runs[i].AbsX ?? startX) - anchorFactor * chunkWidth + chunkWidth;
+            if (right > maxRight) maxRight = right;
+            i = j;
+        }
+        return maxRight - startX;
     }
 
     /// <summary>Fit a single text chunk to <c>textLength</c> (§10.5). <c>lengthAdjust="spacingAndGlyphs"</c>
@@ -96,7 +135,7 @@ internal static class SvgText
     {
         if (!HasLen(text, "textLength", state, style, LenAxis.X, out var target) || !(target > 0)) return false;
         for (var k = 1; k < runs.Count; k++)
-            if (runs[k].AbsX is not null) { state.SawUnsupported = true; return false; } // multi-chunk not modeled
+            if (runs[k].AbsX is not null) return false; // multi-chunk → the caller applies a whole-text scale
 
         var natural = 0f;
         var glyphs = 0;

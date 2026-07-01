@@ -2819,10 +2819,14 @@ flags the categories):
      feMorphology radius, feDisplacementMap scale scaled by the bbox — lighting position + `kernelUnitLength`
      stay partial→flagged); `FillPaint`/`StrokePaint` (a solid-paint plane; gradient ref flagged) +
      `BackgroundImage`/`BackgroundAlpha` (transparent) inputs; per-glyph `rotate` GLOBAL (cross-tspan) index;
-     `feTurbulence` `stitchTiles` (Skia stitched Perlin over the subregion). **SVG residuals (later):**
-     `feTurbulence` exact noise sums; a gradient `FillPaint`/`StrokePaint` + an external `feImage` href +
-     lighting position/`kernelUnitLength` under `primitiveUnits`; `textLength` across multiple chunks;
-     bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); pattern tile resolution under
+     `feTurbulence` `stitchTiles` (Skia stitched Perlin over the subregion). **SVG part 13 closed 5 residuals:**
+     gradient + pattern `FillPaint`/`StrokePaint` (the resolved paint server renders as the input plane over the
+     bbox; shader + backing tile tracked in the filter's owned-disposables); lighting light-source positions
+     under `primitiveUnits=objectBoundingBox` (fePointLight/feSpotLight x/y/z + pointsAt remapped into the bbox
+     coords); `flood-color`/`lighting-color` `currentColor`; `textLength` across MULTIPLE chunks (a whole-text
+     horizontal scale about the start x). **SVG residuals (later):** `feTurbulence` exact noise sums; an external
+     `feImage` href + lighting `kernelUnitLength`; the exact color space (`color-interpolation-filters` linearRGB
+     vs the sRGB approximation); bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); pattern tile resolution under
      heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (raster first cut),
      inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
      lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,

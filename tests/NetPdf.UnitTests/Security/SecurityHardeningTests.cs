@@ -318,6 +318,53 @@ public sealed class SecurityHardeningTests
         Assert.False(FontSafetyValidator.Validate(new byte[] { 1, 2, 3 }).IsSafe);
     }
 
+    // --- SEC-5: configurable output-byte + page-count caps ---------------------------
+
+    [Fact]
+    public void Sec5_page_count_cap_stops_and_diagnoses()
+    {
+        // ~20 forced page breaks, but the configured cap is 5 → rendering stops at the cap + a diagnostic.
+        var html = new StringBuilder();
+        for (var i = 0; i < 20; i++)
+        {
+            html.Append("<div style=\"page-break-after:always\">p").Append(i).Append("</div>");
+        }
+
+        var result = HtmlPdf.ConvertDetailed(
+            html.ToString(), new HtmlPdfOptions { SecurityPolicy = new SecurityPolicy { MaxPages = 5 } });
+
+        Assert.True(result.PageCount <= 5, $"expected ≤ 5 pages, got {result.PageCount}");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PdfPageLimitExceeded001);
+    }
+
+    [Fact]
+    public void Sec5_output_size_cap_aborts_with_typed_exception()
+    {
+        // Any real PDF is far larger than 100 bytes, so a tiny cap aborts the conversion with a typed code.
+        var ex = Assert.Throws<HtmlPdfException>(() => HtmlPdf.Convert(
+            "<p>hello</p>", new HtmlPdfOptions { SecurityPolicy = new SecurityPolicy { MaxOutputBytes = 100 } }));
+
+        Assert.Equal(DiagnosticCodes.PdfOutputSizeExceeded001, ex.Code);
+    }
+
+    [Fact]
+    public void Sec5_default_policy_does_not_trip_the_caps()
+    {
+        // A normal small multi-break document under the default policy renders cleanly (no false positive).
+        var result = HtmlPdf.ConvertDetailed(
+            "<div style=\"page-break-after:always\">a</div><div>b</div>", new HtmlPdfOptions());
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PdfPageLimitExceeded001);
+        Assert.NotEmpty(result.Pdf);
+    }
+
+    [Fact]
+    public void Sec5_untrusted_profile_has_tight_output_caps()
+    {
+        Assert.Equal(500, SecurityPolicy.UntrustedHtml.MaxPages);
+        Assert.Equal(50L * 1024 * 1024, SecurityPolicy.UntrustedHtml.MaxOutputBytes);
+    }
+
     // --- SEC-4: DNS-resolution timeout (slow-resolver DoS) ---------------------------
     //
     // getaddrinfo does not reliably honor cancellation on every platform, so an unbounded resolve of a
@@ -352,11 +399,22 @@ public sealed class SecurityHardeningTests
         var context = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
         var loader = new SafeResourceLoader(http, context);
 
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = await loader.FetchAsync(new Uri("http://dead-resolver.invalid/x"), ResourceKind.Image);
+        sw.Stop();
 
+        // A hung resolver must surface as a typed, timeout-related failure — fast, not a hang. Which
+        // timeout fires first (the loader's DNS bound vs the wrapper's per-fetch bound, both derived from
+        // ResourceTimeout) is a race, so accept either phrasing; the exact DNS message is pinned by the
+        // direct test above.
         Assert.False(result.Success);
         Assert.NotNull(result.Failure);
-        Assert.Contains("timed out", result.Failure!.Reason, StringComparison.OrdinalIgnoreCase);
+        var reason = result.Failure!.Reason;
+        Assert.True(
+            reason.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+            || reason.Contains("timeout", StringComparison.OrdinalIgnoreCase),
+            $"expected a timeout-related failure, got: {reason}");
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"should fail fast; took {sw.Elapsed}");
     }
 
     // ================================================================================

@@ -924,6 +924,27 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string PdfContentOverflowTruncated001 = "PDF-CONTENT-OVERFLOW-TRUNCATED-001";
 
+    /// <summary>
+    /// Per SEC-5 — a conversion tried to emit more pages than the configured
+    /// <c>SecurityPolicy.MaxPages</c> cap (a policy-driven, tighter-for-untrusted
+    /// layer above the pipeline's hard 20 000-page emergency backstop). Rendering
+    /// stops at the cap and drops the remaining content; a page-amplifying untrusted
+    /// document is bounded rather than exhausting memory / time. Raise
+    /// <c>SecurityPolicy.MaxPages</c> for a legitimately long trusted document.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PdfPageLimitExceeded001 = "PDF-PAGE-LIMIT-EXCEEDED-001";
+
+    /// <summary>
+    /// Per SEC-5 — the produced PDF exceeded the configured
+    /// <c>SecurityPolicy.MaxOutputBytes</c> cap. Unlike the page cap this ABORTS the
+    /// conversion (throws <c>HtmlPdfException</c> carrying this code) — a truncated PDF
+    /// is not meaningful. Bounds output amplification (huge image cascades / page
+    /// explosions) independently of the page count. Default is effectively unlimited;
+    /// <c>SecurityPolicy.UntrustedHtml</c> caps at 50 MiB. Severity: fatal (thrown).
+    /// </summary>
+    public const string PdfOutputSizeExceeded001 = "PDF-OUTPUT-SIZE-EXCEEDED-001";
+
     // endregion PDF-*
 
     // region RES-*

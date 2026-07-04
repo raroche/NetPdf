@@ -164,6 +164,10 @@ internal static class PdfRenderPipeline
         using var shaper = new HarfBuzzShaperResolver(options.FontResolver ?? new SystemFontResolver());
         var fontResolutionFailed = false;
         var clippedOrTruncated = false;
+        var pageLimitExceeded = false;
+
+        // SEC-5 — the effective page cap is the configured policy cap, never above the hard backstop.
+        var effectiveMaxPages = Math.Clamp(options.SecurityPolicy.MaxPages, 1, MaxPagesBackstop);
 
         // PHASE A — the multi-page driver (Task 21 / layout→PDF cycle 3). Lay out one
         // fragmentainer per page, resuming via the continuation, accumulating each page's
@@ -304,18 +308,19 @@ internal static class PdfRenderPipeline
                 {
                     pageFragments.Add(System.Array.Empty<BoxFragment>());
                     pageIndex++;   // the blank consumes a page index; the content resumes after it.
-                    if (pageIndex + 1 >= MaxPages)
+                    if (pageIndex + 1 >= effectiveMaxPages)
                     {
-                        clippedOrTruncated = true;
+                        pageLimitExceeded = true;
                         break;
                     }
                 }
 
                 // Forward progress is guaranteed by the forced-overflow penalty; this cap
-                // backstops a layouter that fails to advance, so we never spin forever.
-                if (pageIndex + 1 >= MaxPages)
+                // backstops a layouter that fails to advance, so we never spin forever. SEC-5
+                // makes it configurable (SecurityPolicy.MaxPages, ≤ the hard backstop).
+                if (pageIndex + 1 >= effectiveMaxPages)
                 {
-                    clippedOrTruncated = true;
+                    pageLimitExceeded = true;
                     break;
                 }
             }
@@ -612,12 +617,32 @@ internal static class PdfRenderPipeline
             EmitOverflowClipped(diagnostics);
         }
 
+        // SEC-5 — the configured page cap tripped: the content past the cap was dropped.
+        if (pageLimitExceeded)
+        {
+            EmitPageLimitExceeded(diagnostics, effectiveMaxPages);
+        }
+
         // Build each font ONCE (cross-page union) + replay every page's text — font-dedup-across-pages.
         // Honors the caller's cancellation/timeout (this pass subsets/embeds fonts + replays all pages'
         // text after the per-page loop — review P2).
         textSession.Finish(document, cancellationToken);
 
         var bytes = document.Save();
+
+        // SEC-5 — bound the produced PDF size. Output amplification (huge image cascades, page
+        // explosions) is aborted rather than returned; a hard failure since a truncated PDF is
+        // not meaningful. Default is effectively unlimited; UntrustedHtml caps at 50 MiB.
+        var maxOutputBytes = options.SecurityPolicy.MaxOutputBytes;
+        if (bytes.LongLength > maxOutputBytes)
+        {
+            throw new HtmlPdfException(
+                DiagnosticCodes.PdfOutputSizeExceeded001,
+                $"The produced PDF ({bytes.LongLength} bytes) exceeds the configured output-size cap " +
+                $"({maxOutputBytes} bytes). Raise SecurityPolicy.MaxOutputBytes for a legitimately large " +
+                "trusted document, or reduce the input.");
+        }
+
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
     }
 
@@ -695,7 +720,17 @@ internal static class PdfRenderPipeline
     /// <summary>Backstop page count for the multi-page driver loop (layout→PDF cycle 3).
     /// Forward progress is guaranteed by the forced-overflow penalty, so this never trips for
     /// real content; it bounds the loop if a layouter fails to advance its continuation.</summary>
-    private const int MaxPages = 20_000;
+    // Hard emergency backstop against a non-advancing layout loop — never removed. SEC-5 layers a
+    // configurable, policy-driven MaxPages (SecurityPolicy.MaxPages, tighter for untrusted input) ON TOP.
+    private const int MaxPagesBackstop = 20_000;
+
+    private static void EmitPageLimitExceeded(IDiagnosticsSink diagnostics, int cap) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.PdfPageLimitExceeded001,
+            $"The document tried to emit more than the configured page cap ({cap}); rendering stopped at the " +
+            "cap and the remaining content was dropped. This is a DoS guard against page-amplifying untrusted " +
+            "HTML — raise SecurityPolicy.MaxPages for a legitimately long trusted document.",
+            DiagnosticSeverity.Warning));
 
     private static void EmitOverflowClipped(IDiagnosticsSink diagnostics) =>
         diagnostics.Emit(new Diagnostic(

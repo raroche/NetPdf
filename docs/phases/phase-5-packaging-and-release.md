@@ -130,8 +130,10 @@ The release-candidate gate. All of:
 
 ## Work breakdown (ordered)
 
-> **Status (2026-07-04):** tasks **1, 2, 5 DONE**; **3, 4 AUTHORED (enforcement inert)** — branch
-> `phase5-ci-and-language-packs`. The CI workflow + AOT/visual/benchmark gates are authored
+> **Status (2026-07-04):** tasks **1, 2, 5, 5b, 6, 7, 8, 9 DONE**; **3, 4 AUTHORED (enforcement inert)**.
+> Tasks 1–5 + the CI fixes below shipped in PR #264 (`main` @ `3b288f9`); routing (5b) + the CJK/Arabic/Indic
+> packs + the All meta-package (6–9) are on branch `phase5-lang-routing-and-packs`.
+> The CI workflow + AOT/visual/benchmark gates are authored
 > (`.github/workflows/ci.yml`). Getting the first end-to-end CI run green fixed four pre-existing gate bugs:
 >
 > - **AOT gate produced no native binary.** `scripts/aot-parity.sh` split restore (without `PublishAot`)
@@ -160,10 +162,14 @@ The release-candidate gate. All of:
 > green/inert until the maintainer commits the canonical Linux Chrome reference PNGs (task 3 remainder), and
 > the benchmark gate exits neutral until a `linux-x64` baseline is captured (task 4 remainder). **Five
 > maintainer/CI-box remainders:** arm64-Linux + Alpine-musl SkiaSharp natives, Intel-mac runner, visual
-> reference PNGs, linux benchmark baseline. The `NetPdf.Languages.European` pack + the public
-> `HyphenationRegistry` seam ship a **de/fr starter set** registered into the registry (reachable via
-> `TryHyphenate`); the full CTAN LPPL pattern data (all 15 languages) + layout auto-routing by `lang` are
-> follow-ups (the latter is the first task of the next PR — it is what makes packs affect rendered output).
+> reference PNGs, linux benchmark baseline. **Layout auto-routing by `lang` is now wired (task 5b):**
+> `HyphenationRegistry` moved to `NetPdf.Text` and `BlockLayouter` resolves the `hyphens: auto` hyphenator
+> from a box's effective HTML `lang`, so a `<html lang="de">` document hyphenates with German rules when the
+> European pack is loaded (byte-identical otherwise). The pack set is complete — European (de/fr real
+> starter), CJK + Arabic (no-hyphenation registration), Indic (routing-aware placeholder), and the All
+> meta-package. **Still maintainer-vendored:** the full CTAN LPPL per-language pattern data (real patterns
+> for the remaining European + all Indic languages) — it drops in behind the same `Register` calls with no
+> API change.
 
 | # | Task | Mini-est. | Depends on |
 |---|---|---|---|
@@ -172,10 +178,11 @@ The release-candidate gate. All of:
 | 3 | 🔶 Visual-regression gate in CI — **authored; inert until Linux reference PNGs are committed** (maintainer step) | 1 d | 1 |
 | 4 | 🔶 BenchmarkDotNet performance gate in CI — **authored; neutral until a `linux-x64` baseline is committed** (maintainer step) | 1 d | 1 |
 | 5 | ✅ `NetPdf.Languages.European` package + `HyphenationRegistry` seam (de/fr starter set) | 1 d | — |
-| 6 | `NetPdf.Languages.Cjk` package | 1 d | — |
-| 7 | `NetPdf.Languages.Indic` package | 1 d | — |
-| 8 | `NetPdf.Languages.Arabic` package | 1 d | — |
-| 9 | `NetPdf.Languages.All` meta-package | 0.5 d | 5–8 |
+| 5b | ✅ **Layout auto-routing by `lang`** — `HyphenationRegistry` → `NetPdf.Text`; `BlockLayouter` resolves the `hyphens:auto` hyphenator from a box's effective `lang` (byte-identical unless a pack is loaded) | 1 d | 5 |
+| 6 | ✅ `NetPdf.Languages.Cjk` package (zh/ja/ko no-hyphenation) | 1 d | 5b |
+| 7 | ✅ `NetPdf.Languages.Indic` package (routing-aware placeholders; CTAN data maintainer-vendored) | 1 d | 5b |
+| 8 | ✅ `NetPdf.Languages.Arabic` package (ar/fa/ur no-hyphenation) | 1 d | 5b |
+| 9 | ✅ `NetPdf.Languages.All` meta-package | 0.5 d | 5–8 |
 | 10 | DocFX site setup | 1 d | — |
 | 11 | Getting-started + API + compat + diag pages | 2 d | 10 |
 | 12 | GitHub Pages deployment workflow | 0.5 d | 10 |

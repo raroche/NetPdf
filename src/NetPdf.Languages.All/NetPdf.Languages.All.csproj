@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.All</RootNamespace>
+    <AssemblyName>NetPdf.Languages.All</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.All</PackageId>
+    <Description>Convenience meta-package that pulls in every NetPdf language pack — European, CJK, Arabic, and Indic — and registers them all with NetPdf's HyphenationRegistry in one call. Installing NetPdf.Languages.All is equivalent to installing NetPdf.Languages.European + .Cjk + .Arabic + .Indic. Call AllLanguages.Register at startup; a module initializer also drives it on assembly load.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;i18n;languages;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] registers every bundled pack the moment the assembly loads —
+         the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs. Idempotent. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- The meta-package's direct dependencies ARE the four language packs (each of which depends on NetPdf,
+       so NetPdf arrives transitively). These references are non-private → they become the package's
+       <dependency> set. `AllLanguagesPackageShapeTests` pins the shape. -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Languages.European\NetPdf.Languages.European.csproj" />
+    <ProjectReference Include="..\NetPdf.Languages.Cjk\NetPdf.Languages.Cjk.csproj" />
+    <ProjectReference Include="..\NetPdf.Languages.Arabic\NetPdf.Languages.Arabic.csproj" />
+    <ProjectReference Include="..\NetPdf.Languages.Indic\NetPdf.Languages.Indic.csproj" />
+  </ItemGroup>
+
+  <!-- Suppress the externals that would otherwise surface transitively (via the packs → NetPdf) under
+       CentralPackageTransitivePinning, so the nuspec lists only the four pack dependencies (+ NetPdf,
+       transitively). Versions still come from Directory.Packages.props. -->
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" PrivateAssets="all" />
+    <PackageReference Include="AngleSharp.Css" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

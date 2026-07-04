@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.Indic</RootNamespace>
+    <AssemblyName>NetPdf.Languages.Indic</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.Indic</PackageId>
+    <Description>Optional Indic-script language pack for NetPdf. Registers the major Indic languages (Hindi, Sanskrit, Marathi, Bengali, Assamese, Panjabi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam) with NetPdf's public HyphenationRegistry so layout routes hyphenation by a run's lang. Indic scripts DO hyphenate, but this build ships NO pattern data yet — the CTAN hyph-utf8 (LPPL) pattern sets are vendored by the maintainer; until then hyphens:auto produces no breaks for these languages (conservative — never the wrong English hyphenation). Call IndicHyphenation.Register at startup; a module initializer also drives it on assembly load.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;indic;devanagari;hindi;sanskrit;tamil;telugu;i18n;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] registers the pack's languages the moment the assembly loads —
+         the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs. Idempotent. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- One package dependency (NetPdf, which bundles NetPdf.Text.dll); NetPdf.Text is compile-only for the
+       HyphenationRegistry type. See NetPdf.Languages.European for the full rationale. -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Suppress NetPdf's transitively-pinned externals so the nuspec has exactly one dependency (NetPdf). -->
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" PrivateAssets="all" />
+    <PackageReference Include="AngleSharp.Css" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

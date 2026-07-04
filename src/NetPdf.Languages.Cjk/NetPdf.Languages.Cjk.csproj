@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.Cjk</RootNamespace>
+    <AssemblyName>NetPdf.Languages.Cjk</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.Cjk</PackageId>
+    <Description>Optional CJK (Chinese/Japanese/Korean) language pack for NetPdf. Registers zh/ja/ko with NetPdf's public HyphenationRegistry as explicit NO-hyphenation languages (CJK does not use Liang/soft hyphenation — line breaking is per-character, handled by NetPdf's UAX #14 breaker), so hyphens:auto correctly inserts no hyphens for CJK instead of falling back to the English hyphenator. Richer CJK line-break tailoring (kinsoku) is a follow-up. Call CjkHyphenation.Register at startup; a module initializer also drives it on assembly load.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;cjk;chinese;japanese;korean;i18n;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] registers the pack's languages the moment the assembly loads —
+         the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs. Idempotent. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- The pack's ONE intended PACKAGE dependency is NetPdf (its package bundles NetPdf.Text.dll at
+       runtime). NetPdf.Text is referenced compile-only (PrivateAssets="all") for the HyphenationRegistry
+       type — it must not add a second package dependency. See NetPdf.Languages.European for the rationale. -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Suppress NetPdf's transitively-pinned externals so this pack's nuspec has exactly one dependency
+       (NetPdf). Versions still come from Directory.Packages.props. See NetPdf.Languages.European. -->
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" PrivateAssets="all" />
+    <PackageReference Include="AngleSharp.Css" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

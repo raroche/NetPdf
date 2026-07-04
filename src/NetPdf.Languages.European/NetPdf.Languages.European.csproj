@@ -16,11 +16,17 @@
     <NoWarn>$(NoWarn);CA2255</NoWarn>
   </PropertyGroup>
 
-  <!-- Depends on the NetPdf package (the public HyphenationRegistry seam lives in the facade assembly).
-       This is the pack's ONE intended package dependency: a consumer installs NetPdf.Languages.European
-       and gets NetPdf (and, transitively through it, NetPdf's own runtime deps). -->
+  <!-- The pack's ONE intended PACKAGE dependency is NetPdf: a consumer installs
+       NetPdf.Languages.European and gets NetPdf (whose package bundles every internal NetPdf.*.dll —
+       including NetPdf.Text.dll — at runtime, plus NetPdf's own transitive runtime deps). -->
   <ItemGroup>
     <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+    <!-- HyphenationRegistry lives in NetPdf.Text (moved there so NetPdf.Layout can consult it for
+         lang-based routing). We need the type at COMPILE time, but NetPdf references NetPdf.Text with
+         PrivateAssets="all", so NetPdf.Text's public types do NOT flow to us transitively. Add a direct
+         compile-only reference: PrivateAssets="all" keeps it out of the nuspec (no second package
+         dependency — NetPdf.Text.dll already ships inside the NetPdf package at runtime). -->
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" PrivateAssets="all" />
   </ItemGroup>
 
   <!-- NetPdf re-declares its external runtime deps (AngleSharp/HarfBuzzSharp/SkiaSharp) as direct,

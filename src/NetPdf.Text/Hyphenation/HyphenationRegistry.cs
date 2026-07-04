@@ -69,6 +69,17 @@ public static class HyphenationRegistry
         Hyphenators[key] = new Hyphenator(patterns, exceptions);
     }
 
+    /// <summary>
+    /// Register <paramref name="language"/> as one that does NOT soft-hyphenate — a script whose line
+    /// breaking is handled elsewhere rather than by inserting hyphens (CJK: per-character breaking, UAX #14;
+    /// Arabic: kashida/tatweel justification). This registers a no-op hyphenator, so <c>hyphens: auto</c>
+    /// resolves to zero break points for the language (via <see cref="ResolveOrDefault"/>) instead of
+    /// falling back to the bundled English hyphenator — which would otherwise hyphenate any embedded
+    /// Latin-script runs in a document tagged for such a language. Same primary-subtag normalization +
+    /// validation as <see cref="Register"/>.
+    /// </summary>
+    public static void RegisterNoHyphenation(string language) => Register(language, string.Empty);
+
     /// <summary>Whether a hyphenator is registered for <paramref name="language"/> (by primary subtag).</summary>
     public static bool IsRegistered(string language) =>
         !string.IsNullOrWhiteSpace(language) && Hyphenators.ContainsKey(Normalize(language));

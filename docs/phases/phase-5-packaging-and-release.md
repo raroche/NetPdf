@@ -132,30 +132,35 @@ The release-candidate gate. All of:
 
 > **Status (2026-07-04):** tasks **1, 2, 5 DONE**; **3, 4 AUTHORED (enforcement inert)** — branch
 > `phase5-ci-and-language-packs`. The CI workflow + AOT/visual/benchmark gates are authored
-> (`.github/workflows/ci.yml`). The first end-to-end CI run surfaced two pre-existing gate bugs, now fixed:
-> (a) **AOT gate** — `scripts/aot-parity.sh` split restore (without `PublishAot`) from a `--no-restore`
-> publish, so `Microsoft.DotNet.ILCompiler` was never restored and the publish silently degraded to a
-> trimmed managed publish producing **no native binary** (green locally only when the NuGet/obj cache was
-> warm; red on a clean CI checkout). Fixed to a single `PublishAot` restore+publish — NETSDK1207 is already
-> prevented by the `SetTargetFramework` pin on NetPdf.Css's SourceGen reference. The Linux matrix legs also
-> now install the AOT toolchain (`clang`, `zlib1g-dev`) + SkiaSharp's font deps (`libfontconfig1`,
-> `libuuid1`) and **preload `libuuid.so.1`** — the arm64 `libSkiaSharp` references `uuid_generate_random`
-> but doesn't pull libuuid into scope itself, so it failed at load with `undefined symbol` (the x64 image
-> resolves it transitively); `LD_PRELOAD` forces it in. macOS/Windows ship the AOT toolchain and ignore
-> `LD_PRELOAD`. The gate script also learned the
-> Windows/MSYS `uname` (`MINGW*`/`MSYS*` → `win-x64`) so it resolves a RID under Git Bash instead of exiting
-> "unsupported host platform". A parallel-build cache race (MSB3491 on the SourceGen analyzer, intermittent
-> on the arm64 leg) was fixed by switching NetPdf.Css's analyzer reference from `SetTargetFramework` to
-> `UndefineProperties="TargetFramework;PublishAot"`, so the generator compiles once (one MSBuild node)
-> instead of racing two requests into the same obj dir. (b) **Alpine/musl leg** —
-> SkiaSharp's raster-fallback native fails to load under musl on the stock SDK-alpine image; that leg is now
-> **non-blocking** (`continue-on-error`) pending native-asset/font hardening on a real Alpine runner (not
-> reproducible on the macOS/glibc dev box). The five glibc/Windows/macOS legs are the enforcing matrix. Two
-> gates remain **not yet enforcing**: the visual-regression gate runs green/inert until the maintainer
-> commits the canonical Linux Chrome reference PNGs (task 3 remainder), and the benchmark gate exits neutral
-> until a `linux-x64` baseline is captured + committed (task 4 remainder). All three remainders (Alpine-musl,
-> visual refs, linux baseline) are maintainer/CI-box steps. The `NetPdf.Languages.European` pack + the
-> public `HyphenationRegistry` seam ship a **de/fr starter set** registered into the registry (reachable via
+> (`.github/workflows/ci.yml`). Getting the first end-to-end CI run green fixed four pre-existing gate bugs:
+>
+> - **AOT gate produced no native binary.** `scripts/aot-parity.sh` split restore (without `PublishAot`)
+>   from a `--no-restore` publish, so `Microsoft.DotNet.ILCompiler` was never restored and the publish
+>   silently degraded to a trimmed managed publish — green locally only when the NuGet/obj cache was warm,
+>   red on a clean CI checkout. Fixed to a single `PublishAot` restore+publish. The Linux legs install the
+>   AOT toolchain (`clang`, `zlib1g-dev`); macOS/Windows ship it.
+> - **Windows AOT gate: "unsupported host platform".** The script's RID detection had no Windows case; under
+>   Git Bash `uname -s` reports `MINGW64_NT-*`. Added `MINGW*`/`MSYS*`/`CYGWIN*` → `win-x64`/`win-arm64`.
+> - **Intermittent MSB3491 SourceGen cache race** (hit on the arm64 leg). NetPdf.Css referenced the SourceGen
+>   analyzer with `SetTargetFramework=netstandard2.0`, giving it a distinct global-property set from the
+>   solution's direct build → the generator compiled twice into the same obj dir and raced. Switched to
+>   `UndefineProperties="TargetFramework;PublishAot"` → one MSBuild node, one compile (also keeps NETSDK1207
+>   away during AOT publish).
+> - **linux-arm64 SkiaSharp native is under-provisioned** → made **non-blocking**. `libSkiaSharp` (arm64
+>   raster fallback) resolves symbols from the system libuuid/libfreetype that the runner doesn't satisfy
+>   (undefined `uuid_generate_random`, then `FT_Get_BDF_Property`). Chasing these per-symbol isn't
+>   reproducible on the macOS/x64 dev box (and a matrix-wide `LD_PRELOAD` can't be used — Git Bash on the
+>   Windows leg honors it and aborts if the lib is absent). Hardening the arm64 native (e.g. the
+>   NoDependencies SkiaSharp asset) is a maintainer step on a real arm64 runner.
+>
+> **Enforcing matrix:** linux-x64, windows-x64, macos-arm64, macos-x64. **Non-blocking** (`continue-on-error`,
+> run + surface status but don't gate): linux-arm64 and alpine-musl-x64 (both blocked on SkiaSharp
+> raster-fallback native provisioning on runner environments not reproducible here). The visual-regression
+> gate runs green/inert until the maintainer commits the canonical Linux Chrome reference PNGs (task 3
+> remainder), and the benchmark gate exits neutral until a `linux-x64` baseline is captured (task 4
+> remainder). **Four maintainer/CI-box remainders:** arm64-Linux + Alpine-musl SkiaSharp natives, visual
+> reference PNGs, linux benchmark baseline. The `NetPdf.Languages.European` pack + the public
+> `HyphenationRegistry` seam ship a **de/fr starter set** registered into the registry (reachable via
 > `TryHyphenate`); the full CTAN LPPL pattern data (all 15 languages) + layout auto-routing by `lang` are
 > follow-ups (the latter is the first task of the next PR — it is what makes packs affect rendered output).
 

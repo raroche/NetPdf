@@ -138,9 +138,11 @@ The release-candidate gate. All of:
 > trimmed managed publish producing **no native binary** (green locally only when the NuGet/obj cache was
 > warm; red on a clean CI checkout). Fixed to a single `PublishAot` restore+publish — NETSDK1207 is already
 > prevented by the `SetTargetFramework` pin on NetPdf.Css's SourceGen reference. The Linux matrix legs also
-> now install the AOT toolchain + SkiaSharp natives (`clang`, `zlib1g-dev`, `libfontconfig1`, `libuuid1` —
-> the arm64 runner image lacked `libuuid`, so `libSkiaSharp` failed with `undefined symbol
-> uuid_generate_random`); macOS/Windows ship the AOT toolchain. The gate script also learned the
+> now install the AOT toolchain (`clang`, `zlib1g-dev`) + SkiaSharp's font deps (`libfontconfig1`,
+> `libuuid1`) and **preload `libuuid.so.1`** — the arm64 `libSkiaSharp` references `uuid_generate_random`
+> but doesn't pull libuuid into scope itself, so it failed at load with `undefined symbol` (the x64 image
+> resolves it transitively); `LD_PRELOAD` forces it in. macOS/Windows ship the AOT toolchain and ignore
+> `LD_PRELOAD`. The gate script also learned the
 > Windows/MSYS `uname` (`MINGW*`/`MSYS*` → `win-x64`) so it resolves a RID under Git Bash instead of exiting
 > "unsupported host platform". A parallel-build cache race (MSB3491 on the SourceGen analyzer, intermittent
 > on the arm64 leg) was fixed by switching NetPdf.Css's analyzer reference from `SetTargetFramework` to

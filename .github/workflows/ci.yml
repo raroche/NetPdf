@@ -24,6 +24,13 @@ jobs:
     name: build+test (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    # SkiaSharp's raster-fallback native (libSkiaSharp) references uuid_generate_random but does not pull
+    # libuuid into scope itself; on the arm64 Linux runner that leaves the symbol undefined at load (the x64
+    # image happens to resolve it transitively). Preloading libuuid.so.1 forces it into the process for all
+    # Linux legs. Harmless where it doesn't apply: already-resolved on x64, and LD_PRELOAD is ignored by the
+    # Windows and macOS loaders (macOS uses DYLD_*), so this one job-level env is safe across the matrix.
+    env:
+      LD_PRELOAD: libuuid.so.1
     strategy:
       fail-fast: false
       matrix:

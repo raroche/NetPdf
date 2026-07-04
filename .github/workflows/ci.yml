@@ -1,0 +1,116 @@
+# Phase-5 cross-platform CI — build + test + AOT publish across the support matrix, plus the
+# visual-regression and BenchmarkDotNet gates. (Security fuzz + dependency scan live in fuzz-smoke.yml.)
+#
+# Phase-5 work-breakdown tasks 1–4:
+#   T1 build+test matrix · T2 AOT publish gate · T3 visual-regression Docker gate · T4 benchmark gate.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # T1 — build + test across the OS/arch matrix. T2 — AOT publish gate, folded in per entry.
+  build-test:
+    name: build+test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,   label: linux-x64,   aot: true }
+          - { os: ubuntu-24.04-arm, label: linux-arm64, aot: true }
+          - { os: windows-latest,  label: windows-x64, aot: true }
+          - { os: macos-14,        label: macos-arm64, aot: true }
+          - { os: macos-13,        label: macos-x64,   aot: true }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build (Release, 0 warnings)
+        run: dotnet build NetPdf.slnx -c Release --nologo
+
+      - name: Test
+        run: dotnet test NetPdf.slnx -c Release --nologo
+
+      # T2 — AOT publish + native-smoke + JIT/AOT byte-parity. The helper script is RID-aware
+      # (incl. musl); on Windows it runs under Git Bash (available on windows-latest).
+      - name: AOT publish gate
+        if: matrix.aot
+        shell: bash
+        run: bash scripts/aot-parity.sh
+
+  # T1/T2 — Alpine (musl) build + test + AOT, inside the pinned .NET SDK container.
+  build-test-alpine:
+    name: build+test (alpine-musl-x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    container: mcr.microsoft.com/dotnet/sdk:10.0-alpine
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AOT prerequisites (clang, musl-dev, zlib)
+        run: apk add --no-cache clang build-base zlib-dev bash
+      - name: Build (Release)
+        run: dotnet build NetPdf.slnx -c Release --nologo
+      - name: Test
+        run: dotnet test NetPdf.slnx -c Release --nologo
+      - name: AOT publish gate (musl RID)
+        run: bash scripts/aot-parity.sh
+
+  # T3 — visual-regression gate in the pinned-Chrome Docker image. INERT (green) until the canonical
+  # Linux reference PNGs are committed under tests/NetPdf.RenderingCorpus/references/ (VisualGatePolicy),
+  # so this job is safe to run now. Reference GENERATION stays a deliberate manual/maintainer step
+  # (docs/phases … tests/NetPdf.RenderingCorpus/docker/README.md) — never regenerated automatically here.
+  visual-regression:
+    name: visual-regression (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run the visual-regression gate (PDFium diff vs committed Chrome references)
+        # PDFium ships in-process via the PDFtoImage test dep — no Docker needed to RUN the gate; the
+        # Docker image is only for REGENERATING references (a manual maintainer step). The gate stays
+        # inert until references land, then enforces Δ<4 / SSIM≥0.98 per page.
+        run: dotnet test tests/NetPdf.RenderingCorpus/NetPdf.RenderingCorpus.csproj -c Release --nologo --filter "FullyQualifiedName~Visual"
+
+  # T4 — BenchmarkDotNet performance gate. Compares against the pinned per-platform baseline
+  # (tests/NetPdf.Benchmarks/baselines/…) with a +25% tolerance. Non-blocking (exit 2 → neutral) until a
+  # Linux baseline is captured + committed; once present it fails the build on a regression.
+  benchmarks:
+    name: benchmark gate (linux-x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run benchmark gate (vs pinned baseline, +25% tolerance)
+        shell: bash
+        run: |
+          set +e
+          bash scripts/benchmark-gate.sh
+          code=$?
+          if [ "$code" = "2" ]; then
+            echo "::notice::No committed baseline for this platform yet — benchmark gate is neutral (SEC/Phase-5 follow-up: capture + commit a baseline)."
+            exit 0
+          fi
+          exit $code

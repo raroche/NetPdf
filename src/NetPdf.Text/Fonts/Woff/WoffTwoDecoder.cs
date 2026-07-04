@@ -164,7 +164,17 @@ internal static class WoffTwoDecoder
         }
 
         // (5) Re-assemble into SFNT.
-        return AssembleSfnt(header.Flavor, tableSegments);
+        var sfnt = AssembleSfnt(header.Flavor, tableSegments);
+
+        // SEC-7 — re-validate the reconstructed sfnt before any shaper sees it (see WoffDecoder.Decode).
+        var revalidation = FontSafetyValidator.Validate(sfnt);
+        if (!revalidation.IsSafe)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: reconstructed sfnt failed font-safety re-validation: {revalidation.Reason}");
+        }
+
+        return sfnt;
     }
 
     private static long ComputeExpectedDecompressedSize(WoffTwoTableEntry[] entries)
@@ -185,6 +195,17 @@ internal static class WoffTwoDecoder
         {
             throw new InvalidDataException(
                 $"WOFF2: declared decompressed size ({expectedSize}) is out of range.");
+        }
+        // SEC-7 — decompression-ratio cap (Brotli reaches far higher ratios than zlib, so a WOFF2
+        // bomb is the sharper risk). Reject a small Brotli stream declaring a huge decompressed size
+        // before allocating the output. Shares WOFF 1.0's ratio + floor (WoffLayoutValidator).
+        if (compressed.Length > 0
+            && expectedSize > WoffLayoutValidator.RatioCheckFloorBytes
+            && expectedSize > WoffLayoutValidator.MaxDecompressionRatio * compressed.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: uncompressed:compressed ratio ({expectedSize}:{compressed.Length}) exceeds the " +
+                $"{WoffLayoutValidator.MaxDecompressionRatio}:1 safety cap — possible decompression-bomb input.");
         }
         try
         {

@@ -78,6 +78,21 @@ public sealed class WoffLayoutValidatorTests
     }
 
     [Fact]
+    public void Validate_rejects_decompression_bomb_via_ratio_cap()
+    {
+        // SEC-7 — the first table declares a 5 MiB origLength (under the 256 MiB absolute cap, over the
+        // 1 MiB ratio floor) while its compLength stays tiny → an uncompressed:compressed ratio far above
+        // the 100:1 cap. This is the zip-bomb-within-the-absolute-cap the ratio guard defends against.
+        var woffBytes = SyntheticWoff.Build();
+        BinaryPrimitives.WriteUInt32BigEndian(
+            woffBytes.AsSpan(FirstRecordOffset + RecordOrigLengthField, 4), 5_000_000);
+        var header = WoffHeader.Parse(woffBytes);
+        var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        var ex = Assert.Throws<InvalidDataException>(() => WoffLayoutValidator.Validate(header, entries, woffBytes));
+        Assert.Contains("ratio", ex.Message, System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Validate_rejects_table_offset_not_4_byte_aligned()
     {
         // Shift the first table offset by 1 (was 4-byte aligned by construction). To keep

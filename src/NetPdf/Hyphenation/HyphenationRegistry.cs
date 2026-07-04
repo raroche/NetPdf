@@ -10,16 +10,23 @@ namespace NetPdf.Hyphenation;
 /// <summary>
 /// The public extension seam for language hyphenation. The core ships American-English patterns
 /// (pre-registered as <c>"en"</c>); the optional <c>NetPdf.Languages.*</c> NuGet packages register
-/// additional languages here (from a <c>[ModuleInitializer]</c> on load) by handing over TeX-style
-/// Liang pattern text + an optional exception list. Layout resolves a hyphenator by the run's language
-/// tag; an unregistered language falls back to the core English hyphenator.
+/// additional languages here (via an explicit <c>Register(…)</c> call, which the packs also drive from a
+/// <c>[ModuleInitializer]</c>) by handing over TeX-style Liang pattern text + an optional exception list.
+/// Patterns registered through this seam are reachable via <see cref="TryHyphenate"/> and
+/// <see cref="IsRegistered"/>.
 /// </summary>
 /// <remarks>
 /// <para><b>Language keys.</b> Keys are normalized to the primary subtag, lower-cased (BCP-47
 /// <c>de-DE</c> → <c>de</c>, <c>en-GB</c> → <c>en</c>), so a pack registering <c>"de"</c> serves all
-/// German locales.</para>
+/// German locales. A tag with no primary subtag after normalization (e.g. <c>"-DE"</c> or <c>"-"</c>) is
+/// rejected by <see cref="Register"/>.</para>
 /// <para><b>Thread-safety.</b> Registration and lookup are concurrent-safe. Registering a language that
 /// is already present replaces it (last registration wins) — a pack can override the built-in English.</para>
+/// <para><b>Layout routing (follow-up).</b> Wiring the block/inline layout pass to resolve a hyphenator
+/// from this registry by the run's <c>lang</c> is a documented follow-up. Until it lands, <c>hyphens:
+/// auto</c> layout hyphenates with the bundled English patterns regardless of the run language, and packs
+/// are exercised through this registry's public API. The internal <see cref="ResolveOrDefault"/> seam is
+/// where that routing will attach.</para>
 /// </remarks>
 public static class HyphenationRegistry
 {
@@ -43,11 +50,23 @@ public static class HyphenationRegistry
         ArgumentException.ThrowIfNullOrWhiteSpace(language);
         ArgumentNullException.ThrowIfNull(patternBlock);
 
+        // Normalize + validate the key BEFORE parsing the (potentially large) pattern block, so a
+        // malformed tag fails fast without paying for pattern parsing. A non-whitespace tag can still
+        // normalize to an empty primary subtag ("-DE" → "", "-" → ""); reject it rather than register
+        // a hyphenator under the empty-string key (which later lookups would never resolve intentionally).
+        var key = Normalize(language);
+        if (key.Length == 0)
+        {
+            throw new ArgumentException(
+                $"Language tag '{language}' has no primary subtag after BCP-47 normalization.",
+                nameof(language));
+        }
+
         var patterns = HyphenationPatternSet.ParseBlock(patternBlock);
         var exceptions = string.IsNullOrEmpty(exceptionBlock)
             ? HyphenationDictionary.Empty
             : HyphenationDictionary.Parse(exceptionBlock);
-        Hyphenators[Normalize(language)] = new Hyphenator(patterns, exceptions);
+        Hyphenators[key] = new Hyphenator(patterns, exceptions);
     }
 
     /// <summary>Whether a hyphenator is registered for <paramref name="language"/> (by primary subtag).</summary>

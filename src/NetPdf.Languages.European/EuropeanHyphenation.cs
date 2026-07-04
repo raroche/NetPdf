@@ -8,18 +8,24 @@ using NetPdf.Hyphenation;
 namespace NetPdf.Languages.European;
 
 /// <summary>
-/// Registers the European-language hyphenators with NetPdf's <see cref="HyphenationRegistry"/>. Adding
-/// the <c>NetPdf.Languages.European</c> package is enough: a <c>[ModuleInitializer]</c> registers every
-/// bundled language on assembly load, after which NetPdf hyphenates those languages automatically (layout
-/// resolves the hyphenator by the run's language tag).
+/// Registers the European-language hyphenators with NetPdf's <see cref="HyphenationRegistry"/>. Call
+/// <see cref="Register"/> once at startup (a <c>[ModuleInitializer]</c> also drives it when this assembly
+/// is loaded); afterwards the registered languages hyphenate through the registry's public API
+/// (<see cref="HyphenationRegistry.TryHyphenate"/>). This build registers a <b>German + French starter
+/// set</b>.
 /// </summary>
 /// <remarks>
+/// <para><b>Automatic layout routing is a follow-up.</b> NetPdf's block/inline layout pass does not yet
+/// resolve a hyphenator from <see cref="HyphenationRegistry"/> by a run's <c>lang</c>; until that wiring
+/// lands, this pack makes German/French hyphenation available <em>through the registry API</em> rather than
+/// driving it automatically during rendering. Referencing the package is therefore not by itself enough to
+/// change rendered output — call <see cref="Register"/> and consume the registry.</para>
 /// <para><b>Data status.</b> Hyphenation patterns come from the CTAN <c>tex-hyphen</c> project (LPPL) —
 /// attribution per language is preserved in <c>NOTICE</c>. This build ships a <b>correct starter set</b>
-/// (a real pattern subset + an explicit-hyphenation exception list per language) so the pack and the
-/// registry are functional and tested end to end; the maintainer vendors the full CTAN pattern sets for
-/// all listed languages incrementally (see the pack README) — each drops in behind this same
-/// <see cref="Register"/> seam with no API change.</para>
+/// for German and French (a real pattern subset + an explicit-hyphenation exception list) so the pack and
+/// the registry are functional and tested end to end. The remaining listed European languages and the full
+/// CTAN pattern sets are vendored incrementally behind this same <see cref="Register"/> seam with no API
+/// change (see the pack README).</para>
 /// </remarks>
 public static class EuropeanHyphenation
 {
@@ -52,9 +58,13 @@ public static class EuropeanHyphenation
         "1ba 1be 1bi 1bo 1bu 1da 1de 1di 1ge 1gen 1he 1ke 1keit 1la 1le 1lich 1me 1ne 1ni 1re 1sch " +
         "1se 1te 1ti 1tung 1ung 1ver 1zu .an3 .auf1 .aus1 .be1 .ge1 .un1";
 
+    // The core Hyphenator/HyphenationDictionary canonicalize case for ASCII only, so a non-ASCII initial
+    // (e.g. "Ü") does not fold to its lower-case form. German nouns are always capitalized, so "Übersetzung"
+    // matches; the lower-case "über-set-zung" is listed alongside it so the exception still fires if the
+    // word arrives lower-cased (e.g. from normalized/UI text).
     private const string GermanExceptions =
         "Sil-ben-tren-nung Zu-cker ba-cken Was-ser Deutsch-land Bei-spiel Recht-schrei-bung " +
-        "Ge-schwin-dig-keit Über-set-zung";
+        "Ge-schwin-dig-keit Über-set-zung über-set-zung";
 
     // A small, valid subset of the French Liang patterns (CTAN hyph-fr, MIT/LPPL).
     private const string FrenchPatterns =

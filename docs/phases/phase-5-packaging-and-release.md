@@ -130,20 +130,24 @@ The release-candidate gate. All of:
 
 ## Work breakdown (ordered)
 
-> **Status (2026-07-04):** tasks **1–5 DONE** (branch `phase5-ci-and-language-packs`). CI workflow +
-> AOT/visual/benchmark gates authored (`.github/workflows/ci.yml`) with their commands validated locally;
-> the visual gate stays inert until the maintainer commits the Linux Chrome reference PNGs (task 3
-> remainder), and the benchmark gate is neutral until a Linux baseline is captured (task 4 remainder). The
-> `NetPdf.Languages.European` pack + the public `HyphenationRegistry` seam ship with a de/fr starter set;
-> the full CTAN LPPL pattern data (all 15 languages) + layout auto-routing by `lang` are follow-ups.
+> **Status (2026-07-04):** tasks **1, 2, 5 DONE**; **3, 4 AUTHORED (enforcement inert)** — branch
+> `phase5-ci-and-language-packs`. The CI workflow + AOT/visual/benchmark gates are authored
+> (`.github/workflows/ci.yml`) with their commands validated locally, but two gates are **not yet
+> enforcing**: the visual-regression gate runs green/inert until the maintainer commits the canonical Linux
+> Chrome reference PNGs (task 3 remainder), and the benchmark gate exits neutral until a `linux-x64`
+> baseline is captured + committed (task 4 remainder). Both remainders are maintainer/CI-box steps (not
+> reproducible on the macOS dev box) and are tracked below. The `NetPdf.Languages.European` pack + the
+> public `HyphenationRegistry` seam ship a **de/fr starter set** registered into the registry (reachable via
+> `TryHyphenate`); the full CTAN LPPL pattern data (all 15 languages) + layout auto-routing by `lang` are
+> follow-ups (the latter is the first task of the next PR — it is what makes packs affect rendered output).
 
 | # | Task | Mini-est. | Depends on |
 |---|---|---|---|
 | 1 | ✅ GitHub Actions matrix workflow (Linux x64/arm64, Alpine, Windows, macOS x64/arm64) | 2 d | — |
 | 2 | ✅ AOT publish gate per matrix entry | 1 d | 1 |
-| 3 | ✅ Visual-regression gate in CI (inert until reference PNGs land) | 1 d | 1 |
-| 4 | ✅ BenchmarkDotNet performance gate in CI (neutral until baseline) | 1 d | 1 |
-| 5 | ✅ `NetPdf.Languages.European` package + `HyphenationRegistry` seam | 1 d | — |
+| 3 | 🔶 Visual-regression gate in CI — **authored; inert until Linux reference PNGs are committed** (maintainer step) | 1 d | 1 |
+| 4 | 🔶 BenchmarkDotNet performance gate in CI — **authored; neutral until a `linux-x64` baseline is committed** (maintainer step) | 1 d | 1 |
+| 5 | ✅ `NetPdf.Languages.European` package + `HyphenationRegistry` seam (de/fr starter set) | 1 d | — |
 | 6 | `NetPdf.Languages.Cjk` package | 1 d | — |
 | 7 | `NetPdf.Languages.Indic` package | 1 d | — |
 | 8 | `NetPdf.Languages.Arabic` package | 1 d | — |

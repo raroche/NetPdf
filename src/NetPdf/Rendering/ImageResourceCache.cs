@@ -1096,6 +1096,20 @@ internal sealed class ImageResourceCache
         {
             return Decode(bytes, diagnostics);
         }
+        catch (SvgImageParseException ex)
+        {
+            // SEC-8 — a specific SVG parse-failure diagnostic (blocked-by-guard vs malformed), instead of
+            // the generic IMG-DECODE-FAILED the raster fallback would otherwise report for SVG's text bytes.
+            diagnostics.Emit(new Diagnostic(
+                DiagnosticCodes.SvgParseFailed001,
+                ex.Status == NetPdf.Svg.SvgParseStatus.Blocked
+                    ? "An SVG image was rejected by the parser's security guards — a prohibited <!DOCTYPE / "
+                      + "<!ENTITY, or an over-size document (the XXE / entity-expansion 'billion laughs' "
+                      + "defense). The image was not rendered."
+                    : "An SVG image could not be parsed as well-formed XML. The image was not rendered.",
+                DiagnosticSeverity.Warning));
+            return null;
+        }
         catch (Exception ex) when (ex is System.IO.InvalidDataException or NotSupportedException
             or ArgumentException or System.IO.EndOfStreamException)
         {
@@ -1139,9 +1153,17 @@ internal sealed class ImageResourceCache
         // SVG (Phase 4 PR 5) — a text/XML format Skia's codecs don't decode; the first-cut SVG renderer
         // (NetPdf.Svg) rasterizes the shapes via Skia → an RGBA raster XObject. Sniffed before the raster
         // fallback (which would reject SVG's text bytes).
-        if (NetPdf.Svg.SvgRasterizer.LooksLikeSvg(bytes)
-            && NetPdf.Svg.SvgRasterizer.TryRender(bytes, out var svgUnsupported) is { } svgRaster)
+        if (NetPdf.Svg.SvgRasterizer.LooksLikeSvg(bytes))
         {
+            var svgRaster = NetPdf.Svg.SvgRasterizer.TryRender(bytes, out var svgUnsupported, out var svgStatus);
+            if (svgRaster is null)
+            {
+                // SEC-8 — surface WHY the SVG didn't render (a security-guard rejection vs malformed) instead
+                // of falling through to the raster decoder's generic, misleading IMG-DECODE-FAILED error. The
+                // fetch wrapper (FetchAndDecodeAsync) catches this + emits SVG-PARSE-FAILED-001 once.
+                throw new SvgImageParseException(svgStatus);
+            }
+
             if (svgUnsupported)
                 diagnostics.Emit(new Diagnostic(
                     DiagnosticCodes.CssSvgUnsupported001,
@@ -1178,6 +1200,13 @@ internal sealed class ImageResourceCache
             XObject = RasterImageXObject.Build(raster),
             SourceBytes = bytes,
         };
+    }
+
+    /// <summary>SEC-8 — thrown by <c>Decode</c> when an SVG image can't be parsed, carrying WHY so the
+    /// fetch wrapper emits the specific <c>SVG-PARSE-FAILED-001</c> diagnostic (not the generic decode error).</summary>
+    private sealed class SvgImageParseException(NetPdf.Svg.SvgParseStatus status) : Exception
+    {
+        public NetPdf.Svg.SvgParseStatus Status { get; } = status;
     }
 
     private static void EmitLoadFailed(IDiagnosticsSink diagnostics, string reference, string reason) =>

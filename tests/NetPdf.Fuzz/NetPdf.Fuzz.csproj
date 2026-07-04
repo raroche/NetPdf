@@ -18,7 +18,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The facade (HtmlPdf.Convert) + UriSafetyValidator live here. -->
     <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <!-- The remaining fuzz targets live in sibling assemblies: FontSafetyValidator
+         (NetPdf.Text), ImageSafetyValidator (NetPdf.Pdf), SvgRasterizer (NetPdf.Svg,
+         reached via InternalsVisibleTo). Referenced explicitly so the harness compiles
+         against them regardless of the facade's transitive-reference surface. -->
+    <ProjectReference Include="..\..\src\NetPdf.Text\NetPdf.Text.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Svg\NetPdf.Svg.csproj" />
   </ItemGroup>
 
   <ItemGroup>

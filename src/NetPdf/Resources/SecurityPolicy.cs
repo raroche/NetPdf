@@ -66,6 +66,23 @@ public sealed class SecurityPolicy
     /// + browser defaults.</summary>
     public int MaxRedirectHops { get; init; } = 5;
 
+    /// <summary>Per SEC-5 — maximum number of PDF pages a single conversion may emit.
+    /// A configurable, policy-driven cap layered ABOVE the pipeline's hard
+    /// 20 000-page emergency backstop (which guards a non-advancing layout loop and stays
+    /// regardless). Hostile HTML can amplify into an enormous page count (deeply repeated
+    /// content, forced breaks); tighten this for untrusted input. When exceeded, the render
+    /// stops at the cap + emits <c>PDF-PAGE-LIMIT-EXCEEDED-001</c>. Default 20 000 (the
+    /// backstop) so trusted rendering is unchanged; <see cref="UntrustedHtml"/> uses 500.</summary>
+    public int MaxPages { get; init; } = 20_000;
+
+    /// <summary>Per SEC-5 — maximum size in bytes of the produced PDF. Bounds output
+    /// amplification (huge image cascades, page explosions) independently of the page cap.
+    /// When exceeded, the conversion aborts with an <see cref="HtmlPdfException"/> carrying
+    /// <c>PDF-OUTPUT-SIZE-EXCEEDED-001</c>. Default is effectively unlimited
+    /// (<see cref="long.MaxValue"/>) so trusted rendering is unchanged;
+    /// <see cref="UntrustedHtml"/> caps at 50 MiB.</summary>
+    public long MaxOutputBytes { get; init; } = long.MaxValue;
+
     /// <summary>
     /// The default — BaseUri-sandboxed file:// reads, data URIs, no HTTP(S), 10 s timeout,
     /// 25 MB cap, 200 resources per render, 100 MiB total, 5 redirect hops. Suitable
@@ -104,6 +121,9 @@ public sealed class SecurityPolicy
         MaxTotalResourceBytes = 20L * 1024 * 1024,
         MaxResourceBytes = 5L * 1024 * 1024,
         ResourceTimeout = TimeSpan.FromSeconds(5),
+        // SEC-5 — tight output caps for attacker-controlled HTML.
+        MaxPages = 500,
+        MaxOutputBytes = 50L * 1024 * 1024,
     };
 
     /// <summary>Per Phase D D-2 — trusted-template profile.

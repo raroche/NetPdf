@@ -1,0 +1,75 @@
+# Security fuzz-smoke + regression gate (SEC-2).
+#
+# The always-on, no-instrumentation half of the security-verification track:
+#   1. runs the deterministic fuzz smoke pass over the seeded corpus + mutations
+#      (tests/NetPdf.Fuzz --smoke) — every security-critical entry point must survive
+#      arbitrary bytes without an unexpected throw or a hang;
+#   2. runs the consolidated security regression suite (Category=Security), which pins the
+#      SSRF / LFI / XXE / DoS / PDF-output invariants as executable assertions.
+#
+# This is NOT the full coverage-guided libFuzzer campaign (that needs `sharpfuzz`
+# instrumentation — see docs/security/fuzzing.md); it is the cheap gate that catches
+# regressions on every PR. Reference-image regeneration / the broader cross-platform matrix
+# are separate Phase-5 CI deliverables.
+name: fuzz-smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mutations:
+        description: "Mutations per seed for the smoke pass"
+        required: false
+        default: "64"
+
+permissions:
+  contents: read
+
+jobs:
+  security-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore + build fuzz harness
+        run: dotnet build tests/NetPdf.Fuzz/NetPdf.Fuzz.csproj -c Release --nologo
+
+      - name: Fuzz smoke pass (seeded corpus + mutations)
+        run: >-
+          dotnet run --project tests/NetPdf.Fuzz -c Release --no-build --
+          --smoke --mutations ${{ github.event.inputs.mutations || '64' }}
+
+      - name: Security regression suite (Category=Security)
+        run: >-
+          dotnet test tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj -c Release --nologo
+          --filter "Category=Security"
+
+  # SEC-10 — fail the build if any (transitive) dependency has a known advisory. The native decoders
+  # (Skia / HarfBuzz / PDFium) are the residual RCE surface; staying patched is the main mitigation.
+  dependency-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Restore
+        run: dotnet restore NetPdf.slnx
+      - name: Vulnerable-dependency scan
+        run: |
+          dotnet list NetPdf.slnx package --vulnerable --include-transitive 2>&1 | tee vuln.txt
+          if grep -q "has the following vulnerable packages" vuln.txt; then
+            echo "::error::Vulnerable dependencies found — see the scan output above (SEC-10)."
+            exit 1
+          fi
+          echo "No vulnerable packages."

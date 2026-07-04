@@ -1205,7 +1205,7 @@ internal sealed class PdfPage
     /// <summary>
     /// Finalize: build the page dictionary, attach the resources tree, return the
     /// content-stream bytes for the document to assign to <see cref="ContentsRef"/>.
-    /// Called by <see cref="PdfDocument.Save"/>.
+    /// Called by <see cref="PdfDocument.Save()"/>.
     /// </summary>
     internal (PdfDictionary PageDict, byte[] ContentBytes) Finalize()
     {

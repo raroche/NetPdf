@@ -60,6 +60,24 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
     private readonly HttpClient _httpClient;
     private readonly SecurityPolicy _policy;
 
+    // The host resolver. Defaults to Dns.GetHostAddressesAsync; an internal constructor lets tests
+    // inject a stub (e.g. a non-responding resolver) to exercise the SEC-4 DNS-timeout path.
+    private readonly Func<string, CancellationToken, Task<IPAddress[]>> _resolveHost;
+
+    // SEC-4 — the hardware/OS getaddrinfo path does not reliably honor the CancellationToken on every
+    // platform, so an unbounded resolve of a hostile / dead-DNS host can hang the render thread (a
+    // slow-resolver DoS, threat-model V7). Bound every resolve at min(ResourceTimeout, 5s).
+    private static readonly TimeSpan DnsTimeoutCap = TimeSpan.FromSeconds(5);
+
+    private TimeSpan DnsTimeout
+    {
+        get
+        {
+            var configured = _policy.ResourceTimeout;
+            return configured > TimeSpan.Zero && configured < DnsTimeoutCap ? configured : DnsTimeoutCap;
+        }
+    }
+
     /// <summary>Per post-Task-7 review (recommendation P1 #1) — the
     /// <see cref="SecurityPolicy"/> this loader captured at construction.
     /// Exposed so <see cref="SafeResourceLoader"/>'s constructor can
@@ -86,8 +104,18 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
     /// constructs both with the context's policy as the single source
     /// of truth.</para></summary>
     public SafeHttpResourceLoader(SecurityPolicy? policy = null)
+        : this(policy, static (host, token) => Dns.GetHostAddressesAsync(host, token))
     {
+    }
+
+    /// <summary>Test seam (SEC-4) — inject the host resolver so a stub can simulate a non-responding /
+    /// slow resolver and prove the DNS timeout fails fast instead of hanging the render thread.</summary>
+    internal SafeHttpResourceLoader(
+        SecurityPolicy? policy, Func<string, CancellationToken, Task<IPAddress[]>> resolveHost)
+    {
+        ArgumentNullException.ThrowIfNull(resolveHost);
         _policy = policy ?? SecurityPolicy.SafeDefault;
+        _resolveHost = resolveHost;
         var handler = new SocketsHttpHandler
         {
             // Per PR #18 review #1 — disable auto-redirect; we walk
@@ -183,8 +211,18 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
     /// <summary>Per PR #18 review #1 — resolve the host + return the
     /// first address that passes <see cref="UriSafetyValidator.IsBlockedIp"/>.
     /// Returns null when DNS returned no addresses OR every resolved
-    /// address is on the blocklist.</summary>
-    private static async ValueTask<IPAddress?> ResolveAndValidateAsync(string host, CancellationToken ct)
+    /// address is on the blocklist.
+    ///
+    /// <para>SEC-4 — the resolve is bounded at <see cref="DnsTimeout"/>
+    /// (<c>min(ResourceTimeout, 5s)</c>) via <c>Task.WaitAsync</c>:
+    /// <c>getaddrinfo</c> does not reliably honor the
+    /// <see cref="CancellationToken"/> on every platform, so an unbounded
+    /// resolve of a dead / hostile-DNS host could hang the render thread
+    /// (a slow-resolver DoS). On timeout we throw a typed
+    /// <see cref="HttpRequestException"/> (caught by
+    /// <see cref="SafeResourceLoader"/> + surfaced as a typed failure)
+    /// rather than blocking indefinitely.</para></summary>
+    private async ValueTask<IPAddress?> ResolveAndValidateAsync(string host, CancellationToken ct)
     {
         // GetHostAddressesAsync handles both IP literals (returns the
         // single address) and symbolic names (DNS query). Either way
@@ -192,7 +230,21 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
         IPAddress[] addresses;
         try
         {
-            addresses = await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
+            // WaitAsync guarantees we return within DnsTimeout even if the underlying resolve ignores the
+            // token. If it times out the resolve task is abandoned; attach a fault-only continuation so an
+            // eventual SocketException on that task is observed (never an unobserved-task exception).
+            var resolveTask = _resolveHost(host, ct);
+            _ = resolveTask.ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            addresses = await resolveTask.WaitAsync(DnsTimeout, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            throw new HttpRequestException(
+                $"DNS resolution for '{host}' timed out after {DnsTimeout.TotalSeconds:0.###}s");
         }
         catch (SocketException)
         {

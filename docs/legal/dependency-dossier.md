@@ -100,7 +100,7 @@ This file satisfies the clean-room policy (`docs/clean-room-policy.md` §4).
 
 ## ⛔ Banned (in runtime path)
 
-The `NetPdf.BannedAnalyzer` Roslyn analyzer fails the build if any of these appear in `using` statements or fully-qualified type references inside `src/`.
+None of these may appear in `src/`. Enforcement is by **process** — the dependency-dossier review gate (adding a `PackageVersion` requires a reviewed entry here first), code review, and the CI vulnerable-dependency scan (below). There is no bespoke `NetPdf.BannedAnalyzer` today; machine-enforcement via `Microsoft.CodeAnalysis.BannedApiAnalyzers` + a `BannedSymbols.txt` (starting with `System.Drawing.*`, which the codebase already avoids) is a documented future option.
 
 | Package / Namespace | Reason |
 |---|---|
@@ -117,6 +117,33 @@ The `NetPdf.BannedAnalyzer` Roslyn analyzer fails the build if any of these appe
 
 ---
 
+## Native-dependency CVE policy & patch cadence (SEC-10)
+
+The residual remote-code-execution surface (threat-model class **V5**) is the **native code** reached
+with attacker-controlled bytes: Skia's image codecs, HarfBuzz's font shaper, and (test-only) PDFium.
+NetPdf's pre-decode validators (`ImageSafetyValidator`, `FontSafetyValidator`) bound the *shape* of what
+reaches them, but a memory-safety 0-day in the native library itself (cf. libwebp **CVE-2023-4863**,
+neodyme "HTML renderer to RCE") is mitigated **primarily by staying patched**. Policy:
+
+- **Version floors (current pins).** SkiaSharp `3.119.2` (+ matching `NativeAssets.*`), HarfBuzzSharp
+  `8.3.1.1` (+ `NativeAssets.*`), AngleSharp `1.1.2`, AngleSharp.Css `1.0.0-beta.144`. Test-only:
+  PDFtoImage/`bblanchon.PDFium`, Microsoft.Playwright, SharpFuzz, xUnit, BenchmarkDotNet. Never float a
+  native package below its pinned floor; the whole solution moves together (SkiaSharp is repo-wide so the
+  visual harness measures production's renderer set).
+- **Monitoring.** CI runs `dotnet list package --vulnerable --include-transitive` on every PR (the
+  `dependency-scan` job in [`.github/workflows/fuzz-smoke.yml`](../../.github/workflows/fuzz-smoke.yml)) and
+  **fails** the build if any advisory matches. GitHub Dependabot / advisory alerts watch the same graph.
+- **Patch cadence.** Apply a security patch to a native dependency **promptly** (target: within one release
+  cycle of an advisory affecting a pinned version; sooner for Critical/High reaching a decoder). Because a
+  Skia/HarfBuzz bump can change rendered bytes, **re-verify byte-identity** after any native bump per
+  [`docs/design/determinism.md`](../design/determinism.md) (the golden/corpus/AOT-parity gates) and re-pin
+  the determinism hash if it legitimately moved.
+- **Defense in depth.** The library cannot substitute for OS-level isolation against a native 0-day — the
+  untrusted-HTML deployment MUST additionally run sandboxed (see [`deployment.md`](../security/deployment.md),
+  SEC-11).
+
+---
+
 ## Adding a new dependency: checklist
 
 1. Open a draft PR titled `Add dependency: <package-name>`.
@@ -129,4 +156,4 @@ The `NetPdf.BannedAnalyzer` Roslyn analyzer fails the build if any of these appe
 
 ---
 
-Last updated: 2026-04-30.
+Last updated: 2026-07-04 (SEC-10 — added the native-dependency CVE policy & patch cadence + the CI vulnerable-dependency scan; corrected the `NetPdf.BannedAnalyzer` claim).

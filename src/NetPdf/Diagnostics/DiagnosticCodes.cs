@@ -272,6 +272,18 @@ internal static class DiagnosticCodes
     public const string CssSvgUnsupported001 = "CSS-SVG-UNSUPPORTED-001";
 
     /// <summary>
+    /// Per SEC-8 — an SVG image could not be parsed, so it was not rendered. The message
+    /// distinguishes the two cases the audit called out (observability gap G6): a
+    /// <b>security-guard rejection</b> — a prohibited <c>&lt;!DOCTYPE</c> / <c>&lt;!ENTITY</c> or an
+    /// over-size document, i.e. the XXE / entity-expansion "billion laughs" defense
+    /// (<c>DtdProcessing.Prohibit</c> + <c>MaxCharactersInDocument</c>) — versus <b>malformed</b>
+    /// (not well-formed XML). Replaces the prior silent <c>null</c> return + a misleading generic
+    /// image-decode error. Fires once per failed SVG image.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string SvgParseFailed001 = "SVG-PARSE-FAILED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole
@@ -561,6 +573,24 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string LayoutMeasureNestingBudgetExceeded001 =
         "LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001";
+
+    /// <summary>
+    /// Emitted by the render pipeline when block layout recurses past
+    /// <c>BlockLayouter.MaxRecursionDepth</c> (256) — a DoS guard against
+    /// pathologically deep untrusted HTML that would otherwise
+    /// <c>StackOverflow</c> and halt the process. The DOM parser's own
+    /// nesting cap (1024) is higher, so a document between the two limits
+    /// reaches layout and trips this guard. Rather than let an untyped
+    /// exception escape <c>HtmlPdf.Convert</c>, the pipeline catches the
+    /// guard, degrades to a valid PDF built from the content laid out
+    /// before the cap, and surfaces this diagnostic (diagnostics-not-
+    /// silent-corruption). Distinct from the speculative-measure budget
+    /// (<see cref="LayoutMeasureNestingBudgetExceeded001"/>), which
+    /// degrades a probe to 0-extent without stopping layout.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutRecursionDepthExceeded001 =
+        "LAYOUT-RECURSION-DEPTH-EXCEEDED-001";
 
     /// <summary>
     /// Per Phase 3 Task 13 cycle 1 hardening Finding 5 — emitted by the
@@ -905,6 +935,27 @@ internal static class DiagnosticCodes
     /// most once per conversion. Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string PdfContentOverflowTruncated001 = "PDF-CONTENT-OVERFLOW-TRUNCATED-001";
+
+    /// <summary>
+    /// Per SEC-5 — a conversion tried to emit more pages than the configured
+    /// <c>SecurityPolicy.MaxPages</c> cap (a policy-driven, tighter-for-untrusted
+    /// layer above the pipeline's hard 20 000-page emergency backstop). Rendering
+    /// stops at the cap and drops the remaining content; a page-amplifying untrusted
+    /// document is bounded rather than exhausting memory / time. Raise
+    /// <c>SecurityPolicy.MaxPages</c> for a legitimately long trusted document.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PdfPageLimitExceeded001 = "PDF-PAGE-LIMIT-EXCEEDED-001";
+
+    /// <summary>
+    /// Per SEC-5 — the produced PDF exceeded the configured
+    /// <c>SecurityPolicy.MaxOutputBytes</c> cap. Unlike the page cap this ABORTS the
+    /// conversion (throws <c>HtmlPdfException</c> carrying this code) — a truncated PDF
+    /// is not meaningful. Bounds output amplification (huge image cascades / page
+    /// explosions) independently of the page count. Default is effectively unlimited;
+    /// <c>SecurityPolicy.UntrustedHtml</c> caps at 50 MiB. Severity: fatal (thrown).
+    /// </summary>
+    public const string PdfOutputSizeExceeded001 = "PDF-OUTPUT-SIZE-EXCEEDED-001";
 
     // endregion PDF-*
 

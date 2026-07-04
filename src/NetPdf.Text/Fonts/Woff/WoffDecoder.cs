@@ -76,7 +76,20 @@ internal static class WoffDecoder
             decompressed[i] = DecompressTable(woffBytes, entries[i]);
         }
 
-        return AssembleSfnt(header, entries, decompressed);
+        var sfnt = AssembleSfnt(header, entries, decompressed);
+
+        // SEC-7 — re-validate the RECONSTRUCTED sfnt before any shaper sees it. The WOFF wrapper checks
+        // above cannot see inside the compressed tables (danger-class tables, table count, per-table
+        // bounds), so the decompressed sfnt is re-run through the same pre-decode gate a bare TTF/OTF
+        // passes. This is the invariant SEC-7 requires of the (currently dormant) WOFF render wiring.
+        var revalidation = FontSafetyValidator.Validate(sfnt);
+        if (!revalidation.IsSafe)
+        {
+            throw new InvalidDataException(
+                $"WOFF: reconstructed sfnt failed font-safety re-validation: {revalidation.Reason}");
+        }
+
+        return sfnt;
     }
 
     /// <summary>

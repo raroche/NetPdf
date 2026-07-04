@@ -41,6 +41,9 @@
     -->
     <InternalsVisibleTo Include="NetPdf.AotSmoke" />
     <InternalsVisibleTo Include="NetPdf.Benchmarks" />
+    <!-- The SharpFuzz harness fuzzes SvgRasterizer.TryRender, whose return type
+         (RasterImageInfo) is internal here — the caller must see it to bind the call. -->
+    <InternalsVisibleTo Include="NetPdf.Fuzz" />
   </ItemGroup>
 
 </Project>

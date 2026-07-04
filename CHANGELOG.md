@@ -8,6 +8,47 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
 
+### Security — Phase 5 hardening sub-track: SEC-2 (regression suite + fuzz foundation)
+
+- **Consolidated security regression suite** — `tests/NetPdf.UnitTests/Security/SecurityHardeningTests.cs` (`Category=Security`, 60 test cases at closeout across the security track) pins the SSRF / LFI / XXE / DoS / malicious-PDF-output invariants as executable assertions, organized by the threat-model taxonomy (`docs/security/security-hardening-plan.md`). This is the single home each subsequent `SEC-N` task extends.
+- **Fuzz harness wired** — `tests/NetPdf.Fuzz` (previously a no-op stub) now drives all five security-critical entry points (`HtmlPdf.Convert`, `UriSafetyValidator`, `FontSafetyValidator`, `ImageSafetyValidator`, `SvgRasterizer`) through a shared `FuzzTargets` body with a sanctioned-exception contract. Two modes: a deterministic seeded `--smoke` pass (no instrumentation — runs in CI) and `--libfuzzer` (coverage-guided campaign). Runbook: `docs/security/fuzzing.md`.
+- **CI security gate** — `.github/workflows/fuzz-smoke.yml` runs the fuzz smoke pass + the `Category=Security` suite on every PR (the first CI workflow in the repo; the broader cross-platform matrix is a later Phase-5 deliverable).
+- **Hardening fix found by the fuzzer** — deeply-nested untrusted HTML (past the layout recursion guard at depth 256, under the DOM nesting cap of 1024) used to escape `HtmlPdf.Convert` as an untyped `InvalidOperationException`. It now throws a typed `LayoutDepthExceededException`, caught at the render-pipeline boundary and degraded to a valid PDF plus the new `LAYOUT-RECURSION-DEPTH-EXCEEDED-001` diagnostic (regression-tested). No change to output for any document that doesn't trip the guard (all byte-identity / golden gates unchanged).
+
+### Security — SEC-3: SSRF choke-point invariant (the sequencing gate before Phase-5 resource loading)
+
+- **Enforced choke-point invariant** — `tests/NetPdf.UnitTests/Security/ResourceChokePointInvariantTests.cs` scans the production sources and fails the build if any code outside `SafeResourceLoader` invokes the raw `IResourceLoader.LoadAsync`, or constructs an `HttpClient`/`SocketsHttpHandler` outside `SafeHttpResourceLoader`. This turns the documented "every resource fetch goes through the one wrapper" promise into a CI guard, so the Phase-5 CSS/font-loading feature can't silently reintroduce SSRF (the #1 HTML-to-PDF bug class).
+- **Now-passing negative + SSRF + MIME tests** (in the `SecurityHardeningTests` SEC-3 region): `@import` / `@font-face src:url()` / `<link rel=stylesheet>` make **zero fetches** under `UntrustedHtml` (and under an http-permissive policy — a tripwire for when the fetch is wired); `SafeResourceLoader.FetchAsync` blocks the cloud-metadata IP for the `Stylesheet` and `Font` resource kinds (loader never invoked); MIME mismatch is rejected for those kinds (`text/html` served as a stylesheet/font is refused, `text/css`/`font/ttf` accepted); the kind→MIME allowlist matrix is pinned and unknown resource kinds are **fail-closed** (fetch nothing). Test-only change — no engine behavior change. When Phase 5 wires CSS/font fetching it must route through `SafeResourceLoader.FetchAsync(…, Stylesheet|Font)`; these guards then protect that path.
+
+### Security — SEC-4: DNS-resolution timeout (slow-resolver DoS)
+
+- **`SafeHttpResourceLoader` now bounds host resolution** at `min(ResourceTimeout, 5s)` via `Task.WaitAsync`. `getaddrinfo` does not reliably honor the cancellation token on every platform, so an unbounded resolve of a dead or hostile-DNS host could hang the render thread. On timeout it throws a typed `HttpRequestException` ("DNS resolution … timed out after Ns"), which `SafeResourceLoader` catches and surfaces as a typed resource-failure — fail-fast, not a hung thread. The host resolver is now injectable through an internal constructor for testing. Only affects the opt-in `SafeHttpResourceLoader` (no default loader ships), so all render output is byte-identical; the golden/corpus/snapshot gates are unchanged.
+
+### Security — SEC-5: configurable output-byte + page-count caps
+
+- **`SecurityPolicy` gains `MaxPages` and `MaxOutputBytes`.** Defaults preserve trusted behavior (`MaxPages` = 20 000, the hard backstop; `MaxOutputBytes` effectively unlimited); `UntrustedHtml` tightens both to 500 pages / 50 MiB. The render pipeline enforces the configured page cap in the multi-page loop (above the renamed `MaxPagesBackstop` = 20 000 emergency guard) → stops and emits `PDF-PAGE-LIMIT-EXCEEDED-001`; and checks the produced size after `Save()` → aborts with `HtmlPdfException(PDF-OUTPUT-SIZE-EXCEEDED-001)` (a truncated PDF isn't meaningful). Byte-identical for any document that doesn't trip the caps.
+
+### Security — SEC-6: data: URI MIME hardening
+
+- **`data:` URIs now require an explicit, allowlisted mediatype** at the resource choke point. A missing/empty type (`data:,…` / `data:;base64,…`) or a non-allowlisted one (esp. `text/html`, an SSRF/polyglot sneak-path) is rejected. The HTML `<img>` path already enforced this; SEC-6 closes it for CSS `url()` / direct loader use. `data:` stays fully off under `UntrustedHtml`.
+
+### Security — SEC-7: WOFF/WOFF2 decompression guard + re-validation
+
+- **A 100:1 decompression-ratio cap** (above a 1 MiB floor) added to both the WOFF and WOFF2 decoders, complementing the existing absolute-size caps, and the **reconstructed sfnt is re-run through `FontSafetyValidator`** before it could reach a shaper. Guards the (still dormant, v1-rejected) WOFF render wiring against a decompression bomb. `FontFaceData`'s doc already reflected the rejected-in-v1 state.
+
+### Security — SEC-8: SVG parser observability
+
+- **SVG parse failures are now diagnosed, not silent.** `SvgRasterizer.TryRender` reports an `SvgParseStatus`; the pipeline emits `SVG-PARSE-FAILED-001` distinguishing a security-guard rejection (a prohibited `<!DOCTYPE`/`<!ENTITY` or an over-size document — the XXE / entity-expansion defense) from malformed XML, instead of the prior silent null / misleading generic image-decode error. Valid-SVG rendering is byte-identical.
+
+### Security — SEC-9: CSS-amplification caps (verified + regression-tested)
+
+- Confirmed and regression-tested the existing CSS-amplification guards (the audit gap was largely stale): grid `repeat()` is capped at 10 000 (over-cap → `CSS-PROPERTY-VALUE-INVALID-001` + the declaration dropped), the expanded track count at 50 000, and counter magnitude is bounded by the counter formatters (roman > 3999 → decimal; alphabetic/greek logarithmic).
+
+### Security — SEC-10 + SEC-11: dependency CVE policy, CI vuln-scan, deployment guide
+
+- **Native-dependency CVE policy** documented in the dependency dossier (version floors, the V5 native-decoder RCE surface, re-verify-byte-identity-after-a-bump), plus a **CI `dependency-scan` job** (`dotnet list package --vulnerable`) that fails on any advisory. Corrected the false `NetPdf.BannedAnalyzer` claim in `CLAUDE.md` and the dossier (no such analyzer exists).
+- **Deployment hardening guide** published ([docs/security/deployment.md](docs/security/deployment.md)): a container-isolation baseline (no egress, read-only FS, resource limits, drop-caps, seccomp, one-shot) as the OS-level backstop against native-decoder 0-days, plus the accepted residuals (symlink TOCTOU, `AllowedHosts` single-label wildcard scope).
+
 ## [0.9.0-rc1] — staged for 2026-07-01 (tag pending PR merge)
 
 Phase 4 — **visual parity**. NetPdf now renders the full v1-scoped set of CSS *visual* features to PDF: gradients (linear / radial / conic), box- and text-shadows (sharp + blurred), 2D transforms, CSS filters on images, faithful borders + `clip-path`, `border-image`, masks + `mix-blend-mode` on images, `opacity` (incl. descendant-subtree propagation + the CSS-wide keywords), hyperlink Link annotations, document outlines, multi-layer backgrounds, and static SVG (parts 1–13 + an opt-in native-vector path). Native PDF is the default; a Skia raster fallback (with a stable diagnostic) engages only where a feature can't be expressed natively. The repository remains **private through Phase 5**; this is a git-tag-only milestone (no NuGet — that lands at v1.0).

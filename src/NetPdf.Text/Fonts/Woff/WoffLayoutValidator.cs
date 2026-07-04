@@ -53,6 +53,18 @@ internal static class WoffLayoutValidator
     public const long MaxSfntSize = 256L * 1024 * 1024;
 
     /// <summary>
+    /// SEC-7 — maximum uncompressed:compressed size ratio. Real font tables compress ~2–4× with
+    /// zlib; 100:1 is far above any legitimate font yet rejects a decompression bomb (a tiny
+    /// compressed payload declaring a near-<see cref="MaxSfntSize"/> <c>origLength</c>) that would
+    /// otherwise pass the absolute-size cap. Only applied above <see cref="RatioCheckFloorBytes"/>
+    /// so small fonts (where the ratio is noisy) are never false-rejected.
+    /// </summary>
+    public const long MaxDecompressionRatio = 100;
+
+    /// <summary>Ratio check applies only when the uncompressed size exceeds this floor.</summary>
+    public const long RatioCheckFloorBytes = 1L * 1024 * 1024;
+
+    /// <summary>
     /// Validate the full WOFF file layout. Throws <see cref="InvalidDataException"/> on
     /// any non-conformance. The caller (typically <see cref="WoffDecoder.Decode"/>)
     /// invokes this immediately after directory parsing and before any decompression.
@@ -77,6 +89,23 @@ internal static class WoffLayoutValidator
                     $"after table {i} ('{OpenTypeTags.ToAsciiString(entries[i].Tag)}').");
             }
         }
+        // (1b) SEC-7 — decompression-ratio cap. A zip-bomb table (tiny compLength, huge origLength)
+        //      can stay under the absolute cap yet balloon allocation/CPU on decode; reject it. Runs
+        //      before the totalSfntSize match so it catches the ratio regardless of self-consistency.
+        var totalCompLength = 0L;
+        for (var i = 0; i < entries.Length; i++)
+        {
+            totalCompLength += entries[i].CompLength;
+        }
+        if (totalCompLength > 0
+            && expectedSfntSize > RatioCheckFloorBytes
+            && expectedSfntSize > MaxDecompressionRatio * totalCompLength)
+        {
+            throw new InvalidDataException(
+                $"WOFF: uncompressed:compressed ratio ({expectedSfntSize}:{totalCompLength}) exceeds the " +
+                $"{MaxDecompressionRatio}:1 safety cap — possible decompression-bomb input.");
+        }
+
         if ((uint)expectedSfntSize != header.TotalSfntSize)
         {
             throw new InvalidDataException(

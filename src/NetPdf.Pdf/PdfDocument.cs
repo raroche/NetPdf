@@ -756,6 +756,23 @@ internal sealed class PdfDocument
         return buf.WrittenSpan.ToArray();
     }
 
+    /// <summary>SEC-5 — render the document, aborting DURING serialization once the output would exceed
+    /// <paramref name="maxBytes"/> (rather than checking after the whole PDF has been materialized + copied).
+    /// Throws <see cref="PdfOutputSizeExceededException"/> when the cap is crossed. A non-positive or
+    /// <see cref="long.MaxValue"/> cap means "unlimited" and takes the plain <see cref="Save()"/> path
+    /// (byte-identical, no per-write overhead).</summary>
+    public byte[] Save(long maxBytes)
+    {
+        if (maxBytes <= 0 || maxBytes >= long.MaxValue)
+        {
+            return Save();
+        }
+
+        var buf = new ArrayBufferWriter<byte>();
+        SaveTo(new BoundedBufferWriter(buf, maxBytes));
+        return buf.WrittenSpan.ToArray();
+    }
+
     /// <summary>Render the document to <paramref name="output"/>.</summary>
     public void SaveTo(IBufferWriter<byte> output)
     {

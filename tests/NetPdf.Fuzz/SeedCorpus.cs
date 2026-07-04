@@ -1,0 +1,222 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System.Text;
+using static NetPdf.Fuzz.FuzzTargets;
+
+namespace NetPdf.Fuzz;
+
+/// <summary>
+/// The seeded, hand-authored corpus the <c>--smoke</c> runner replays every CI run. Each
+/// seed is one known attack shape aimed at a specific target; the smoke runner asserts none
+/// crash or hang (it does NOT assert a particular verdict — the executable invariants live in
+/// <c>SecurityHardeningTests</c>). The corpus doubles as the starting seed set for a real
+/// libFuzzer campaign (see <c>docs/security/fuzzing.md</c>).
+/// </summary>
+internal static class SeedCorpus
+{
+    internal readonly record struct Seed(Target Target, byte[] Payload, string Label);
+
+    internal static IReadOnlyList<Seed> All { get; } = Build();
+
+    private static List<Seed> Build()
+    {
+        var seeds = new List<Seed>();
+
+        void Html(string label, string html) => seeds.Add(new Seed(Target.HtmlConvert, Utf8(html), label));
+        void Uri(string label, string uri) => seeds.Add(new Seed(Target.Uri, Utf8(uri), label));
+        void Font(string label, byte[] bytes) => seeds.Add(new Seed(Target.Font, bytes, label));
+        void Image(string label, byte[] bytes) => seeds.Add(new Seed(Target.Image, bytes, label));
+        void Svg(string label, string svg) => seeds.Add(new Seed(Target.Svg, Utf8(svg), label));
+
+        // --- V1 SSRF / V2 LFI through the full pipeline (must fetch nothing under UntrustedHtml) ---
+        Html("ssrf-metadata-img", "<img src=\"http://169.254.169.254/latest/meta-data/iam/security-credentials/\">");
+        Html("ssrf-css-import", "<style>@import url('http://10.0.0.1/internal.css');</style><p>x</p>");
+        Html("ssrf-font-face", "<style>@font-face{font-family:x;src:url('http://192.168.0.1/f.ttf')}</style><p style=\"font-family:x\">y</p>");
+        Html("lfi-file-img", "<img src=\"file:///etc/passwd\">");
+        Html("lfi-object-data", "<object data=\"file:///etc/shadow\"></object>");
+        Html("ssrf-link-stylesheet", "<link rel=\"stylesheet\" href=\"http://127.0.0.1:8080/x.css\"><p>z</p>");
+
+        // --- V6-adjacent: script + event-handler stripping (structurally eliminated, but assert no crash) ---
+        Html("script-and-onerror", "<script>while(true){}</script><img src=x onerror=\"fetch('http://evil')\"><body onload=\"x()\">hi</body>");
+        Html("javascript-uri-anchor", "<a href=\"javascript:alert(document.cookie)\">click</a>");
+
+        // --- V8 malicious-PDF-output token injection attempts (preflight must keep them out) ---
+        Html("pdf-token-injection", "<a href=\"file:///etc/passwd\">f</a><div>/OpenAction /JavaScript /Launch (\\) 0 obj</div>");
+        Html("uri-fragment-anchor", "<a href=\"#\\)/JS(x\">t</a>");
+
+        // --- V7 DoS shapes through the pipeline (caps must abort, not hang) ---
+        Html("deep-nesting", NestedDivs(2000));
+        Html("huge-attr", "<div class=\"" + new string('a', 200_000) + "\">x</div>");
+        Html("many-elements", string.Concat(Enumerable.Repeat("<span>a</span>", 5000)));
+        Html("css-var-bomb", "<style>:root{--a:var(--a)var(--a)}</style><div style=\"width:var(--a)\">x</div>");
+
+        // --- Degenerate / malformed HTML (parser robustness) ---
+        Html("empty", string.Empty);
+        Html("unterminated-tags", "<div><span><p><table><tr><td>");
+        Html("bare-lt-gt", "< > << >> <<<>>> </>");
+        Html("unicode-soup", "\uFEFF\u200B<div>\U00010000 \uFFFF\u0000</div>");
+        Html("entity-heavy", string.Concat(Enumerable.Repeat("&amp;&lt;&#x41;&nbsp;", 2000)));
+
+        // --- V1/V2 URI validator seeds (metadata, private ranges, decimal/hex/IPv6 encodings, alt schemes) ---
+        Uri("metadata-v4", "http://169.254.169.254/");
+        Uri("metadata-decimal", "http://2852039166/");                 // 169.254.169.254 as a flat integer
+        Uri("metadata-hex", "http://0xA9.0xFE.0xA9.0xFE/");
+        Uri("metadata-octal", "http://0251.0376.0251.0376/");
+        Uri("loopback-v4", "http://127.0.0.1/");
+        Uri("loopback-v6", "http://[::1]/");
+        Uri("private-10", "http://10.0.0.5/");
+        Uri("private-172", "http://172.16.9.9/");
+        Uri("private-192", "http://192.168.1.1/");
+        Uri("mapped-v4-in-v6", "http://[::ffff:169.254.169.254]/");
+        Uri("ula-v6", "http://[fc00::1]/");
+        Uri("linklocal-v6", "http://[fe80::1]/");
+        Uri("file-scheme", "file:///etc/passwd");
+        Uri("gopher-scheme", "gopher://127.0.0.1:6379/_INFO");
+        Uri("dict-scheme", "dict://127.0.0.1:11211/stat");
+        Uri("data-html", "data:text/html,<script>1</script>");
+        Uri("public-ok", "https://example.com/logo.png");
+
+        // --- V4/V5 font validator seeds (magic bytes + hostile headers) ---
+        Font("ttf-magic-junk", WithMagic([0x00, 0x01, 0x00, 0x00], fill: 0x41, total: 128));
+        Font("otto-magic-junk", WithMagic("OTTO"u8.ToArray(), fill: 0x42, total: 128));
+        Font("woff-wrapped", WithMagic("wOFF"u8.ToArray(), fill: 0x00, total: 128));   // WOFF rejected in v1
+        Font("woff2-wrapped", WithMagic("wOF2"u8.ToArray(), fill: 0x00, total: 128));
+        Font("sfnt-huge-numtables", SfntHeader(numTables: 0xFFFF));                      // over the 64-table cap
+        Font("sfnt-danger-svg-table", SfntWithTable("SVG "u8.ToArray()));                // denylisted table tag
+        Font("truncated", [0x00, 0x01, 0x00]);
+        Font("empty", []);
+        Font("random-256", Ramp(256));
+
+        // --- V5 image validator seeds (magic bytes + oversized-dimension headers) ---
+        Image("png-magic-junk", WithMagic([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A], fill: 0x00, total: 64));
+        Image("png-giant-dims", PngIhdr(width: 100_000, height: 100_000));               // over the dimension cap
+        Image("jpeg-magic-junk", WithMagic([0xFF, 0xD8, 0xFF, 0xE0], fill: 0x00, total: 64));
+        Image("gif-magic", WithMagic("GIF89a"u8.ToArray(), fill: 0x00, total: 64));
+        Image("webp-magic", WebpHeader());
+        Image("bmp-magic", WithMagic("BM"u8.ToArray(), fill: 0x00, total: 64));
+        Image("avif-brand", AvifHeader());                                               // rejected on all platforms
+        Image("truncated", [0x89, 0x50]);
+        Image("empty", []);
+        Image("random-256", Ramp(256));
+
+        // --- V3 XXE + DoS through the SVG rasterizer (DTD prohibited; entity/element caps) ---
+        Svg("xxe-file-entity", "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&xxe;</text></svg>");
+        Svg("xxe-http-entity", "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY x SYSTEM \"http://169.254.169.254/\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&x;</text></svg>");
+        Svg("billion-laughs", BillionLaughs());
+        Svg("external-image", "<svg xmlns=\"http://www.w3.org/2000/svg\"><image href=\"http://10.0.0.1/x.png\"/></svg>");
+        Svg("deep-groups", "<svg xmlns=\"http://www.w3.org/2000/svg\">" + string.Concat(Enumerable.Repeat("<g>", 500)) + "<rect width=\"1\" height=\"1\"/>" + string.Concat(Enumerable.Repeat("</g>", 500)) + "</svg>");
+        Svg("use-self-recursion", "<svg xmlns=\"http://www.w3.org/2000/svg\"><defs><g id=\"a\"><use href=\"#a\"/></g></defs><use href=\"#a\"/></svg>");
+        Svg("malformed-xml", "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect");
+        Svg("empty", string.Empty);
+        Svg("valid-tiny", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\" fill=\"red\"/></svg>");
+
+        return seeds;
+    }
+
+    // --- helpers ---------------------------------------------------------------------
+
+    private static byte[] Utf8(string s) => Encoding.UTF8.GetBytes(s);
+
+    private static string NestedDivs(int depth) =>
+        string.Concat(Enumerable.Repeat("<div>", depth)) + "x" + string.Concat(Enumerable.Repeat("</div>", depth));
+
+    private static byte[] WithMagic(byte[] magic, byte fill, int total)
+    {
+        var buf = new byte[Math.Max(total, magic.Length)];
+        magic.CopyTo(buf, 0);
+        for (var i = magic.Length; i < buf.Length; i++)
+        {
+            buf[i] = fill;
+        }
+
+        return buf;
+    }
+
+    private static byte[] Ramp(int n)
+    {
+        var buf = new byte[n];
+        for (var i = 0; i < n; i++)
+        {
+            buf[i] = (byte)i;
+        }
+
+        return buf;
+    }
+
+    // sfnt: 4-byte version + uint16 numTables + 6 bytes of search params, then junk.
+    private static byte[] SfntHeader(int numTables)
+    {
+        var buf = new byte[64];
+        buf[0] = 0x00; buf[1] = 0x01; buf[2] = 0x00; buf[3] = 0x00; // TrueType version
+        buf[4] = (byte)(numTables >> 8); buf[5] = (byte)(numTables & 0xFF);
+        return buf;
+    }
+
+    // sfnt with a single table-directory entry carrying a (denylisted) tag.
+    private static byte[] SfntWithTable(byte[] tag)
+    {
+        var buf = new byte[12 + 16];
+        buf[0] = 0x00; buf[1] = 0x01; buf[2] = 0x00; buf[3] = 0x00;
+        buf[4] = 0x00; buf[5] = 0x01;                               // numTables = 1
+        Array.Copy(tag, 0, buf, 12, 4);                            // table-record tag
+        return buf;
+    }
+
+    // PNG signature + IHDR chunk declaring an (oversized) width/height.
+    private static byte[] PngIhdr(uint width, uint height)
+    {
+        var buf = new byte[8 + 4 + 4 + 13];
+        byte[] sig = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        sig.CopyTo(buf, 0);
+        // IHDR length (13) + type "IHDR"
+        buf[8] = 0x00; buf[9] = 0x00; buf[10] = 0x00; buf[11] = 0x0D;
+        buf[12] = (byte)'I'; buf[13] = (byte)'H'; buf[14] = (byte)'D'; buf[15] = (byte)'R';
+        WriteBe32(buf, 16, width);
+        WriteBe32(buf, 20, height);
+        buf[24] = 8;  // bit depth
+        buf[25] = 6;  // color type RGBA
+        return buf;
+    }
+
+    private static byte[] WebpHeader()
+    {
+        // RIFF____WEBP
+        var buf = new byte[32];
+        "RIFF"u8.CopyTo(buf);
+        buf[4] = 0x1A; // arbitrary size
+        "WEBP"u8.CopyTo(buf.AsSpan(8));
+        "VP8 "u8.CopyTo(buf.AsSpan(12));
+        return buf;
+    }
+
+    private static byte[] AvifHeader()
+    {
+        // ....ftypavif
+        var buf = new byte[32];
+        buf[3] = 0x18;
+        "ftyp"u8.CopyTo(buf.AsSpan(4));
+        "avif"u8.CopyTo(buf.AsSpan(8));
+        return buf;
+    }
+
+    private static string BillionLaughs()
+    {
+        var sb = new StringBuilder();
+        sb.Append("<?xml version=\"1.0\"?><!DOCTYPE svg [");
+        sb.Append("<!ENTITY a \"aaaaaaaaaa\">");
+        sb.Append("<!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;\">");
+        sb.Append("<!ENTITY c \"&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;\">");
+        sb.Append("<!ENTITY d \"&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;\">");
+        sb.Append("]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&d;</text></svg>");
+        return sb.ToString();
+    }
+
+    private static void WriteBe32(byte[] buf, int offset, uint value)
+    {
+        buf[offset] = (byte)(value >> 24);
+        buf[offset + 1] = (byte)(value >> 16);
+        buf[offset + 2] = (byte)(value >> 8);
+        buf[offset + 3] = (byte)value;
+    }
+}

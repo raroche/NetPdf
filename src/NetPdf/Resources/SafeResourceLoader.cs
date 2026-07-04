@@ -192,10 +192,16 @@ public sealed class SafeResourceLoader
                 return SafeResourceResult.Failed(uri, kind,
                     $"resource size {dataBytes.Length} exceeds per-resource cap {_context.Policy.MaxResourceBytes}");
             }
-            if (!string.IsNullOrEmpty(dataMime) && !IsMimeAllowedForKind(dataMime, kind))
+            // SEC-6 — a data: URI's mediatype is attacker-authored INLINE, so require an EXPLICIT,
+            // allowlisted type. Unlike an HTTP response (which may legitimately omit Content-Type,
+            // deferring to magic-byte sniffing), a missing/empty mediatype (`data:,…` / `data:;base64,…`)
+            // or a non-allowlisted one (esp. `text/html` — a known SSRF/polyglot sneak-path) is rejected
+            // here. The HTML img path already enforces this (HtmlParsingHost.IsAllowedImageDataUri); this
+            // closes it at the shared choke point for every other consumer (CSS url(), direct loader use).
+            if (string.IsNullOrEmpty(dataMime) || !IsMimeAllowedForKind(dataMime, kind))
             {
                 return SafeResourceResult.Failed(uri, kind,
-                    $"MIME type '{dataMime}' not in allowlist for {kind} resource");
+                    $"data: URI requires an explicit allowlisted mediatype for a {kind} resource (got '{(string.IsNullOrEmpty(dataMime) ? "(none)" : dataMime)}')");
             }
             var dataBytesReason = _context.TryAddBytes(dataBytes.Length);
             if (dataBytesReason is not null)

@@ -153,12 +153,13 @@ The release-candidate gate. All of:
 >   Windows leg honors it and aborts if the lib is absent). Hardening the arm64 native (e.g. the
 >   NoDependencies SkiaSharp asset) is a maintainer step on a real arm64 runner.
 >
-> **Enforcing matrix:** linux-x64, windows-x64, macos-arm64, macos-x64. **Non-blocking** (`continue-on-error`,
-> run + surface status but don't gate): linux-arm64 and alpine-musl-x64 (both blocked on SkiaSharp
-> raster-fallback native provisioning on runner environments not reproducible here). The visual-regression
-> gate runs green/inert until the maintainer commits the canonical Linux Chrome reference PNGs (task 3
-> remainder), and the benchmark gate exits neutral until a `linux-x64` baseline is captured (task 4
-> remainder). **Four maintainer/CI-box remainders:** arm64-Linux + Alpine-musl SkiaSharp natives, visual
+> **Enforcing matrix:** linux-x64, windows-x64, macos-arm64. **Non-blocking** (`continue-on-error`, run +
+> surface status but don't gate): linux-arm64 + alpine-musl-x64 (SkiaSharp raster-fallback native
+> provisioning, not reproducible here) and macos-x64 (GitHub is deprecating the Intel-mac hosted runners; it
+> stays queued the whole timeout — macos-arm64 is the enforcing macOS leg). The visual-regression gate runs
+> green/inert until the maintainer commits the canonical Linux Chrome reference PNGs (task 3 remainder), and
+> the benchmark gate exits neutral until a `linux-x64` baseline is captured (task 4 remainder). **Five
+> maintainer/CI-box remainders:** arm64-Linux + Alpine-musl SkiaSharp natives, Intel-mac runner, visual
 > reference PNGs, linux benchmark baseline. The `NetPdf.Languages.European` pack + the public
 > `HyphenationRegistry` seam ship a **de/fr starter set** registered into the registry (reachable via
 > `TryHyphenate`); the full CTAN LPPL pattern data (all 15 languages) + layout auto-routing by `lang` are

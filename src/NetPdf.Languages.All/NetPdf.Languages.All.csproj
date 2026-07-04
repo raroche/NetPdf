@@ -17,7 +17,7 @@
 
   <!-- The meta-package's direct dependencies ARE the four language packs (each of which depends on NetPdf,
        so NetPdf arrives transitively). These references are non-private → they become the package's
-       <dependency> set. `AllLanguagesPackageShapeTests` pins the shape. -->
+       <dependency> set. `LanguagePackShapeTests` pins the shape. -->
   <ItemGroup>
     <ProjectReference Include="..\NetPdf.Languages.European\NetPdf.Languages.European.csproj" />
     <ProjectReference Include="..\NetPdf.Languages.Cjk\NetPdf.Languages.Cjk.csproj" />

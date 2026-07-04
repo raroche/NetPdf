@@ -13,7 +13,8 @@ namespace NetPdf.UnitTests.Languages;
 /// Pins the SHAPE of the produced NuGet packages for every <c>NetPdf.Languages.*</c> pack. Each leaf pack
 /// (European / Cjk / Arabic / Indic) must declare exactly ONE package dependency — <c>NetPdf</c> — so a
 /// consumer receives NetPdf's own runtime deps transitively rather than the pack re-declaring a dozen it
-/// doesn't use; and the <c>NetPdf.All</c> meta-package must depend on exactly the four leaf packs. Per PR
+/// doesn't use; and the <c>NetPdf.Languages.All</c> meta-package must depend on exactly the four leaf
+/// packs. Per PR
 /// #264 review [P2], extended to the full pack set. The <c>dotnet pack</c> <c>&lt;dependencies&gt;</c> set is
 /// fully determined by the csproj metadata asserted here, so this pins the shape without invoking
 /// <c>dotnet pack</c> inside the test (nested MSBuild under <c>dotnet test</c> is slow and flaky).

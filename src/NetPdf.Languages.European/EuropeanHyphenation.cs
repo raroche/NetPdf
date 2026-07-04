@@ -15,11 +15,11 @@ namespace NetPdf.Languages.European;
 /// set</b>.
 /// </summary>
 /// <remarks>
-/// <para><b>Automatic layout routing is a follow-up.</b> NetPdf's block/inline layout pass does not yet
-/// resolve a hyphenator from <see cref="HyphenationRegistry"/> by a run's <c>lang</c>; until that wiring
-/// lands, this pack makes German/French hyphenation available <em>through the registry API</em> rather than
-/// driving it automatically during rendering. Referencing the package is therefore not by itself enough to
-/// change rendered output — call <see cref="Register"/> and consume the registry.</para>
+/// <para><b>Layout routing.</b> Once registered, these hyphenators are used automatically during rendering:
+/// NetPdf's block layout resolves the <c>hyphens: auto</c> hyphenator from a block's effective HTML
+/// <c>lang</c> (the nearest <c>lang</c> up the ancestor chain, e.g. <c>&lt;html lang="de"&gt;</c>) through
+/// <see cref="HyphenationRegistry"/>. So a German document hyphenates with these patterns when the pack is
+/// loaded. Per-run/mixed-language <c>lang</c> within a single block is a follow-up.</para>
 /// <para><b>Data status.</b> Hyphenation patterns come from the CTAN <c>tex-hyphen</c> project (LPPL) —
 /// attribution per language is preserved in <c>NOTICE</c>. This build ships a <b>correct starter set</b>
 /// for German and French (a real pattern subset + an explicit-hyphenation exception list) so the pack and

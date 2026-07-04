@@ -8,8 +8,8 @@ using NetPdf.Hyphenation;
 namespace NetPdf.Languages.Indic;
 
 /// <summary>
-/// Registers the major Indic-script languages with NetPdf's <see cref="HyphenationRegistry"/> so layout
-/// routes hyphenation by a run's <c>lang</c>.
+/// Registers the major Indic-script languages with NetPdf's <see cref="HyphenationRegistry"/> so layout can
+/// hyphenate a block by its effective <c>lang</c>.
 /// </summary>
 /// <remarks>
 /// <para><b>Data status.</b> Indic scripts <em>do</em> hyphenate (at akshara/syllable boundaries), unlike

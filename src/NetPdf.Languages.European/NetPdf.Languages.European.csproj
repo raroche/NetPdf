@@ -6,7 +6,7 @@
     <AssemblyName>NetPdf.Languages.European</AssemblyName>
     <IsPackable>true</IsPackable>
     <PackageId>NetPdf.Languages.European</PackageId>
-    <Description>Optional European-language hyphenation pack for NetPdf. Registers a German + French starter set of TeX/Liang hyphenation patterns into NetPdf's public HyphenationRegistry (call EuropeanHyphenation.Register at startup; a module initializer also drives it on assembly load). The remaining European languages and the full CTAN pattern data, plus automatic layout routing by a run's lang, are follow-ups.</Description>
+    <Description>Optional European-language hyphenation pack for NetPdf. Registers a German + French starter set of TeX/Liang hyphenation patterns into NetPdf's public HyphenationRegistry (call EuropeanHyphenation.Register at startup; a module initializer also drives it on assembly load). NetPdf's layout hyphenates a block by its effective HTML lang, so a lang-tagged document (e.g. &lt;html lang="de"&gt;) uses these patterns when the pack is loaded. The remaining European languages and the full CTAN pattern data are follow-ups.</Description>
     <PackageTags>pdf;html-to-pdf;hyphenation;european;german;french;i18n;typography</PackageTags>
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
@@ -35,7 +35,7 @@
        dependencies it neither references nor needs to re-declare — a consumer already receives them
        transitively through the single NetPdf dependency. Marking them PrivateAssets="all" (versions still
        come from Directory.Packages.props — no hard-coding) keeps them out of THIS pack's dependency set,
-       so the produced package has exactly one direct dependency: NetPdf. `ShapeOfPublishedPackageTests`
+       so the produced package has exactly one direct dependency: NetPdf. `LanguagePackShapeTests`
        pins this. -->
   <ItemGroup>
     <PackageReference Include="AngleSharp" PrivateAssets="all" />

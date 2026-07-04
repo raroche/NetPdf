@@ -226,45 +226,61 @@ sub-track**.
   ✅ a non-responding resolver fails fast with a typed failure (regression tests
   `Sec4_non_responding_dns_resolver_fails_fast_not_hang` + `Sec4_dns_timeout_surfaces_as_typed_failure_through_the_choke_point`
   in `SecurityHardeningTests`, using an injected never-completing resolver).
-- [ ] **SEC-5 (G3, MED) — Configurable output-size & page-count caps.** Add a configurable `MaxOutputBytes`
-  (new — there is no output-byte budget today) and a configurable, much-tighter `MaxPages` to
-  `HtmlPdfOptions`/`SecurityPolicy` (sane defaults; tighter under `UntrustedHtml`), **layered above** the
-  existing `PdfRenderPipeline.MaxPages = 20_000` emergency backstop (keep that as the loop guard); abort with a
-  stable diagnostic when exceeded. **Accept:** a page-amplification / huge-image HTML aborts within the
-  *configured* cap well before the 20k backstop; the byte budget aborts an oversized output; tests.
-- [ ] **SEC-6 (G5, MED) — `data:` URI MIME hardening.** Require an explicit, allowlisted mediatype for `data:`
-  (reject missing/empty and non-allowlisted, esp. `text/html`) under `SafeDefault`; keep `data:` fully off
-  under `UntrustedHtml`. **Accept:** `data:text/html,…` and bare `data:,…` rejected everywhere they could reach
-  a consumer; image `data:` still works; tests.
-- [ ] **SEC-7 (G4, MED) — Safely wire the existing WOFF/WOFF2 decoder into the font path.** The decoder
-  infrastructure already exists but the render path rejects wrapped fonts before parsing. When enabling it,
-  decompress with a hard **decompression-ratio + absolute-size cap**, then re-run `FontSafetyValidator` on the
-  decompressed sfnt before HarfBuzz. Ship the guard + a font-bomb rejection test with the wiring. (Also fix the
-  stale `FontFaceData` XML doc that still lists WOFF as supported in v1.) **Accept:** an over-ratio WOFF2 is
-  rejected pre-HarfBuzz; decompressed sfnt re-validated; the doc reflects the real support state.
-- [ ] **SEC-8 (G6, LOW) — SVG parser observability + tuning.** Replace the silent `catch` with a stable
-  diagnostic (distinguish "entity/size limit exceeded" from "malformed"); re-evaluate
-  `MaxCharactersFromEntities` (raise to a documented value with a diagnostic when hit). **Accept:** a
-  billion-laughs SVG is rejected *with* a diagnostic; a valid entity-heavy SVG renders; tests.
-- [ ] **SEC-9 (G7, LOW) — Explicit CSS-amplification caps.** Add explicit caps on `repeat()` count, resolved
-  grid track count, and counter magnitude, with diagnostics. **Accept:** `repeat(1000000,1px)` aborts within
-  the cap; test.
+- [x] **SEC-5 (G3, MED) — Configurable output-size & page-count caps.** ✅ Done. `SecurityPolicy` gains
+  `MaxPages` (default 20 000 = the hard backstop, so trusted rendering is unchanged) and `MaxOutputBytes`
+  (default effectively unlimited); `UntrustedHtml` tightens both (500 pages / 50 MiB). `PdfRenderPipeline`
+  enforces the configured page cap in the multi-page loop (above the renamed `MaxPagesBackstop = 20 000`
+  emergency guard) → stops + emits `PDF-PAGE-LIMIT-EXCEEDED-001`; and checks output size after `Save()` →
+  aborts with `HtmlPdfException(PDF-OUTPUT-SIZE-EXCEEDED-001)`. **Accept:** ✅ a page-amplifying HTML stops at
+  the configured cap; ✅ the byte budget aborts an oversized output; tests + byte-identical for docs that don't
+  trip the caps.
+- [x] **SEC-6 (G5, MED) — `data:` URI MIME hardening.** ✅ Done. `SafeResourceLoader`'s `data:` path now
+  requires an EXPLICIT, allowlisted mediatype: a missing/empty type (`data:,…` / `data:;base64,…`) or a
+  non-allowlisted one (esp. `text/html`) is rejected at the choke point (the HTML img path already enforced
+  this; SEC-6 closes it for CSS `url()` / direct loader use). `data:` stays fully off under `UntrustedHtml`.
+  **Accept:** ✅ `data:text/html,…` + bare `data:,…` rejected; image `data:` still works; tests.
+- [x] **SEC-7 (G4, MED) — WOFF/WOFF2 decompression guard + re-validation.** ✅ Done (the guards; the decoders
+  stay dormant — no render path decodes WOFF in v1). The absolute-size cap already existed (WOFF 256 MiB;
+  WOFF2 declared-size bound); added a **100:1 decompression-ratio cap** (above a 1 MiB floor) to both decoders
+  and **re-run `FontSafetyValidator.Validate` on the reconstructed sfnt** before returning (the wrapper checks
+  can't see inside compressed tables). Font-bomb rejection test. The `FontFaceData` XML doc already reflects
+  the real state (WOFF/WOFF2 rejected at load pending this wiring). **Accept:** ✅ an over-ratio WOFF/WOFF2 is
+  rejected; ✅ decompressed sfnt re-validated; ✅ doc accurate.
+- [x] **SEC-8 (G6, LOW) — SVG parser observability.** ✅ Done. `SvgRasterizer.TryRender` gains an overload
+  reporting an `SvgParseStatus` (Ok / NotSvg / Malformed / Blocked); the catch distinguishes a security-guard
+  rejection (prohibited `<!DOCTYPE`/`<!ENTITY` or over-size — the XXE / billion-laughs defense) from malformed
+  XML via a locale-independent prolog scan. `ImageResourceCache` emits a specific `SVG-PARSE-FAILED-001`
+  instead of the silent null / misleading generic decode error. Re-evaluated `MaxCharactersFromEntities`:
+  documented that `DtdProcessing.Prohibit` forbids author-defined entities entirely, so 1024 only ever bounds
+  the five predefined entities — kept as a belt-and-braces floor (no change needed). **Accept:** ✅ a
+  billion-laughs SVG is diagnosed, not silent; valid SVG renders (byte-identical); tests.
+- [x] **SEC-9 (G7, LOW) — CSS-amplification caps (verified + regression-tested).** ✅ Done. The caps this gap
+  called for already exist (G7 was largely stale): grid `repeat()` count is capped at
+  `TrackRepeat.MaxRepeatCount = 10 000` (over-cap → `GridParseException` → `CSS-PROPERTY-VALUE-INVALID-001` +
+  the declaration dropped), the expanded track count at `TrackList.MaxExpandedTrackCount = 50 000`, and counter
+  magnitude is bounded by `CounterStyleFormatter` (roman > 3999 → decimal fallback; alpha/greek logarithmic;
+  values int-bounded). Added regression tests locking in both guards. **Accept:** ✅ `repeat(1000000,1px)`
+  aborts within the cap + a diagnostic; huge counter values don't amplify.
 
 ### Track C — Process & documented residuals
 
-- [ ] **SEC-10 (G10, INFO) — Native-dependency CVE policy + banned-API enforcement.** Document a version floor
-  + a monitoring/patch cadence for SkiaSharp / HarfBuzzSharp / PDFium(test-only) / AngleSharp in
-  `docs/legal/dependency-dossier.md` (link the libwebp CVE-2023-4863 / neodyme lessons); add a CI
-  advisory-scan (`dotnet list package --vulnerable`). **Also:** `CLAUDE.md` (and, until PR #262, the README)
-  claim a `NetPdf.BannedAnalyzer` Roslyn analyzer enforces the dependency allowlist at compile time — **it does
-  not exist** (only `NetPdf.SourceGen` ships). Either build the banned-API analyzer (e.g.
-  `Microsoft.CodeAnalysis.BannedApiAnalyzers` + a `BannedSymbols.txt`) or correct the remaining doc claim in
-  `CLAUDE.md`. **Accept:** policy documented; CI check added; the allowlist is either machine-enforced or the
-  docs stop asserting it is.
-- [ ] **SEC-11 (G8, INFO) — Document accepted residuals + deployment hardening.** In this doc + a deployment
-  guide, state the accepted residuals (symlink TOCTOU, `AllowedHosts` single-label wildcard scope) and **strongly recommend
-  container isolation** (no egress, read-only FS, memory/CPU/pids limits, seccomp) for the untrusted-HTML API
-  use case — the OS-level backstop against native-decoder 0-days (V5). **Accept:** deployment guide published.
+- [x] **SEC-10 (G10, INFO) — Native-dependency CVE policy + banned-API doc correction.** ✅ Done. Added a
+  **Native-dependency CVE policy & patch cadence** section to
+  [`docs/legal/dependency-dossier.md`](../legal/dependency-dossier.md#native-dependency-cve-policy--patch-cadence-sec-10)
+  (version floors for SkiaSharp/HarfBuzzSharp/AngleSharp + test-only PDFium; the libwebp CVE-2023-4863 /
+  neodyme V5 lesson; re-verify byte-identity after any native bump). Added a **CI `dependency-scan` job**
+  (`dotnet list package --vulnerable --include-transitive`, fails on any advisory) to
+  [`.github/workflows/fuzz-smoke.yml`](../../.github/workflows/fuzz-smoke.yml). **Corrected the
+  `NetPdf.BannedAnalyzer` claim** in `CLAUDE.md` + the dossier (it does not exist — only `NetPdf.SourceGen`
+  ships; the allowlist is enforced by the dossier-review process + code review + the vulnerable-scan, with a
+  `BannedApiAnalyzers` machine-enforcement noted as a future option). **Accept:** ✅ policy documented; ✅ CI
+  check added; ✅ the docs no longer assert a non-existent analyzer.
+- [x] **SEC-11 (G8, INFO) — Accepted residuals + deployment hardening.** ✅ Done. Published
+  [`docs/security/deployment.md`](deployment.md): the in-process config, a **container-isolation** baseline
+  (no egress, read-only FS, memory/CPU/pids limits, drop-caps, seccomp, one-shot) as the OS-level backstop
+  against native-decoder 0-days (V5), and the accepted residuals (symlink TOCTOU — backstopped by a read-only
+  FS / `UntrustedHtml`; `AllowedHosts` single-label wildcard scope). Cross-linked from the dossier CVE policy
+  and G8 below. **Accept:** ✅ deployment guide published.
 
 ---
 

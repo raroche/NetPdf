@@ -51,3 +51,25 @@ jobs:
         run: >-
           dotnet test tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj -c Release --nologo
           --filter "Category=Security"
+
+  # SEC-10 — fail the build if any (transitive) dependency has a known advisory. The native decoders
+  # (Skia / HarfBuzz / PDFium) are the residual RCE surface; staying patched is the main mitigation.
+  dependency-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Restore
+        run: dotnet restore NetPdf.slnx
+      - name: Vulnerable-dependency scan
+        run: |
+          dotnet list NetPdf.slnx package --vulnerable --include-transitive 2>&1 | tee vuln.txt
+          if grep -q "has the following vulnerable packages" vuln.txt; then
+            echo "::error::Vulnerable dependencies found — see the scan output above (SEC-10)."
+            exit 1
+          fi
+          echo "No vulnerable packages."

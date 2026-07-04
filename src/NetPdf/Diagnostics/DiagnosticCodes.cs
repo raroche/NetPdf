@@ -272,6 +272,18 @@ internal static class DiagnosticCodes
     public const string CssSvgUnsupported001 = "CSS-SVG-UNSUPPORTED-001";
 
     /// <summary>
+    /// Per SEC-8 — an SVG image could not be parsed, so it was not rendered. The message
+    /// distinguishes the two cases the audit called out (observability gap G6): a
+    /// <b>security-guard rejection</b> — a prohibited <c>&lt;!DOCTYPE</c> / <c>&lt;!ENTITY</c> or an
+    /// over-size document, i.e. the XXE / entity-expansion "billion laughs" defense
+    /// (<c>DtdProcessing.Prohibit</c> + <c>MaxCharactersInDocument</c>) — versus <b>malformed</b>
+    /// (not well-formed XML). Replaces the prior silent <c>null</c> return + a misleading generic
+    /// image-decode error. Fires once per failed SVG image.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string SvgParseFailed001 = "SVG-PARSE-FAILED-001";
+
+    /// <summary>
     /// Phase 4 — a <c>box-shadow</c> form NetPdf does not paint exactly was ignored or
     /// approximated: a value whose offsets / blur / spread use a unit the parser can't resolve
     /// (e.g. <c>em</c>/<c>rem</c> — absolute units + <c>px</c> are supported, rejecting the whole

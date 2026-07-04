@@ -288,6 +288,40 @@ public sealed class SecurityHardeningTests
         Assert.Null(info);
     }
 
+    // --- SEC-8: SVG parser observability ---------------------------------------------
+
+    [Fact]
+    public void Sec8_svg_parse_status_distinguishes_blocked_malformed_and_ok()
+    {
+        var dtd = Encoding.UTF8.GetBytes(
+            "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY a \"aaa\">]>" +
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>&a;</text></svg>");
+        NetPdf.Svg.SvgRasterizer.TryRender(dtd, out _, out var dtdStatus);
+        Assert.Equal(NetPdf.Svg.SvgParseStatus.Blocked, dtdStatus);
+
+        var malformed = Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\"><rect");
+        NetPdf.Svg.SvgRasterizer.TryRender(malformed, out _, out var malStatus);
+        Assert.Equal(NetPdf.Svg.SvgParseStatus.Malformed, malStatus);
+
+        var valid = Encoding.UTF8.GetBytes(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\"/></svg>");
+        var ok = NetPdf.Svg.SvgRasterizer.TryRender(valid, out _, out var okStatus);
+        Assert.Equal(NetPdf.Svg.SvgParseStatus.Ok, okStatus);
+        Assert.NotNull(ok);
+    }
+
+    [Fact]
+    public void Sec8_billion_laughs_svg_image_is_diagnosed_not_silent()
+    {
+        var svg = "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY a \"aaaaaaaaaa\">" +
+            "<!ENTITY b \"&a;&a;&a;&a;&a;\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&b;</text></svg>";
+        var dataUri = "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(svg));
+
+        var result = HtmlPdf.ConvertDetailed($"<img src=\"{dataUri}\">", new HtmlPdfOptions());
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.SvgParseFailed001);
+    }
+
     // ================================================================================
     // V7 — DoS / resource exhaustion
     // ================================================================================

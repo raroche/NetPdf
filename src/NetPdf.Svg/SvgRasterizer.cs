@@ -17,9 +17,32 @@ namespace NetPdf.Svg;
 /// RGBA <see cref="RasterImageInfo"/> the image pipeline embeds as an XObject + <c>/SMask</c>. This is a
 /// RASTER renderer (part 1 = shapes, PR 5; part 2 = gradients / text / use, PR 7). Native vector SVG → PDF
 /// operators is a later refinement.</summary>
+/// <summary>SEC-8 — why an SVG failed to parse, so the caller can emit a specific diagnostic instead of a
+/// silent null: <see cref="Blocked"/> = rejected by a security guard (prohibited DTD/entity or over-size —
+/// the XXE / billion-laughs defense); <see cref="Malformed"/> = not well-formed XML; <see cref="NotSvg"/> =
+/// parsed but the root isn't <c>&lt;svg&gt;</c>.</summary>
+internal enum SvgParseStatus
+{
+    Ok,
+    NotSvg,
+    Malformed,
+    Blocked,
+}
+
 internal static class SvgRasterizer
 {
     private const int DefaultIntrinsicPx = 150; // SVG default when no width/height/viewBox (CSS Images §4).
+
+    /// <summary>SEC-8 — cheap, locale-independent scan of the prolog for a <c>&lt;!DOCTYPE</c> / <c>&lt;!ENTITY</c>
+    /// marker: the entity-expansion / XXE constructs <see cref="System.Xml.DtdProcessing.Prohibit"/> rejects.
+    /// Lets a parse failure be classified as a security-guard rejection vs a malformed document.</summary>
+    private static bool ContainsDtdOrEntityMarker(byte[] bytes)
+    {
+        var limit = Math.Min(bytes.Length, 4096); // a DOCTYPE must appear in the prolog
+        var head = System.Text.Encoding.ASCII.GetString(bytes, 0, limit);
+        return head.Contains("<!DOCTYPE", StringComparison.OrdinalIgnoreCase)
+            || head.Contains("<!ENTITY", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>Detect an SVG document by sniffing the leading bytes (an XML prolog or a root
     /// <c>&lt;svg</c>). Cheap pre-check before the full parse.</summary>
@@ -48,8 +71,15 @@ internal static class SvgRasterizer
     /// this renderer doesn't support (image / a pattern paint-server / an unresolved reference / an unknown
     /// element, or content truncated by the depth / element budget) so the caller can diagnose it.</summary>
     public static RasterImageInfo? TryRender(byte[] svgBytes, out bool sawUnsupported)
+        => TryRender(svgBytes, out sawUnsupported, out _);
+
+    /// <summary>SEC-8 overload — also reports WHY a parse failed (<paramref name="status"/>) so the caller
+    /// can surface a specific diagnostic (a security-guard rejection vs malformed markup) instead of a
+    /// silent null.</summary>
+    public static RasterImageInfo? TryRender(byte[] svgBytes, out bool sawUnsupported, out SvgParseStatus status)
     {
         sawUnsupported = false;
+        status = SvgParseStatus.Ok;
         ArgumentNullException.ThrowIfNull(svgBytes);
         XDocument doc;
         try
@@ -57,6 +87,10 @@ internal static class SvgRasterizer
             // XXE-hardened parse: DTD processing prohibited + no external resolver, so a malicious SVG
             // cannot pull external entities / files (the security reason image/svg+xml was gated). The
             // renderer also never fetches external resources (no <image>/href/url() following this cut).
+            // NOTE (SEC-8): with DtdProcessing.Prohibit the parser THROWS on any <!DOCTYPE, so no
+            // author-defined general entities can exist — MaxCharactersFromEntities only ever bounds the
+            // five predefined XML entities (which each expand to one char and cannot bomb). The real size
+            // bound is MaxCharactersInDocument; 1024 is deliberately kept as a belt-and-braces floor.
             var settings = new System.Xml.XmlReaderSettings
             {
                 DtdProcessing = System.Xml.DtdProcessing.Prohibit,
@@ -68,10 +102,27 @@ internal static class SvgRasterizer
             using var reader = System.Xml.XmlReader.Create(ms, settings);
             doc = XDocument.Load(reader, LoadOptions.None);
         }
-        catch (Exception) { return null; }
+        catch (System.Xml.XmlException)
+        {
+            // Either malformed markup, OR a security-guard rejection: DtdProcessing.Prohibit throws on a
+            // <!DOCTYPE (the XXE / entity-expansion "billion laughs" vector) and MaxCharactersInDocument
+            // throws on an over-size document. Distinguish via a locale-independent scan for a DTD/entity
+            // marker so the caller can tell an attack from a typo.
+            status = ContainsDtdOrEntityMarker(svgBytes) ? SvgParseStatus.Blocked : SvgParseStatus.Malformed;
+            return null;
+        }
+        catch (Exception)
+        {
+            status = SvgParseStatus.Malformed;
+            return null;
+        }
 
         var root = doc.Root;
-        if (root is null || !root.Name.LocalName.Equals("svg", StringComparison.OrdinalIgnoreCase)) return null;
+        if (root is null || !root.Name.LocalName.Equals("svg", StringComparison.OrdinalIgnoreCase))
+        {
+            status = SvgParseStatus.NotSvg;
+            return null;
+        }
 
         // Intrinsic pixel size: width/height attrs, else the viewBox extent, else the 150px default.
         var (vbX, vbY, vbW, vbH) = ParseViewBox(Attr(root, "viewBox"));

@@ -57,23 +57,23 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "error: unsupported host platform $(uname -s)-$(uname -m)" >&2; exit 4 ;;
 esac
 
-echo "==> Restoring for ${HOST_RID} without PublishAot"
-# The smoke project transitively references NetPdf.SourceGen via the analyzer
-# ProjectReference in NetPdf.Css.csproj. If we set `-p:PublishAot=true` on the publish
-# command, MSBuild propagates that as a global property to every project in the restore
-# graph — including the netstandard2.0 SourceGen analyzer, which can't AOT-publish and
-# fails NETSDK1207 at restore. Splitting restore (no PublishAot, RID-aware) from publish
-# (--no-restore + PublishAot) keeps the analyzer happy while still producing an AOT binary.
-dotnet restore "$SMOKE_PROJ" -r "$HOST_RID" --nologo
-
-echo "==> Publishing AOT smoke binary"
+echo "==> Publishing AOT smoke binary for ${HOST_RID} (restore + native publish)"
+# Single restore+publish with PublishAot. An earlier version split restore (WITHOUT
+# PublishAot) from a `--no-restore` publish (WITH PublishAot) to dodge NETSDK1207 on the
+# netstandard2.0 SourceGen analyzer that the smoke project references transitively via
+# NetPdf.Css. That split is obsolete AND harmful: without PublishAot at restore, the
+# `Microsoft.DotNet.ILCompiler` package is never restored, so the publish silently degrades
+# to a trimmed MANAGED publish ("Optimizing assemblies for size" but no "Generating native
+# code") and emits NO native binary — green locally only when a prior AOT publish warmed the
+# NuGet/obj cache, but red on a clean CI checkout (exit 3 below). NETSDK1207 is already
+# prevented by the `SetTargetFramework=netstandard2.0` pin on NetPdf.Css's SourceGen
+# ProjectReference, so a single PublishAot restore+publish is both correct and clean.
 dotnet publish "$SMOKE_PROJ" \
   -c Release \
   -f net10.0 \
   -r "$HOST_RID" \
   -p:PublishAot=true \
   -o "$ARTIFACTS_DIR" \
-  --no-restore \
   --nologo
 
 if [ "$(uname -s)" = "Linux" ] || [ "$(uname -s)" = "Darwin" ]; then

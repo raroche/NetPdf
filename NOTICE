@@ -12,7 +12,9 @@ For complete attributions, see THIRD-PARTY-NOTICES.md.
   - HarfBuzzSharp (MIT License); HarfBuzz (Old MIT-style)
   - SkiaSharp (MIT License); Skia (BSD-3-Clause)
   - ICU data tables (Unicode-DFS-2016) — embedded for bidi/line-break/segmentation
-  - Liang hyphenation patterns (TeX/LPPL, per-language)
+  - Liang hyphenation patterns (TeX/LPPL, per-language) — from the CTAN `tex-hyphen`
+    project (http://www.hyphenation.org/tex); en-US in the core, other European languages
+    in the optional `NetPdf.Languages.European` pack
   - sRGB v4 ICC profile (public domain / ICC license; embedded for future PDF/A)
 
 A copy of each third-party license is included in the THIRD-PARTY-NOTICES.md file.

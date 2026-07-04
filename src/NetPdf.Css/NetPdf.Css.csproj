@@ -23,25 +23,24 @@
       properties.json (registered as an AdditionalFile below).
     -->
     <!--
-      The analyzer reference uses UndefineProperties="TargetFramework" so the consuming
-      project's TargetFramework (net10.0) is not propagated to the SourceGen build (which
-      targets netstandard2.0 because Roslyn analyzers must). Without it, `dotnet publish
-      -p:PublishAot=true` walks the SourceGen project and fails with NETSDK1207
-      ("AOT not supported for the target framework"). UndefineProperties is the
-      Microsoft-blessed pattern for analyzer ProjectReferences — it lets the publish
-      process see only the analyzer DLL, not the project's framework metadata.
+      The analyzer reference UNDEFINES TargetFramework + PublishAot rather than SET-ting a
+      TargetFramework, for two reasons:
+        1. NETSDK1207 — SourceGen targets netstandard2.0 (Roslyn requirement). If the consumer's
+           net10.0 TargetFramework or a `-p:PublishAot=true` propagates into its build, the AOT
+           publish fails NETSDK1207 ("AOT not supported for the target framework"). Undefining both
+           lets SourceGen build as its own netstandard2.0 with no AOT check.
+        2. Parallel-build cache race — `SetTargetFramework=netstandard2.0` makes the analyzer-ref
+           build a DISTINCT MSBuild request (its own TargetFramework global property) from the
+           solution's direct build of SourceGen, so `dotnet build NetPdf.slnx` compiles SourceGen
+           TWICE into the same obj dir and intermittently races on CoreCompileInputs.cache
+           (MSB3491 "file already exists", observed on the arm64 CI leg). UndefineProperties makes
+           the ref's global-property set match the direct build → one node → one compile → no race.
+      UndefineProperties is the Microsoft-blessed pattern for netstandard2.0 analyzer references.
     -->
     <ProjectReference Include="..\NetPdf.SourceGen\NetPdf.SourceGen.csproj"
                       OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false">
-      <!-- Pin the SourceGen TargetFramework so the analyzer build/restore is invoked
-           against netstandard2.0 (Roslyn requirement) rather than inheriting net10.0
-           from the consuming project. Without this, `dotnet publish -p:PublishAot=true`
-           fails NETSDK1207 at restore time because PublishAot+netstandard2.0 isn't a
-           supported combination. SetTargetFramework is the Microsoft-recommended pattern
-           for netstandard2.0 analyzer ProjectReferences. -->
-      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
-    </ProjectReference>
+                      ReferenceOutputAssembly="false"
+                      UndefineProperties="TargetFramework;PublishAot" />
   </ItemGroup>
 
   <ItemGroup>

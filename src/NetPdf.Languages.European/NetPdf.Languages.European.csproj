@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.European</RootNamespace>
+    <AssemblyName>NetPdf.Languages.European</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.European</PackageId>
+    <Description>Optional European-language hyphenation pack for NetPdf. Registers a German + French starter set of TeX/Liang hyphenation patterns into NetPdf's public HyphenationRegistry (call EuropeanHyphenation.Register at startup; a module initializer also drives it on assembly load). The remaining European languages and the full CTAN pattern data, plus automatic layout routing by a run's lang, are follow-ups.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;european;german;french;i18n;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] registers the pack's hyphenators the moment the assembly loads —
+         that IS the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs (adding
+         the package is all a consumer does). The registration is idempotent + allocation-light. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- Depends on the NetPdf package (the public HyphenationRegistry seam lives in the facade assembly).
+       This is the pack's ONE intended package dependency: a consumer installs NetPdf.Languages.European
+       and gets NetPdf (and, transitively through it, NetPdf's own runtime deps). -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+  </ItemGroup>
+
+  <!-- NetPdf re-declares its external runtime deps (AngleSharp/HarfBuzzSharp/SkiaSharp) as direct,
+       non-private PackageReferences so *its own* nuspec lists them. With CentralPackageTransitivePinning
+       enabled those otherwise surface transitively HERE and bloat this pack's nuspec with a dozen
+       dependencies it neither references nor needs to re-declare — a consumer already receives them
+       transitively through the single NetPdf dependency. Marking them PrivateAssets="all" (versions still
+       come from Directory.Packages.props — no hard-coding) keeps them out of THIS pack's dependency set,
+       so the produced package has exactly one direct dependency: NetPdf. `ShapeOfPublishedPackageTests`
+       pins this. -->
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" PrivateAssets="all" />
+    <PackageReference Include="AngleSharp.Css" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

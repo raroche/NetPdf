@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.European</RootNamespace>
+    <AssemblyName>NetPdf.Languages.European</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.European</PackageId>
+    <Description>Optional European-language hyphenation pack for NetPdf. Registers TeX/Liang hyphenation patterns for German, French, Spanish, Italian, Portuguese, Dutch, the Nordic languages, and Central/Eastern European languages with NetPdf's HyphenationRegistry on load. Add the package and NetPdf hyphenates those languages automatically.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;european;german;french;i18n;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] registers the pack's hyphenators the moment the assembly loads —
+         that IS the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs (adding
+         the package is all a consumer does). The registration is idempotent + allocation-light. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- Depends on the NetPdf package (the public HyphenationRegistry seam lives in the facade assembly). -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

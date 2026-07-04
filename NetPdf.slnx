@@ -19,6 +19,7 @@
     <Project Path="src/NetPdf.Svg/NetPdf.Svg.csproj" />
     <Project Path="src/NetPdf.Text/NetPdf.Text.csproj" />
     <Project Path="src/NetPdf/NetPdf.csproj" />
+    <Project Path="src/NetPdf.Languages.European/NetPdf.Languages.European.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj" />

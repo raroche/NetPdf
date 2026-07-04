@@ -16,6 +16,8 @@
     <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Text\NetPdf.Text.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Svg\NetPdf.Svg.csproj" />
+    <!-- Phase-5 T5 — exercise the NetPdf.Languages.European hyphenation pack. -->
+    <ProjectReference Include="..\..\src\NetPdf.Languages.European\NetPdf.Languages.European.csproj" />
     <!--
       AotSmoke is referenced so the JIT/AOT parity test can call SmokeDocumentFactory
       without duplicating the smoke build code. Plain .dll reference; AotSmoke's

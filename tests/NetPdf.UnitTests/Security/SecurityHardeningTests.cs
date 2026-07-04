@@ -439,6 +439,40 @@ public sealed class SecurityHardeningTests
         Assert.Equal(50L * 1024 * 1024, SecurityPolicy.UntrustedHtml.MaxOutputBytes);
     }
 
+    // --- SEC-9: explicit CSS-amplification caps --------------------------------------
+    //
+    // The grid repeat()/track-count caps (TrackRepeat.MaxRepeatCount = 10 000,
+    // TrackList.MaxExpandedTrackCount = 50 000) and the counter formatters are already bounded; these
+    // tests lock in those guards (regression protection) against the CSS-amplification DoS class.
+
+    [Fact]
+    public void Sec9_grid_repeat_over_cap_is_rejected_not_expanded()
+    {
+        // repeat(1000000,1px) would expand to a million tracks; the cap rejects the declaration (a
+        // diagnostic, not a 1M-element allocation) and the conversion completes fast with a valid PDF.
+        var sink = new CapturingSink();
+        var pdf = HtmlPdf.Convert(
+            "<div style=\"display:grid;grid-template-columns:repeat(1000000,1px)\">x</div>",
+            new HtmlPdfOptions { Diagnostics = sink });
+
+        Assert.NotEmpty(pdf);
+        Assert.Contains(sink.Diagnostics, d => d.Code == "CSS-PROPERTY-VALUE-INVALID-001");
+    }
+
+    [Fact]
+    public void Sec9_huge_counter_value_does_not_amplify()
+    {
+        // A pathological counter value formatted as roman must fall back to decimal (CSS Lists L3
+        // §7.1.4), NOT emit millions of 'M' characters. Alphabetic/greek are logarithmic in the value.
+        var roman = NetPdf.Layout.Boxes.CounterStyleFormatter.TryFormat(2_000_000_000, "upper-roman");
+        Assert.NotNull(roman);
+        Assert.True(roman!.Length < 20, $"huge roman must fall back to decimal; got {roman.Length} chars");
+
+        var alpha = NetPdf.Layout.Boxes.CounterStyleFormatter.TryFormat(int.MaxValue, "lower-alpha");
+        Assert.NotNull(alpha);
+        Assert.True(alpha!.Length < 16, $"alphabetic counter is logarithmic; got {alpha.Length} chars");
+    }
+
     // --- SEC-4: DNS-resolution timeout (slow-resolver DoS) ---------------------------
     //
     // getaddrinfo does not reliably honor cancellation on every platform, so an unbounded resolve of a

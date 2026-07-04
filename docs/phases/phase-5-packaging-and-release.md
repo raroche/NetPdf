@@ -138,7 +138,11 @@ The release-candidate gate. All of:
 > trimmed managed publish producing **no native binary** (green locally only when the NuGet/obj cache was
 > warm; red on a clean CI checkout). Fixed to a single `PublishAot` restore+publish — NETSDK1207 is already
 > prevented by the `SetTargetFramework` pin on NetPdf.Css's SourceGen reference. The Linux matrix legs also
-> now install the AOT toolchain (`clang`, `zlib1g-dev`); macOS/Windows ship it. (b) **Alpine/musl leg** —
+> now install the AOT toolchain + SkiaSharp natives (`clang`, `zlib1g-dev`, `libfontconfig1`, `libuuid1` —
+> the arm64 runner image lacked `libuuid`, so `libSkiaSharp` failed with `undefined symbol
+> uuid_generate_random`); macOS/Windows ship the AOT toolchain. The gate script also learned the
+> Windows/MSYS `uname` (`MINGW*`/`MSYS*` → `win-x64`) so it resolves a RID under Git Bash instead of exiting
+> "unsupported host platform". (b) **Alpine/musl leg** —
 > SkiaSharp's raster-fallback native fails to load under musl on the stock SDK-alpine image; that leg is now
 > **non-blocking** (`continue-on-error`) pending native-asset/font hardening on a real Alpine runner (not
 > reproducible on the macOS/glibc dev box). The five glibc/Windows/macOS legs are the enforcing matrix. Two

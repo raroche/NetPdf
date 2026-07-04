@@ -54,6 +54,10 @@ case "$(uname -s)-$(uname -m)" in
     if [ "$(detect_linux_libc)" = "musl" ]; then HOST_RID="linux-musl-arm64"
     else HOST_RID="linux-arm64"; fi
     ;;
+  # Windows: the gate runs under Git Bash / MSYS2, where `uname -s` reports
+  # MINGW64_NT-* / MSYS_NT-* / CYGWIN_NT-* rather than a bare OS name.
+  MINGW*-x86_64 | MSYS*-x86_64 | CYGWIN*-x86_64) HOST_RID="win-x64" ;;
+  MINGW*-aarch64 | MSYS*-aarch64 | CYGWIN*-aarch64) HOST_RID="win-arm64" ;;
   *) echo "error: unsupported host platform $(uname -s)-$(uname -m)" >&2; exit 4 ;;
 esac
 

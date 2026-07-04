@@ -40,13 +40,14 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      # T2 prereq — native AOT on Linux links with clang against zlib dev headers. macOS ships
-      # clang with the Xcode command-line tools and Windows ships the MSVC toolchain on the hosted
-      # runners, so only the Linux matrix legs need an explicit install. (The Alpine/musl leg has
-      # its own install step in build-test-alpine.)
-      - name: Install AOT prerequisites (Linux)
-        if: matrix.aot && runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      # Linux native prerequisites: (a) the native-AOT toolchain — clang links against the zlib dev
+      # headers; macOS ships clang with the Xcode CLT and Windows ships MSVC on the hosted runners, so
+      # only Linux needs an explicit install. (b) SkiaSharp's raster-fallback native (libSkiaSharp)
+      # dlopens libfontconfig + libuuid at test time; the x64 runner image ships them but the arm64
+      # image does not (libSkiaSharp → undefined symbol uuid_generate_random), so install them for both.
+      - name: Install native prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev libfontconfig1 libuuid1
 
       - name: Build (Release, 0 warnings)
         run: dotnet build NetPdf.slnx -c Release --nologo

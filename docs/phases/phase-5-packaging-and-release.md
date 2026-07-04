@@ -142,7 +142,10 @@ The release-candidate gate. All of:
 > the arm64 runner image lacked `libuuid`, so `libSkiaSharp` failed with `undefined symbol
 > uuid_generate_random`); macOS/Windows ship the AOT toolchain. The gate script also learned the
 > Windows/MSYS `uname` (`MINGW*`/`MSYS*` → `win-x64`) so it resolves a RID under Git Bash instead of exiting
-> "unsupported host platform". (b) **Alpine/musl leg** —
+> "unsupported host platform". A parallel-build cache race (MSB3491 on the SourceGen analyzer, intermittent
+> on the arm64 leg) was fixed by switching NetPdf.Css's analyzer reference from `SetTargetFramework` to
+> `UndefineProperties="TargetFramework;PublishAot"`, so the generator compiles once (one MSBuild node)
+> instead of racing two requests into the same obj dir. (b) **Alpine/musl leg** —
 > SkiaSharp's raster-fallback native fails to load under musl on the stock SDK-alpine image; that leg is now
 > **non-blocking** (`continue-on-error`) pending native-asset/font hardening on a real Alpine runner (not
 > reproducible on the macOS/glibc dev box). The five glibc/Windows/macOS legs are the enforcing matrix. Two

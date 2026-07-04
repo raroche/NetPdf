@@ -90,7 +90,8 @@ public sealed class DataUriImagePipelineTests
         var result = await loader.FetchAsync(
             new Uri("data:text/html,<b>x</b>"), ResourceKind.Image);
         Assert.False(result.Success);
-        Assert.Contains("not in allowlist", result.Failure!.Reason, StringComparison.Ordinal);
+        // SEC-6 tightened the data: gate to require an explicit allowlisted mediatype.
+        Assert.Contains("allowlist", result.Failure!.Reason, StringComparison.Ordinal);
     }
 
     [Fact]

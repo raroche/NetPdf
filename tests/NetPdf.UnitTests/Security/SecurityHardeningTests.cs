@@ -190,6 +190,46 @@ public sealed class SecurityHardeningTests
         Assert.False(SafeResourceLoader.IsMimeAllowedForKind("application/octet-stream", (ResourceKind)999));
     }
 
+    // --- SEC-6: data: URI MIME hardening ---------------------------------------------
+
+    [Theory]
+    [InlineData("data:,hello")]                 // no mediatype
+    [InlineData("data:;base64,QUJD")]           // no mediatype, base64
+    [InlineData("data:text/html,<b>x</b>")]     // text/html polyglot sneak-path
+    [InlineData("data:text/plain,hello")]       // not on any allowlist
+    public async Task Sec6_data_uri_without_explicit_allowlisted_mediatype_is_rejected(string uri)
+    {
+        var context = new ResourceFetchContext(SecurityPolicy.SafeDefault, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner: null, context);
+
+        var result = await loader.FetchAsync(new Uri(uri), ResourceKind.Image);
+
+        Assert.False(result.Success, $"{uri} must be rejected (no explicit allowlisted mediatype)");
+    }
+
+    [Fact]
+    public async Task Sec6_explicit_image_data_uri_still_loads()
+    {
+        // Self-contained documents (the vendored-asset pattern) keep working — no false positive.
+        var context = new ResourceFetchContext(SecurityPolicy.SafeDefault, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner: null, context);
+
+        var result = await loader.FetchAsync(new Uri("data:image/png;base64,QUJD"), ResourceKind.Image);
+
+        Assert.True(result.Success);
+    }
+
+    [Fact]
+    public async Task Sec6_data_scheme_is_off_under_untrusted_html()
+    {
+        var context = new ResourceFetchContext(SecurityPolicy.UntrustedHtml, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner: null, context);
+
+        var result = await loader.FetchAsync(new Uri("data:image/png;base64,QUJD"), ResourceKind.Image);
+
+        Assert.False(result.Success);
+    }
+
     // ================================================================================
     // V2 — Local file disclosure
     // ================================================================================

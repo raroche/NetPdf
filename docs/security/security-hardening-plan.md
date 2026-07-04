@@ -148,21 +148,24 @@ line pins — they drift):
 
 ## 5. Residual gaps (prioritized)
 
-Nothing critical is *open* in the shipped surface — the strongest finding is that the biggest future risk is a
-**Phase-5 wiring hazard**, not a current hole. Severity = risk **if left unaddressed as the library grows**.
+> **Closeout status (2026-07-04):** every gap G1–G10 below has been **addressed** by the SEC-1…SEC-11 task
+> series (see §6 for the per-task detail). The table's **Status** column records how each was closed; the
+> **only work that remains is a Phase-5 *feature*, not a hole**: the actual CSS/font *fetch enablement* (G1) is
+> deferred, but SEC-3 installed the enforced choke-point invariant + tripwire tests that make it safe to wire.
+> The G8 residuals (symlink TOCTOU, `AllowedHosts` wildcard scope) are **accepted + documented**, not open.
 
-| ID | Sev | Gap | Where |
+| ID | Sev | Gap | Status |
 |---|---|---|---|
-| **G1** | **HIGH** | Phase-5 CSS/font resource loading (`@import`, `@font-face src:url()`, CSS `url()` props, `<link rel=stylesheet>`) is *extracted but not fetched* today. When wired, it MUST route through `SafeResourceLoader` with kind-specific MIME — otherwise it reintroduces V1/V2 wholesale. There is no *enforced invariant* preventing a future fetch from bypassing the choke point. | `CssImportRule`, `CssResourceExtractor`, `HtmlParsingHost` |
-| **G2** | MED | No DNS-resolution timeout — `Dns.GetHostAddressesAsync` can hang the render thread (a slow-resolver DoS, V7). | `SafeHttpResourceLoader.ResolveAndValidateAsync` |
-| **G3** | MED | HTML can amplify into a huge PDF (many pages / huge image cascades). A hard `PdfRenderPipeline.MaxPages = 20_000` **emergency backstop** exists, but it is **not configurable / policy-driven**, is far too high for untrusted input, and there is **no output-byte budget**. (V7) | `PdfRenderPipeline`, writer |
-| **G4** | MED | WOFF/WOFF2 **decoder infrastructure exists**, but the `FontFace` / `@font-face` render path currently **rejects wrapped WOFF/WOFF2 before parsing** (safe). Wiring the existing decoder in MUST add a decompression-ratio + absolute-size cap and **re-run sfnt validation on the *decompressed* bytes** before HarfBuzz (font-bomb / V4/V7). | `FontFace`, WOFF decoder, `FontSafetyValidator` |
-| **G5** | MED | `data:` URI with a missing/empty mediatype passes the MIME gate (relies on downstream magic-byte). `data:text/html` is a known SSRF/polyglot sneak-path; disabled under `UntrustedHtml`, but `SafeDefault` accepts `data:`. (V1/V8) | `SafeResourceLoader` data: path |
-| **G6** | LOW | `MaxCharactersFromEntities = 1024` may false-reject valid SVG; parse failure is a silent `catch (Exception) { return null }` with no diagnostic (observability — can't tell an attack from a malformed doc). (V3) | `SvgRasterizer`, `SvgNativeEmitter` |
-| **G7** | LOW | CSS `repeat()` / counter / grid-track counts not *explicitly* capped (bounded only by calc-depth + layout recursion). Defense-in-depth for CSS-amplification DoS. (V7) | grid track sizing |
-| **G8** | LOW | Accepted residuals to *document*, not fix: symlink TOCTOU (OS-level), `AllowedHosts` single-label wildcard scope. | various |
-| **G9** | INFO | **No formal threat-model / SECURITY.md / secure-usage doc** existed before this file. Security decisions live in code comments only. Several audits flagged this as the top weakness. | docs |
-| **G10** | INFO | No documented **native-dependency CVE-monitoring / patch policy**. V5 (Skia/HarfBuzz/PDFium memory-safety) is the residual RCE surface and is mitigated primarily by staying patched. | process |
+| **G1** | **HIGH** | Phase-5 CSS/font resource loading is *extracted but not fetched*; a future fetch could bypass the `SafeResourceLoader` choke point. | ✅ **SEC-3** — enforced choke-point invariant (source-scan guard) + no-fetch/SSRF/MIME tests for the Stylesheet/Font kinds. The fetch *feature* stays deferred; these guards gate it. |
+| **G2** | MED | No DNS-resolution timeout — `Dns.GetHostAddressesAsync` can hang the render thread. | ✅ **SEC-4** — bounded at `min(ResourceTimeout, 5s)` via `Task.WaitAsync`; typed fail-fast failure. |
+| **G3** | MED | No configurable page-count / output-byte cap above the 20 000-page backstop. | ✅ **SEC-5** — `SecurityPolicy.MaxPages` + `MaxOutputBytes` (tighter under `UntrustedHtml`), enforced in the pipeline (page cap → diagnostic; byte cap → aborts *during* serialization). |
+| **G4** | MED | WOFF/WOFF2 decoders lack a decompression-ratio cap + decompressed-sfnt re-validation. | ✅ **SEC-7** — 100:1 ratio cap on both decoders + `FontSafetyValidator` re-validation of the reconstructed sfnt (decoders stay dormant in v1). |
+| **G5** | MED | `data:` with a missing/empty mediatype bypasses the MIME gate; `text/html` polyglot sneak-path. | ✅ **SEC-6** — an explicit allowlisted mediatype is now required at the choke point. |
+| **G6** | LOW | SVG parse failure was a silent `catch { return null }` — can't tell an attack from a malformed doc. | ✅ **SEC-8** — `SVG-PARSE-FAILED-001` distinguishes security-guard rejection (blocked) from malformed; `MaxCharactersFromEntities` re-evaluated (adequate under `DtdProcessing.Prohibit`). |
+| **G7** | LOW | CSS `repeat()` / grid-track / counter counts "not explicitly capped". | ✅ **SEC-9** — verified the caps already exist (`MaxRepeatCount` 10 000, `MaxExpandedTrackCount` 50 000, bounded counter formatters) + added regression tests. |
+| **G8** | LOW | Accepted residuals to *document*: symlink TOCTOU, `AllowedHosts` single-label wildcard scope. | ✅ **SEC-11** — documented as accepted residuals in [`deployment.md`](deployment.md) (backstopped by container isolation). |
+| **G9** | INFO | No formal threat-model / SECURITY.md / secure-usage doc. | ✅ **SEC-1** — this doc + root `SECURITY.md` + the README secure-usage section. |
+| **G10** | INFO | No native-dependency CVE-monitoring / patch policy; a stale `NetPdf.BannedAnalyzer` doc claim. | ✅ **SEC-10** — CVE policy in the dependency dossier + CI `dotnet list package --vulnerable`; corrected the analyzer claim. |
 
 ---
 
@@ -183,7 +186,7 @@ sub-track**.
   link annotations *did* ship in Phase 4, scheme-restricted by `LinkUriPolicy`.)
 - [x] **SEC-2 — Security regression suite + fuzz expansion.** ✅ Done. Consolidated
   [`SecurityHardeningTests`](../../tests/NetPdf.UnitTests/Security/SecurityHardeningTests.cs) (`Category=Security`,
-  24 tests) pins SSRF/LFI/XXE/DoS/PDF-output as executable assertions, organized by the §5 taxonomy — the one
+  60 `Category=Security` test cases at closeout, growing as each SEC-N task extends it) pins SSRF/LFI/XXE/DoS/PDF-output as executable assertions, organized by the §5 taxonomy — the one
   home each subsequent SEC task extends. `tests/NetPdf.Fuzz` (was a no-op stub) now drives all five targets
   (`HtmlPdf.Convert`, `UriSafetyValidator`, `FontSafetyValidator`, `ImageSafetyValidator`, `SvgRasterizer`) via a
   shared `FuzzTargets` body with a sanctioned-exception contract, in two modes: a deterministic seeded `--smoke`
@@ -286,21 +289,21 @@ sub-track**.
 
 ## 7. Coverage matrix (taxonomy → status)
 
-| Class | Status in `0.9.0-rc1` | Residual work |
+| Class | Status (post SEC-1…SEC-11) | Hardening applied · remaining |
 |---|---|---|
-| V1 SSRF | **Strong** (choke point, IP blocklist, DNS-pin, redirect re-validation; default no-http) | SEC-3 (Phase-5 wiring), SEC-4 (DNS timeout), SEC-6 (data:) |
-| V2 Local file read | **Strong** (file: off under `UntrustedHtml`; base-path + symlink check under `SafeDefault`) | SEC-3, SEC-11 (TOCTOU doc) |
-| V3 XXE / entity DoS | **Strong** (DTD prohibited, resolver null, entity + doc caps) | SEC-8 (observability) |
-| V4 `@font-face` RCE | **Strong** (pre-decode validator, danger-table denylist; WOFF/WOFF2 rejected) | SEC-7 (safe decompression) |
-| V5 Native-decoder RCE | **Mitigated** (pre-decode validation + caps) — residual = native 0-days | SEC-10 (patch policy), SEC-11 (sandbox) |
-| V6 JS / arg-injection RCE | **Eliminated by design** (no browser, no JS, no process spawn) | preserve the invariant |
-| V7 DoS | **Strong** (layered caps + timeout) | SEC-4, SEC-5, SEC-9 |
-| V8 Malicious PDF output | **Strong** (preflight denylist, link-URI allowlist, string escaping) | negative tests in SEC-2 |
-| V9 Deserialization/traversal | **Eliminated by design** (no untrusted-input-driven type activation / deserialization; no `Activator`) | preserve the invariant |
+| V1 SSRF | **Strong** (choke point, IP blocklist, DNS-pin, redirect re-validation; default no-http) | ✅ SEC-3 (enforced choke-point invariant) · ✅ SEC-4 (DNS timeout) · ✅ SEC-6 (data:). Remaining = the Phase-5 CSS/font *fetch feature*, gated by SEC-3. |
+| V2 Local file read | **Strong** (file: off under `UntrustedHtml`; base-path + symlink check under `SafeDefault`) | ✅ SEC-3 · ✅ SEC-11 (TOCTOU accepted-residual doc). |
+| V3 XXE / entity DoS | **Strong** (DTD prohibited, resolver null, entity + doc caps) | ✅ SEC-8 (parse observability + robust blocked/malformed classification). |
+| V4 `@font-face` RCE | **Strong** (pre-decode validator, danger-table denylist; WOFF/WOFF2 rejected) | ✅ SEC-7 (ratio cap + decompressed-sfnt re-validation on the dormant decoders). |
+| V5 Native-decoder RCE | **Mitigated** (pre-decode validation + caps) — residual = native 0-days | ✅ SEC-10 (CVE policy + CI vuln-scan) · ✅ SEC-11 (container-isolation guide). Residual is inherent; backstopped by patching + sandbox. |
+| V6 JS / arg-injection RCE | **Eliminated by design** (no browser, no JS, no process spawn) | preserve the invariant. |
+| V7 DoS | **Strong** (layered caps + timeout) | ✅ SEC-4 · ✅ SEC-5 (page/output caps) · ✅ SEC-9 (CSS-amplification caps verified). |
+| V8 Malicious PDF output | **Strong** (preflight denylist, link-URI allowlist, string escaping) | ✅ SEC-2 (negative regression tests in `SecurityHardeningTests`). |
+| V9 Deserialization/traversal | **Eliminated by design** (no untrusted-input-driven type activation / deserialization; no `Activator`) | preserve the invariant. |
 
-**Bottom line:** NetPdf is already substantially hardened and structurally immune to several whole classes.
-The plan closes the remaining ranked gaps and — most importantly — installs the **SSRF choke-point invariant
-(SEC-3)** so the Phase-5 resource-loading work can't silently reintroduce the #1 bug class as the library grows.
+**Bottom line:** the SEC-1…SEC-11 series is complete — every ranked gap is closed, and the **SSRF choke-point
+invariant (SEC-3)** is installed so the Phase-5 resource-loading *feature* can't silently reintroduce the #1
+bug class as the library grows. The only remaining item is that Phase-5 feature itself, which these guards gate.
 
 ---
 

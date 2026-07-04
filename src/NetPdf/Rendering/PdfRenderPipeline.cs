@@ -628,19 +628,23 @@ internal static class PdfRenderPipeline
         // text after the per-page loop — review P2).
         textSession.Finish(document, cancellationToken);
 
-        var bytes = document.Save();
-
-        // SEC-5 — bound the produced PDF size. Output amplification (huge image cascades, page
-        // explosions) is aborted rather than returned; a hard failure since a truncated PDF is
-        // not meaningful. Default is effectively unlimited; UntrustedHtml caps at 50 MiB.
+        // SEC-5 — bound the produced PDF size DURING serialization (a BoundedBufferWriter aborts once the
+        // written count would cross the cap, so an oversized output never fully materializes). Output
+        // amplification (huge image cascades, page explosions) is a hard failure — a truncated PDF is not
+        // meaningful. Default is effectively unlimited; UntrustedHtml caps at 50 MiB.
         var maxOutputBytes = options.SecurityPolicy.MaxOutputBytes;
-        if (bytes.LongLength > maxOutputBytes)
+        byte[] bytes;
+        try
+        {
+            bytes = document.Save(maxOutputBytes);
+        }
+        catch (PdfOutputSizeExceededException ex)
         {
             throw new HtmlPdfException(
                 DiagnosticCodes.PdfOutputSizeExceeded001,
-                $"The produced PDF ({bytes.LongLength} bytes) exceeds the configured output-size cap " +
-                $"({maxOutputBytes} bytes). Raise SecurityPolicy.MaxOutputBytes for a legitimately large " +
-                "trusted document, or reduce the input.");
+                $"The produced PDF exceeds the configured output-size cap ({ex.MaxBytes} bytes); generation " +
+                "was aborted. Raise SecurityPolicy.MaxOutputBytes for a legitimately large trusted document, " +
+                "or reduce the input.");
         }
 
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);

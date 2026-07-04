@@ -34,14 +34,27 @@ internal static class SmokeRunner
 
         foreach (var seed in seeds)
         {
-            // The pristine seed first, then deterministic mutations derived from it.
-            Exercise(seed.Target, seed.Label, mutation: 0, seed.Payload, findings, ref runs);
+            // The pristine seed first, then deterministic mutations derived from it. Fail fast on a hang.
+            if (!Exercise(seed.Target, seed.Label, mutation: 0, seed.Payload, findings, ref runs))
+            {
+                break;
+            }
 
             var rng = new Lcg(HashLabel(seed.Label)); // per-seed stream → stable, seed-independent
+            var hung = false;
             for (var m = 1; m <= mutationsPerSeed; m++)
             {
                 var mutated = Mutate(seed.Payload, rng);
-                Exercise(seed.Target, seed.Label, m, mutated, findings, ref runs);
+                if (!Exercise(seed.Target, seed.Label, m, mutated, findings, ref runs))
+                {
+                    hung = true;
+                    break;
+                }
+            }
+
+            if (hung)
+            {
+                break;
             }
         }
 
@@ -54,7 +67,9 @@ internal static class SmokeRunner
         return findings.Count == 0 ? 0 : 1;
     }
 
-    private static void Exercise(Target target, string label, int mutation, byte[] payload, List<Finding> findings, ref int runs)
+    /// <summary>Run one target on one payload. Returns <see langword="false"/> on a hang (a fail-fast
+    /// signal — a hung case keeps consuming CPU, so the runner stops rather than working through the rest).</summary>
+    private static bool Exercise(Target target, string label, int mutation, byte[] payload, List<Finding> findings, ref int runs)
     {
         runs++;
         // Qualify: this class's own Run(int, TextWriter) would otherwise shadow the target dispatcher.
@@ -63,8 +78,15 @@ internal static class SmokeRunner
         {
             if (!task.Wait(PerRunTimeoutMs))
             {
-                // The task is abandoned; it dies with the process. A hang is still a finding.
+                // The task is abandoned (it dies with the process). Observe any eventual fault on it so it
+                // never surfaces as an unobserved-task exception, then fail fast.
+                _ = task.ContinueWith(
+                    static t => _ = t.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
                 findings.Add(new Finding(target, label, mutation, "hang", $"exceeded {PerRunTimeoutMs} ms"));
+                return false;
             }
         }
         catch (AggregateException agg)
@@ -72,6 +94,8 @@ internal static class SmokeRunner
             var inner = agg.InnerException ?? agg;
             findings.Add(new Finding(target, label, mutation, "throw", $"{inner.GetType().Name}: {Truncate(inner.Message)}"));
         }
+
+        return true;
     }
 
     // --- deterministic mutation ------------------------------------------------------

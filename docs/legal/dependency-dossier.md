@@ -156,4 +156,4 @@ neodyme "HTML renderer to RCE") is mitigated **primarily by staying patched**. P
 
 ---
 
-Last updated: 2026-04-30.
+Last updated: 2026-07-04 (SEC-10 — added the native-dependency CVE policy & patch cadence + the CI vulnerable-dependency scan; corrected the `NetPdf.BannedAnalyzer` claim).

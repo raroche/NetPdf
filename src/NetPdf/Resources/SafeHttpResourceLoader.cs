@@ -230,9 +230,16 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
         IPAddress[] addresses;
         try
         {
-            // WaitAsync guarantees we return within DnsTimeout even if the underlying resolve ignores
-            // the token — the abandoned resolve task completes (or faults with SocketException) unobserved.
-            addresses = await _resolveHost(host, ct).WaitAsync(DnsTimeout, ct).ConfigureAwait(false);
+            // WaitAsync guarantees we return within DnsTimeout even if the underlying resolve ignores the
+            // token. If it times out the resolve task is abandoned; attach a fault-only continuation so an
+            // eventual SocketException on that task is observed (never an unobserved-task exception).
+            var resolveTask = _resolveHost(host, ct);
+            _ = resolveTask.ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            addresses = await resolveTask.WaitAsync(DnsTimeout, ct).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {

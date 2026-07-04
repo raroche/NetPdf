@@ -322,6 +322,27 @@ public sealed class SecurityHardeningTests
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.SvgParseFailed001);
     }
 
+    [Fact]
+    public void Sec8_oversized_svg_without_dtd_is_blocked()
+    {
+        // An over-size SVG with no DTD marker must be classified Blocked (the size-limit defense), not
+        // Malformed — the pre-parse size guard catches it before the byte scan.
+        var big = new byte[(int)(NetPdf.Svg.SvgRasterizer.MaxCharactersInDocument + 1)];
+        NetPdf.Svg.SvgRasterizer.TryRender(big, out _, out var status);
+        Assert.Equal(NetPdf.Svg.SvgParseStatus.Blocked, status);
+    }
+
+    [Fact]
+    public void Sec8_dtd_after_padded_prolog_is_blocked_not_malformed()
+    {
+        // A DTD marker sitting far past the first 4 KiB of prolog padding must still be Blocked — the
+        // classifier scans the whole document, not just the prolog window.
+        var svg = "<!--" + new string(' ', 6000) + "-->\n" +
+            "<!DOCTYPE svg [<!ENTITY a \"x\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&a;</text></svg>";
+        NetPdf.Svg.SvgRasterizer.TryRender(Encoding.UTF8.GetBytes(svg), out _, out var status);
+        Assert.Equal(NetPdf.Svg.SvgParseStatus.Blocked, status);
+    }
+
     // ================================================================================
     // V7 — DoS / resource exhaustion
     // ================================================================================
@@ -437,6 +458,26 @@ public sealed class SecurityHardeningTests
     {
         Assert.Equal(500, SecurityPolicy.UntrustedHtml.MaxPages);
         Assert.Equal(50L * 1024 * 1024, SecurityPolicy.UntrustedHtml.MaxOutputBytes);
+    }
+
+    [Fact]
+    public void Sec5_output_cap_aborts_during_serialization_not_after()
+    {
+        // Proves the cap stops generation ON the crossing write (before the full oversized buffer /
+        // ToArray copy), rather than measuring the finished PDF. The inner writer is never advanced past
+        // the cap.
+        var inner = new System.Buffers.ArrayBufferWriter<byte>();
+        var bounded = new NetPdf.Pdf.BoundedBufferWriter(inner, maxBytes: 10);
+
+        bounded.GetSpan(8);
+        bounded.Advance(8);
+        bounded.GetSpan(2);
+        bounded.Advance(2);          // reaches the cap exactly — allowed (10 is not > 10)
+        Assert.Equal(10, bounded.Written);
+
+        bounded.GetSpan(1);
+        Assert.Throws<NetPdf.Pdf.PdfOutputSizeExceededException>(() => bounded.Advance(1));
+        Assert.Equal(10, inner.WrittenCount); // inner NOT advanced past the cap
     }
 
     // --- SEC-9: explicit CSS-amplification caps --------------------------------------

@@ -201,7 +201,7 @@ public sealed class SafeResourceLoader
             if (string.IsNullOrEmpty(dataMime) || !IsMimeAllowedForKind(dataMime, kind))
             {
                 return SafeResourceResult.Failed(uri, kind,
-                    $"data: URI requires an explicit allowlisted mediatype for a {kind} resource (got '{dataMime ?? "(none)"}')");
+                    $"data: URI requires an explicit allowlisted mediatype for a {kind} resource (got '{(string.IsNullOrEmpty(dataMime) ? "(none)" : dataMime)}')");
             }
             var dataBytesReason = _context.TryAddBytes(dataBytes.Length);
             if (dataBytesReason is not null)

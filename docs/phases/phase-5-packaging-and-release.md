@@ -130,13 +130,20 @@ The release-candidate gate. All of:
 
 ## Work breakdown (ordered)
 
+> **Status (2026-07-04):** tasks **1–5 DONE** (branch `phase5-ci-and-language-packs`). CI workflow +
+> AOT/visual/benchmark gates authored (`.github/workflows/ci.yml`) with their commands validated locally;
+> the visual gate stays inert until the maintainer commits the Linux Chrome reference PNGs (task 3
+> remainder), and the benchmark gate is neutral until a Linux baseline is captured (task 4 remainder). The
+> `NetPdf.Languages.European` pack + the public `HyphenationRegistry` seam ship with a de/fr starter set;
+> the full CTAN LPPL pattern data (all 15 languages) + layout auto-routing by `lang` are follow-ups.
+
 | # | Task | Mini-est. | Depends on |
 |---|---|---|---|
-| 1 | GitHub Actions matrix workflow (Linux x64/arm64, Alpine, Windows, macOS x64/arm64) | 2 d | — |
-| 2 | AOT publish gate per matrix entry | 1 d | 1 |
-| 3 | Visual-regression Docker integration in CI | 1 d | 1 |
-| 4 | BenchmarkDotNet performance gate in CI | 1 d | 1 |
-| 5 | `NetPdf.Languages.European` package | 1 d | — |
+| 1 | ✅ GitHub Actions matrix workflow (Linux x64/arm64, Alpine, Windows, macOS x64/arm64) | 2 d | — |
+| 2 | ✅ AOT publish gate per matrix entry | 1 d | 1 |
+| 3 | ✅ Visual-regression gate in CI (inert until reference PNGs land) | 1 d | 1 |
+| 4 | ✅ BenchmarkDotNet performance gate in CI (neutral until baseline) | 1 d | 1 |
+| 5 | ✅ `NetPdf.Languages.European` package + `HyphenationRegistry` seam | 1 d | — |
 | 6 | `NetPdf.Languages.Cjk` package | 1 d | — |
 | 7 | `NetPdf.Languages.Indic` package | 1 d | — |
 | 8 | `NetPdf.Languages.Arabic` package | 1 d | — |

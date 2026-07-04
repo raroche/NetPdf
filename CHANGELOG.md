@@ -8,6 +8,12 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
 
+### Added — Phase 5 (packaging): cross-platform CI + first language pack (work-breakdown tasks 1–5)
+
+- **Cross-platform CI matrix** (`.github/workflows/ci.yml`): build + test across Linux x64/arm64, Alpine (musl), Windows x64, and macOS arm64/x64. **AOT publish gate** per entry (native publish + JIT/AOT byte-parity via `scripts/aot-parity.sh`, musl-RID-aware). **Visual-regression gate** (Linux) running the RenderingCorpus PDFium diff — inert until the canonical Chrome reference PNGs are committed. **BenchmarkDotNet gate** vs the pinned per-platform baseline (`scripts/benchmark-gate.sh`, +25% tolerance) — neutral until a Linux baseline is captured.
+- **`HyphenationRegistry`** — a new public extension seam: language packs register TeX/Liang hyphenation patterns (en-US is pre-registered); `TryHyphenate`/`IsRegistered` are public; keys normalize to the primary BCP-47 subtag.
+- **`NetPdf.Languages.European`** — the first optional hyphenation pack (NuGet `NetPdf.Languages.European`, Apache-2.0). A module initializer registers German + French on load (adding the package is all a consumer does), shipping a correct starter pattern/exception set per language. The full CTAN `tex-hyphen` (LPPL) pattern data for all 15 listed languages and layout auto-routing by the run's `lang` are documented follow-ups.
+
 ### Security — Phase 5 hardening sub-track: SEC-2 (regression suite + fuzz foundation)
 
 - **Consolidated security regression suite** — `tests/NetPdf.UnitTests/Security/SecurityHardeningTests.cs` (`Category=Security`, 60 test cases at closeout across the security track) pins the SSRF / LFI / XXE / DoS / malicious-PDF-output invariants as executable assertions, organized by the threat-model taxonomy (`docs/security/security-hardening-plan.md`). This is the single home each subsequent `SEC-N` task extends.

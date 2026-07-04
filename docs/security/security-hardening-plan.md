@@ -181,25 +181,51 @@ sub-track**.
   golden rule (full `UntrustedHtml` + `ResourceLoader = null` + `Timeout` snippet) and now links the threat
   model + `SECURITY.md`. All three docs cross-link. (Also corrected a stale README note: `<a href>` → `/URI`
   link annotations *did* ship in Phase 4, scheme-restricted by `LinkUriPolicy`.)
-- [ ] **SEC-2 — Security regression suite + fuzz expansion.** Consolidate a `SecurityHardeningTests` suite
-  (SSRF/LFI/XXE/DoS/PDF-output as executable assertions) and expand `tests/NetPdf.Fuzz` to cover
-  `HtmlPdf.Convert`, `SvgRasterizer`, `FontSafetyValidator`, `ImageSafetyValidator`, and `UriSafetyValidator`;
-  add a CI fuzz-smoke job (short, seeded corpus) + document it (`docs/security/fuzzing.md`). **Accept:** the
-  suite runs green in CI; fuzz smoke wired; each subsequent SEC task adds its regression tests here.
+- [x] **SEC-2 — Security regression suite + fuzz expansion.** ✅ Done. Consolidated
+  [`SecurityHardeningTests`](../../tests/NetPdf.UnitTests/Security/SecurityHardeningTests.cs) (`Category=Security`,
+  24 tests) pins SSRF/LFI/XXE/DoS/PDF-output as executable assertions, organized by the §5 taxonomy — the one
+  home each subsequent SEC task extends. `tests/NetPdf.Fuzz` (was a no-op stub) now drives all five targets
+  (`HtmlPdf.Convert`, `UriSafetyValidator`, `FontSafetyValidator`, `ImageSafetyValidator`, `SvgRasterizer`) via a
+  shared `FuzzTargets` body with a sanctioned-exception contract, in two modes: a deterministic seeded `--smoke`
+  pass (CI, no instrumentation) and `--libfuzzer` (coverage-guided campaign). The
+  [`fuzz-smoke`](../../.github/workflows/fuzz-smoke.yml) CI job runs the smoke pass + the security suite on every
+  PR; runbook in [`docs/security/fuzzing.md`](fuzzing.md). **Payoff on day one:** the smoke pass caught a DoS
+  guard (deeply-nested HTML, layout depth > 256) escaping `HtmlPdf.Convert` as an untyped
+  `InvalidOperationException` — now a typed `LayoutDepthExceededException` caught at the pipeline and degraded to
+  a valid PDF + `LAYOUT-RECURSION-DEPTH-EXCEEDED-001` (regression-tested). **Accept:** ✅ suite green;
+  ✅ fuzz smoke wired (0 findings over the seeded corpus + mutations); ✅ CI job authored.
 
 ### Track B — Close the ranked code gaps (in severity order)
 
-- [ ] **SEC-3 (G1, HIGH) — SSRF choke-point invariant for the Phase-5 resource surface.** *Before* wiring any
-  CSS/font fetch: add an architectural guard + tests asserting every resource kind (`Stylesheet`, `Font`,
-  image, mask) can only fetch via `SafeResourceLoader`, and add now-passing negative tests that `UntrustedHtml`
-  yields **no fetch** for `@import http://…`, `@font-face src:url(http://…)`, `<link rel=stylesheet href=http://…>`,
-  and that `SafeDefault` blocks them absent an explicit loader. Then wire fetching *through the choke point*
-  with `ResourceKind.Stylesheet` → `text/css` only and `ResourceKind.Font` → font-MIME only. **Accept:** an
-  internal-URL `@import`/`@font-face` in the API use case provably makes zero outbound requests; MIME-mismatch
-  rejected; SSRF integration tests (metadata IP, redirect-to-internal, DNS-rebind) green.
-- [ ] **SEC-4 (G2, MED) — DNS-resolution timeout.** Bound `Dns.GetHostAddressesAsync` with an explicit
-  timeout (≈5 s, or `min(ResourceTimeout, 5s)`), linked to the render token. **Accept:** a non-responding
-  resolver fails fast with a typed diagnostic, not a hung thread; regression test with a stub resolver.
+- [x] **SEC-3 (G1, HIGH) — SSRF choke-point invariant for the Phase-5 resource surface.** ✅ Done (the
+  **invariant + guards**; the actual CSS/font *fetch enablement* is the Phase-5 feature this now gates). The
+  choke point already held (only `ImageResourceCache` fetches, only `ResourceKind.Image`; CSS/font URLs are
+  extracted-but-not-fetched). SEC-3 makes that promise **enforced**:
+  [`ResourceChokePointInvariantTests`](../../tests/NetPdf.UnitTests/Security/ResourceChokePointInvariantTests.cs)
+  scans the production sources and FAILS if any code outside `SafeResourceLoader` invokes the raw
+  `IResourceLoader.LoadAsync`, or constructs an `HttpClient`/`SocketsHttpHandler` outside `SafeHttpResourceLoader`
+  (with an anti-vacuous "did the scan run" check). The SEC-3 region in `SecurityHardeningTests` adds the
+  now-passing behavioral tests: `UntrustedHtml` (and even an http-permissive policy — a tripwire for the Phase-5
+  wiring) yields **zero fetches** for `@import`/`@font-face`/`<link rel=stylesheet>`; `SafeResourceLoader.FetchAsync`
+  **blocks the metadata IP** for the `Stylesheet` + `Font` kinds (loader never invoked); **MIME mismatch is
+  rejected** for those kinds (`text/html` as a stylesheet/font → rejected; `text/css`/`font/ttf` → accepted),
+  exercised through the real fetch path via `data:` URIs; the kind→MIME allowlist matrix is pinned and the
+  default is **fail-closed** (an unknown `ResourceKind` fetches nothing). **Accept:** ✅ internal-URL
+  `@import`/`@font-face` provably makes zero outbound requests; ✅ MIME-mismatch rejected; ✅ SSRF block for the
+  Stylesheet/Font kinds green (the HTTP-loader-level redirect-to-internal + DNS-rebind defenses are kind-agnostic
+  and covered by the existing `SafeHttpResourceLoader` tests). **When Phase 5 wires CSS/font fetching, it must
+  route through `SafeResourceLoader.FetchAsync(…, Stylesheet|Font)`** — the tripwire test above flags any other
+  route, and these guards then protect the new fetch path.
+- [x] **SEC-4 (G2, MED) — DNS-resolution timeout.** ✅ Done. `SafeHttpResourceLoader.ResolveAndValidateAsync`
+  now bounds the resolve at `min(ResourceTimeout, 5s)` via `Task.WaitAsync(DnsTimeout, ct)` — `getaddrinfo`
+  does not reliably honor the `CancellationToken` on every platform, so an unbounded resolve of a dead /
+  hostile-DNS host could hang the render thread (slow-resolver DoS, V7). On timeout it throws a typed
+  `HttpRequestException("DNS resolution for '…' timed out after Ns")`, which `SafeResourceLoader` catches and
+  surfaces as a typed `SafeResourceResult` failure — fail-fast, not a hung thread. The host resolver is now
+  injectable via an internal constructor so tests can drive the timeout with a non-responding stub. **Accept:**
+  ✅ a non-responding resolver fails fast with a typed failure (regression tests
+  `Sec4_non_responding_dns_resolver_fails_fast_not_hang` + `Sec4_dns_timeout_surfaces_as_typed_failure_through_the_choke_point`
+  in `SecurityHardeningTests`, using an injected never-completing resolver).
 - [ ] **SEC-5 (G3, MED) — Configurable output-size & page-count caps.** Add a configurable `MaxOutputBytes`
   (new — there is no output-byte budget today) and a configurable, much-tighter `MaxPages` to
   `HtmlPdfOptions`/`SecurityPolicy` (sane defaults; tighter under `UntrustedHtml`), **layered above** the

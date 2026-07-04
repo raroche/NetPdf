@@ -1,0 +1,432 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using NetPdf.Pdf.Images;
+using NetPdf.Svg;
+using NetPdf.Text.Fonts;
+using Xunit;
+
+namespace NetPdf.UnitTests.Security;
+
+/// <summary>
+/// The consolidated security-regression suite (SEC-2). It pins the engine's defenses against the
+/// canonical HTML-to-PDF attack classes as <b>executable assertions</b>, organized by the threat-model
+/// taxonomy in <c>docs/security/security-hardening-plan.md</c>:
+/// <list type="bullet">
+///   <item>V1 SSRF — the URI choke point rejects internal / metadata / private / alt-scheme targets.</item>
+///   <item>V2 Local file read — <c>file:</c> is off under the untrusted-HTML profile.</item>
+///   <item>V3 XXE — the SVG parser is DTD-prohibited + entity-capped; a malicious entity does not leak.</item>
+///   <item>V7 DoS — layered caps degrade hostile input to a diagnostic, never an untyped crash / hang.</item>
+///   <item>V8 Malicious PDF output — dangerous URL schemes are stripped; no active-content token escapes.</item>
+/// </list>
+///
+/// <para><b>Extension contract:</b> each subsequent SEC-N hardening task adds its regression tests HERE
+/// (a new <c>#region</c> under the matching taxonomy class), so the security surface has one discoverable
+/// home. The broad, generative counterpart is the <c>tests/NetPdf.Fuzz</c> smoke harness
+/// (<c>docs/security/fuzzing.md</c>) — this suite asserts specific invariants; the fuzzer hunts for the
+/// unknown. Companion audits live in <c>Phase2/Phase{A,B,C,D}SecurityHardeningTests</c> (organized by the
+/// original audit recommendations rather than by taxonomy).</para>
+/// </summary>
+[Trait("Category", "Security")]
+public sealed class SecurityHardeningTests
+{
+    // ================================================================================
+    // V1 — SSRF: the URI safety choke point
+    // ================================================================================
+
+    [Theory]
+    [InlineData("https://169.254.169.254/latest/meta-data/", "cloud metadata")]
+    [InlineData("https://[fd00::1]/", "IPv6 ULA")]
+    [InlineData("https://[::ffff:169.254.169.254]/", "IPv4-mapped metadata")]
+    [InlineData("https://10.1.2.3/internal", "private 10/8")]
+    [InlineData("https://172.16.0.1/internal", "private 172.16/12")]
+    [InlineData("https://192.168.1.1/internal", "private 192.168/16")]
+    [InlineData("https://127.0.0.1/", "loopback")]
+    [InlineData("https://[::1]/", "IPv6 loopback")]
+    [InlineData("https://100.64.0.1/", "CGNAT 100.64/10")]
+    public void V1_uri_validator_blocks_internal_targets(string url, string _)
+    {
+        // AllowHttpsScheme isolates the IP blocklist from the scheme gate: the scheme passes, so an
+        // Unsafe verdict must come from the IP check — the SSRF-relevant assertion.
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var verdict = UriSafetyValidator.Validate(new Uri(url), policy);
+        Assert.False(verdict.IsSafe, $"{url} must be rejected by the SSRF IP blocklist");
+    }
+
+    [Theory]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("gopher://127.0.0.1:6379/_INFO")]
+    [InlineData("dict://127.0.0.1:11211/stat")]
+    [InlineData("ftp://internal/secret")]
+    public void V1_uri_validator_rejects_non_http_schemes_under_untrusted(string url)
+    {
+        var verdict = UriSafetyValidator.Validate(new Uri(url), SecurityPolicy.UntrustedHtml);
+        Assert.False(verdict.IsSafe, $"{url} must be rejected under UntrustedHtml (scheme not allowed)");
+    }
+
+    [Fact]
+    public async Task V1_untrusted_html_makes_zero_fetches_for_internal_image()
+    {
+        // The hostile deployment: even WITH an ambient loader, UntrustedHtml must not fetch an
+        // internal-IP image (http/https off + IP blocklist). The loader must never be invoked.
+        var loader = new CountingLoader();
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = SecurityPolicy.UntrustedHtml,
+            ResourceLoader = loader,
+        };
+
+        _ = await HtmlPdf.ConvertAsync(
+            "<img src=\"http://169.254.169.254/latest/meta-data/\">", options, CancellationToken.None);
+
+        Assert.Equal(0, loader.Count);
+    }
+
+    // ================================================================================
+    // V1 — SSRF: SEC-3 choke-point invariant for the CSS/font resource surface
+    //
+    // `@import`, `@font-face src:url()`, and `<link rel=stylesheet>` URLs are EXTRACTED but NOT
+    // fetched today (Phase-5 feature). SEC-3 is the sequencing gate: these tests pin that state and
+    // prove that WHEN the fetch is wired, the choke point (`SafeResourceLoader`) blocks internal
+    // targets + MIME mismatches for the Stylesheet / Font kinds. The architectural guard that every
+    // fetch must route through `SafeResourceLoader` lives in `ResourceChokePointInvariantTests`.
+    // ================================================================================
+
+    [Theory]
+    [InlineData("<style>@import url(\"http://169.254.169.254/x.css\");</style><p>x</p>")]
+    [InlineData("<style>@font-face{font-family:x;src:url(\"http://10.0.0.1/f.ttf\")}</style><p style=\"font-family:x\">y</p>")]
+    [InlineData("<link rel=\"stylesheet\" href=\"http://192.168.0.1/x.css\"><p>z</p>")]
+    public async Task Sec3_untrusted_html_fetches_no_css_or_font_resource(string html)
+    {
+        var loader = new CountingLoader();
+        var options = new HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml, ResourceLoader = loader };
+
+        _ = await HtmlPdf.ConvertAsync(html, options, CancellationToken.None);
+
+        Assert.Equal(0, loader.Count);
+    }
+
+    [Fact]
+    public async Task Sec3_css_and_font_are_not_fetched_even_when_http_is_allowed()
+    {
+        // TRIPWIRE for the Phase-5 CSS/font-loading feature. Even with http/https ALLOWED and a loader
+        // present, no @import / @font-face / <link> resource is fetched today (only images are wired).
+        // When that feature lands it MUST fetch through SafeResourceLoader.FetchAsync(…, Stylesheet|Font)
+        // — at which point this test is updated deliberately, and the SSRF/MIME tests below start guarding
+        // the new fetch path. A change that wires CSS/font fetching by any OTHER route trips this.
+        var loader = new CountingLoader();
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { AllowHttpScheme = true, AllowHttpsScheme = true },
+            ResourceLoader = loader,
+        };
+        const string html =
+            "<style>@import url(\"http://example.com/a.css\");" +
+            "@font-face{font-family:x;src:url(\"http://example.com/f.ttf\")}</style>" +
+            "<link rel=\"stylesheet\" href=\"http://example.com/b.css\"><p style=\"font-family:x\">t</p>";
+
+        _ = await HtmlPdf.ConvertAsync(html, options, CancellationToken.None);
+
+        Assert.Equal(0, loader.Count);
+    }
+
+    [Theory]
+    [InlineData(ResourceKind.Stylesheet)]
+    [InlineData(ResourceKind.Font)]
+    public async Task Sec3_choke_point_blocks_internal_ip_for_css_and_font_kinds(ResourceKind kind)
+    {
+        // When CSS/font fetching IS wired through the choke point, an internal-IP target must be blocked
+        // by the IP blocklist BEFORE the loader is ever invoked — exactly as it is for images today.
+        var inner = new CountingLoader();
+        var context = new ResourceFetchContext(
+            new SecurityPolicy { AllowHttpsScheme = true }, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner, context);
+
+        var result = await loader.FetchAsync(new Uri("https://169.254.169.254/resource"), kind);
+
+        Assert.False(result.Success);
+        Assert.Equal(0, inner.Count);
+    }
+
+    [Theory]
+    [InlineData(ResourceKind.Stylesheet, "data:text/css,x", "data:text/html,x")]
+    [InlineData(ResourceKind.Font, "data:font/ttf,x", "data:text/html,x")]
+    public async Task Sec3_choke_point_enforces_kind_specific_mime(ResourceKind kind, string allowedUri, string mismatchUri)
+    {
+        // The MIME gate keeps a Stylesheet fetch from accepting text/html (and a Font from accepting a
+        // stylesheet, etc.). Exercised through the real FetchAsync path via data: URIs (no network).
+        var context = new ResourceFetchContext(SecurityPolicy.SafeDefault, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner: null, context); // data: needs no loader
+
+        var allowed = await loader.FetchAsync(new Uri(allowedUri), kind);
+        var mismatch = await loader.FetchAsync(new Uri(mismatchUri), kind);
+
+        Assert.True(allowed.Success, $"{allowedUri} should be accepted for {kind}");
+        Assert.False(mismatch.Success, $"{mismatchUri} (wrong MIME) must be rejected for {kind}");
+    }
+
+    [Theory]
+    [InlineData("text/css", ResourceKind.Stylesheet, true)]
+    [InlineData("text/html", ResourceKind.Stylesheet, false)]
+    [InlineData("font/ttf", ResourceKind.Stylesheet, false)]
+    [InlineData("font/woff2", ResourceKind.Font, true)]
+    [InlineData("text/html", ResourceKind.Font, false)]
+    [InlineData("text/css", ResourceKind.Font, false)]
+    [InlineData("image/png", ResourceKind.Image, true)]
+    [InlineData("text/html", ResourceKind.Image, false)]
+    public void Sec3_kind_mime_allowlist_matrix(string mime, ResourceKind kind, bool allowed)
+        => Assert.Equal(allowed, SafeResourceLoader.IsMimeAllowedForKind(mime, kind));
+
+    [Fact]
+    public void Sec3_unknown_resource_kind_is_fail_closed()
+    {
+        // The kind→MIME switch defaults to REJECT, so a ResourceKind added in the future without an
+        // explicit allowlist entry can't fetch anything until someone opts it in. Fail-closed by design.
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("text/css", (ResourceKind)999));
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("application/octet-stream", (ResourceKind)999));
+    }
+
+    // ================================================================================
+    // V2 — Local file disclosure
+    // ================================================================================
+
+    [Fact]
+    public void V2_file_scheme_is_off_under_untrusted_html()
+    {
+        var verdict = UriSafetyValidator.Validate(new Uri("file:///etc/passwd"), SecurityPolicy.UntrustedHtml);
+        Assert.False(verdict.IsSafe);
+    }
+
+    [Fact]
+    public async Task V2_untrusted_html_makes_zero_fetches_for_file_uri_image()
+    {
+        var loader = new CountingLoader();
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = SecurityPolicy.UntrustedHtml,
+            ResourceLoader = loader,
+        };
+
+        _ = await HtmlPdf.ConvertAsync("<img src=\"file:///etc/passwd\">", options, CancellationToken.None);
+
+        Assert.Equal(0, loader.Count);
+    }
+
+    // ================================================================================
+    // V3 — XXE / entity-expansion DoS (the SVG parse surface)
+    // ================================================================================
+
+    [Fact]
+    public void V3_svg_external_entity_is_rejected_not_expanded()
+    {
+        // DtdProcessing.Prohibit rejects the DOCTYPE outright, so the &xxe; entity is never resolved —
+        // no file read, no SSRF, no throw. TryRender degrades to null.
+        const string xxe =
+            "<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>" +
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>&xxe;</text></svg>";
+
+        var info = SvgRasterizer.TryRender(Encoding.UTF8.GetBytes(xxe), out _);
+        Assert.Null(info);
+    }
+
+    [Fact]
+    public void V3_svg_billion_laughs_does_not_hang_or_throw()
+    {
+        var sb = new StringBuilder();
+        sb.Append("<?xml version=\"1.0\"?><!DOCTYPE svg [<!ENTITY a \"aaaaaaaaaa\">");
+        sb.Append("<!ENTITY b \"&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;\">");
+        sb.Append("<!ENTITY c \"&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;\">");
+        sb.Append("<!ENTITY d \"&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;\">");
+        sb.Append("]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&d;</text></svg>");
+
+        // Must return (not OOM / hang) — the DTD prohibition rejects it before any expansion.
+        var info = SvgRasterizer.TryRender(Encoding.UTF8.GetBytes(sb.ToString()), out _);
+        Assert.Null(info);
+    }
+
+    // ================================================================================
+    // V7 — DoS / resource exhaustion
+    // ================================================================================
+
+    [Fact]
+    public void V7_pathologically_deep_html_degrades_with_diagnostic_not_untyped_crash()
+    {
+        // Regression for the gap the SEC-2 fuzz harness found: HTML nested past the layout recursion
+        // guard (256) but under the DOM nesting cap (1024) used to escape HtmlPdf.Convert as an untyped
+        // InvalidOperationException. It must now degrade to a valid PDF + LAYOUT-RECURSION-DEPTH-EXCEEDED-001.
+        var html = new StringBuilder();
+        const int depth = 600; // > 256 layout guard, < 1024 DOM cap
+        for (var i = 0; i < depth; i++)
+        {
+            html.Append("<div>");
+        }
+
+        html.Append("deep");
+        for (var i = 0; i < depth; i++)
+        {
+            html.Append("</div>");
+        }
+
+        var result = HtmlPdf.ConvertDetailed(
+            html.ToString(),
+            new HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml });
+
+        Assert.NotEmpty(result.Pdf);
+        Assert.True(result.PageCount >= 1);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.LayoutRecursionDepthExceeded001);
+    }
+
+    [Fact]
+    public void V7_oversized_image_dimensions_are_rejected_before_decode()
+    {
+        // PNG signature + IHDR declaring 100000 x 100000 — far past the dimension cap. Rejected on the
+        // header peek, before any decoder allocates a pixel buffer.
+        var png = new byte[8 + 4 + 4 + 13];
+        new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }.CopyTo(png, 0);
+        png[8] = 0x00; png[9] = 0x00; png[10] = 0x00; png[11] = 0x0D;
+        png[12] = (byte)'I'; png[13] = (byte)'H'; png[14] = (byte)'D'; png[15] = (byte)'R';
+        WriteBe32(png, 16, 100_000);
+        WriteBe32(png, 20, 100_000);
+        png[24] = 8;  // bit depth
+        png[25] = 6;  // RGBA
+
+        Assert.False(ImageSafetyValidator.Validate(png).IsSafe);
+    }
+
+    [Fact]
+    public void V7_font_with_too_many_tables_is_rejected_before_harfbuzz()
+    {
+        // sfnt header claiming 0xFFFF tables — over the 64-table cap. Rejected pre-decode.
+        var font = new byte[64];
+        font[0] = 0x00; font[1] = 0x01; font[2] = 0x00; font[3] = 0x00; // TrueType version
+        font[4] = 0xFF; font[5] = 0xFF;                                 // numTables
+
+        Assert.False(FontSafetyValidator.Validate(font).IsSafe);
+    }
+
+    [Fact]
+    public void V7_validators_never_throw_on_empty_or_garbage_input()
+    {
+        // The pre-decode validators are total functions — a robustness assertion the fuzzer generalizes.
+        Assert.False(ImageSafetyValidator.Validate(ReadOnlySpan<byte>.Empty).IsSafe);
+        Assert.False(FontSafetyValidator.Validate(ReadOnlySpan<byte>.Empty).IsSafe);
+        Assert.False(ImageSafetyValidator.Validate(new byte[] { 1, 2, 3 }).IsSafe);
+        Assert.False(FontSafetyValidator.Validate(new byte[] { 1, 2, 3 }).IsSafe);
+    }
+
+    // --- SEC-4: DNS-resolution timeout (slow-resolver DoS) ---------------------------
+    //
+    // getaddrinfo does not reliably honor cancellation on every platform, so an unbounded resolve of a
+    // dead / hostile-DNS host could hang the render thread. SafeHttpResourceLoader bounds every resolve
+    // at min(ResourceTimeout, 5s). Tested with an injected non-responding resolver.
+
+    [Fact]
+    public async Task Sec4_non_responding_dns_resolver_fails_fast_not_hang()
+    {
+        // A resolver whose task never completes — the timeout, not the resolver, must end the wait.
+        var policy = new SecurityPolicy { AllowHttpScheme = true, ResourceTimeout = TimeSpan.FromMilliseconds(150) };
+        using var loader = new SafeHttpResourceLoader(
+            policy, (_, _) => new System.Threading.Tasks.TaskCompletionSource<System.Net.IPAddress[]>().Task);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var ex = await Assert.ThrowsAsync<System.Net.Http.HttpRequestException>(
+            () => loader.LoadAsync(new Uri("http://dead-resolver.invalid/x"), ResourceKind.Image, CancellationToken.None).AsTask());
+        sw.Stop();
+
+        Assert.Contains("timed out", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"DNS resolve should fail fast; took {sw.Elapsed}");
+    }
+
+    [Fact]
+    public async Task Sec4_dns_timeout_surfaces_as_typed_failure_through_the_choke_point()
+    {
+        // End-to-end: a hung resolver surfaces as a typed SafeResourceResult failure (not a throw / hang).
+        var policy = new SecurityPolicy { AllowHttpScheme = true, ResourceTimeout = TimeSpan.FromMilliseconds(150) };
+        using var http = new SafeHttpResourceLoader(
+            policy, (_, _) => new System.Threading.Tasks.TaskCompletionSource<System.Net.IPAddress[]>().Task);
+        // The wrapper requires the SAME policy instance as its context (policy-divergence guard).
+        var context = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(http, context);
+
+        var result = await loader.FetchAsync(new Uri("http://dead-resolver.invalid/x"), ResourceKind.Image);
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.Failure);
+        Assert.Contains("timed out", result.Failure!.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ================================================================================
+    // V8 — Malicious PDF output
+    // ================================================================================
+
+    [Fact]
+    public void V8_javascript_url_is_stripped_and_absent_from_output()
+    {
+        // The URL-strip pass runs at HTML parse time, so its diagnostic surfaces through the sink
+        // (not the render-time Warnings list). Capture it explicitly.
+        var sink = new CapturingSink();
+        var pdf = HtmlPdf.Convert(
+            "<a href=\"javascript:alert(document.cookie)\">click</a>",
+            new HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml, Diagnostics = sink });
+
+        Assert.Contains(sink.Diagnostics, d => d.Code == "HTML-JAVASCRIPT-URL-IGNORED-001");
+
+        // Facade output streams are uncompressed, so the scheme would be searchable if it leaked.
+        var text = Encoding.Latin1.GetString(pdf);
+        Assert.DoesNotContain("javascript:", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void V8_no_active_content_tokens_in_untrusted_output()
+    {
+        // Active-content actions must never appear in a rendered PDF — the preflight denylist keeps them
+        // out even when the input tries to smuggle the literal tokens through text / attributes.
+        var result = HtmlPdf.ConvertDetailed(
+            "<div>/OpenAction /JavaScript /Launch /SubmitForm /EmbeddedFile</div>",
+            new HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml });
+
+        var text = Encoding.Latin1.GetString(result.Pdf);
+        foreach (var token in new[] { "/OpenAction", "/JavaScript", "/Launch", "/SubmitForm", "/EmbeddedFile" })
+        {
+            Assert.DoesNotContain(token, text, StringComparison.Ordinal);
+        }
+    }
+
+    // --- helpers ---------------------------------------------------------------------
+
+    private static void WriteBe32(byte[] buf, int offset, uint value)
+    {
+        buf[offset] = (byte)(value >> 24);
+        buf[offset + 1] = (byte)(value >> 16);
+        buf[offset + 2] = (byte)(value >> 8);
+        buf[offset + 3] = (byte)value;
+    }
+
+    /// <summary>Captures every diagnostic (including parse-time ones) the pipeline emits.</summary>
+    private sealed class CapturingSink : IDiagnosticsSink
+    {
+        public System.Collections.Generic.List<Diagnostic> Diagnostics { get; } = new();
+
+        public void Emit(Diagnostic diagnostic) => Diagnostics.Add(diagnostic);
+    }
+
+    /// <summary>A loader that records invocations; used to prove the untrusted profile fetches nothing.</summary>
+    private sealed class CountingLoader : IResourceLoader
+    {
+        public int Count;
+
+        public ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Count);
+            return ValueTask.FromResult(new ResourceResponse
+            {
+                Content = new byte[10],
+                MimeType = "image/png",
+            });
+        }
+    }
+}

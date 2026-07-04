@@ -98,6 +98,9 @@
     <InternalsVisibleTo Include="NetPdf.RealDocuments" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
     <InternalsVisibleTo Include="NetPdf.Benchmarks" />
+    <!-- The SharpFuzz harness fuzzes the facade + internal typed exceptions
+         (FontResolutionException) it may surface on hostile input. -->
+    <InternalsVisibleTo Include="NetPdf.Fuzz" />
   </ItemGroup>
 
 </Project>

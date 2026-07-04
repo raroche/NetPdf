@@ -332,6 +332,17 @@ internal static class PdfRenderPipeline
             EmitTextFontUnresolved(diagnostics, ex.Message);
             fontResolutionFailed = true;
         }
+        catch (LayoutDepthExceededException ex)
+        {
+            // A DoS guard against pathologically deep untrusted HTML (the box tree recursed past
+            // BlockLayouter.MaxRecursionDepth). Degrade to a valid PDF — keeping any pages laid out
+            // before the guard tripped — plus a diagnostic, rather than letting an untyped exception
+            // escape HtmlPdf.Convert (CLAUDE.md #7; found by the SEC-2 security fuzz harness). Only
+            // THIS deliberate guard is caught here — a genuine layout bug (NRE / index) still surfaces.
+            // The specific diagnostic below is the story; we do NOT also set clippedOrTruncated (which
+            // would double-emit the generic overflow-truncated diagnostic at the post-loop check).
+            EmitLayoutDepthExceeded(diagnostics, ex.Message);
+        }
 
         // Always emit at least one page (an empty document, or a font failure before page 1,
         // would otherwise produce a page-less — invalid — PDF).
@@ -671,6 +682,14 @@ internal static class PdfRenderPipeline
             detail + " The rest of the document still renders. A bundled deterministic last-resort " +
             "font (so the default path always resolves) is a tracked follow-up " +
             "(deferrals.md#layout-to-pdf-pipeline).",
+            DiagnosticSeverity.Warning));
+
+    private static void EmitLayoutDepthExceeded(IDiagnosticsSink diagnostics, string detail) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.LayoutRecursionDepthExceeded001,
+            "Layout stopped because the box tree recursed past the depth cap — a DoS guard against " +
+            "pathologically deep untrusted HTML: " + detail + " A valid PDF is still produced from the " +
+            "content laid out before the cap was hit, rather than failing the whole conversion.",
             DiagnosticSeverity.Warning));
 
     /// <summary>Backstop page count for the multi-page driver loop (layout→PDF cycle 3).

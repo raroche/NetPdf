@@ -563,6 +563,24 @@ internal static class DiagnosticCodes
         "LAYOUT-MEASURE-NESTING-BUDGET-EXCEEDED-001";
 
     /// <summary>
+    /// Emitted by the render pipeline when block layout recurses past
+    /// <c>BlockLayouter.MaxRecursionDepth</c> (256) — a DoS guard against
+    /// pathologically deep untrusted HTML that would otherwise
+    /// <c>StackOverflow</c> and halt the process. The DOM parser's own
+    /// nesting cap (1024) is higher, so a document between the two limits
+    /// reaches layout and trips this guard. Rather than let an untyped
+    /// exception escape <c>HtmlPdf.Convert</c>, the pipeline catches the
+    /// guard, degrades to a valid PDF built from the content laid out
+    /// before the cap, and surfaces this diagnostic (diagnostics-not-
+    /// silent-corruption). Distinct from the speculative-measure budget
+    /// (<see cref="LayoutMeasureNestingBudgetExceeded001"/>), which
+    /// degrades a probe to 0-extent without stopping layout.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutRecursionDepthExceeded001 =
+        "LAYOUT-RECURSION-DEPTH-EXCEEDED-001";
+
+    /// <summary>
     /// Per Phase 3 Task 13 cycle 1 hardening Finding 5 — emitted by the
     /// table layouter when the break resolver returns
     /// <c>BreakAction.Rewind</c> at a table row boundary. Cycle 1 does

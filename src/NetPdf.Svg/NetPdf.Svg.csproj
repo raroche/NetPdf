@@ -27,6 +27,9 @@
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
     <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
+    <!-- The SharpFuzz harness (tests/NetPdf.Fuzz) fuzzes the internal SvgRasterizer.TryRender
+         entry directly (the SVG parse/rasterize surface — an XXE + DoS target). -->
+    <InternalsVisibleTo Include="NetPdf.Fuzz" />
   </ItemGroup>
 
 </Project>

@@ -4609,7 +4609,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // handling at the assembly boundary).
         if (depth > MaxRecursionDepth)
         {
-            throw new InvalidOperationException(
+            throw new LayoutDepthExceededException(
                 $"BlockLayouter recursion depth exceeded {MaxRecursionDepth}; "
                 + "pathologically deep box tree. This is a DoS guard against "
                 + "untrusted HTML; legitimate documents rarely exceed depth "
@@ -9474,7 +9474,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     {
         if (depth > MaxRecursionDepth)
         {
-            throw new InvalidOperationException(
+            throw new LayoutDepthExceededException(
                 $"BlockLayouter measure-pass recursion depth exceeded {MaxRecursionDepth}; "
                 + "pathologically deep box tree. This is a DoS guard against "
                 + "untrusted HTML; legitimate documents rarely exceed depth 32.");

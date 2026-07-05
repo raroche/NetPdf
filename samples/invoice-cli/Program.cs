@@ -43,20 +43,10 @@ internal static class Program
             Console.WriteLine($"wrote {outputPath} ({pdf.Length:N0} bytes)");
             return 0;
         }
-        catch (NotImplementedException ex)
-        {
-            // NetPdf 0.1.0-alpha shipped the internal byte writer, font subsetter, image
-            // embedders, and text shaping — but the public HtmlPdf.Convert facade still
-            // throws because the HTML+CSS pipeline glue lands in Phase 2 (`0.3.0-alpha`).
-            // This catch goes away once Phase 2 ships; until then the error is expected
-            // and the exit code (3) is stable for CI scripts that wrap this CLI.
-            Console.Error.WriteLine(
-                $"NetPdf {HtmlPdf.Version} — HtmlPdf.Convert wires up in Phase 2.");
-            Console.Error.WriteLine($"  {ex.Message}");
-            return 3;
-        }
         catch (HtmlPdfException ex)
         {
+            // NetPdf never corrupts output silently — a hard failure (hostile or malformed input, an
+            // exceeded resource cap) surfaces as a typed exception carrying a stable diagnostic code.
             Console.Error.WriteLine($"NetPdf error [{ex.Code}]: {ex.Message}");
             return 4;
         }

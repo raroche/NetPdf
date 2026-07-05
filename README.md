@@ -15,23 +15,27 @@ Both are loaded as in-process libraries via the official `*.NativeAssets.{Linux,
 
 ## Installation
 
-NetPdf targets **.NET 10** and ships as a **single NuGet package** — that one package bundles the whole engine, so there is nothing else to wire up:
+NetPdf targets **.NET 10** and ships as a **single NuGet package** — that one package bundles the whole engine, so there is nothing else to wire up.
+
+The current build is the **`0.9.0-rc1`** release candidate. Because it carries a pre-release (`-rc`) suffix, install it with `--prerelease` (or pin the exact version):
 
 ```bash
-dotnet add package NetPdf
+dotnet add package NetPdf --prerelease
 ```
 
 or in your `.csproj`:
 
 ```xml
-<PackageReference Include="NetPdf" Version="1.0.0" />
+<PackageReference Include="NetPdf" Version="0.9.0-rc1" />
 ```
+
+Once **`1.0.0`** ships you can drop `--prerelease` and take the stable line (`dotnet add package NetPdf`).
 
 **Requirements:** the .NET 10 SDK/runtime. NetPdf runs on **Linux, macOS, and Windows** (x64 and arm64); the permissive-licensed HarfBuzz + Skia native assets are restored automatically as part of the package — no extra install, no browser, no system dependency. It is **Native-AOT compatible** and trimmable.
 
 Optional add-on packages provide non-English hyphenation dictionaries — see [Language packs](#language-packs).
 
-> Until the `1.0.0` launch the package is published from a private repo; on the public launch it appears on nuget.org. Pre-release builds carry a `-rc` suffix, so add `--prerelease` (or pin the exact version) when installing a release candidate.
+> Until the `1.0.0` launch the package is published from a private repo; on the public launch it appears on nuget.org.
 
 ## Quick start
 
@@ -111,7 +115,7 @@ foreach (Diagnostic d in result.Warnings)
 try { pdf = HtmlPdf.Convert(html); }
 catch (HtmlPdfException ex) { Console.Error.WriteLine($"render failed [{ex.Code}]: {ex.Message}"); }
 
-// Version string, e.g. "1.0.0+<commit-sha>"
+// Version string, e.g. "0.9.0-rc1+<commit-sha>"
 Console.WriteLine(HtmlPdf.Version);
 ```
 
@@ -227,10 +231,10 @@ h2    { break-after: avoid; }            /* section headings stay with their con
 
 ## Language packs
 
-The core `NetPdf` package bundles **en-US** hyphenation. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. Hyphenation then activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`):
+The core `NetPdf` package bundles **en-US** hyphenation. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).
 
 ```bash
-dotnet add package NetPdf.Languages.European   # de, fr, es, it, nl, ... (Liang patterns)
+dotnet add package NetPdf.Languages.European --prerelease   # de, fr Liang hyphenation
 ```
 
 ```csharp
@@ -244,15 +248,17 @@ var pdf = HtmlPdf.Convert(
     "Silbentrennung im Donaudampfschifffahrtsgesellschaftskapitän</div>");
 ```
 
-| Package | Covers |
-|---|---|
-| `NetPdf.Languages.European` | Western/Central/Northern European Liang hyphenation (de, fr, es, it, nl, pt, …) |
-| `NetPdf.Languages.Cjk` | Chinese / Japanese / Korean line-breaking behavior (no hyphenation) |
-| `NetPdf.Languages.Arabic` | Arabic / Persian / Urdu (RTL; no hyphenation) |
-| `NetPdf.Languages.Indic` | Indic-script routing |
-| `NetPdf.Languages.All` | Meta-package — references every pack; `AllLanguages.Register()` wires them all |
+The table below is the **honest current coverage** — what each pack registers *today*, not an aspirational language list. The pack surface (namespaces + `Register()` entry points) is stable; additional languages fill in behind it as the pattern data is vendored.
 
-Text **shaping** for these scripts (RTL, CJK, ligatures, kerning) is always in the core package via HarfBuzz — the language packs only add per-language **hyphenation / line-break dictionaries**.
+| Package | Languages registered today | What it does |
+|---|---|---|
+| `NetPdf.Languages.European` | `de`, `fr` | Real Liang hyphenation patterns. (More European languages are planned behind the same `Register()`.) |
+| `NetPdf.Languages.Cjk` | `zh`, `ja`, `ko` | Registers **no-hyphenation** so `hyphens: auto` inserts no hyphens (correct for CJK) instead of falling back to English rules. Line breaking itself is in the core. |
+| `NetPdf.Languages.Arabic` | `ar`, `fa`, `ur` | Registers **no-hyphenation** (these scripts are RTL and do not hyphenate this way). |
+| `NetPdf.Languages.Indic` | `hi`, `bn`, `ta`, `te`, … | **Placeholder** registration — reserves the `lang` routing with an empty hyphenator so English rules are never wrongly applied. No Indic hyphenation is performed yet (pending vendored pattern data). |
+| `NetPdf.Languages.All` | all of the above | Meta-package — references every pack; `AllLanguages.Register()` wires them all. |
+
+Text **shaping** for these scripts (RTL, CJK, ligatures, kerning) and **line breaking** (UAX #14, including CJK) are always in the core package via HarfBuzz — the language packs only add per-language **hyphenation** dictionaries (or, for CJK/Arabic, the explicit *no-hyphenation* registration).
 
 ## What's actually shipped (current: `0.9.0-rc1`)
 

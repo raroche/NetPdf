@@ -36,7 +36,12 @@ jobs:
     # for manual approval (Settings → Environments → nuget-release).
     environment: nuget-release
     steps:
+      # Check out the exact ref being released. On a tag push `github.ref` is the tag; on a manual
+      # workflow_dispatch we check out the requested `tag` input (else the run would build the default
+      # branch and could publish bytes that don't match the tag).
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
@@ -87,7 +92,13 @@ jobs:
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
+          # `*.nupkg` does NOT match `*.snupkg`, so push both globs — the symbol packages carry the
+          # SourceLink debug info the runbook promises consumers. `--skip-duplicate` keeps a re-run idempotent.
           dotnet nuget push "artifacts/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          dotnet nuget push "artifacts/*.snupkg" \
             --api-key "$NUGET_API_KEY" \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate

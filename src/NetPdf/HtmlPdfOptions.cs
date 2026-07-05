@@ -86,14 +86,41 @@ public sealed class HtmlPdfOptions
     /// <summary>The PDF version emitted in the file header. Defaults to 1.7 for compatibility.</summary>
     public PdfVersion EmittedPdfVersion { get; init; } = PdfVersion.V1_7;
 
-    /// <summary>Document <c>/Title</c> metadata.</summary>
+    /// <summary>Document <c>/Title</c> metadata. When set, overrides the HTML <c>&lt;title&gt;</c>.</summary>
     public string? Title { get; init; }
 
-    /// <summary>Document <c>/Author</c> metadata.</summary>
+    /// <summary>Document <c>/Author</c> metadata. When set, overrides <c>&lt;meta name="author"&gt;</c>.</summary>
     public string? Author { get; init; }
 
-    /// <summary>Document language tag (BCP-47), used for accessibility metadata. Default <c>"en"</c>.</summary>
-    public string? Language { get; init; } = "en";
+    /// <summary>Document <c>/Subject</c> metadata. When set, overrides <c>&lt;meta name="description"&gt;</c>.</summary>
+    public string? Subject { get; init; }
+
+    /// <summary>Document <c>/Keywords</c> metadata. When set, overrides <c>&lt;meta name="keywords"&gt;</c>.</summary>
+    public string? Keywords { get; init; }
+
+    /// <summary>Document <c>/Creator</c> metadata — the authoring application. When set, emitted verbatim.</summary>
+    public string? Creator { get; init; }
+
+    /// <summary>Document language tag (BCP-47), used for the catalog <c>/Lang</c> and XMP metadata.
+    /// The HTML root <c>&lt;html lang&gt;</c> attribute takes precedence when present; this is the
+    /// fallback. <see langword="null"/> (the default) means "not declared" — no <c>/Lang</c> is
+    /// manufactured, so a document that declares no language is not presumed to be English.</summary>
+    public string? Language { get; init; }
+
+    /// <summary>Custom document-information entries emitted as extra keys in the PDF <c>/Info</c>
+    /// dictionary (beyond the standard Title/Author/Subject/Keywords/Creator). Keys must be
+    /// non-empty and are matched case-sensitively; the standard keys and <c>Producer</c> cannot be
+    /// overridden here. <see langword="null"/> or empty = none.</summary>
+    public IReadOnlyDictionary<string, string>? DocumentProperties { get; init; }
+
+    /// <summary>Document creation timestamp emitted as <c>/CreationDate</c> (and in XMP). <see langword="null"/>
+    /// (the default) omits it entirely — the deterministic default, since no wall-clock time is ever read.
+    /// Set an explicit value when a real (or fixed) timestamp is wanted.</summary>
+    public DateTimeOffset? CreationDate { get; init; }
+
+    /// <summary>Document modification timestamp emitted as <c>/ModDate</c>. <see langword="null"/> (the
+    /// default) omits it. Same determinism rule as <see cref="CreationDate"/>.</summary>
+    public DateTimeOffset? ModDate { get; init; }
 
     /// <summary>Hard cap on conversion time. <c>null</c> = no cap.</summary>
     public TimeSpan? Timeout { get; init; }

@@ -373,8 +373,7 @@ internal static class PdfRenderPipeline
         // opt into the active-content preflight's narrow /URI-action allowance (JS / Launch / embedded
         // files stay blocked).
         document.AllowUriLinkAnnotations = true;
-        if (!string.IsNullOrEmpty(options.Title)) document.Title = options.Title;
-        if (!string.IsNullOrEmpty(options.Author)) document.Author = options.Author;
+        ApplyDocumentMetadata(document, options, phase2.Metadata);
         var mediaBox = new MediaBoxSize(
             PdfUnits.PxToPt(pageSize.WidthPx),
             PdfUnits.PxToPt(pageSize.HeightPx));
@@ -818,4 +817,41 @@ internal static class PdfRenderPipeline
         PdfVersion.V2_0 => "2.0",
         _ => "1.7",
     };
+
+    /// <summary>
+    /// Populate the document's <c>/Info</c> / XMP / catalog metadata from the caller's
+    /// <paramref name="options"/> and the metadata harvested from the HTML head
+    /// (<paramref name="htmlMeta"/>). Precedence:
+    /// <list type="bullet">
+    ///   <item>Title / Author / Subject / Keywords — an explicit <see cref="HtmlPdfOptions"/> value
+    ///   wins; otherwise the HTML <c>&lt;title&gt;</c> / <c>&lt;meta&gt;</c> descriptor is used.</item>
+    ///   <item>Creator — options only (no HTML equivalent).</item>
+    ///   <item><c>/Lang</c> — the HTML root <c>&lt;html lang&gt;</c> wins (it declares the content
+    ///   language); otherwise <see cref="HtmlPdfOptions.Language"/> (default <c>"en"</c>).</item>
+    ///   <item>Custom <c>/Info</c> entries — <see cref="HtmlPdfOptions.DocumentProperties"/>.</item>
+    /// </list>
+    /// Empty / whitespace values are treated as unset so a blank option never clears a harvested value.
+    /// </summary>
+    private static void ApplyDocumentMetadata(
+        PdfDocument document, HtmlPdfOptions options, HtmlDocumentMetadata htmlMeta)
+    {
+        document.Title = Coalesce(options.Title, htmlMeta.Title);
+        document.Author = Coalesce(options.Author, htmlMeta.Author);
+        document.Subject = Coalesce(options.Subject, htmlMeta.Description);
+        document.Keywords = Coalesce(options.Keywords, htmlMeta.Keywords);
+        document.Creator = Coalesce(options.Creator, null);
+        document.Lang = Coalesce(htmlMeta.Lang, options.Language);
+        document.CreationDate = options.CreationDate;
+        document.ModDate = options.ModDate;
+        if (options.DocumentProperties is { Count: > 0 } props)
+            document.SetCustomInfoProperties(props);
+    }
+
+    /// <summary>First non-blank of the two candidates, else <see langword="null"/>.</summary>
+    private static string? Coalesce(string? primary, string? fallback)
+    {
+        if (!string.IsNullOrWhiteSpace(primary)) return primary;
+        if (!string.IsNullOrWhiteSpace(fallback)) return fallback;
+        return null;
+    }
 }

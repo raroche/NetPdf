@@ -1,0 +1,120 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System.Text;
+
+namespace NetPdf.Pdf;
+
+/// <summary>
+/// Builds the XMP (Extensible Metadata Platform, ISO 16684-1) packet emitted as the catalog
+/// <c>/Metadata</c> stream. XMP mirrors the <c>/Info</c> dictionary in RDF/XML so modern readers,
+/// search indexers, and archival tooling can read the document's title/author/description/keywords
+/// without parsing the classic Info dictionary — and it is the prerequisite carrier for a later
+/// PDF/A conformance pass.
+/// </summary>
+/// <remarks>
+/// The packet is deterministic: only the caller-supplied fields are emitted, in a fixed order,
+/// with a fixed xpacket id. No timestamps or random document IDs are injected here (dates ride the
+/// optional <c>CreationDate</c>/<c>ModDate</c>), so the same metadata always yields the same bytes.
+/// </remarks>
+internal static class XmpMetadataBuilder
+{
+    // The canonical xpacket wrapper id (a fixed magic constant from the XMP specification).
+    private const string PacketId = "W5M0MpCehiHzreSzNTczkc9d";
+
+    /// <summary>
+    /// Build the XMP packet bytes (UTF-8) for the given metadata, or <see langword="null"/> when no
+    /// descriptive field is present (so a bare document emits no <c>/Metadata</c> stream). The
+    /// <paramref name="producer"/> is always available but on its own is not enough to warrant an XMP
+    /// packet — at least one of title/author/subject/keywords/creator/lang must be set.
+    /// </summary>
+    public static byte[]? Build(
+        string? title, string? author, string? subject, string? keywords,
+        string? creator, string? lang, string producer)
+    {
+        var hasDescriptive =
+            !string.IsNullOrEmpty(title) || !string.IsNullOrEmpty(author) ||
+            !string.IsNullOrEmpty(subject) || !string.IsNullOrEmpty(keywords) ||
+            !string.IsNullOrEmpty(creator) || !string.IsNullOrEmpty(lang);
+        if (!hasDescriptive) return null;
+
+        var sb = new StringBuilder(512);
+        sb.Append("<?xpacket begin=\"﻿\" id=\"").Append(PacketId).Append("\"?>\n");
+        sb.Append("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
+        sb.Append(" <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
+        sb.Append("  <rdf:Description rdf:about=\"\"");
+        sb.Append(" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"");
+        sb.Append(" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"");
+        sb.Append(" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\">\n");
+
+        if (!string.IsNullOrEmpty(title))
+        {
+            sb.Append("   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">")
+              .Append(Escape(title)).Append("</rdf:li></rdf:Alt></dc:title>\n");
+        }
+
+        if (!string.IsNullOrEmpty(author))
+        {
+            // dc:creator is an ordered array (rdf:Seq) of authors.
+            sb.Append("   <dc:creator><rdf:Seq><rdf:li>")
+              .Append(Escape(author)).Append("</rdf:li></rdf:Seq></dc:creator>\n");
+        }
+
+        if (!string.IsNullOrEmpty(subject))
+        {
+            sb.Append("   <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">")
+              .Append(Escape(subject)).Append("</rdf:li></rdf:Alt></dc:description>\n");
+        }
+
+        if (!string.IsNullOrEmpty(keywords))
+        {
+            // Keywords live in pdf:Keywords (the classic-Info mirror), a plain text property.
+            sb.Append("   <pdf:Keywords>").Append(Escape(keywords)).Append("</pdf:Keywords>\n");
+        }
+
+        // Producer is always emitted alongside descriptive metadata (mirrors /Info /Producer).
+        sb.Append("   <pdf:Producer>").Append(Escape(producer)).Append("</pdf:Producer>\n");
+
+        if (!string.IsNullOrEmpty(creator))
+        {
+            sb.Append("   <xmp:CreatorTool>").Append(Escape(creator)).Append("</xmp:CreatorTool>\n");
+        }
+
+        if (!string.IsNullOrEmpty(lang))
+        {
+            sb.Append("   <dc:language><rdf:Bag><rdf:li>")
+              .Append(Escape(lang)).Append("</rdf:li></rdf:Bag></dc:language>\n");
+        }
+
+        sb.Append("  </rdf:Description>\n");
+        sb.Append(" </rdf:RDF>\n");
+        sb.Append("</x:xmpmeta>\n");
+        sb.Append("<?xpacket end=\"w\"?>");
+
+        return Encoding.UTF8.GetBytes(sb.ToString());
+    }
+
+    /// <summary>XML-escape the five predefined entities so metadata text can't break the RDF/XML.</summary>
+    private static string Escape(string value)
+    {
+        var sb = new StringBuilder(value.Length + 8);
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '&': sb.Append("&amp;"); break;
+                case '<': sb.Append("&lt;"); break;
+                case '>': sb.Append("&gt;"); break;
+                case '"': sb.Append("&quot;"); break;
+                case '\'': sb.Append("&apos;"); break;
+                default:
+                    // Drop control chars that are illegal in XML 1.0 (except TAB/CR/LF).
+                    if (c < 0x20 && c is not ('\t' or '\r' or '\n')) break;
+                    sb.Append(c);
+                    break;
+            }
+        }
+
+        return sb.ToString();
+    }
+}

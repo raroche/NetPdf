@@ -145,7 +145,9 @@ internal static class Phase2Pipeline
         cancellationToken.ThrowIfCancellationRequested();
         var semanticRoot = SemanticTreeBuilder.Build(document, resolved, cancellationToken);
 
-        return new Phase2Result(boxRoot, semanticRoot, resolved, sheets);
+        var metadata = HtmlDocumentMetadata.Extract(document);
+
+        return new Phase2Result(boxRoot, semanticRoot, resolved, sheets, metadata);
     }
 
     /// <summary>Per Task 17 review Rec 2 — build the cascade's media

@@ -183,3 +183,44 @@ For context on what these numbers mean (warm path, single PDF):
 - **PDFsharp** (pure .NET, similar scope): ~50–100 µs for a blank page — same order of magnitude as NetPdf's writer.
 
 The benchmark above proves NetPdf's *writer* is in the same regime as PDFsharp; the headroom for Phase 2/3 layout work is enormous compared to browser-print pipelines.
+
+## Allocation audit (Phase 5, task 18)
+
+A hot-path allocation audit of the full HTML → PDF pipeline (parse + cascade + layout + paginate + paint +
+byte-write), measured with `GC.GetTotalAllocatedBytes(precise: true)` around a warmed `HtmlPdf.Convert` on
+the synthetic-font fixtures (so the numbers isolate the engine, not system-font I/O):
+
+| Fixture | Pages | Transient alloc | Per page |
+|---|---|---|---|
+| 3-page invoice (table) | 3 | 20.4 MiB | 6.8 MiB/pg |
+| 20-page report (tables) | 22 | 86.0 MiB | 3.9 MiB/pg |
+| 150-paragraph prose | 6 | 38.3 MiB | 6.4 MiB/pg |
+
+**Finding — transient allocation is linear (amortizing), not super-linear, in page count.** Per-page
+allocation is flat-to-decreasing as pages rise (the 22-page report is 3.9 MiB/pg vs the 3-page invoice's
+6.8 MiB/pg — fixed per-conversion setup amortizes over more pages). This is the intended profile: the
+`multi-page-allocation-churn` O(n²) regression (a fragmenting table re-shaped per page) was fixed by
+measuring each table once per conversion and reusing it across pages via the cross-page
+`TableMeasurementCache`. Two always-on gates in
+`tests/NetPdf.UnitTests/Performance/PerformanceGateTests.cs` guard it: a per-page-constant allocation gate
+and a 3-point linear-scaling gate.
+
+**Allocation-management techniques already in the hot paths:**
+
+- **`FrozenDictionary` / `FrozenSet`** for the read-only lookup tables (CSS property registry + keyword maps,
+  OpenType kerning/GPOS tables, hyphenation exception dictionaries) — ~22 source files.
+- **`Span<T>` / `ReadOnlySpan<T>`** slicing (no substring allocations) across the CSS tokenizer, the
+  Liang-pattern matcher (span-window lookups via `FrozenDictionary.AlternateLookup`), and the PDF writer.
+- **`ArrayPool<T>`** for the reused large transient buffer, and **`IBufferWriter<byte>`** for the PDF byte
+  stream (no intermediate `MemoryStream` copies).
+- **Per-conversion measure caches** (`TableMeasurementCache`, grid + inline-only measure caches) reused
+  across the page loop, plus **`stackalloc`** for small bounded working buffers (e.g. the hyphenator's
+  lowercase canonicalization for words ≤ 64 chars).
+
+**The transient allocation is dominated by per-page layout intermediates** (box-tree fragments, shaped-run
+buffers, display lists) that are produced, emitted to the PDF, and released each page — which is why the
+retained heap stays flat while transient allocation scales linearly. Pooling those intermediates (a
+box/fragment object pool) is the clearest remaining win but is deferred post-v1: it sits on the hottest
+layout path and would need re-validating byte-identity across the whole golden corpus. The BenchmarkDotNet
+`[MemoryDiagnoser]` flow (`tests/NetPdf.Benchmarks/`, `bash scripts/benchmark-gate.sh`) remains the
+authoritative per-benchmark allocation profile for tracking any such change.

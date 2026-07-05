@@ -8,6 +8,14 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
 
+### Added — Phase 5 (packaging): sample cleanup, perf gates, and NuGet pack validation (work-breakdown tasks 15–19)
+
+- **`samples/readme-snippets`** — dropped the dead `NotImplementedException` catch + Phase-1/2 messaging; all three README snippets (one-liner, options, detailed mode) now run against the live facade and the sample returns non-zero on any render failure.
+- **Benchmark baselines documented** (`tests/NetPdf.Benchmarks/baselines/README.md`) — the per-platform layout/naming, the +25% gate tolerance, and the `./scripts/benchmark-gate.sh capture` refresh flow. The `osx-arm64` baseline is committed; the `linux-x64` baseline is a maintainer step (captured on the CI runner).
+- **Memory-linearity gate** — added an explicit 3-point allocation-linearity test to `PerformanceGateTests` (asserts per-page allocation stays within 1.5× across ~1×/2×/4× page counts), stating the CLAUDE.md "memory grows linearly with page count" criterion directly alongside the existing retained-heap + per-page-constant gates.
+- **Allocation hot-path audit** (`docs/design/performance.md`) — the measured transient-allocation profile (invoice 6.8, report 3.9, prose 6.4 MiB/page — amortizing, not super-linear), the allocation-management techniques already in the hot paths (`FrozenDictionary`/`FrozenSet`, `Span<T>`, `ArrayPool<T>`, `IBufferWriter<byte>`, per-conversion measure caches, `stackalloc`), the guards, and the deferred box/fragment-pool win.
+- **NuGet pack validation** — all six packages (`NetPdf` + the five language packs) pack cleanly and were inspected; `NetPdfPackageShapeTests` pins the single-package strategy (every internal `NetPdf.*` DLL bundled into `lib/`, the real external deps declared, no phantom `NetPdf.*` package dependencies).
+
 ### Added — Phase 5 (packaging): documentation site + sample polish (work-breakdown tasks 10–14)
 
 - **DocFX documentation site** (`docs-site/`): a landing page, a getting-started guide, compatibility and diagnostics overviews, and API reference generated from the public projects' XML docs (`HtmlPdf`, `HtmlPdfOptions`, `HtmlPdfException`, `HyphenationRegistry`, and the `NetPdf.Languages.*` packs). Builds clean with `docfx docs-site/docfx.json --warningsAsErrors`.

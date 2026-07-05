@@ -191,11 +191,11 @@ The release-candidate gate. All of:
 | 12 | ✅ GitHub Pages deployment workflow (`.github/workflows/docs.yml`; deploy inert until the maintainer enables Pages) | 0.5 d | 10 |
 | 13 | ✅ Polish `samples/invoice-cli` (dropped the stale `NotImplementedException` catch; renders a real PDF) | 0.5 d | — |
 | 14 | ✅ Polish `samples/report-aspnet` (content-hash ETag + Cache-Control + Content-Disposition + 304 conditional GET) | 0.5 d | — |
-| 15 | Polish `samples/readme-snippets` (drop catches) | 0.5 d | — |
-| 16 | BenchmarkDotNet baseline lock (commit baseline JSON) | 1 d | 4 |
-| 17 | Memory-linearity test | 1 d | 16 |
-| 18 | Allocation hot-path audit | 1 d | 17 |
-| 19 | NuGet pack + manual NuGet Package Explorer review | 1 d | 1, 5–9 |
+| 15 | ✅ Polish `samples/readme-snippets` (dropped the dead NIE catch; all 3 README snippets run against the live facade) | 0.5 d | — |
+| 16 | 🔶 BenchmarkDotNet baseline lock — osx-arm64 baseline committed + `baselines/README.md`; **`linux-x64` baseline is a maintainer step** (capture on the CI runner) | 1 d | 4 |
+| 17 | ✅ Memory-linearity test — 3-point allocation-linearity gate added (complements the existing retained-heap + per-page gates in `PerformanceGateTests`) | 1 d | 16 |
+| 18 | ✅ Allocation hot-path audit — profile + techniques + guards documented in `docs/design/performance.md` (linear/amortizing; box-pool is a documented post-v1 win) | 1 d | 17 |
+| 19 | ✅ NuGet pack + review — all 6 packages pack + inspected; `NetPdfPackageShapeTests` pins the single-package bundle (internal DLLs in lib/, real external deps, no phantom NetPdf.* deps) | 1 d | 1, 5–9 |
 | 20 | `EnablePackageValidation` baseline at v1.0 | 0.5 d | 19 |
 | 21 | Run full corpus acceptance gate | 1 d | all-of-above |
 | 22 | Publish W3C pass-rates to README | 0.5 d | 21 |

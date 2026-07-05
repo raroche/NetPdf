@@ -19,13 +19,23 @@ a **pass-rate**.
 | Fragmentation | **100%** (12/12) | ≥ 80% | ✅ met |
 | Flexbox L1 | **100%** (19/19) | ≥ 85% | ✅ met |
 | Grid L1 | **100%** (15/15) | ≥ 70% | ✅ met |
-| Backgrounds & Borders | **100%** (6/6) | ≥ 90% | ✅ met |
-| Transforms | **100%** (6/6) | ≥ 85% | ✅ met |
+| Backgrounds & Borders † | **100%** (6/6) | ≥ 90% | ✅ met |
+| Transforms † | **100%** (6/6) | ≥ 85% | ✅ met |
 
-**All six conformance exit criteria are met (88/88 cases).** The Phase-5 task-22 PR
+**These are LAYOUT-conformance rates** — the harness drives the internal layout pipeline
+and asserts `BoxFragment` geometry; it has no PDF content-stream reader, so it measures
+what layout *does*, not how the page *looks*. **† Backgrounds & Borders and Transforms
+measure the LAYOUT-OBSERVABLE SUBSET** of their module: borders inset the content box, and
+a `transform` (like a `background` or a `border-radius`) is paint-only and so must NOT
+move the layout box. They do NOT assert that a background fills, a border/`border-radius`
+renders, or a transform visually applies — that paint fidelity is a separate axis, covered
+by the visual-regression corpus (`tests/NetPdf.RenderingCorpus/`, per-page pixel diff vs
+Chrome).
+
+**All six layout-conformance targets are met (88/88 cases).** The Phase-5 task-22 PR
 added the last two categories: **Backgrounds & Borders** (border-width insets the
 content box — symmetric, asymmetric, and `border-style`+`border-width` longhand;
-`background`, `border-radius`, and `box-sizing:border-box` behave per spec) and
+`background`, `border-radius`, and `box-sizing:border-box` do not perturb the layout box) and
 **Transforms** (per CSS Transforms 1 §3 a `transform` is paint-only — a translated /
 scaled / rotated element keeps its normal-flow layout box and its siblings flow as if
 it were absent). The CSS Fragmentation control PR took

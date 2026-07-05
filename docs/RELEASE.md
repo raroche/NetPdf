@@ -52,9 +52,13 @@ runbook is the human sequence around it.
 5. **Merge** the PR to `main`.
 6. **Tag.** `git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z`. The tag version
    MUST equal the packed version — `release.yml` fails the publish if they disagree.
-7. **Approve the publish.** The `release` workflow builds + tests + packs the six
-   packages and waits on the `nuget-release` environment approval. Review the run's
-   packed-artifact list, then approve. It pushes with `--skip-duplicate` (idempotent).
+7. **Approve the publish.** The `release` workflow runs `validate` (build + test + pack
+   the six packages + verify the exact package/symbol set at the tag version + upload
+   artifacts) with NO environment, then holds the `publish` job on the `nuget-release`
+   environment's required-reviewer gate. Review the `validate` run's verified artifact
+   list, then approve — `publish` downloads those exact artifacts and pushes both the
+   `.nupkg` and `.snupkg` with `--skip-duplicate` (idempotent). Approval therefore
+   happens *after* validation, never before.
 8. **Verify on nuget.org.** Confirm all six packages (`NetPdf`, `NetPdf.Languages.European`,
    `NetPdf.Languages.Cjk`, `NetPdf.Languages.Indic`, `NetPdf.Languages.Arabic`,
    `NetPdf.Languages.All`) are listed at `X.Y.Z`. Spot-check one in NuGet Package Explorer:

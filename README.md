@@ -11,7 +11,7 @@ NetPdf is a true paged-media renderer written from scratch in managed code. It d
 
 Both are loaded as in-process libraries via the official `*.NativeAssets.{Linux,macOS,Win32}` packages — no `Process.Start`, no executable spawning, no IPC. AOT publish + execution is verified on every commit via `scripts/aot-parity.sh`, which asserts the published native binary produces byte-identical PDF output to the JIT path.
 
-> **Status:** Phase 1 ✅ + Phase 2 ✅ + Phase 3 ✅ — **`0.7.0-beta` staged for tagging** (the first user-useful release). Phase 1 (`0.1.0-alpha`, tagged 2026-05-03) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`, staged) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wires the facade end-to-end**: `HtmlPdf.Convert(html)` now returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. All six W3C conformance exit criteria are met (CSS 2.2 / Flexbox / Grid / Fragmentation / Backgrounds & Borders / Transforms — see the [pass-rate table](#w3c-conformance-pass-rates) below); perf + memory are signed off measured-with-documented-residuals. **Still pending before `1.0.0`:** Phase 4 visual-parity hardening (gradients, shadows, filters, full SVG — `0.9.0-rc1`). The `0.7.0-beta` git tag is created by the maintainer after merge; repository is private until v1.0 launch.
+> **Status:** Phases 1–4 ✅ — **`0.9.0-rc1`** (release candidate; Phase 5 packaging in progress toward `1.0.0`). Phase 1 (`0.1.0-alpha`) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wired the facade end-to-end**: `HtmlPdf.Convert(html)` returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. **Phase 4 (`0.9.0-rc1`) is visual parity**: gradients, box/text shadows, 2D transforms, CSS filters, borders + clip-path, masks/blend modes, Link annotations + outlines, and static SVG. All six W3C conformance exit criteria are met (CSS 2.2 / Flexbox / Grid / Fragmentation / Backgrounds & Borders / Transforms — see the [pass-rate table](#w3c-conformance-pass-rates) below); perf + memory are signed off measured-with-documented-residuals. **Phase 5 (packaging) is now closing out toward `1.0.0`**: cross-platform CI, language packs, docs site, package validation, corpus acceptance, and the NuGet publish pipeline. Git tags are created by the maintainer; the repository is private until the v1.0 launch.
 
 ## Why another HTML-to-PDF library?
 
@@ -125,16 +125,25 @@ suite, not vendored web-platform-tests (which fits the deterministic + AOT ethos
 numbers below are measured by the `ConformanceGates` tests and gated per-case in CI —
 a regression or a silently-closed gap turns the build red.
 
+**These are LAYOUT-conformance rates** — the harness asserts spec-correct box geometry
+(the internal layout pipeline has no PDF content-stream reader). Paint fidelity — that
+backgrounds actually fill, borders and `border-radius` render, transforms visually apply,
+gradients/shadows/filters/SVG look right — is a *separate* axis covered by the
+visual-regression corpus (`tests/NetPdf.RenderingCorpus/`, per-page pixel diff vs Chrome).
+The two rows marked † measure the layout-observable subset of their module (e.g. borders
+inset the content box; a `transform` must **not** move the layout box) rather than the
+module's full visual behavior.
+
 | Category | Spec | Pass-rate | Target |
 |---|---|---|---|
 | CSS 2.2 layout | CSS 2.1/2.2 §8–10 (block, box model, margins, floats, sizing) | **100%** (30/30) | ≥ 90% |
 | Fragmentation | CSS Fragmentation L3 (breaks, widows/orphans) | **100%** (12/12) | ≥ 80% |
 | Flexbox | CSS Flexbox L1 | **100%** (19/19) | ≥ 85% |
 | Grid | CSS Grid L1 | **100%** (15/15) | ≥ 70% |
-| Backgrounds & Borders | CSS Backgrounds & Borders L3 (border insets, box-sizing, radius, background) | **100%** (6/6) | ≥ 90% |
-| Transforms | CSS Transforms L1 (paint-only; layout box unaffected) | **100%** (6/6) | ≥ 85% |
+| Backgrounds & Borders † | CSS Backgrounds & Borders L3 — layout-observable subset (border insets, box-sizing; background/radius are paint-only ⇒ must not affect layout) | **100%** (6/6) | ≥ 90% |
+| Transforms † | CSS Transforms L1 — layout-observable subset (paint-only; layout box unaffected) | **100%** (6/6) | ≥ 85% |
 
-**All six exit criteria are met — 88/88 curated cases pass** (measured 2026-07-05). See
+**All six layout-conformance targets are met — 88/88 curated cases pass** (measured 2026-07-05). See
 [`tests/NetPdf.W3cConformance/README.md`](tests/NetPdf.W3cConformance/README.md) for the
 per-case breakdown, the per-case regression gate, and why the suite is curated rather
 than vendored. Paint-fidelity beyond layout geometry (gradients, shadows, filters, SVG)

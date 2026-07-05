@@ -47,13 +47,42 @@ public sealed class CorpusAcceptanceGate
     [MemberData(nameof(CorpusDocuments))]
     public void Corpus_document_renders_to_a_valid_pdf(string relativePath)
     {
-        var html = File.ReadAllText(Path.Combine(LocateCorpusRoot(), relativePath));
+        var fullPath = Path.Combine(LocateCorpusRoot(), relativePath);
+        var html = File.ReadAllText(fullPath);
 
-        var result = HtmlPdf.ConvertDetailed(html);
+        // Root relative URLs (img / CSS / font `src`) at the document's own directory, exactly as a real
+        // consumer would. Without a BaseUri a corpus file carrying a relative asset renders DEGRADED (the
+        // asset fails to resolve — see `A_relative_asset_is_unresolvable_without_BaseUri` below) yet still
+        // produces a "structurally valid" PDF, so the gate would silently miss that regression. The
+        // directory needs a trailing separator so relative resolution keeps it (RFC 3986 §5.3).
+        var baseUri = new Uri(Path.GetDirectoryName(fullPath)! + Path.DirectorySeparatorChar);
+        var result = HtmlPdf.ConvertDetailed(html, new HtmlPdfOptions { BaseUri = baseUri });
 
         Assert.True(result.PageCount >= 1,
             $"{relativePath}: rendered to {result.PageCount} pages — a corpus document must produce at least one page.");
         AssertStructurallyValidPdf(result.Pdf, relativePath);
+    }
+
+    [Fact]
+    public void A_relative_asset_is_unresolvable_without_BaseUri()
+    {
+        // Proves the BaseUri wiring above is load-bearing (review [P2]). A relative image reference is
+        // UNRESOLVABLE with no BaseUri — the engine surfaces RES-LOAD-FAILED-001 "…no HtmlPdfOptions.BaseUri
+        // to resolve it against…" (content is never dropped silently) — and that specific failure disappears
+        // once a BaseUri is supplied. If a future edit dropped BaseUri from the gate, this documents the
+        // degraded-render consequence the gate would otherwise pass over.
+        const string html =
+            "<!DOCTYPE html><html><body><img src=\"logo-relative.png\" width=\"10\" height=\"10\"></body></html>";
+
+        var withoutBase = HtmlPdf.ConvertDetailed(html);
+        Assert.Contains(withoutBase.Warnings,
+            d => d.Message.Contains("HtmlPdfOptions.BaseUri", StringComparison.Ordinal));
+
+        // With a BaseUri the relative URL RESOLVES (to a path that doesn't exist → a different, resolution-
+        // stage failure), so the "no BaseUri" diagnostic is gone — proving BaseUri changed resolution.
+        var withBase = HtmlPdf.ConvertDetailed(html, new HtmlPdfOptions { BaseUri = new Uri(Path.GetTempPath()) });
+        Assert.DoesNotContain(withBase.Warnings,
+            d => d.Message.Contains("no HtmlPdfOptions.BaseUri", StringComparison.Ordinal));
     }
 
     [Fact]

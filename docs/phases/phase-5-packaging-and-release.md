@@ -295,7 +295,7 @@ Phase 5 (and v1.0) is complete when:
 - **Pinned Chrome version drift.** When you upgrade the Docker image, the pinned Chrome version may change subtly. Lock to a specific tag, not `latest`.
 - **Reference PNG noise from font fallback.** A missing pinned font causes Chrome to fall back to a system font, generating noisy diffs. Verify the pinned-fonts pack covers every glyph used in the corpus.
 - **Module-initializer ordering.** Language packs use `[ModuleInitializer]` to register patterns. .NET runs initializers in unspecified order across assemblies; design the registry to be order-independent (idempotent registration).
-- **`EnablePackageValidation` on first release.** There's no baseline to validate against on v1.0. Enable validation *after* v1.0 ships (in v1.0.1 onwards, baseline = v1.0.0).
+- **`EnablePackageValidation` on first release.** `EnablePackageValidation` is enabled **now** (task 20, `Directory.Build.props`) — the baseline-free validators (compatible-framework + compatible-runtime) run at every `dotnet pack`. What is deferred is only the BREAKING-CHANGE baseline: `PackageValidationBaselineVersion` cannot be set on v1.0 (there's no prior package to diff against), so it starts at v1.0.1 with `baseline = 1.0.0`.
 - **Symbol package size bloat.** `EmbedAllSources=true` (different from `EmbedUntrackedSources`) embeds all sources, potentially blowing up symbol-package size. Stick with `EmbedUntrackedSources=true` (just the tracked ones).
 - **CHANGELOG format drift.** Stick to Keep a Changelog format. Auto-generated GitHub release notes parse it.
 - **NuGet API key in CI logs.** Use GitHub Actions secret + masked-output. Never log the raw key.

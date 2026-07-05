@@ -7,18 +7,21 @@ using Xunit.Abstractions;
 
 namespace NetPdf.W3cConformance;
 
-/// <summary>Per Phase 3 PR 1 — curated W3C conformance gates (exit criteria 3–6).
-/// Each category runs its case set and gates on a PER-CASE BASELINE, not the
-/// aggregate pass-rate: every case with no <c>KnownGap</c> marker MUST pass (its
-/// regression turns the gate red), and every <c>KnownGap</c> case MUST still fail
-/// (if a gap closes, the gate goes red so the marker + published rate get
-/// updated). A loose pass-rate floor could let a passing case break while a
-/// known-failing case starts passing — aggregate unchanged, CI green — which the
-/// PR 1 review [P1] flagged; the per-case baseline closes that hole.
+/// <summary>Curated W3C conformance gates. The original four categories are the
+/// Phase-3 exit criteria 3–6; Phase-5 task 22 added Backgrounds &amp; Borders and
+/// Transforms, so there are now SIX categories. Each runs its case set and gates
+/// on a PER-CASE BASELINE, not the aggregate pass-rate: every case with no
+/// <c>KnownGap</c> marker MUST pass (its regression turns the gate red), and every
+/// <c>KnownGap</c> case MUST still fail (if a gap closes, the gate goes red so the
+/// marker + published rate get updated). A loose pass-rate floor could let a
+/// passing case break while a known-failing case starts passing — aggregate
+/// unchanged, CI green — which the PR 1 review [P1] flagged; the per-case baseline
+/// closes that hole.
 ///
 /// <para>The pass-rate is still computed and written to the test output as the
 /// PUBLISHED MEASUREMENT next to its roadmap target (CSS 2.2 ≥90%, Fragmentation
-/// ≥80%, Flexbox ≥85%, Grid ≥70%) — see <c>README.md</c> — but it is not the
+/// ≥80%, Flexbox ≥85%, Grid ≥70%, Backgrounds &amp; Borders ≥90%, Transforms ≥85%)
+/// — see <c>README.md</c> and the README pass-rate table — but it is not the
 /// gate.</para></summary>
 public sealed class ConformanceGates
 {
@@ -32,6 +35,8 @@ public sealed class ConformanceGates
     private const double FragmentationTarget = 0.80;
     private const double FlexboxTarget = 0.85;
     private const double GridTarget = 0.70;
+    private const double BackgroundsBordersTarget = 0.90;
+    private const double TransformsTarget = 0.85;
 
     [Fact]
     public void Css22_layout_conformance_baseline()
@@ -48,6 +53,14 @@ public sealed class ConformanceGates
     [Fact]
     public void Grid_conformance_baseline()
         => AssertBaseline("Grid", GridCases.All, GridTarget);
+
+    [Fact]
+    public void BackgroundsBorders_conformance_baseline()
+        => AssertBaseline("Backgrounds & Borders", BackgroundsBordersCases.All, BackgroundsBordersTarget);
+
+    [Fact]
+    public void Transforms_conformance_baseline()
+        => AssertBaseline("Transforms", TransformsCases.All, TransformsTarget);
 
     private void AssertBaseline(
         string category, IReadOnlyList<ConformanceCase> cases, double target)

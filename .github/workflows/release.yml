@@ -1,0 +1,149 @@
+# Phase-5 task 24 — NuGet publish. Fires when the maintainer pushes a `v*` tag (e.g. `v1.0.0`) after the
+# release PR merges. Two jobs, on purpose:
+#
+#   * `validate` (NO environment) — checks out the tag, builds, tests, packs the six shipping packages
+#     (NetPdf + the five NetPdf.Languages.* packs; the internal NetPdf.* libs are IsPackable=false and
+#     bundled into the facade), verifies the EXACT expected package + symbol set at the tag-derived
+#     version, and uploads the artifacts.
+#   * `publish` (`needs: validate`, `environment: nuget-release`) — downloads the exact artifacts and
+#     pushes them to NuGet.org.
+#
+# This ordering matters: GitHub applies the environment's required-reviewer gate to the `publish` job, so
+# the reviewer approves AFTER validation has run and the packed-artifact list is visible in the run — which
+# is what docs/RELEASE.md tells the maintainer to review before approving. A non-environment job cannot
+# publish (no secret), and the environment job does nothing but push already-validated bytes.
+#
+# SAFETY:
+#   * The version-parity step fails `validate` if the git tag (`vX.Y.Z`) disagrees with the version MSBuild
+#     actually packed, so a mistagged release can never reach `publish`.
+#   * `--skip-duplicate` makes a re-run idempotent (a package already on nuget.org is skipped, not an error).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to pack + publish (e.g. v1.0.0). Must match Directory.Build.props version."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: build + test + pack + verify (no publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      # Check out the exact ref being released. On a tag push `github.ref` is the tag; on a manual
+      # workflow_dispatch we check out the requested `tag` input (else the run would build the default
+      # branch and could pack bytes that don't match the tag).
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::Release tag '$TAG' must start with 'v' (e.g. v1.0.0)."; exit 1;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Release, 0 warnings)
+        run: dotnet build NetPdf.slnx -c Release --nologo
+
+      - name: Test
+        run: dotnet test NetPdf.slnx -c Release --no-build --nologo
+
+      # Pack the whole solution; only the 6 IsPackable=true projects emit a package (EnablePackageValidation
+      # runs here). Symbols (.snupkg) are produced alongside via IncludeSymbols in Directory.Build.props.
+      - name: Pack (6 packages + symbols)
+        run: dotnet pack NetPdf.slnx -c Release --no-build --nologo -o artifacts
+
+      - name: Verify the exact package + symbol set at the tag version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.tag.outputs.version }}"
+          # The complete shipping set — the facade + the five language packs. Every ID must be present as
+          # BOTH a .nupkg and a .snupkg at exactly this version, and nothing extra may be packed.
+          IDS=(NetPdf NetPdf.Languages.European NetPdf.Languages.Cjk NetPdf.Languages.Indic NetPdf.Languages.Arabic NetPdf.Languages.All)
+          fail=0
+          for id in "${IDS[@]}"; do
+            for ext in nupkg snupkg; do
+              f="artifacts/${id}.${VERSION}.${ext}"
+              if [ ! -f "$f" ]; then echo "::error::Missing expected artifact ${f} for tag ${{ steps.tag.outputs.tag }}."; fail=1; fi
+            done
+          done
+          nupkgs=$(ls -1 artifacts/*.nupkg 2>/dev/null | wc -l | tr -d ' ')
+          snupkgs=$(ls -1 artifacts/*.snupkg 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$nupkgs" -ne "${#IDS[@]}" ] || [ "$snupkgs" -ne "${#IDS[@]}" ]; then
+            echo "::error::Expected ${#IDS[@]} .nupkg + ${#IDS[@]} .snupkg; packed ${nupkgs} + ${snupkgs}."
+            ls -1 artifacts/ || true
+            fail=1
+          fi
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Verified: all ${#IDS[@]} packages + symbols at version ${VERSION}."
+          ls -1 artifacts/
+
+      - name: Upload packages for the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish to NuGet.org
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The required-reviewer gate lives here — approval happens AFTER `validate` has packed + verified, so the
+    # reviewer sees the artifact list. Bind the NUGET_API_KEY secret to this environment
+    # (Settings → Environments → nuget-release) and add a required reviewer there.
+    environment: nuget-release
+    steps:
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Download the validated packages
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts
+
+      - name: Push to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          # `*.nupkg` does NOT match `*.snupkg`, so push both globs — the symbol packages carry the
+          # SourceLink debug info the runbook promises consumers. `--skip-duplicate` keeps a re-run idempotent.
+          dotnet nuget push "artifacts/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          dotnet nuget push "artifacts/*.snupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

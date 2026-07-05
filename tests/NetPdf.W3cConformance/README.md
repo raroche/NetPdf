@@ -11,16 +11,34 @@ NetPdf engine. This replaces the prior smoke stub (`Solution_Compiles`) with a
 border-box geometry the layout must produce, and a per-category runner computes
 a **pass-rate**.
 
-## Pass-rates (measured 2026-06-21)
+## Pass-rates (measured 2026-07-05)
 
 | Category | Pass-rate | Roadmap target | Status |
 |---|---|---|---|
-| CSS 2.2 layout | **96.7%** (29/30) | ≥ 90% | ✅ met |
+| CSS 2.2 layout | **100%** (30/30) | ≥ 90% | ✅ met |
 | Fragmentation | **100%** (12/12) | ≥ 80% | ✅ met |
 | Flexbox L1 | **100%** (19/19) | ≥ 85% | ✅ met |
 | Grid L1 | **100%** (15/15) | ≥ 70% | ✅ met |
+| Backgrounds & Borders † | **100%** (6/6) | ≥ 90% | ✅ met |
+| Transforms † | **100%** (6/6) | ≥ 85% | ✅ met |
 
-**All four conformance exit criteria are met.** The CSS Fragmentation control PR took
+**These are LAYOUT-conformance rates** — the harness drives the internal layout pipeline
+and asserts `BoxFragment` geometry; it has no PDF content-stream reader, so it measures
+what layout *does*, not how the page *looks*. **† Backgrounds & Borders and Transforms
+measure the LAYOUT-OBSERVABLE SUBSET** of their module: borders inset the content box, and
+a `transform` (like a `background` or a `border-radius`) is paint-only and so must NOT
+move the layout box. They do NOT assert that a background fills, a border/`border-radius`
+renders, or a transform visually applies — that paint fidelity is a separate axis, covered
+by the visual-regression corpus (`tests/NetPdf.RenderingCorpus/`, per-page pixel diff vs
+Chrome).
+
+**All six layout-conformance targets are met (88/88 cases).** The Phase-5 task-22 PR
+added the last two categories: **Backgrounds & Borders** (border-width insets the
+content box — symmetric, asymmetric, and `border-style`+`border-width` longhand;
+`background`, `border-radius`, and `box-sizing:border-box` do not perturb the layout box) and
+**Transforms** (per CSS Transforms 1 §3 a `transform` is paint-only — a translated /
+scaled / rotated element keeps its normal-flow layout box and its siblings flow as if
+it were absent). The CSS Fragmentation control PR took
 Fragmentation to **100%** (`break-before` / `break-after` + the legacy `page-break-*`
 aliases now propagate forced-break metadata to the resolver — a forced break splits
 even a *fitting* ancestor in the recursive emit, so `break-before:page` on a grandchild
@@ -81,7 +99,8 @@ metrics) so they're deterministic without a font dependency.
 ## Known gaps (the failing cases — each is a real, documented approximation)
 
 **None — every curated case now passes** (CSS 2.2 100% · Fragmentation 100% ·
-Flexbox 100% · Grid 100%). There are currently no `KnownGap` cases. Documented
+Flexbox 100% · Grid 100% · Backgrounds & Borders 100% · Transforms 100%). There are
+currently no `KnownGap` cases. Documented
 approximations that aren't represented as a failing geometry case (e.g. cross-page
 box-decoration repetition, single-paragraph line splitting) live in
 [docs/deferrals.md](../../docs/deferrals.md) — add a `KnownGap` case here when one
@@ -112,8 +131,8 @@ These are tracked in [docs/deferrals.md](../../docs/deferrals.md) /
   per-`(id, page)` fragment count) + the pass/fail runner + per-category
   `Evaluate` (regressions, closed gaps, published rate, per-case report).
 - `Css22Cases.cs` / `FragmentationCases.cs` / `FlexboxCases.cs` / `GridCases.cs`
-  — the curated case sets.
-- `ConformanceGates.cs` — the four `[Fact]` per-case-baseline gates.
+  / `BackgroundsBordersCases.cs` / `TransformsCases.cs` — the curated case sets.
+- `ConformanceGates.cs` — the six `[Fact]` per-case-baseline gates.
 
 ## Adding a case
 

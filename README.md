@@ -13,6 +13,55 @@ Both are loaded as in-process libraries via the official `*.NativeAssets.{Linux,
 
 > **Status:** Phases 1–4 ✅ — **`0.9.0-rc1`** (release candidate; Phase 5 packaging in progress toward `1.0.0`). Phase 1 (`0.1.0-alpha`) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wired the facade end-to-end**: `HtmlPdf.Convert(html)` returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. **Phase 4 (`0.9.0-rc1`) is visual parity**: gradients, box/text shadows, 2D transforms, CSS filters, borders + clip-path, masks/blend modes, Link annotations + outlines, and static SVG. All six W3C conformance exit criteria are met (CSS 2.2 / Flexbox / Grid / Fragmentation / Backgrounds & Borders / Transforms — see the [pass-rate table](#w3c-conformance-pass-rates) below); perf + memory are signed off measured-with-documented-residuals. **Phase 5 (packaging) is now closing out toward `1.0.0`**: cross-platform CI, language packs, docs site, package validation, corpus acceptance, and the NuGet publish pipeline. Git tags are created by the maintainer; the repository is private until the v1.0 launch.
 
+## Installation
+
+NetPdf targets **.NET 10** and ships as a **single NuGet package** — that one package bundles the whole engine, so there is nothing else to wire up.
+
+The current build is the **`0.9.0-rc1`** release candidate. Because it carries a pre-release (`-rc`) suffix, install it with `--prerelease` (or pin the exact version):
+
+```bash
+dotnet add package NetPdf --prerelease
+```
+
+or in your `.csproj`:
+
+```xml
+<PackageReference Include="NetPdf" Version="0.9.0-rc1" />
+```
+
+Once **`1.0.0`** ships you can drop `--prerelease` and take the stable line (`dotnet add package NetPdf`).
+
+**Requirements:** the .NET 10 SDK/runtime. NetPdf runs on **Linux, macOS, and Windows** (x64 and arm64); the permissive-licensed HarfBuzz + Skia native assets are restored automatically as part of the package — no extra install, no browser, no system dependency. It is **Native-AOT compatible** and trimmable.
+
+Optional add-on packages provide non-English hyphenation dictionaries — see [Language packs](#language-packs).
+
+> Until the `1.0.0` launch the package is published from a private repo; on the public launch it appears on nuget.org.
+
+## Quick start
+
+```csharp
+using NetPdf;
+
+// HTML + CSS in, PDF bytes out. No browser, no temp files, no subprocess.
+byte[] pdf = HtmlPdf.Convert("""
+    <style>
+      body { font-family: sans-serif; }
+      h1   { color: #14396b; }
+      table{ width: 100%; border-collapse: collapse; }
+      td   { border-bottom: 1px solid #ccc; padding: 6px; }
+    </style>
+    <h1>Invoice #1234</h1>
+    <table>
+      <tr><td>Widget</td><td>$19.00</td></tr>
+      <tr><td>Gadget</td><td>$42.00</td></tr>
+    </table>
+    """);
+
+File.WriteAllBytes("invoice.pdf", pdf);
+```
+
+That's the whole "hello world" — see [Using the API](#using-the-api-frozen-for-v1) for options, async streaming, diagnostics, and paged-media features.
+
 ## Why another HTML-to-PDF library?
 
 Every existing free option for .NET fails one or more critical criteria:
@@ -33,40 +82,186 @@ NetPdf fills the gap: **truly free, truly forever, truly open source.**
 
 Closer to **Prince**, **WeasyPrint**, **OpenHTMLtoPDF** than to Playwright/Puppeteer/wkhtmltopdf. Layout-engine first, paint-engine second, PDF byte-writer third — all built from scratch using public W3C / Unicode / ISO specifications under a clean-room policy.
 
-## Public API surface (frozen for v1)
+## Using the API (frozen for v1)
 
-> ✅ **At `0.7.0-beta` the facade is wired end-to-end** — every overload below returns real PDF bytes for static documents (the Phase 1–3 feature set: layout + pagination + paged media + text + images + basic paint). Phase 4 visual-parity hardening (gradients, shadows, filters, full SVG) is the remaining work before `1.0.0`; unsupported features emit structured diagnostics rather than throwing. The shape below is the frozen v1 contract.
+The public surface is the single static `HtmlPdf` facade plus a small set of option/result types (namespace `NetPdf`). Every overload below returns real PDF bytes for the full feature set — layout, pagination, paged media, text shaping, images, and visual parity (gradients, shadows, transforms, filters, SVG). Unsupported features emit a stable structured diagnostic rather than throwing or silently dropping content. This shape is the **frozen v1 contract**.
 
 ```csharp
 using NetPdf;
 
-// One-liner — returns PDF bytes at 0.7.0-beta
-var pdf = HtmlPdf.Convert("<h1>Invoice #1234</h1><p>Hello world.</p>");
+string html = "<h1>Invoice #1234</h1><p>Hello world.</p>";
+
+// 1) One-liner — HTML string in, PDF bytes out.
+byte[] pdf = HtmlPdf.Convert(html);
 File.WriteAllBytes("out.pdf", pdf);
 
-// With options
-var pdf = HtmlPdf.Convert(html, new HtmlPdfOptions
+// 2) With options — page size, backgrounds, and a base URI for relative asset/URL resolution.
+byte[] letter = HtmlPdf.Convert(html, new HtmlPdfOptions
 {
-    BaseUri = new Uri("file:///app/templates/"),
-    PageSize = PageSize.Letter,
-    PrintBackgrounds = true,
+    BaseUri = new Uri("file:///app/templates/"),  // resolves <img src="logo.png">, url(...), @font-face
+    PageSize = PageSize.Letter,                    // or A4; or let CSS @page decide (PreferCssPageSize)
+    PrintBackgrounds = true,                        // paint CSS background colors/images (on by default)
 });
 
-// Async streaming
+// 3) Async streaming — write bytes to a stream as they're produced.
+// ConvertAsync also takes an optional CancellationToken as a final argument.
 await using var fs = File.Create("report.pdf");
 await HtmlPdf.ConvertAsync(html, fs, new HtmlPdfOptions { PreferCssPageSize = true });
 
-// Diagnostic mode
-var result = HtmlPdf.ConvertDetailed(html);
-foreach (var d in result.Warnings) Console.WriteLine($"{d.Code}: {d.Message}");
+// 4) Diagnostic mode — bytes + page count + every structured warning (unsupported feature, skipped asset, ...).
+PdfRenderResult result = HtmlPdf.ConvertDetailed(html);
+Console.WriteLine($"{result.PageCount} pages, {result.Warnings.Count} warnings");
+foreach (Diagnostic d in result.Warnings)
+    Console.WriteLine($"  [{d.Code}] {d.Severity}: {d.Message}");   // codes are stable — see docs/diagnostics-codes.md
 
-// Version string:
-Console.WriteLine(HtmlPdf.Version); // -> "0.7.0-beta+<commit-sha>"
+// 5) Hard failures surface as a typed exception carrying a stable code (bytes are never half-written).
+try { pdf = HtmlPdf.Convert(html); }
+catch (HtmlPdfException ex) { Console.Error.WriteLine($"render failed [{ex.Code}]: {ex.Message}"); }
+
+// Version string, e.g. "0.9.0-rc1+<commit-sha>"
+Console.WriteLine(HtmlPdf.Version);
+```
+
+**Paged media** works through standard CSS — no proprietary API. Use `@page` for size/margins, the 16 margin boxes for running headers/footers, `counter(page)` / `counter(pages)` for page numbers, and `break-before` / `break-inside` / `widows` / `orphans` for pagination control:
+
+```html
+<style>
+  @page { size: A4; margin: 20mm; @bottom-center { content: "Page " counter(page) " of " counter(pages); } }
+  table { break-inside: auto; }  thead { display: table-header-group; }  /* repeat headers across pages */
+  h2    { break-after: avoid; }                                          /* keep a heading with its section */
+</style>
 ```
 
 See [`docs/compatibility-matrix.md`](docs/compatibility-matrix.md) for the supported / not-supported feature list.
 See [`docs/diagnostics-codes.md`](docs/diagnostics-codes.md) for the stable diagnostic code registry.
 See [`docs/phases/`](docs/phases/) for per-phase execution guides — what to build, in what order, with exit criteria.
+
+## Recipes: pagination, repeating headers & page numbers
+
+NetPdf is a true **paged-media** engine, so multi-page documents, repeating headers, and page numbers are all **plain CSS** — there is no special API to call. You render the HTML the same way; the layout engine splits it across pages for you. The recipes below are the ones you'll reach for most on invoices, statements, and reports.
+
+### Long documents split across pages automatically
+
+Just render — content that doesn't fit flows onto as many pages as it needs. No option, no flag:
+
+```csharp
+byte[] pdf = HtmlPdf.Convert(longInvoiceHtml);   // a 120-row table → ~6 pages, automatically
+```
+
+### Repeat a table's column headers on every page
+
+Put the headings in `<thead>` — they repeat at the top of each page the table spans. `<tfoot>` repeats a totals row at the bottom:
+
+```css
+thead { display: table-header-group; }   /* column headers repeat on every page */
+tfoot { display: table-footer-group; }   /* optional running totals repeat on every page */
+```
+
+### Repeat a document banner (logo / title) on every page
+
+Two ways — pick whichever fits:
+
+**Simplest — `position: fixed`** (the element is painted on every page):
+
+```css
+@page  { size: A4; margin: 28mm 20mm; }         /* leave headroom for the banner */
+header { position: fixed; top: -20mm; left: 0; right: 0;
+         border-bottom: 2px solid #14396b; font-weight: bold; }
+```
+```html
+<header>ACME Corp — Invoice</header>
+<!-- body content -->
+```
+
+**CSS Paged Media — `@page` margin boxes** (ideal for text headers/footers + page numbers):
+
+```css
+@page {
+  size: A4; margin: 20mm;
+  @top-center   { content: "ACME — Invoice"; }
+  @bottom-right { content: "Page " counter(page) " of " counter(pages); }
+}
+```
+
+For a **rich** running header (e.g. a logo image), mark it as a running element and place it in a margin box: `header { position: running(hdr); }` + `@top-center { content: element(hdr); }`. All 16 `@page` margin boxes plus `counter(page)` / `counter(pages)` / `string()` / `element()` are supported.
+
+### Put each invoice on its own page (one PDF)
+
+Force a page break before each invoice section:
+
+```css
+.invoice              { break-before: page; }
+.invoice:first-child  { break-before: auto; }   /* no blank leading page */
+```
+```html
+<section class="invoice">…invoice 1…</section>
+<section class="invoice">…invoice 2…</section>   <!-- starts on page 2 -->
+```
+
+### One PDF **file** per invoice
+
+NetPdf renders one HTML → one PDF, so split the source and call the API per invoice:
+
+```csharp
+foreach (var (name, html) in invoices)
+    File.WriteAllBytes($"{name}.pdf", HtmlPdf.Convert(html));
+```
+
+### Keep things from breaking awkwardly
+
+```css
+h2 { break-after: avoid; }    /* keep a heading with the content that follows it */
+tr { break-inside: avoid; }   /* never split a line-item row across a page boundary */
+figure, .keep-together { break-inside: avoid; }
+```
+
+### A complete invoice stylesheet
+
+```css
+@page {
+  size: A4; margin: 20mm;
+  @top-left     { content: "Invoice #1234"; }
+  @bottom-right { content: "Page " counter(page) " / " counter(pages); }
+}
+table { width: 100%; border-collapse: collapse; }
+thead { display: table-header-group; }   /* headers repeat every page */
+tfoot { display: table-footer-group; }   /* totals repeat every page */
+tr    { break-inside: avoid; }           /* rows stay whole */
+h2    { break-after: avoid; }            /* section headings stay with their content */
+```
+
+> Two ready-to-run references live in the repo: [`Corpus/Reports/01-quarterly-report.html`](tests/NetPdf.RealDocuments/Corpus/Reports/01-quarterly-report.html) (repeating `thead` + `@page` footer) and [`Corpus/Invoices/04-anvil-running-elements.html`](tests/NetPdf.RealDocuments/Corpus/Invoices/04-anvil-running-elements.html) (running elements + page counters).
+
+## Language packs
+
+The core `NetPdf` package bundles **English** hyphenation, registered under the primary subtag `en` (American-English Liang patterns) — so `en`, `en-GB`, `en-US`, etc. all resolve to it. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).
+
+```bash
+dotnet add package NetPdf.Languages.European --prerelease   # de, fr Liang hyphenation
+```
+
+```csharp
+using NetPdf.Languages.European;
+
+EuropeanHyphenation.Register();   // once, at startup — wires the European hyphenators
+
+// A German paragraph now hyphenates when CSS opts in:
+var pdf = HtmlPdf.Convert(
+    "<div lang='de' style='width:120px; text-align:justify; hyphens:auto'>" +
+    "Silbentrennung im Donaudampfschifffahrtsgesellschaftskapitän</div>");
+```
+
+The table below is the **honest current coverage** — what each pack registers *today*, not an aspirational language list. The pack surface (namespaces + `Register()` entry points) is stable; additional languages fill in behind it as the pattern data is vendored.
+
+| Package | Languages registered today | What it does |
+|---|---|---|
+| `NetPdf.Languages.European` | `de`, `fr` | Real Liang hyphenation patterns. (More European languages are planned behind the same `Register()`.) |
+| `NetPdf.Languages.Cjk` | `zh`, `ja`, `ko` | Registers **no-hyphenation** so `hyphens: auto` inserts no hyphens (correct for CJK) instead of falling back to English rules. Line breaking itself is in the core. |
+| `NetPdf.Languages.Arabic` | `ar`, `fa`, `ur` | Registers **no-hyphenation** (these scripts are RTL and do not hyphenate this way). |
+| `NetPdf.Languages.Indic` | `hi`, `bn`, `ta`, `te`, … | **Placeholder** registration — reserves the `lang` routing with an empty hyphenator so English rules are never wrongly applied. No Indic hyphenation is performed yet (pending vendored pattern data). |
+| `NetPdf.Languages.All` | all of the above | Meta-package — references every pack; `AllLanguages.Register()` wires them all. |
+
+Text **shaping** for these scripts (RTL, CJK, ligatures, kerning) and **line breaking** (UAX #14, including CJK) are always in the core package via HarfBuzz — the language packs only add per-language **hyphenation** dictionaries (or, for CJK/Arabic, the explicit *no-hyphenation* registration).
 
 ## What's actually shipped (current: `0.9.0-rc1`)
 
@@ -79,7 +274,7 @@ These columns are the honest answer to "what does NetPdf do today?" `HtmlPdf.Con
 | WOFF 1.0 (zlib) + WOFF 2.0 (Brotli + glyf/loca transform reverse) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | OpenType shaping via HarfBuzzSharp (kerning, ligatures, RTL, CJK) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | UAX #9 Bidi (100% UCD), UAX #14 Line Break (99.952% UCD), UAX #29 grapheme clusters (100% UCD) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
-| Liang hyphenation (en-US bundled; other languages ship as `NetPdf.Languages.*` packs at v1.0+) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
+| Liang hyphenation (English bundled under `en`; other languages ship as optional `NetPdf.Languages.*` packs — de/fr real patterns today, see [Language packs](#language-packs)) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | Image embedders (JPEG passthrough, PNG 4 paths inc. RGBA `/SMask`, WebP/AVIF/GIF via Skia raster) with content-hash dedup | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | HTML parsing host (AngleSharp, no scripting) + `<script>` / `javascript:` URL stripping with diagnostics | ✅ | ✅ | Phase 2 internal; public ✅ at 0.7.0-beta |
 | CSS cascade + `var()` substitution + `calc()`/`min()`/`max()`/`clamp()`/`abs()`/`sign()` (subset: absolute units fully reduce; context-relative units — `em`/`rem`/`vh`/`vw`/etc. — defer to Phase 3 typed pipeline) | ✅ | ✅ | Phase 2 internal; public ✅ at 0.7.0-beta |

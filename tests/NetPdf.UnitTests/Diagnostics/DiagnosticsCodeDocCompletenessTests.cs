@@ -45,23 +45,24 @@ public sealed class DiagnosticsCodeDocCompletenessTests
             + "(run /add-diagnostic-code, or add a row):\n  " + string.Join("\n  ", missing));
     }
 
+    /// <summary>Every internal <c>NetPdf.*</c> assembly bundled into the shipping packages. Any of them could
+    /// grow a <c>*DiagnosticCodes</c> table, so we load ALL of them by name (deterministic — not dependent on
+    /// what another test happened to load first) before scanning for code tables (review [P2]).</summary>
+    private static readonly string[] EngineAssemblyNames =
+    [
+        "NetPdf", "NetPdf.Css", "NetPdf.Layout", "NetPdf.Paginate",
+        "NetPdf.Paint", "NetPdf.Pdf", "NetPdf.Text", "NetPdf.Svg",
+    ];
+
     /// <summary>Every <c>const string</c> whose value is a diagnostic code, across every
-    /// <c>*DiagnosticCodes</c> table in the loaded <c>NetPdf.*</c> assemblies. Seeded with the three known
-    /// tables so their assemblies are loaded; also self-discovers any future table.</summary>
+    /// <c>*DiagnosticCodes</c> table in the shipping engine assemblies (all loaded up front, so a future
+    /// table in any assembly — e.g. <c>NetPdf.Svg</c> — is discovered regardless of test load order).</summary>
     private static SortedSet<string> DefinedCodes()
     {
-        // Touch one type per known table so its assembly is loaded before we scan the AppDomain.
-        _ = new[]
-        {
-            typeof(NetPdf.DiagnosticCodes),
-            typeof(NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes),
-            typeof(NetPdf.Css.Diagnostics.CssDiagnosticCodes),
-        };
-
         var codes = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()
-                     .Where(a => a.GetName().Name?.StartsWith("NetPdf", StringComparison.Ordinal) == true))
+        foreach (var name in EngineAssemblyNames)
         {
+            var assembly = Assembly.Load(name);   // fails loudly if a shipping assembly is missing
             Type[] types;
             try { types = assembly.GetTypes(); }
             catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(t => t is not null).ToArray()!; }

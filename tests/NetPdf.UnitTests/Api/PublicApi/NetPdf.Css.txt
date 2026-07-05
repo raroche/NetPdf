@@ -1,0 +1,53 @@
+class NetPdf.Css.Cascade.VarSubstitution+Budget
+    .ctor(System.Int64 bytesPerElement = 10485760)
+    field const System.Int32 DefaultBytesPerElement
+    method System.Boolean TryConsume(System.Int32 chars)
+    property System.Boolean IsExhausted { get; }
+    property System.Int64 InitialBudget { get; }
+struct NetPdf.Css.PagedMedia.AtPageRules+PageRule : System.IEquatable<NetPdf.Css.PagedMedia.AtPageRules+PageRule>
+    .ctor(NetPdf.Css.Parser.CssAtRule Rule, System.Boolean PaperSizeConditioned)
+    method System.Boolean Equals(NetPdf.Css.PagedMedia.AtPageRules+PageRule other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Css.PagedMedia.AtPageRules+PageRule left, NetPdf.Css.PagedMedia.AtPageRules+PageRule right)
+    method System.Boolean op_Inequality(NetPdf.Css.PagedMedia.AtPageRules+PageRule left, NetPdf.Css.PagedMedia.AtPageRules+PageRule right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out NetPdf.Css.Parser.CssAtRule Rule, out System.Boolean PaperSizeConditioned)
+    property NetPdf.Css.Parser.CssAtRule Rule { get;set; }
+    property System.Boolean PaperSizeConditioned { get;set; }
+struct NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext : System.IEquatable<NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext>
+    .ctor(System.Int32 PageIndex, System.Boolean IsBlank = false, System.String? AssignedPageName = null, System.Boolean StartsOnVerso = false, System.Boolean IsRtl = false)
+    method System.Boolean Equals(NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext left, NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext right)
+    method System.Boolean op_Inequality(NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext left, NetPdf.Css.PagedMedia.AtPageRules+PageSelectorContext right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Int32 PageIndex, out System.Boolean IsBlank, out System.String? AssignedPageName, out System.Boolean StartsOnVerso, out System.Boolean IsRtl)
+    property System.Boolean IsBlank { get;set; }
+    property System.Boolean IsFirstPage { get; }
+    property System.Boolean IsRightPage { get; }
+    property System.Boolean IsRtl { get;set; }
+    property System.Boolean StartsOnVerso { get;set; }
+    property System.Int32 PageIndex { get;set; }
+    property System.String? AssignedPageName { get;set; }
+struct NetPdf.Css.PagedMedia.PageProgression : System.IEquatable<NetPdf.Css.PagedMedia.PageProgression>
+    .ctor(System.Boolean StartsOnVerso = false, System.Boolean IsRtl = false)
+    method System.Boolean Equals(NetPdf.Css.PagedMedia.PageProgression other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean IsRecto(System.Int32 pageNumber)
+    method System.Boolean IsRightPage(System.Int32 pageNumber)
+    method System.Boolean op_Equality(NetPdf.Css.PagedMedia.PageProgression left, NetPdf.Css.PagedMedia.PageProgression right)
+    method System.Boolean op_Inequality(NetPdf.Css.PagedMedia.PageProgression left, NetPdf.Css.PagedMedia.PageProgression right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Boolean StartsOnVerso, out System.Boolean IsRtl)
+    property System.Boolean IsRtl { get;set; }
+    property System.Boolean StartsOnVerso { get;set; }
+struct NetPdf.Css.Selectors.SelectorBytecode+Reader
+    method NetPdf.Css.Selectors.SelectorBytecode ReadSubGroup()
+    method NetPdf.Css.Selectors.SelectorOpcode ReadOpcode()
+    method System.Byte ReadByte()
+    method System.Int32 ReadInt32()
+    method System.String ReadSymbol()
+    property System.Boolean IsEnd { get; }

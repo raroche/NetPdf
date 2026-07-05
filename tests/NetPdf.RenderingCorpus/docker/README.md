@@ -29,9 +29,11 @@ after references are committed if the native backend was never installed.
 
 Diffable invoices live in `../corpus/` and MUST be **self-contained** — no remote `http(s)` resources (a
 guard test enforces this). A remote asset is blocked by NetPdf's `SafeDefault` yet fetched by Chrome, which
-makes the diff nondeterministic; vendor such assets as inline `data:` URIs (see the vendored
-`01-classic-pure-css.html`). The upstream Anvil invoice (`04`) still carries remote images and is excluded
-until vendored.
+makes the diff nondeterministic; vendor such assets as inline `data:` URIs. Two invoices are now vendored +
+diffable: `01-classic-pure-css.html` and `04-anvil-running-elements.html` (its two upstream remote raster
+logos were replaced by inline SVG `data:` URIs). **Generate + commit references for BOTH** — the full
+per-page set for `01-classic` and `04-anvil`. Only the Tailwind-CDN invoices (`02`, `03`) stay excluded
+(they need runtime JS to emit their utility CSS).
 
 ## Step 1 — PDFium (NetPdf-side PDF → raster) — ✅ DONE (no install)
 

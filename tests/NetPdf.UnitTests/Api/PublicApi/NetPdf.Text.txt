@@ -1,0 +1,79 @@
+static class NetPdf.Hyphenation.HyphenationRegistry
+    method System.Boolean IsRegistered(System.String language)
+    method System.Boolean TryHyphenate(System.String language, System.ReadOnlySpan<System.Char> word, out System.Int32[] breaks, System.Int32 leftMin = 2, System.Int32 rightMin = 3)
+    method System.Void Register(System.String language, System.String patternBlock, System.String? exceptionBlock = null)
+    method System.Void RegisterNoHyphenation(System.String language)
+struct NetPdf.Text.Bidi.BidiBrackets+BracketEntry : System.IEquatable<NetPdf.Text.Bidi.BidiBrackets+BracketEntry>
+    .ctor(System.Int32 PairCodepoint, NetPdf.Text.Bidi.BidiBrackets+BracketKind Kind)
+    method System.Boolean Equals(NetPdf.Text.Bidi.BidiBrackets+BracketEntry other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Text.Bidi.BidiBrackets+BracketEntry left, NetPdf.Text.Bidi.BidiBrackets+BracketEntry right)
+    method System.Boolean op_Inequality(NetPdf.Text.Bidi.BidiBrackets+BracketEntry left, NetPdf.Text.Bidi.BidiBrackets+BracketEntry right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Int32 PairCodepoint, out NetPdf.Text.Bidi.BidiBrackets+BracketKind Kind)
+    property NetPdf.Text.Bidi.BidiBrackets+BracketKind Kind { get;set; }
+    property System.Int32 PairCodepoint { get;set; }
+enum NetPdf.Text.Bidi.BidiBrackets+BracketKind : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Byte value__
+    field const NetPdf.Text.Bidi.BidiBrackets+BracketKind Close
+    field const NetPdf.Text.Bidi.BidiBrackets+BracketKind Open
+struct NetPdf.Text.Bidi.DirectionalStatusStack+Entry : System.IEquatable<NetPdf.Text.Bidi.DirectionalStatusStack+Entry>
+    .ctor(System.Byte Level, NetPdf.Text.Bidi.DirectionalOverride Override, System.Boolean IsIsolate)
+    method System.Boolean Equals(NetPdf.Text.Bidi.DirectionalStatusStack+Entry other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Text.Bidi.DirectionalStatusStack+Entry left, NetPdf.Text.Bidi.DirectionalStatusStack+Entry right)
+    method System.Boolean op_Inequality(NetPdf.Text.Bidi.DirectionalStatusStack+Entry left, NetPdf.Text.Bidi.DirectionalStatusStack+Entry right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Byte Level, out NetPdf.Text.Bidi.DirectionalOverride Override, out System.Boolean IsIsolate)
+    property NetPdf.Text.Bidi.DirectionalOverride Override { get;set; }
+    property System.Boolean IsIsolate { get;set; }
+    property System.Byte Level { get;set; }
+static class NetPdf.Text.Fonts.FontSafetyValidator
+    field const System.Int32 MaxBytes
+    field const System.Int32 MaxTableCount
+    field const System.Int32 MinBytes
+    method NetPdf.Text.Fonts.FontSafetyValidator+FontFormat SniffFormat(System.ReadOnlySpan<System.Byte> bytes)
+    method NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult Validate(System.ReadOnlySpan<System.Byte> fontBytes)
+    method NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult ValidateSfntHeader(System.ReadOnlySpan<System.Byte> fontBytes, NetPdf.Text.Fonts.FontSafetyValidator+FontFormat format)
+enum NetPdf.Text.Fonts.FontSafetyValidator+FontFormat : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontFormat OpenTypeCff
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontFormat TrueType
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontFormat Unknown
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontFormat Woff
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontFormat Woff2
+enum NetPdf.Text.Fonts.FontSafetyValidator+FontSafetyVerdict : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontSafetyVerdict Safe
+    field const NetPdf.Text.Fonts.FontSafetyValidator+FontSafetyVerdict Unsafe
+struct NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult : System.IEquatable<NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult>
+    .ctor(NetPdf.Text.Fonts.FontSafetyValidator+FontSafetyVerdict Verdict, System.String? Reason, NetPdf.Text.Fonts.FontSafetyValidator+FontFormat DetectedFormat)
+    method System.Boolean Equals(NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult left, NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult right)
+    method System.Boolean op_Inequality(NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult left, NetPdf.Text.Fonts.FontSafetyValidator+ValidationResult right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out NetPdf.Text.Fonts.FontSafetyValidator+FontSafetyVerdict Verdict, out System.String? Reason, out NetPdf.Text.Fonts.FontSafetyValidator+FontFormat DetectedFormat)
+    property NetPdf.Text.Fonts.FontSafetyValidator+FontFormat DetectedFormat { get;set; }
+    property NetPdf.Text.Fonts.FontSafetyValidator+FontSafetyVerdict Verdict { get;set; }
+    property System.Boolean IsSafe { get; }
+    property System.String? Reason { get;set; }
+struct NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry : System.IEquatable<NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry>
+    .ctor(System.Byte ByteCount, System.Byte XBits, System.Byte YBits, System.Int16 DeltaX, System.Int16 DeltaY, System.SByte XSign, System.SByte YSign)
+    method System.Boolean Equals(NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry left, NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry right)
+    method System.Boolean op_Inequality(NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry left, NetPdf.Text.Fonts.Woff.WoffTwoTripletTable+Entry right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Byte ByteCount, out System.Byte XBits, out System.Byte YBits, out System.Int16 DeltaX, out System.Int16 DeltaY, out System.SByte XSign, out System.SByte YSign)
+    property System.Byte ByteCount { get;set; }
+    property System.Byte XBits { get;set; }
+    property System.Byte YBits { get;set; }
+    property System.Int16 DeltaX { get;set; }
+    property System.Int16 DeltaY { get;set; }
+    property System.SByte XSign { get;set; }
+    property System.SByte YSign { get;set; }

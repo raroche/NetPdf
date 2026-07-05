@@ -1,0 +1,13 @@
+struct NetPdf.Svg.SvgFilters+FilterRegion : System.IEquatable<NetPdf.Svg.SvgFilters+FilterRegion>
+    .ctor(SkiaSharp.SKRect Rect, System.Boolean Empty)
+    field readonly NetPdf.Svg.SvgFilters+FilterRegion EmptyRegion
+    method NetPdf.Svg.SvgFilters+FilterRegion Of(SkiaSharp.SKRect rect)
+    method System.Boolean Equals(NetPdf.Svg.SvgFilters+FilterRegion other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Svg.SvgFilters+FilterRegion left, NetPdf.Svg.SvgFilters+FilterRegion right)
+    method System.Boolean op_Inequality(NetPdf.Svg.SvgFilters+FilterRegion left, NetPdf.Svg.SvgFilters+FilterRegion right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out SkiaSharp.SKRect Rect, out System.Boolean Empty)
+    property SkiaSharp.SKRect Rect { get;set; }
+    property System.Boolean Empty { get;set; }

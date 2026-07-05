@@ -4,8 +4,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using AngleSharp.Dom;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
+using NetPdf.Hyphenation;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Paginate;
@@ -7445,13 +7447,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return null;
         }
 
-        // Sub-cycle 1 — hard-coded script + language (UAX #24 +
-        // BCP 47 plumbing deferred).
+        // Sub-cycle 1 — hard-coded shaping script + shaping language (UAX #24 + BCP 47
+        // SHAPING plumbing still deferred). HYPHENATION, however, now routes by the block's
+        // effective `lang` — see the hyphenator argument below.
         // _shaperResolver is guaranteed non-null by the caller's
         // IsInlineOnlyBlockContainer gate + the diagnostic branch.
         // Per Finding #6 — wrap with try/catch so per-source-TextRun
         // mismatches that still throw (KeepAll) degrade to a Warning
         // diagnostic instead of bringing the block layouter down.
+
+        // Hyphenation language routing — resolve the hyphenator for `hyphens: auto` from the block's
+        // effective HTML `lang` (the nearest `lang` attribute up the ancestor chain, e.g. <html lang="de">).
+        // ResolveOrDefault returns the bundled English hyphenator for an unregistered language, so output
+        // is byte-identical to the pre-routing behavior UNLESS a NetPdf.Languages.* pack has registered that
+        // language. The shaping `language` argument below stays "en": changing it would alter shaping
+        // output; script/shaping-language routing is a separate follow-up.
+        var hyphenationLanguage = ResolveEffectiveLanguage(inlineOnlyBlock.SourceElement);
         try
         {
             inlineResult = InlineLayouter.LayoutPerRun(
@@ -7466,7 +7477,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // context out right-to-left (bidi base level 1); a default/LTR block
                 // is byte-identical to the pre-pipeline output.
                 paragraphDirection: inlineOnlyBlock.Style.ReadParagraphDirection(),
-                hyphenator: null,
+                hyphenator: HyphenationRegistry.ResolveOrDefault(hyphenationLanguage),
                 cancellationToken: cancellationToken,
                 // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5
                 // — pass through the layouter's intrinsic-sizing-mode
@@ -9066,6 +9077,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // in-flow block path's measure semantics).
         return metrics.MarginBlockStart + comp.BorderBoxBlockSize
             + metrics.MarginBlockEnd;
+    }
+
+    /// <summary>Resolve an element's effective BCP-47 language for hyphenation routing, following the HTML
+    /// language algorithm (https://html.spec.whatwg.org/multipage/dom.html#language). Walks up the ancestor
+    /// chain; the <b>nearest element carrying a <c>lang</c> attribute decides</b> (or <c>xml:lang</c> when
+    /// <c>lang</c> is absent on that element) — even an <b>empty</b> value, which HTML defines as "language
+    /// unknown" and which therefore OVERRIDES an ancestor rather than inheriting from it (e.g.
+    /// <c>&lt;html lang="de"&gt;&lt;p lang=""&gt;</c> is unknown, not German). Returns the non-empty value,
+    /// or <see langword="null"/> when the deciding attribute is empty/whitespace or no ancestor declares one
+    /// — in both cases the caller resolves to the bundled English hyphenator. Only the <c>hyphens: auto</c>
+    /// hyphenator is selected from this (via <see cref="HyphenationRegistry.ResolveOrDefault"/>); shaping is
+    /// unaffected, so output is byte-identical unless a <c>NetPdf.Languages.*</c> pack registered the
+    /// language. Clean-room: reads the DOM attributes through AngleSharp's public <c>IElement</c> API.
+    /// <c>internal</c> (not <c>private</c>) so the lang-routing end-to-end test can exercise it against a
+    /// real <see cref="BoxBuilder"/>-produced box tree.</summary>
+    internal static string? ResolveEffectiveLanguage(IElement? element)
+    {
+        for (var e = element; e is not null; e = e.ParentElement)
+        {
+            // A `lang` attribute present on this element decides (empty included); `xml:lang` is the
+            // fallback only when `lang` is absent. GetAttribute returns "" for a present-but-empty value and
+            // null for an absent one — so `lang=""` reaches this branch and short-circuits the walk.
+            var lang = e.GetAttribute("lang") ?? e.GetAttribute("xml:lang");
+            if (lang is not null)
+            {
+                var trimmed = lang.Trim();
+                return trimmed.Length == 0 ? null : trimmed; // empty/whitespace → "unknown" → default hyphenator
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening

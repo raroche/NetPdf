@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.Arabic</RootNamespace>
+    <AssemblyName>NetPdf.Languages.Arabic</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.Arabic</PackageId>
+    <Description>Optional Arabic-script language pack for NetPdf. Registers Arabic (ar), Persian/Farsi (fa), and Urdu (ur) with NetPdf's public HyphenationRegistry as explicit NO-hyphenation languages — Arabic-script text is not soft-hyphenated (justification uses kashida/tatweel elongation, not hyphens) — so hyphens:auto inserts no hyphens for those languages instead of falling back to the English hyphenator. Call ArabicHyphenation.Register at startup; a module initializer also drives it on assembly load.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;arabic;persian;farsi;urdu;i18n;rtl;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] auto-registers this pack's languages once the assembly is loaded — a
+         best-effort convenience, NOT the primary contract. A referenced package's assembly isn't guaranteed
+         to load unless consumer code touches it, so the documented path is an explicit ArabicHyphenation
+         .Register() at startup. Idempotent. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- One package dependency (NetPdf, which bundles NetPdf.Text.dll); NetPdf.Text is compile-only for the
+       HyphenationRegistry type. See NetPdf.Languages.European for the full rationale. -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Suppress NetPdf's transitively-pinned externals so the nuspec has exactly one dependency (NetPdf). -->
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" PrivateAssets="all" />
+    <PackageReference Include="AngleSharp.Css" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

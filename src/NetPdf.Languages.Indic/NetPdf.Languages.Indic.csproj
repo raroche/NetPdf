@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>NetPdf.Languages.Indic</RootNamespace>
+    <AssemblyName>NetPdf.Languages.Indic</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>NetPdf.Languages.Indic</PackageId>
+    <Description>Optional Indic-script language pack for NetPdf. Registers the major Indic languages (Hindi, Sanskrit, Marathi, Nepali, Bengali, Assamese, Panjabi, Gujarati, Odia, Tamil, Telugu, Kannada, Malayalam) with NetPdf's public HyphenationRegistry so layout can hyphenate a block by its effective lang. Indic scripts DO hyphenate, but this build ships NO pattern data yet — the CTAN hyph-utf8 (LPPL) pattern sets are vendored by the maintainer; until then hyphens:auto produces no breaks for these languages (conservative — never the wrong English hyphenation). Call IndicHyphenation.Register at startup; a module initializer also drives it on assembly load.</Description>
+    <PackageTags>pdf;html-to-pdf;hyphenation;indic;devanagari;hindi;sanskrit;tamil;telugu;i18n;typography</PackageTags>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <!-- CA2255: a [ModuleInitializer] auto-registers this pack's languages once the assembly is loaded — a
+         best-effort convenience, NOT the primary contract. A referenced package's assembly isn't guaranteed
+         to load unless consumer code touches it, so the documented path is an explicit IndicHyphenation
+         .Register() at startup. Idempotent. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
+  </PropertyGroup>
+
+  <!-- One package dependency (NetPdf, which bundles NetPdf.Text.dll); NetPdf.Text is compile-only for the
+       HyphenationRegistry type. See NetPdf.Languages.European for the full rationale. -->
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Suppress NetPdf's transitively-pinned externals so the nuspec has exactly one dependency (NetPdf). -->
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" PrivateAssets="all" />
+    <PackageReference Include="AngleSharp.Css" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" PrivateAssets="all" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+  </ItemGroup>
+
+</Project>

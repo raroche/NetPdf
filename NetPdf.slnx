@@ -20,6 +20,10 @@
     <Project Path="src/NetPdf.Text/NetPdf.Text.csproj" />
     <Project Path="src/NetPdf/NetPdf.csproj" />
     <Project Path="src/NetPdf.Languages.European/NetPdf.Languages.European.csproj" />
+    <Project Path="src/NetPdf.Languages.Cjk/NetPdf.Languages.Cjk.csproj" />
+    <Project Path="src/NetPdf.Languages.Arabic/NetPdf.Languages.Arabic.csproj" />
+    <Project Path="src/NetPdf.Languages.Indic/NetPdf.Languages.Indic.csproj" />
+    <Project Path="src/NetPdf.Languages.All/NetPdf.Languages.All.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj" />

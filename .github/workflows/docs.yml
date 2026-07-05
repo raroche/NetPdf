@@ -46,6 +46,11 @@ jobs:
         run: |
           dotnet tool update -g docfx
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      # Build first so the NetPdf.SourceGen analyzer DLL exists: DocFX's `metadata` step compiles the
+      # projects with its own Roslyn, and without the built generator the source-generated types (e.g.
+      # `PropertyId`) are missing → CS0246 → metadata (and the whole site) fails.
+      - name: Build the solution (so DocFX's metadata compile can run the source generator)
+        run: dotnet build NetPdf.slnx -c Release --nologo
       - name: Build the docs site (0 warnings)
         run: docfx docs-site/docfx.json --warningsAsErrors
       - name: Upload Pages artifact

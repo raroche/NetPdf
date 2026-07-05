@@ -89,8 +89,10 @@ The public surface is the single static `HtmlPdf` facade plus a small set of opt
 ```csharp
 using NetPdf;
 
+string html = "<h1>Invoice #1234</h1><p>Hello world.</p>";
+
 // 1) One-liner — HTML string in, PDF bytes out.
-byte[] pdf = HtmlPdf.Convert("<h1>Invoice #1234</h1><p>Hello world.</p>");
+byte[] pdf = HtmlPdf.Convert(html);
 File.WriteAllBytes("out.pdf", pdf);
 
 // 2) With options — page size, backgrounds, and a base URI for relative asset/URL resolution.
@@ -101,9 +103,10 @@ byte[] letter = HtmlPdf.Convert(html, new HtmlPdfOptions
     PrintBackgrounds = true,                        // paint CSS background colors/images (on by default)
 });
 
-// 3) Async streaming — write bytes to a stream as they're produced; supports cancellation.
+// 3) Async streaming — write bytes to a stream as they're produced.
+// ConvertAsync also takes an optional CancellationToken as a final argument.
 await using var fs = File.Create("report.pdf");
-await HtmlPdf.ConvertAsync(html, fs, new HtmlPdfOptions { PreferCssPageSize = true }, cancellationToken);
+await HtmlPdf.ConvertAsync(html, fs, new HtmlPdfOptions { PreferCssPageSize = true });
 
 // 4) Diagnostic mode — bytes + page count + every structured warning (unsupported feature, skipped asset, ...).
 PdfRenderResult result = HtmlPdf.ConvertDetailed(html);
@@ -231,7 +234,7 @@ h2    { break-after: avoid; }            /* section headings stay with their con
 
 ## Language packs
 
-The core `NetPdf` package bundles **en-US** hyphenation. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).
+The core `NetPdf` package bundles **English** hyphenation, registered under the primary subtag `en` (American-English Liang patterns) — so `en`, `en-GB`, `en-US`, etc. all resolve to it. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).
 
 ```bash
 dotnet add package NetPdf.Languages.European --prerelease   # de, fr Liang hyphenation
@@ -271,7 +274,7 @@ These columns are the honest answer to "what does NetPdf do today?" `HtmlPdf.Con
 | WOFF 1.0 (zlib) + WOFF 2.0 (Brotli + glyf/loca transform reverse) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | OpenType shaping via HarfBuzzSharp (kerning, ligatures, RTL, CJK) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | UAX #9 Bidi (100% UCD), UAX #14 Line Break (99.952% UCD), UAX #29 grapheme clusters (100% UCD) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
-| Liang hyphenation (en-US bundled; other languages ship as `NetPdf.Languages.*` packs at v1.0+) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
+| Liang hyphenation (English bundled under `en`; other languages ship as optional `NetPdf.Languages.*` packs — de/fr real patterns today, see [Language packs](#language-packs)) | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | Image embedders (JPEG passthrough, PNG 4 paths inc. RGBA `/SMask`, WebP/AVIF/GIF via Skia raster) with content-hash dedup | ✅ | ✅ | Phase 1 internal; public ✅ at 0.7.0-beta |
 | HTML parsing host (AngleSharp, no scripting) + `<script>` / `javascript:` URL stripping with diagnostics | ✅ | ✅ | Phase 2 internal; public ✅ at 0.7.0-beta |
 | CSS cascade + `var()` substitution + `calc()`/`min()`/`max()`/`clamp()`/`abs()`/`sign()` (subset: absolute units fully reduce; context-relative units — `em`/`rem`/`vh`/`vw`/etc. — defer to Phase 3 typed pipeline) | ✅ | ✅ | Phase 2 internal; public ✅ at 0.7.0-beta |

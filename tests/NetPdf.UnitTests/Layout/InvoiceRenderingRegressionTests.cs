@@ -102,10 +102,49 @@ public sealed class InvoiceRenderingRegressionTests
             + "table{border-collapse:collapse}td{border:1px solid #999;padding:6px 8px}</style></head>"
             + "<body><table><tr><td>A</td></tr></table></body></html>", Opts());
 
-        // One cell, four border edges = four filled rectangles. Pre-fix there were eight
-        // (an extra inset square from the content-box border).
-        var rects = Regex.Matches(FirstContentStreamWithRects(pdf), @"[\d.]+ [\d.]+ [\d.]+ [\d.]+ re").Count;
-        Assert.Equal(4, rects);
+        // The bug painted the cell's border a SECOND time, inset by the padding — an "extra
+        // square inside the cell". A correct render draws exactly ONE border frame: every
+        // painted border rectangle lies on the perimeter of that single frame, and none floats
+        // in the interior. Assert the geometric signature directly (robust to how many `re`
+        // ops one frame decomposes into) rather than pinning an exact rectangle count.
+        var rects = ParseRects(FirstContentStreamWithRects(pdf));
+        Assert.NotEmpty(rects);
+
+        var minX = rects.Min(r => r.X0);
+        var minY = rects.Min(r => r.Y0);
+        var maxX = rects.Max(r => r.X1);
+        var maxY = rects.Max(r => r.Y1);
+        const double tol = 0.5;
+
+        foreach (var r in rects)
+        {
+            // A perimeter (border) rectangle touches at least one side of the single frame.
+            var touchesFrame =
+                Math.Abs(r.X0 - minX) < tol || Math.Abs(r.X1 - maxX) < tol ||
+                Math.Abs(r.Y0 - minY) < tol || Math.Abs(r.Y1 - maxY) < tol;
+            Assert.True(touchesFrame,
+                $"Border rectangle [{r.X0:0.##},{r.Y0:0.##},{r.X1:0.##},{r.Y1:0.##}] floats inside the "
+                + $"cell frame [{minX:0.##},{minY:0.##},{maxX:0.##},{maxY:0.##}] — a duplicated inset border.");
+        }
+    }
+
+    private readonly record struct Rect(double X0, double Y0, double X1, double Y1);
+
+    private static System.Collections.Generic.List<Rect> ParseRects(string stream)
+    {
+        // `x y w h re` — (x,y) a corner, w/h signed extents. Normalize to (x0,y0)-(x1,y1).
+        var list = new System.Collections.Generic.List<Rect>();
+        foreach (Match m in Regex.Matches(
+            stream, @"(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) re"))
+        {
+            var x = double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+            var y = double.Parse(m.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+            var w = double.Parse(m.Groups[3].Value, System.Globalization.CultureInfo.InvariantCulture);
+            var h = double.Parse(m.Groups[4].Value, System.Globalization.CultureInfo.InvariantCulture);
+            list.Add(new Rect(Math.Min(x, x + w), Math.Min(y, y + h), Math.Max(x, x + w), Math.Max(y, y + h)));
+        }
+
+        return list;
     }
 
     private static string FirstContentStreamWithRects(byte[] pdf)

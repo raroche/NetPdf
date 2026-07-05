@@ -128,6 +128,73 @@ public sealed class PropertyResolverDispatchTests
         Assert.Equal(CssDiagnosticCodes.CssPropertyValueInvalid001, sink.Diagnostics[0].Code);
     }
 
+    // ── CSS-wide keywords (CSS Cascade L5 §7) — centrally handled by the dispatch ──────────
+    // These are valid on EVERY property; the dispatch intercepts them before the per-type
+    // resolver. `initial` resolves the property's INITIAL value; the others fall through as
+    // "declaration ignored" (Invalid → the cascade materializes inherited-or-initial). None
+    // of them may emit CSS-PROPERTY-VALUE-INVALID-001 — they are valid, not authoring errors.
+
+    [Fact]
+    public void Initial_on_line_height_resolves_to_the_properties_initial_value_not_the_keyword_table()
+    {
+        // Regression for the #271 P2 review: `line-height: initial` must compute to the
+        // property's initial value (`normal` → Keyword(Normal)), NOT be silently dropped as
+        // Invalid (which — on an inherited property under a parent `line-height: 3` — would
+        // wrongly leave the inherited 3 instead of resetting to normal).
+        var sink = new CapturingSink();
+        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "initial", sink);
+
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Keyword, result.Slot.Tag);
+        Assert.Equal(LineHeightResolver.Normal, result.Slot.AsKeyword());
+        // Identical to spelling the initial value out explicitly.
+        var normal = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "normal");
+        Assert.Equal(normal.Slot.AsKeyword(), result.Slot.AsKeyword());
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void Initial_on_a_non_inherited_property_resolves_to_its_default_value()
+    {
+        // background-attachment's initial value is `scroll`; `initial` must resolve it, not warn.
+        var sink = new CapturingSink();
+        var result = PropertyResolverDispatch.Resolve(PropertyId.BackgroundAttachment, "initial", sink);
+        var scroll = PropertyResolverDispatch.Resolve(PropertyId.BackgroundAttachment, "scroll");
+
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Keyword, result.Slot.Tag);
+        Assert.Equal(scroll.Slot.AsKeyword(), result.Slot.AsKeyword());
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    [InlineData("revert-layer")]
+    public void Non_initial_css_wide_keywords_are_ignored_without_a_warning(string keyword)
+    {
+        // inherit/unset/revert fall through as Invalid (the cascade materializes them as the
+        // inherited value for an inherited property / the initial value otherwise) — but they
+        // must NOT emit the "not an admitted keyword" diagnostic that a genuine typo would.
+        var sink = new CapturingSink();
+        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, keyword, sink);
+
+        Assert.True(result.IsInvalid);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void Css_wide_keyword_is_case_insensitive_and_ignores_surrounding_whitespace()
+    {
+        var sink = new CapturingSink();
+        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "  INITIAL  ", sink);
+
+        Assert.True(result.IsResolved);
+        Assert.Equal(LineHeightResolver.Normal, result.Slot.AsKeyword());
+        Assert.Empty(sink.Diagnostics);
+    }
+
     [Fact]
     public void Color_default_canvastext_resolves_via_dispatch_after_rec_2()
     {

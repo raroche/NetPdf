@@ -56,17 +56,10 @@ internal static class KeywordResolver
         if (table.TryGetValue(normalized, out var id))
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(id));
 
-        // The CSS-wide keywords (initial / inherit / unset / revert / revert-layer) are valid
-        // on EVERY property and are the cascade's job, not a per-property keyword table's — but
-        // they still REACH this resolver via shorthand expansion (e.g. the `background`
-        // shorthand resetting `background-attachment` to `initial`, or a reset stylesheet's
-        // `line-height: inherit`). They are NOT an authoring error, so fall back through the
-        // cascade's invalid-value path WITHOUT emitting CssPropertyValueInvalid001. Byte-
-        // identical: the computed value is the same invalid-fallback (initial for a non-
-        // inherited property, the inherited value for an inherited one) that today's Invalid()
-        // already produces — this only suppresses the misleading diagnostic noise.
-        if (CssWideKeyword.Is(value))
-            return ResolverResult.Invalid();
+        // Note: CSS-wide keywords (initial / inherit / unset / revert / revert-layer) never reach here —
+        // PropertyResolverDispatch intercepts them centrally (resolving `initial` to the property's initial
+        // value, and `inherit`/`unset`/`revert` to the cascade's ignored-declaration fallback) before this
+        // per-property resolver runs, so an unrecognized keyword here is a genuine authoring error.
 
         // Per Phase A A-6 — sanitize untrusted value before message interpolation.
         // Property names are generator-validated (frozen-set lookup); raw value is

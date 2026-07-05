@@ -1,10 +1,11 @@
 # Phase-5 T12 — build the DocFX documentation site and publish it to GitHub Pages.
 #
-# The build job runs on every PR that touches the site (or the API source), so a broken site or a dead API
-# xref fails CI. The deploy job runs only on push to main. NOTE: deployment stays inert until the maintainer
-# enables Pages for the repo (Settings → Pages → Source: "GitHub Actions"); the repo is private through
-# Phase 5, so Pages is turned on at (or near) the 1.0 public flip. Until then the build job still validates
-# the site on every PR.
+# The build job runs on every PR that touches the site or its build inputs, so a broken site or a dead API
+# xref fails CI. The deploy job runs on push to main BUT is gated on the `NETPDF_PAGES_ENABLED` repository
+# variable: the maintainer sets it to "true" once GitHub Pages is enabled (Settings → Pages → Source:
+# "GitHub Actions"). Until then deploy is skipped, so a docs change on main never turns red for a
+# not-yet-enabled Pages site. The repo is private through Phase 5; Pages flips on at (or near) the 1.0 public
+# launch. DocFX is pinned via the .config/dotnet-tools.json manifest for reproducible builds.
 name: docs
 
 on:
@@ -14,11 +15,25 @@ on:
       - "docs-site/**"
       - "src/**"
       - ".github/workflows/docs.yml"
+      - ".config/dotnet-tools.json"
+      - "Directory.Build.props"
+      - "Directory.Build.targets"
+      - "Directory.Packages.props"
+      - "global.json"
+      - "NetPdf.slnx"
+      - "build/version.json"
   pull_request:
     paths:
       - "docs-site/**"
       - "src/**"
       - ".github/workflows/docs.yml"
+      - ".config/dotnet-tools.json"
+      - "Directory.Build.props"
+      - "Directory.Build.targets"
+      - "Directory.Packages.props"
+      - "global.json"
+      - "NetPdf.slnx"
+      - "build/version.json"
   workflow_dispatch:
 
 # Least privilege at the workflow level (applies to the PR build job); the deploy job elevates to
@@ -42,17 +57,15 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
-      - name: Install DocFX
-        run: |
-          dotnet tool install -g docfx || dotnet tool update -g docfx
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      - name: Restore local tools (pinned DocFX)
+        run: dotnet tool restore
       # Build first so the NetPdf.SourceGen analyzer DLL exists: DocFX's `metadata` step compiles the
       # projects with its own Roslyn, and without the built generator the source-generated types (e.g.
       # `PropertyId`) are missing → CS0246 → metadata (and the whole site) fails.
       - name: Build the solution (so DocFX's metadata compile can run the source generator)
         run: dotnet build NetPdf.slnx -c Release --nologo
       - name: Build the docs site (0 warnings)
-        run: docfx docs-site/docfx.json --warningsAsErrors
+        run: dotnet docfx docs-site/docfx.json --warningsAsErrors
       - name: Upload Pages artifact
         if: github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
@@ -61,8 +74,8 @@ jobs:
 
   deploy:
     name: deploy to GitHub Pages
-    # Only on push to main; safe to leave enabled — it no-ops (or fails soft) until Pages is turned on.
-    if: github.event_name == 'push'
+    # Push to main AND the maintainer has enabled Pages (repo variable). Skipped otherwise — never red.
+    if: github.event_name == 'push' && vars.NETPDF_PAGES_ENABLED == 'true'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10

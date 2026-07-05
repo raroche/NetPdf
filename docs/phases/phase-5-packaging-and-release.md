@@ -58,11 +58,14 @@ DocFX-based, served from GitHub Pages.
 - `docs-site/index.md` — landing.
 - `docs-site/getting-started.md` — `dotnet add package NetPdf` + minimal example.
 - `docs-site/api/` — auto-generated from XML docs.
-- `docs-site/compatibility/` — rendered version of `docs/compatibility-matrix.md`.
-- `docs-site/diagnostics/` — rendered version of `docs/diagnostics-codes.md`.
-- `docs-site/performance.md` — benchmark methodology + reference numbers.
-- `docs-site/migrations.md` — empty for 1.0; populated as breaking changes ship in v2+.
-- `docs-site/contributing.md` — clean-room policy summary + how to contribute.
+- `docs-site/compatibility.md` — an in/out-of-scope overview that links to the authoritative
+  `docs/compatibility-matrix.md` (kept single-source in `docs/`, not duplicated into the site).
+- `docs-site/diagnostics.md` — the diagnostic-code system (severity + prefixes) linking to the authoritative
+  `docs/diagnostics-codes.md`.
+- `docs-site/performance.md` — benchmark methodology + reference numbers. *(follow-up — lands with the
+  benchmark baselines, tasks 16–18.)*
+- `docs-site/migrations.md` — empty for 1.0; populated as breaking changes ship in v2+. *(follow-up.)*
+- `docs-site/contributing.md` — clean-room policy summary + how to contribute. *(follow-up.)*
 
 ### Samples polished
 

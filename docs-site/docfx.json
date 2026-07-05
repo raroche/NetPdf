@@ -18,7 +18,6 @@
       ],
       "dest": "api",
       "namespaceLayout": "nested",
-      "memberLayout": "separatePages",
       "filter": "filter.yml"
     }
   ],

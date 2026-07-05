@@ -1,0 +1,11 @@
+- name: Home
+  href: index.md
+- name: Getting started
+  href: getting-started.md
+- name: Compatibility
+  href: compatibility.md
+- name: Diagnostics
+  href: diagnostics.md
+- name: API
+  href: api/
+  homepage: api/index.md

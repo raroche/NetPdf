@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/dotnet/docfx/main/schemas/docfx.schema.json",
+  "metadata": [
+    {
+      "src": [
+        {
+          "src": "..",
+          "files": [
+            "src/NetPdf/NetPdf.csproj",
+            "src/NetPdf.Text/NetPdf.Text.csproj",
+            "src/NetPdf.Languages.European/NetPdf.Languages.European.csproj",
+            "src/NetPdf.Languages.Cjk/NetPdf.Languages.Cjk.csproj",
+            "src/NetPdf.Languages.Arabic/NetPdf.Languages.Arabic.csproj",
+            "src/NetPdf.Languages.Indic/NetPdf.Languages.Indic.csproj",
+            "src/NetPdf.Languages.All/NetPdf.Languages.All.csproj"
+          ]
+        }
+      ],
+      "dest": "api",
+      "namespaceLayout": "nested",
+      "memberLayout": "separatePages",
+      "filter": "filter.yml"
+    }
+  ],
+  "build": {
+    "content": [
+      { "files": ["**/*.{md,yml}"], "exclude": ["_site/**", "obj/**", "bin/**", "filter.yml"] }
+    ],
+    "resource": [
+      { "files": ["images/**"], "exclude": ["_site/**"] }
+    ],
+    "output": "_site",
+    "template": ["default", "modern"],
+    "globalMetadata": {
+      "_appName": "NetPdf",
+      "_appTitle": "NetPdf — HTML + CSS to PDF for .NET",
+      "_appFooter": "NetPdf — pure C# / .NET 10 HTML+CSS-to-PDF rendering engine. Apache-2.0.",
+      "_enableSearch": true,
+      "_disableContribution": true,
+      "_gitContribute": { "repo": "https://github.com/raroche/NetPdf", "branch": "main" }
+    },
+    "sitemap": { "baseUrl": "https://raroche.github.io/NetPdf/" }
+  }
+}

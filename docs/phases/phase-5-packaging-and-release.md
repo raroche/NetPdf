@@ -183,11 +183,11 @@ The release-candidate gate. All of:
 | 7 | ✅ `NetPdf.Languages.Indic` package (routing-aware placeholders; CTAN data maintainer-vendored) | 1 d | 5b |
 | 8 | ✅ `NetPdf.Languages.Arabic` package (ar/fa/ur no-hyphenation) | 1 d | 5b |
 | 9 | ✅ `NetPdf.Languages.All` meta-package | 0.5 d | 5–8 |
-| 10 | DocFX site setup | 1 d | — |
-| 11 | Getting-started + API + compat + diag pages | 2 d | 10 |
-| 12 | GitHub Pages deployment workflow | 0.5 d | 10 |
-| 13 | Polish `samples/invoice-cli` (replace placeholder content) | 0.5 d | — |
-| 14 | Polish `samples/report-aspnet` (real ETag, headers) | 0.5 d | — |
+| 10 | ✅ DocFX site setup (`docs-site/docfx.json`; API generated from the public projects) | 1 d | — |
+| 11 | ✅ Getting-started + API + compat + diag pages (`docs-site/*.md`) | 2 d | 10 |
+| 12 | ✅ GitHub Pages deployment workflow (`.github/workflows/docs.yml`; deploy inert until the maintainer enables Pages) | 0.5 d | 10 |
+| 13 | ✅ Polish `samples/invoice-cli` (dropped the stale `NotImplementedException` catch; renders a real PDF) | 0.5 d | — |
+| 14 | ✅ Polish `samples/report-aspnet` (content-hash ETag + Cache-Control + Content-Disposition + 304 conditional GET) | 0.5 d | — |
 | 15 | Polish `samples/readme-snippets` (drop catches) | 0.5 d | — |
 | 16 | BenchmarkDotNet baseline lock (commit baseline JSON) | 1 d | 4 |
 | 17 | Memory-linearity test | 1 d | 16 |

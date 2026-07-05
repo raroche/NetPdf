@@ -1,0 +1,5 @@
+# DocFX API filter. Document the public NetPdf surface; drop the Roslyn source generator (an internal
+# build-time component, not part of the consumer-facing API).
+apiRules:
+  - exclude:
+      uidRegex: ^NetPdf\.SourceGen

@@ -1,0 +1,70 @@
+# Phase-5 T12 — build the DocFX documentation site and publish it to GitHub Pages.
+#
+# The build job runs on every PR that touches the site (or the API source), so a broken site or a dead API
+# xref fails CI. The deploy job runs only on push to main. NOTE: deployment stays inert until the maintainer
+# enables Pages for the repo (Settings → Pages → Source: "GitHub Actions"); the repo is private through
+# Phase 5, so Pages is turned on at (or near) the 1.0 public flip. Until then the build job still validates
+# the site on every PR.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs-site/**"
+      - "src/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs-site/**"
+      - "src/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress production deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build site (DocFX)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Install DocFX
+        run: |
+          dotnet tool update -g docfx
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+      - name: Build the docs site (0 warnings)
+        run: docfx docs-site/docfx.json --warningsAsErrors
+      - name: Upload Pages artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-site/_site
+
+  deploy:
+    name: deploy to GitHub Pages
+    # Only on push to main; safe to leave enabled — it no-ops (or fails soft) until Pages is turned on.
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

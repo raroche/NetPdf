@@ -1,0 +1,3 @@
+static class NetPdf.Languages.Indic.IndicHyphenation
+    method System.Void Register()
+    property System.Collections.Generic.IReadOnlyList<System.String> RegisteredLanguages { get; }

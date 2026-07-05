@@ -21,10 +21,10 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
+# Least privilege at the workflow level (applies to the PR build job); the deploy job elevates to
+# pages:write / id-token:write for itself only.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Allow one concurrent deployment; don't cancel an in-progress production deploy.
 concurrency:
@@ -44,7 +44,7 @@ jobs:
           dotnet-version: "10.0.x"
       - name: Install DocFX
         run: |
-          dotnet tool update -g docfx
+          dotnet tool install -g docfx || dotnet tool update -g docfx
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
       # Build first so the NetPdf.SourceGen analyzer DLL exists: DocFX's `metadata` step compiles the
       # projects with its own Roslyn, and without the built generator the source-generated types (e.g.
@@ -66,6 +66,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Only the deploy job needs the elevated Pages permissions.
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

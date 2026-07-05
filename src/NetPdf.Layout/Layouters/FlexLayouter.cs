@@ -2390,9 +2390,20 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             var item = blockLevelItems[i];
             var basisKind = item.Style.ReadFlexBasis().Kind;
             // content ≡ max-content per §9.2.3; the explicit max-content/min-content
-            // keywords map to their own measure. auto / length / percentage are NOT here.
+            // keywords map to their own measure. Length / percentage bases are NOT here
+            // (they resolve to a definite base in ResolveHypotheticalMainSize).
             var isMinContent = basisKind == FlexBasisKind.MinContent;
-            var isMaxContent = basisKind is FlexBasisKind.MaxContent or FlexBasisKind.Content;
+            // CSS Flexbox §7.2.3: `flex-basis: auto` retrieves the main-size property; when
+            // that is ALSO auto (Unset / a keyword like `auto`), it falls through to `content`
+            // (= max-content). Pre-fix such items measured as ZERO (they read `width` = 0),
+            // which collapsed a row's items and made justify-content:space-between distribute
+            // the whole container width as the gap → the last item overflowed the container
+            // (the "Bill to column runs off the page" invoice bug). Treat auto+auto as
+            // max-content so the item gets its real content base size.
+            var autoResolvesToContent = basisKind == FlexBasisKind.Auto
+                && item.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+            var isMaxContent = basisKind is FlexBasisKind.MaxContent or FlexBasisKind.Content
+                || autoResolvesToContent;
             if (!isMinContent && !isMaxContent) continue;
 
             var availInline = isMinContent ? 1.0 : MaxContentMeasureInlinePx;

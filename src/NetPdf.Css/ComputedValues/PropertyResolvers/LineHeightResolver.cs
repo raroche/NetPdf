@@ -51,6 +51,14 @@ internal static class LineHeightResolver
         if (trimmed.Equals("normal", StringComparison.OrdinalIgnoreCase))
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(Normal));
 
+        // CSS-wide keywords (initial / inherit / unset / …) are cascade-resolved, not a
+        // line-height value — a reset stylesheet's `line-height: inherit` still reaches here,
+        // so fall through the invalid-value path WITHOUT the misleading "must be a non-negative
+        // number" diagnostic (the delegated LengthResolver below would emit it). Byte-identical:
+        // the computed value is the same invalid-fallback (inherited — line-height inherits).
+        if (CssWideKeyword.Is(trimmed))
+            return ResolverResult.Invalid();
+
         // A unitless <number> (the multiplier) — distinguished from a <length> by carrying no unit and
         // no `%`. A non-negative number → a Number slot; a negative one is invalid (line-height ≥ 0).
         if (IsUnitlessNumber(trimmed))

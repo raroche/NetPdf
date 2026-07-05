@@ -80,6 +80,25 @@ internal static class PropertyResolverDispatch
             && trimmed.Equals("auto", StringComparison.OrdinalIgnoreCase))
             return ResolverResult.Resolved(ComputedSlot.CurrentColor);
 
+        // CSS-wide keywords (CSS Cascade L5 §7.x) are valid on EVERY property and are the CASCADE's job,
+        // not a per-property grammar — handle them HERE, once, correctly, before the per-type dispatch (they
+        // still reach here via shorthand expansion, e.g. `background` → `background-attachment: initial`, and
+        // reset stylesheets, e.g. `line-height: inherit`):
+        //   * `initial` → the property's INITIAL value (resolve its DefaultValue). Crucially this RESETS an
+        //     inherited property to its initial value rather than leaving the parent's inherited value — so
+        //     `line-height: initial` under `line-height: 3` computes to `normal`, not `3`.
+        //   * `inherit` / `unset` / `revert` / `revert-layer` → fall through as "declaration ignored"
+        //     (Invalid). The cascade materializes that as the INHERITED value for an inherited property and
+        //     the INITIAL value for a non-inherited one — exactly the spec meaning of `unset`/`revert`, and
+        //     of `inherit` on an inherited property (the overwhelmingly common cases).
+        // No CssPropertyValueInvalid001 diagnostic is emitted — a CSS-wide keyword is valid, not an error.
+        if (CssWideKeyword.Is(trimmed))
+        {
+            return trimmed.Equals("initial", StringComparison.OrdinalIgnoreCase)
+                ? Resolve(propertyId, meta.DefaultValue, diagnostics: null, location)   // DefaultValue is never CSS-wide → no recursion
+                : ResolverResult.Invalid();
+        }
+
         return meta.Type switch
         {
             PropertyType.Color => ColorResolver.Resolve(

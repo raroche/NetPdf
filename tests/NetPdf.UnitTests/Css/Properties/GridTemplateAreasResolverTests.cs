@@ -165,11 +165,19 @@ public sealed class GridTemplateAreasResolverTests
         Assert.NotEmpty(sink.Diagnostics);
     }
 
-    [Fact]
-    public void Css_wide_keyword_rejected_defense_in_depth()
+    [Theory]
+    [InlineData("initial")]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    public void Css_wide_keywords_are_handled_centrally_without_a_diagnostic(string keyword)
     {
-        using var style = Materialize("inherit", out var sink);
-        Assert.NotEmpty(sink.Diagnostics);
+        // CSS-wide keywords are intercepted centrally by PropertyResolverDispatch — they are
+        // valid on every property, so no CSS-PROPERTY-VALUE-INVALID diagnostic is emitted. On
+        // this non-inherited property they materialize to the initial value (`none`).
+        using var style = Materialize(keyword, out var sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.Equal(GridTemplateAreas.None, style.ReadGridTemplateAreas());
     }
 
     // =================================================================

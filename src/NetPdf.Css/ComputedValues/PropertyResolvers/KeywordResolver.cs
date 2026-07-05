@@ -56,6 +56,11 @@ internal static class KeywordResolver
         if (table.TryGetValue(normalized, out var id))
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(id));
 
+        // Note: CSS-wide keywords (initial / inherit / unset / revert / revert-layer) never reach here —
+        // PropertyResolverDispatch intercepts them centrally (resolving `initial` to the property's initial
+        // value, and `inherit`/`unset`/`revert` to the cascade's ignored-declaration fallback) before this
+        // per-property resolver runs, so an unrecognized keyword here is a genuine authoring error.
+
         // Per Phase A A-6 — sanitize untrusted value before message interpolation.
         // Property names are generator-validated (frozen-set lookup); raw value is
         // author CSS so it could carry C0/C1/DEL chars or extreme length.

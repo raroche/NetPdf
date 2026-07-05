@@ -568,7 +568,10 @@ public sealed class GridParserTests
     }
 
     // =====================================================================
-    //  PR-#90 review F3 — CSS-wide keywords rejected as defense in depth
+    //  CSS-wide keywords — now intercepted CENTRALLY by PropertyResolverDispatch
+    //  (originally PR-#90 review F3 rejected them at the grid resolver as a
+    //  stop-gap "for now, central fix tracked separately"; that central fix has
+    //  landed, so they no longer reach the grid parser at all).
     // =====================================================================
 
     [Theory]
@@ -577,14 +580,12 @@ public sealed class GridParserTests
     [InlineData("unset")]
     [InlineData("revert")]
     [InlineData("revert-layer")]
-    public void GridLine_CSS_wide_keywords_are_rejected_for_defense_in_depth(string css)
+    public void GridLine_CSS_wide_keywords_are_centrally_handled_without_a_diagnostic(string css)
     {
-        // Pre-hardening — these leaked through as GridLineValue.NamedLine
-        // ("initial"). The cascade SHOULD intercept these centrally (= the
-        // central fix is tracked separately); for now we reject at the
-        // resolver so cycle-0b doesn't produce garbage AST.
+        // Valid on every property — no CSS-PROPERTY-VALUE-INVALID diagnostic. grid-row-start
+        // is non-inherited, so every CSS-wide keyword materializes to its initial value (auto).
         using var style = Materialize(PropertyId.GridRowStart, css, out var sink);
-        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Empty(sink.Diagnostics);
         Assert.Equal(GridLineKind.Auto, style.ReadGridRowStart().Kind);
     }
 
@@ -592,10 +593,10 @@ public sealed class GridParserTests
     [InlineData("initial")]
     [InlineData("inherit")]
     [InlineData("unset")]
-    public void GridTemplateList_CSS_wide_keywords_are_rejected_for_defense_in_depth(string css)
+    public void GridTemplateList_CSS_wide_keywords_are_centrally_handled_without_a_diagnostic(string css)
     {
         using var style = Materialize(PropertyId.GridTemplateRows, css, out var sink);
-        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Empty(sink.Diagnostics);
         Assert.Same(TrackList.None, style.ReadGridTemplateRows());
     }
 

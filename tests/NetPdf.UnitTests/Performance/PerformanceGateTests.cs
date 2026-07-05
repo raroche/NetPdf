@@ -155,6 +155,10 @@ public sealed class PerformanceGateTests
 
         var min = Math.Min(a, Math.Min(b, c));
         var max = Math.Max(a, Math.Max(b, c));
+        // Guard the ratio math: a measurement anomaly yielding a zero per-page figure would otherwise turn
+        // the assertion message into a DivideByZero/Infinity instead of a clear failure (review P3 / Copilot).
+        Assert.True(min > 0,
+            $"per-page allocation must be positive; got [{a}, {b}, {c}] bytes/pg — measurement anomaly.");
         // A super-linear (e.g. O(n²)) total would make the larger renders' per-page allocation climb; a
         // 1.5× ceiling on the per-page span tolerates fixed-overhead amortization + GC noise but catches it.
         Assert.True(max < min * 1.5,

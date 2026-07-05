@@ -272,7 +272,7 @@ Phase 5 (and v1.0) is complete when:
 
 1. ✅ All cross-platform matrix entries pass full build + test + AOT smoke.
 2. ✅ Visual regression passes for every corpus file.
-3. ✅ Performance gates pass and baseline is committed.
+3. 🔶 Performance gates pass and baseline is committed. **Gate authored + neutral (`benchmark-gate.sh` exit 2 = pass) until a `linux-x64` baseline is captured on the CI runner and committed** — do NOT sign off criterion 3 from a neutral job; it flips to ✅ enforcing only once that baseline lands (maintainer step, see task 16).
 4. ✅ Memory linearity verified.
 5. ✅ All NuGet packages produced cleanly: `NetPdf`, `NetPdf.Languages.European`, `NetPdf.Languages.Cjk`, `NetPdf.Languages.Indic`, `NetPdf.Languages.Arabic`, `NetPdf.Languages.All`.
 6. ✅ Documentation site builds and deploys.

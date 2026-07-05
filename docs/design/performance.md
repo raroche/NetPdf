@@ -193,7 +193,7 @@ the synthetic-font fixtures (so the numbers isolate the engine, not system-font 
 | Fixture | Pages | Transient alloc | Per page |
 |---|---|---|---|
 | 3-page invoice (table) | 3 | 20.4 MiB | 6.8 MiB/pg |
-| 20-page report (tables) | 22 | 86.0 MiB | 3.9 MiB/pg |
+| 22-page report (tables) | 22 | 86.0 MiB | 3.9 MiB/pg |
 | 150-paragraph prose | 6 | 38.3 MiB | 6.4 MiB/pg |
 
 **Finding — transient allocation is linear (amortizing), not super-linear, in page count.** Per-page

@@ -38,19 +38,45 @@ public sealed class NetPdfPackageShapeTests
     [Fact]
     public void Facade_declares_its_real_external_runtime_dependencies()
     {
-        var pkgs = LoadNetPdfCsproj().Descendants("PackageReference")
-            .Where(e => !string.Equals((string?)e.Attribute("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase))
-            .Select(e => (string?)e.Attribute("Include"))
-            .Where(id => !string.IsNullOrEmpty(id))
-            .Select(id => id!)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var pkgs = DeclaredPackageDependencies();
 
-        // The three external dependency families a consumer needs at runtime (parsing + shaping + raster).
+        // The managed external dependency families a consumer needs at runtime (parsing + shaping + raster).
         foreach (var dep in new[] { "AngleSharp", "AngleSharp.Css", "HarfBuzzSharp", "SkiaSharp" })
         {
             Assert.True(pkgs.Contains(dep), $"NetPdf's nuspec must declare the external dependency '{dep}'.");
         }
     }
+
+    [Fact]
+    public void Facade_declares_the_native_runtime_asset_packages_for_every_shipping_platform()
+    {
+        // The managed HarfBuzzSharp / SkiaSharp packages carry NO native binary — the platform `.so`/`.dylib`/
+        // `.dll` ship in separate `*.NativeAssets.*` packages. Dropping one (e.g. `SkiaSharp.NativeAssets.Linux`)
+        // still passes the managed-dep test above but silently breaks consumers on that OS at first shape/raster
+        // call. Pin all six so a regression that removes a native-asset dep fails here (review P2 / Copilot).
+        var pkgs = DeclaredPackageDependencies();
+        foreach (var dep in new[]
+                 {
+                     "HarfBuzzSharp.NativeAssets.Linux", "HarfBuzzSharp.NativeAssets.macOS",
+                     "HarfBuzzSharp.NativeAssets.Win32", "SkiaSharp.NativeAssets.Linux",
+                     "SkiaSharp.NativeAssets.macOS", "SkiaSharp.NativeAssets.Win32",
+                 })
+        {
+            Assert.True(pkgs.Contains(dep),
+                $"NetPdf's nuspec must declare the native-asset package '{dep}' — without it the shaping/raster "
+                + "native binary is absent on that platform and consumers fault at runtime.");
+        }
+    }
+
+    // The external <dependency> set a consumer sees in the produced .nuspec: every PackageReference NOT
+    // suppressed via PrivateAssets="all" (internal NetPdf.* refs are suppressed and bundled instead).
+    private static System.Collections.Generic.HashSet<string> DeclaredPackageDependencies() =>
+        LoadNetPdfCsproj().Descendants("PackageReference")
+            .Where(e => !string.Equals((string?)e.Attribute("PrivateAssets"), "all", StringComparison.OrdinalIgnoreCase))
+            .Select(e => (string?)e.Attribute("Include"))
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Select(id => id!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     [Fact]
     public void Facade_bundles_the_dll_of_every_internal_project_it_references()

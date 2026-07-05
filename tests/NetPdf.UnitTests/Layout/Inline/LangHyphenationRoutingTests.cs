@@ -87,6 +87,40 @@ public sealed class LangHyphenationRoutingTests
         Assert.Same(EnUsHyphenation.Default, HyphenationRegistry.ResolveOrDefault(null));
     }
 
+    [Fact]
+    public async Task Empty_lang_attribute_overrides_an_ancestor_lang_as_unknown()
+    {
+        // HTML: lang="" is an explicit "language unknown" that OVERRIDES the ancestor <html lang="de"> —
+        // it must NOT inherit German. Effective language is null → the default (English) hyphenator, so the
+        // paragraph is NOT hyphenated with German rules.
+        var pBox = await ParagraphBox("<html lang=\"de\"><body><p lang=\"\">Silbentrennung</p></body></html>");
+
+        Assert.Null(BlockLayouter.ResolveEffectiveLanguage(pBox.SourceElement));
+        Assert.Same(EnUsHyphenation.Default, HyphenationRegistry.ResolveOrDefault(
+            BlockLayouter.ResolveEffectiveLanguage(pBox.SourceElement)));
+    }
+
+    [Fact]
+    public async Task Whitespace_only_lang_attribute_is_treated_as_unknown()
+    {
+        var pBox = await ParagraphBox("<html lang=\"de\"><body><p lang=\"   \">Silbentrennung</p></body></html>");
+        Assert.Null(BlockLayouter.ResolveEffectiveLanguage(pBox.SourceElement));
+    }
+
+    [Fact]
+    public async Task Xml_lang_is_honored_when_lang_is_absent()
+    {
+        var pBox = await ParagraphBox("<html><body><p xml:lang=\"fr\">ordinateur</p></body></html>");
+        Assert.Equal("fr", BlockLayouter.ResolveEffectiveLanguage(pBox.SourceElement));
+    }
+
+    [Fact]
+    public async Task Lang_takes_priority_over_xml_lang_on_the_same_element()
+    {
+        var pBox = await ParagraphBox("<html><body><p lang=\"de\" xml:lang=\"fr\">Silbentrennung</p></body></html>");
+        Assert.Equal("de", BlockLayouter.ResolveEffectiveLanguage(pBox.SourceElement));
+    }
+
     // --- pipeline helpers (parse → cascade → var-resolve → box tree), mirroring InlineTextPolicyEndToEndTests ---
 
     private static async Task<Box> ParagraphBox(string html)

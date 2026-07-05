@@ -9079,23 +9079,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             + metrics.MarginBlockEnd;
     }
 
-    /// <summary>Resolve an element's effective BCP-47 language for hyphenation routing: the nearest
-    /// <c>lang</c> attribute on the element or an ancestor (HTML language inheritance, e.g.
-    /// <c>&lt;html lang="de"&gt;</c>). Returns <see langword="null"/> when no ancestor declares one — the
-    /// caller then resolves to the bundled English hyphenator. Only the <c>hyphens: auto</c> hyphenator is
-    /// selected from this (via <see cref="HyphenationRegistry.ResolveOrDefault"/>); shaping is unaffected,
-    /// so output is byte-identical unless a <c>NetPdf.Languages.*</c> pack registered the language.
-    /// Clean-room: reads the DOM <c>lang</c> attribute through AngleSharp's public <c>IElement</c> API.
+    /// <summary>Resolve an element's effective BCP-47 language for hyphenation routing, following the HTML
+    /// language algorithm (https://html.spec.whatwg.org/multipage/dom.html#language). Walks up the ancestor
+    /// chain; the <b>nearest element carrying a <c>lang</c> attribute decides</b> (or <c>xml:lang</c> when
+    /// <c>lang</c> is absent on that element) — even an <b>empty</b> value, which HTML defines as "language
+    /// unknown" and which therefore OVERRIDES an ancestor rather than inheriting from it (e.g.
+    /// <c>&lt;html lang="de"&gt;&lt;p lang=""&gt;</c> is unknown, not German). Returns the non-empty value,
+    /// or <see langword="null"/> when the deciding attribute is empty/whitespace or no ancestor declares one
+    /// — in both cases the caller resolves to the bundled English hyphenator. Only the <c>hyphens: auto</c>
+    /// hyphenator is selected from this (via <see cref="HyphenationRegistry.ResolveOrDefault"/>); shaping is
+    /// unaffected, so output is byte-identical unless a <c>NetPdf.Languages.*</c> pack registered the
+    /// language. Clean-room: reads the DOM attributes through AngleSharp's public <c>IElement</c> API.
     /// <c>internal</c> (not <c>private</c>) so the lang-routing end-to-end test can exercise it against a
     /// real <see cref="BoxBuilder"/>-produced box tree.</summary>
     internal static string? ResolveEffectiveLanguage(IElement? element)
     {
         for (var e = element; e is not null; e = e.ParentElement)
         {
-            var lang = e.GetAttribute("lang");
-            if (!string.IsNullOrWhiteSpace(lang))
+            // A `lang` attribute present on this element decides (empty included); `xml:lang` is the
+            // fallback only when `lang` is absent. GetAttribute returns "" for a present-but-empty value and
+            // null for an absent one — so `lang=""` reaches this branch and short-circuits the walk.
+            var lang = e.GetAttribute("lang") ?? e.GetAttribute("xml:lang");
+            if (lang is not null)
             {
-                return lang.Trim();
+                var trimmed = lang.Trim();
+                return trimmed.Length == 0 ? null : trimmed; // empty/whitespace → "unknown" → default hyphenator
             }
         }
 

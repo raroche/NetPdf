@@ -11,10 +11,12 @@ using NetPdf.Languages.Indic;
 namespace NetPdf.Languages.All;
 
 /// <summary>
-/// Convenience aggregator for every <c>NetPdf.Languages.*</c> pack. Installing the
-/// <c>NetPdf.Languages.All</c> meta-package (which depends on the European, CJK, Arabic, and Indic packs)
-/// and calling <see cref="Register"/> registers all of them with NetPdf's <c>HyphenationRegistry</c> in one
-/// call. A <c>[ModuleInitializer]</c> also drives it on assembly load.
+/// Convenience aggregator for every <c>NetPdf.Languages.*</c> pack. Install the <c>NetPdf.Languages.All</c>
+/// meta-package (which depends on the European, CJK, Arabic, and Indic packs) and call <see cref="Register"/>
+/// once at startup to register all of them with NetPdf's <c>HyphenationRegistry</c> in one call — that
+/// explicit call is the documented path. A <c>[ModuleInitializer]</c> also drives it as a best-effort
+/// convenience, but only once this assembly is actually loaded (a package reference alone does not guarantee
+/// that), so prefer the explicit call.
 /// </summary>
 public static class AllLanguages
 {

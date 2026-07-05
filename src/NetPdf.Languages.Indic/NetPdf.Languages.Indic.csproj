@@ -10,8 +10,10 @@
     <PackageTags>pdf;html-to-pdf;hyphenation;indic;devanagari;hindi;sanskrit;tamil;telugu;i18n;typography</PackageTags>
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
-    <!-- CA2255: a [ModuleInitializer] registers the pack's languages the moment the assembly loads —
-         the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs. Idempotent. -->
+    <!-- CA2255: a [ModuleInitializer] auto-registers this pack's languages once the assembly is loaded — a
+         best-effort convenience, NOT the primary contract. A referenced package's assembly isn't guaranteed
+         to load unless consumer code touches it, so the documented path is an explicit IndicHyphenation
+         .Register() at startup. Idempotent. -->
     <NoWarn>$(NoWarn);CA2255</NoWarn>
   </PropertyGroup>
 

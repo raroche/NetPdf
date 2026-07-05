@@ -74,43 +74,43 @@ grepping the ID).
 ## hyphens-auto-language-routing
 
 - **ID** — `hyphens-auto-language-routing`
-- **Status** — `approximated`.
-- **Behavior** — `Hyphens.Auto` always applies en-US Liang patterns
-  regardless of the source run's language. Word tokenization in
-  `ApplyLiangPatterns` accepts only ASCII letters [A-Za-z] (+ U+00AD soft
-  hyphens per cycle 3d sub-cycle 1 Rec #6) — apostrophes split contractions
-  ("don't" → "don" / "t"), and non-ASCII letter sequences (e.g., German
-  umlaut, Cyrillic, accented Latin Extended) are skipped entirely.
-  CSS Text L4 `hyphenate-character`, `hyphenate-limit-chars`,
-  `hyphenate-limit-lines`, `hyphenate-limit-zone` are also not implemented.
-- **Missing** —
-  - Per-language Liang pattern routing (de-DE, fr-FR, es-ES, etc.) keyed
-    off each source TextRun's BCP 47 language tag.
-  - UAX #29 word-segmentation so apostrophes inside contractions don't
-    truncate words + non-ASCII letter sequences participate.
-  - CSS Text L4 `hyphenate-character`, `hyphenate-limit-chars`,
-    `hyphenate-limit-lines`, `hyphenate-limit-zone` properties.
-- **Trigger** — corpus adds non-English text needing auto-hyphenation, OR
-  a user-reported case where contractions / accented letters mis-wrap.
+- **Status** — `approximated` (Phase 5: **block-level language routing shipped**; per-run + tokenization +
+  `hyphenate-*` remain).
+- **Behavior** — `Hyphens.Auto` now selects the hyphenator by the block's **effective HTML `lang`** — the
+  nearest `lang` (or `xml:lang`) up the ancestor chain, with an empty value treated as "unknown" per the
+  HTML language algorithm — resolved through the public `HyphenationRegistry`
+  (`BlockLayouter.ResolveEffectiveLanguage` → `HyphenationRegistry.ResolveOrDefault`). An
+  unregistered/unknown language falls back to the bundled en-US hyphenator, so output is byte-identical
+  unless a `NetPdf.Languages.*` pack registered the language. What is still approximated: the hyphenator is
+  resolved **once per inline-only block** (not per source TextRun — a single block that mixes languages uses
+  the block language throughout); word tokenization in `ApplyLiangPatterns` accepts only ASCII letters
+  [A-Za-z] (+ U+00AD) — apostrophes split contractions ("don't" → "don"/"t") and non-ASCII letter sequences
+  (umlaut, Cyrillic, accented Latin Extended) are skipped; and CSS Text L4 `hyphenate-*` is not implemented.
+- **Now closed (Phase 5)** — block effective-`lang` routing; the public `HyphenationRegistry` seam; the
+  `NetPdf.Languages.*` pack mechanism (European de/fr real patterns; CJK/Arabic no-hyphenation; Indic + the
+  remaining European languages registered as routing-aware placeholders).
+- **Still missing** —
+  - **Per-RUN** (mixed-language within one block) hyphenator routing keyed off each source TextRun's `lang`.
+  - UAX #29 word-segmentation so apostrophes inside contractions don't truncate words + non-ASCII letter
+    sequences participate.
+  - CSS Text L4 `hyphenate-character`, `hyphenate-limit-chars`, `hyphenate-limit-lines`,
+    `hyphenate-limit-zone` properties.
+  - The full CTAN `hyph-utf8` (LPPL) per-language pattern data (real patterns for the remaining European +
+    all Indic languages) — maintainer-vendored behind the same `Register` calls, no API change.
+- **Trigger** — a document mixes languages within one paragraph; OR a contraction / accented-letter case
+  mis-wraps; OR a corpus sample needs a `hyphenate-*` property.
 - **Owner files** —
-  - `src/NetPdf.Text/Hyphenation/EnUsHyphenation.cs` siblings — e.g.,
-    `DeDeHyphenation.cs`, `FrFrHyphenation.cs`, etc., loading their
-    Liang TeX pattern resources.
-  - New `NetPdf.Text.Hyphenation.LanguagePackRegistry` (BCP 47 lookup →
-    Hyphenator).
-  - `src/NetPdf.Layout/Inline/LineBuilder.cs::ApplyLiangPatterns` —
-    replace ASCII-letter check with UAX #29 word boundaries + per-language
-    hyphenator selection.
-  - `src/NetPdf.Layout/Inline/Hyphens.cs` XML doc — drop the "deferred"
-    framing once shipped.
-- **Added** — Phase 3 Task 9 cycle 3b sub-cycle 3 (en-US-only Liang +
-  ASCII tokenization); cycle 3d sub-cycle 1 Rec #6 (soft-hyphen
-  suppression); cycle 3d sub-cycle 4 review Finding #1 (per-position
-  Liang gating, which depends on this entry's owner files for the
-  tokenizer when extended).
-- **Removal condition** — at least one non-English language pack ships,
-  the tokenizer uses UAX #29, AND one CSS Text L4 hyphenate-* property
-  is implemented.
+  - `src/NetPdf.Text/Hyphenation/HyphenationRegistry.cs` — the BCP-47 lookup → Hyphenator (shipped).
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `ResolveEffectiveLanguage` + the `LayoutPerRun` call
+    site (block-level routing shipped; extend to per-run for mixed-language blocks).
+  - `src/NetPdf.Layout/Inline/LineBuilder.cs::ApplyLiangPatterns` — replace the ASCII-letter check with
+    UAX #29 word boundaries + per-run hyphenator selection.
+  - `src/NetPdf.Languages.*` packs — vendor the real CTAN pattern data.
+- **Added** — Phase 3 Task 9 cycle 3b sub-cycle 3 (en-US-only Liang + ASCII tokenization); cycle 3d
+  sub-cycle 1 Rec #6 (soft-hyphen suppression). **Narrowed** — Phase 5 (block effective-`lang` routing +
+  the `HyphenationRegistry` seam + the language packs shipped).
+- **Removal condition** — per-run mixed-language routing lands, the tokenizer uses UAX #29, AND at least
+  one CSS Text L4 `hyphenate-*` property is implemented.
 
 ---
 

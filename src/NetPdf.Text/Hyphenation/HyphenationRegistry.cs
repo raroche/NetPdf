@@ -22,11 +22,12 @@ namespace NetPdf.Hyphenation;
 /// rejected by <see cref="Register"/>.</para>
 /// <para><b>Thread-safety.</b> Registration and lookup are concurrent-safe. Registering a language that
 /// is already present replaces it (last registration wins) — a pack can override the built-in English.</para>
-/// <para><b>Layout routing (follow-up).</b> Wiring the block/inline layout pass to resolve a hyphenator
-/// from this registry by the run's <c>lang</c> is a documented follow-up. Until it lands, <c>hyphens:
-/// auto</c> layout hyphenates with the bundled English patterns regardless of the run language, and packs
-/// are exercised through this registry's public API. The internal <see cref="ResolveOrDefault"/> seam is
-/// where that routing will attach.</para>
+/// <para><b>Layout routing.</b> The block layout pass resolves the <c>hyphens: auto</c> hyphenator from a
+/// block's effective HTML <c>lang</c> (nearest <c>lang</c>/<c>xml:lang</c> up the ancestor chain) through
+/// this registry, via the internal <see cref="ResolveOrDefault"/> seam. So a language a pack registered
+/// here is used automatically during rendering. An unregistered/unknown language falls back to the bundled
+/// English hyphenator. Still a follow-up: <b>per-run</b> routing (a single block that mixes languages uses
+/// the block language for all of it) and UAX #29 tokenization.</para>
 /// </remarks>
 public static class HyphenationRegistry
 {

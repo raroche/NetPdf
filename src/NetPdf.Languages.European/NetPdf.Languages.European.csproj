@@ -10,9 +10,11 @@
     <PackageTags>pdf;html-to-pdf;hyphenation;european;german;french;i18n;typography</PackageTags>
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>
-    <!-- CA2255: a [ModuleInitializer] registers the pack's hyphenators the moment the assembly loads —
-         that IS the deliberate, documented plug-in mechanism for the NetPdf.Languages.* packs (adding
-         the package is all a consumer does). The registration is idempotent + allocation-light. -->
+    <!-- CA2255: a [ModuleInitializer] auto-registers the pack's hyphenators once this assembly is loaded —
+         a best-effort convenience, NOT the primary contract. A referenced package's assembly is not
+         guaranteed to load unless consumer code touches it (or the app roots it), so the DOCUMENTED path is
+         an explicit EuropeanHyphenation.Register() at startup; the initializer just covers the common case.
+         Registration is idempotent + allocation-light. -->
     <NoWarn>$(NoWarn);CA2255</NoWarn>
   </PropertyGroup>
 

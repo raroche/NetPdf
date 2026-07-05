@@ -140,6 +140,16 @@ internal static class FragmentPainter
             var style = fragment.Box.Style;
             if (style is null) continue;
 
+            // Anonymous boxes — BoxBuilder's anonymous-block / -inline wrappers for a block's or table
+            // cell's inline content (Display L3 §2.1) — REUSE the parent's style REF on purpose, so
+            // InlineVerticalAlign can detect block-direct text via ReferenceEquals and suppress the cell's
+            // own vertical-align. They therefore also carry the parent's (non-inheritable) border /
+            // background, which must NOT paint: otherwise a bordered / padded table cell's border is
+            // painted a SECOND time at the content box (the "extra square inside each cell" bug). This is
+            // the DECORATION pass only; the anonymous box's inline TEXT is painted by the separate text
+            // pass, so skipping it here drops the spurious decoration without losing content.
+            if (fragment.Box.Kind is BoxKind.AnonymousBlock or BoxKind.AnonymousInline) continue;
+
             // Non-block-pagination arc (flex item / grid cell content) — a content
             // fragment whose box == the item paints TEXT ONLY (a separate pass): its box
             // decoration (background / borders / outline) is already painted by the item's

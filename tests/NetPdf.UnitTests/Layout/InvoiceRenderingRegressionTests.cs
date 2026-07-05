@@ -1,7 +1,10 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Linq;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using NetPdf;
@@ -84,6 +87,42 @@ public sealed class InvoiceRenderingRegressionTests
         var result = HtmlPdf.ConvertDetailed(Page(body), Opts());
 
         Assert.DoesNotContain(result.Warnings, d => d.Code == "CSS-PROPERTY-VALUE-INVALID-001");
+    }
+
+    // ── Bug D: table-cell border painted twice ────────────────────────────────────────────
+    // A bordered <td> must paint its border ONCE (at the border-box), not a second time inset
+    // at the content box (the "extra square inside each cell"). The cause was the anonymous
+    // block wrapping the cell's inline content inheriting the cell's (non-inheritable) border.
+
+    [Fact]
+    public void Table_cell_border_is_painted_once_not_doubled()
+    {
+        var pdf = HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page{margin:20mm}"
+            + "table{border-collapse:collapse}td{border:1px solid #999;padding:6px 8px}</style></head>"
+            + "<body><table><tr><td>A</td></tr></table></body></html>", Opts());
+
+        // One cell, four border edges = four filled rectangles. Pre-fix there were eight
+        // (an extra inset square from the content-box border).
+        var rects = Regex.Matches(FirstContentStreamWithRects(pdf), @"[\d.]+ [\d.]+ [\d.]+ [\d.]+ re").Count;
+        Assert.Equal(4, rects);
+    }
+
+    private static string FirstContentStreamWithRects(byte[] pdf)
+    {
+        var s = Encoding.Latin1.GetString(pdf);
+        var i = s.IndexOf("stream", StringComparison.Ordinal);
+        while (i >= 0)
+        {
+            var start = s.IndexOf('\n', i) + 1;
+            var end = s.IndexOf("endstream", start, StringComparison.Ordinal);
+            if (end < 0) break;
+            var body = s.Substring(start, end - start);
+            if (body.Contains(" re")) return body;
+            i = s.IndexOf("stream", end, StringComparison.Ordinal);
+        }
+
+        return string.Empty;
     }
 
     private sealed class SynthResolver : IFontResolver

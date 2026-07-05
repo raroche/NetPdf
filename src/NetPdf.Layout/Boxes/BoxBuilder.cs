@@ -884,6 +884,13 @@ internal static class BoxBuilder
         static void FlushRun(Box parent, ref List<Box>? run)
         {
             if (run is null || run.Count == 0) return;
+            // The anonymous block REUSES the parent's style REF on purpose: the anonymous direct-text
+            // runs also reuse it (BoxBuilder text-run creation), and InlineVerticalAlign detects
+            // "block-direct text" by ReferenceEquals(runStyle, blockStyle) to suppress a cell's/block's
+            // own `vertical-align` on its direct text. Its NON-inheritable box decorations (border,
+            // background) must NOT paint on this anonymous wrapper, though — the painter skips them for
+            // anonymous boxes (see FragmentDecorationPainter), which is what prevents the cell's border
+            // from being painted a second time at the content box ("extra square inside each cell").
             var wrapper = Box.Anonymous(BoxKind.AnonymousBlock, parent.Style);
             foreach (var child in run) wrapper.AppendChild(child);
             parent.AppendChild(wrapper);

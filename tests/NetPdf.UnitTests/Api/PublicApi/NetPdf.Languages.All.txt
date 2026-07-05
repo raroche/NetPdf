@@ -1,0 +1,2 @@
+static class NetPdf.Languages.All.AllLanguages
+    method System.Void Register()

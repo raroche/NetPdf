@@ -1,0 +1,2 @@
+static class NetPdf.Languages.Cjk.CjkHyphenation
+    method System.Void Register()

@@ -1,0 +1,2 @@
+static class NetPdf.Languages.European.EuropeanHyphenation
+    method System.Void Register()

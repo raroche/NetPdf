@@ -1,0 +1,110 @@
+struct NetPdf.Layout.Boxes.CssContentList+MarginContentContext : System.IEquatable<NetPdf.Layout.Boxes.CssContentList+MarginContentContext>
+    .ctor(System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStrings, System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElements, System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStringsFirst = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElementsFirst = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>>? RunningElementStyles = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>>? RunningElementStylesFirst = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningSegment>>? RunningElementSegments = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningSegment>>? RunningElementSegmentsFirst = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningContainer>>? RunningElementContainers = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningContainer>>? RunningElementContainersFirst = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStringsStart = null, System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElementsStart = null)
+    method System.Boolean Equals(NetPdf.Layout.Boxes.CssContentList+MarginContentContext other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Layout.Boxes.CssContentList+MarginContentContext left, NetPdf.Layout.Boxes.CssContentList+MarginContentContext right)
+    method System.Boolean op_Inequality(NetPdf.Layout.Boxes.CssContentList+MarginContentContext left, NetPdf.Layout.Boxes.CssContentList+MarginContentContext right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStrings, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElements, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStringsFirst, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElementsFirst, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>>? RunningElementStyles, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>>? RunningElementStylesFirst, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningSegment>>? RunningElementSegments, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningSegment>>? RunningElementSegmentsFirst, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningContainer>>? RunningElementContainers, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningContainer>>? RunningElementContainersFirst, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStringsStart, out System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElementsStart)
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningContainer>>? RunningElementContainers { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningContainer>>? RunningElementContainersFirst { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningSegment>>? RunningElementSegments { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<NetPdf.Layout.Boxes.CssContentList+RunningSegment>>? RunningElementSegmentsFirst { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>>? RunningElementStyles { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>>? RunningElementStylesFirst { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStrings { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStringsFirst { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? NamedStringsStart { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElements { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElementsFirst { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? RunningElementsStart { get;set; }
+struct NetPdf.Layout.Boxes.CssContentList+PageCounters : System.IEquatable<NetPdf.Layout.Boxes.CssContentList+PageCounters>
+    .ctor(System.Int32 page, System.Int32 pages)
+    method System.Boolean Equals(NetPdf.Layout.Boxes.CssContentList+PageCounters other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Layout.Boxes.CssContentList+PageCounters left, NetPdf.Layout.Boxes.CssContentList+PageCounters right)
+    method System.Boolean op_Inequality(NetPdf.Layout.Boxes.CssContentList+PageCounters left, NetPdf.Layout.Boxes.CssContentList+PageCounters right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    property System.Int32 Page { get; }
+    property System.Int32 Pages { get; }
+struct NetPdf.Layout.Boxes.CssContentList+RunningContainer : System.IEquatable<NetPdf.Layout.Boxes.CssContentList+RunningContainer>
+    .ctor(System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> Decoration, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> OwnStyle, System.Int32 FirstSegment, System.Int32 LastSegment, System.Double MarginLeftPx = 0, System.Double MarginRightPx = 0, System.Double LeadingInsidePx = 0, System.Double TrailingInsidePx = 0)
+    method System.Boolean Equals(NetPdf.Layout.Boxes.CssContentList+RunningContainer other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Layout.Boxes.CssContentList+RunningContainer left, NetPdf.Layout.Boxes.CssContentList+RunningContainer right)
+    method System.Boolean op_Inequality(NetPdf.Layout.Boxes.CssContentList+RunningContainer left, NetPdf.Layout.Boxes.CssContentList+RunningContainer right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> Decoration, out System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> OwnStyle, out System.Int32 FirstSegment, out System.Int32 LastSegment, out System.Double MarginLeftPx, out System.Double MarginRightPx, out System.Double LeadingInsidePx, out System.Double TrailingInsidePx)
+    property System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> Decoration { get;set; }
+    property System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> OwnStyle { get;set; }
+    property System.Double LeadingInsidePx { get;set; }
+    property System.Double MarginLeftPx { get;set; }
+    property System.Double MarginRightPx { get;set; }
+    property System.Double TrailingInsidePx { get;set; }
+    property System.Int32 FirstSegment { get;set; }
+    property System.Int32 LastSegment { get;set; }
+struct NetPdf.Layout.Boxes.CssContentList+RunningSegment : System.IEquatable<NetPdf.Layout.Boxes.CssContentList+RunningSegment>
+    .ctor(System.String Text, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> OwnStyle, System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>? Decoration = null, System.Double MarginTopPx = 0, System.Double MarginBottomPx = 0, System.Double PaddingTopPx = 0, System.Double PaddingBottomPx = 0, System.Double PaddingLeftPx = 0, System.Double PaddingRightPx = 0, System.Double MarginLeftPx = 0, System.Double MarginRightPx = 0)
+    method System.Boolean Equals(NetPdf.Layout.Boxes.CssContentList+RunningSegment other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Layout.Boxes.CssContentList+RunningSegment left, NetPdf.Layout.Boxes.CssContentList+RunningSegment right)
+    method System.Boolean op_Inequality(NetPdf.Layout.Boxes.CssContentList+RunningSegment left, NetPdf.Layout.Boxes.CssContentList+RunningSegment right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.String Text, out System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> OwnStyle, out System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>? Decoration, out System.Double MarginTopPx, out System.Double MarginBottomPx, out System.Double PaddingTopPx, out System.Double PaddingBottomPx, out System.Double PaddingLeftPx, out System.Double PaddingRightPx, out System.Double MarginLeftPx, out System.Double MarginRightPx)
+    property System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>> OwnStyle { get;set; }
+    property System.Collections.Generic.IReadOnlyList<System.Collections.Generic.KeyValuePair<System.String, System.String>>? Decoration { get;set; }
+    property System.Double MarginBottomPx { get;set; }
+    property System.Double MarginLeftPx { get;set; }
+    property System.Double MarginRightPx { get;set; }
+    property System.Double MarginTopPx { get;set; }
+    property System.Double PaddingBottomPx { get;set; }
+    property System.Double PaddingLeftPx { get;set; }
+    property System.Double PaddingRightPx { get;set; }
+    property System.Double PaddingTopPx { get;set; }
+    property System.String Text { get;set; }
+enum NetPdf.Layout.Boxes.DisplayMapper+DisplayMappingResult : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Byte value__
+    field const NetPdf.Layout.Boxes.DisplayMapper+DisplayMappingResult Contents
+    field const NetPdf.Layout.Boxes.DisplayMapper+DisplayMappingResult None
+    field const NetPdf.Layout.Boxes.DisplayMapper+DisplayMappingResult Resolved
+    field const NetPdf.Layout.Boxes.DisplayMapper+DisplayMappingResult Unsupported
+struct NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox : System.IEquatable<NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox>
+    .ctor(System.Double ContentInlineSize, System.Double ContentBlockSize, System.Double ContentInlineOffset, System.Double ContentBlockOffset, System.Double BorderPaddingBlockSum)
+    method System.Boolean Equals(NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox left, NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox right)
+    method System.Boolean op_Inequality(NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox left, NetPdf.Layout.Layouters.BlockLayouter+MulticolGeometryHelper+ContentBox right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double ContentInlineSize, out System.Double ContentBlockSize, out System.Double ContentInlineOffset, out System.Double ContentBlockOffset, out System.Double BorderPaddingBlockSum)
+    property System.Double BorderPaddingBlockSum { get;set; }
+    property System.Double ContentBlockOffset { get;set; }
+    property System.Double ContentBlockSize { get;set; }
+    property System.Double ContentInlineOffset { get;set; }
+    property System.Double ContentInlineSize { get;set; }
+delegate NetPdf.Layout.Layouters.GridSizing+EmitDiagnostic : System.ICloneable, System.Runtime.Serialization.ISerializable
+    .ctor(System.Object object, System.IntPtr method)
+    method System.IAsyncResult BeginInvoke(NetPdf.Paginate.Diagnostics.PaginateDiagnostic diagnostic, System.AsyncCallback callback, System.Object object)
+    method System.Void EndInvoke(System.IAsyncResult result)
+    method System.Void Invoke(NetPdf.Paginate.Diagnostics.PaginateDiagnostic diagnostic)
+delegate NetPdf.Layout.Layouters.GridSizing+GridContentMeasurer : System.ICloneable, System.Runtime.Serialization.ISerializable
+    .ctor(System.Object object, System.IntPtr method)
+    method System.Double EndInvoke(System.IAsyncResult result)
+    method System.Double Invoke(NetPdf.Layout.Boxes.Box item, System.Double availableInlineSize)
+    method System.IAsyncResult BeginInvoke(NetPdf.Layout.Boxes.Box item, System.Double availableInlineSize, System.AsyncCallback callback, System.Object object)
+class NetPdf.Layout.Layouters.GridSizing+Result
+    .ctor()
+    property System.Boolean HasExplicitTracks { get; }
+    property System.Boolean IsGeometryFinite { get;set; }
+    property System.Collections.Generic.List<NetPdf.Layout.Layouters.PlacedItem> PlacedItems { get;set; }
+    property System.Collections.Generic.List<System.Double> ColPositions { get;set; }
+    property System.Collections.Generic.List<System.Double> ColSizes { get;set; }
+    property System.Collections.Generic.List<System.Double> RowPositions { get;set; }
+    property System.Collections.Generic.List<System.Double> RowSizes { get;set; }
+    property System.Double RowExtentSum { get; }
+    property System.Double RowGap { get;set; }
+    property System.Int32 RowVisibleGutterCount { get;set; }

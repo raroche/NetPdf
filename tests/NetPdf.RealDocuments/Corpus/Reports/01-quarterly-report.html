@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<!--
+  Corpus sample — a multi-section quarterly report that PAGINATES: several regional sections, each a heading
+  plus a data table, so the content fragments across pages and exercises the break resolver + repeated table
+  headers. Self-contained (pure CSS, no remote resources).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quarterly Business Review — Q2 2026</title>
+<style>
+  @page { size: A4; margin: 20mm; @bottom-right { content: counter(page); } }
+  body { font-family: Georgia, "Times New Roman", serif; font-size: 11px; color: #222; margin: 0; }
+  h1 { font-size: 24px; color: #0b3d2e; border-bottom: 4px solid #0b3d2e; padding-bottom: 8px; }
+  .subtitle { color: #5a6b64; font-size: 12px; margin-top: 4px; }
+  h2 { font-size: 15px; color: #0b3d2e; margin-top: 22px; break-after: avoid; }
+  p { line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; break-inside: auto; }
+  thead { display: table-header-group; }
+  th { background-color: #0b3d2e; color: #fff; text-align: left; padding: 5px 8px; font-size: 10px; }
+  th.num, td.num { text-align: right; }
+  td { padding: 5px 8px; border-bottom: 1px solid #dfe5e2; }
+  tr:nth-child(even) td { background-color: #f4f7f5; }
+  .kpi { font-weight: bold; color: #0b3d2e; }
+</style>
+</head>
+<body>
+  <h1>Quarterly Business Review</h1>
+  <div class="subtitle">Q2 2026 · Prepared for the board · Confidential</div>
+
+  <p>Consolidated revenue grew <span class="kpi">14.2%</span> quarter-over-quarter, led by the West and
+  International regions. Gross margin held at 61%, and net new customers rose to 1,284. The regional detail
+  below breaks out bookings, expansion, and churn for each territory.</p>
+
+  <h2>West Region</h2>
+  <table>
+    <thead><tr><th>Account</th><th>Segment</th><th class="num">Bookings ($K)</th><th class="num">Expansion ($K)</th><th class="num">Churn ($K)</th></tr></thead>
+    <tbody>
+      <tr><td>Cascade Systems</td><td>Enterprise</td><td class="num">184</td><td class="num">42</td><td class="num">0</td></tr>
+      <tr><td>Pacific Retail Group</td><td>Mid-Market</td><td class="num">96</td><td class="num">18</td><td class="num">6</td></tr>
+      <tr><td>Sierra Health</td><td>Enterprise</td><td class="num">240</td><td class="num">55</td><td class="num">0</td></tr>
+      <tr><td>Golden Gate Media</td><td>SMB</td><td class="num">31</td><td class="num">4</td><td class="num">2</td></tr>
+      <tr><td>Redwood Logistics</td><td>Mid-Market</td><td class="num">118</td><td class="num">27</td><td class="num">9</td></tr>
+    </tbody>
+  </table>
+
+  <h2>East Region</h2>
+  <table>
+    <thead><tr><th>Account</th><th>Segment</th><th class="num">Bookings ($K)</th><th class="num">Expansion ($K)</th><th class="num">Churn ($K)</th></tr></thead>
+    <tbody>
+      <tr><td>Atlantic Financial</td><td>Enterprise</td><td class="num">312</td><td class="num">61</td><td class="num">0</td></tr>
+      <tr><td>Harbor Point Retail</td><td>Mid-Market</td><td class="num">88</td><td class="num">12</td><td class="num">14</td></tr>
+      <tr><td>Beacon Education</td><td>Public</td><td class="num">140</td><td class="num">20</td><td class="num">0</td></tr>
+      <tr><td>Empire Manufacturing</td><td>Enterprise</td><td class="num">205</td><td class="num">33</td><td class="num">7</td></tr>
+      <tr><td>Coastal Media</td><td>SMB</td><td class="num">27</td><td class="num">3</td><td class="num">1</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Central Region</h2>
+  <table>
+    <thead><tr><th>Account</th><th>Segment</th><th class="num">Bookings ($K)</th><th class="num">Expansion ($K)</th><th class="num">Churn ($K)</th></tr></thead>
+    <tbody>
+      <tr><td>Prairie Insurance</td><td>Enterprise</td><td class="num">176</td><td class="num">29</td><td class="num">3</td></tr>
+      <tr><td>Midwest Grocers</td><td>Mid-Market</td><td class="num">102</td><td class="num">16</td><td class="num">5</td></tr>
+      <tr><td>Lakeside Utilities</td><td>Public</td><td class="num">158</td><td class="num">22</td><td class="num">0</td></tr>
+      <tr><td>Cornerstone Bank</td><td>Enterprise</td><td class="num">221</td><td class="num">40</td><td class="num">0</td></tr>
+      <tr><td>Trailhead Outfitters</td><td>SMB</td><td class="num">44</td><td class="num">7</td><td class="num">2</td></tr>
+    </tbody>
+  </table>
+
+  <h2>International Region</h2>
+  <table>
+    <thead><tr><th>Account</th><th>Segment</th><th class="num">Bookings ($K)</th><th class="num">Expansion ($K)</th><th class="num">Churn ($K)</th></tr></thead>
+    <tbody>
+      <tr><td>Thames Digital</td><td>Enterprise</td><td class="num">268</td><td class="num">58</td><td class="num">0</td></tr>
+      <tr><td>Rhine Manufacturing</td><td>Mid-Market</td><td class="num">134</td><td class="num">24</td><td class="num">4</td></tr>
+      <tr><td>Nordic Retail</td><td>Mid-Market</td><td class="num">109</td><td class="num">19</td><td class="num">8</td></tr>
+      <tr><td>Pacific Rim Trading</td><td>Enterprise</td><td class="num">297</td><td class="num">64</td><td class="num">0</td></tr>
+      <tr><td>Southern Cross Media</td><td>SMB</td><td class="num">38</td><td class="num">5</td><td class="num">3</td></tr>
+    </tbody>
+  </table>
+
+  <p>Full account-level detail and the reconciliation appendix follow in the data room. Prepared by Finance
+  Operations; figures are preliminary and subject to quarter-end close.</p>
+</body>
+</html>

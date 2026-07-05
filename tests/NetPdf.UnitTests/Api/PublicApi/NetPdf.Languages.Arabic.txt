@@ -1,0 +1,2 @@
+static class NetPdf.Languages.Arabic.ArabicHyphenation
+    method System.Void Register()

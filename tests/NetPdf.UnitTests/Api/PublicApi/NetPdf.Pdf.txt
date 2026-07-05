@@ -1,0 +1,147 @@
+struct NetPdf.Pdf.CornerRadii : System.IEquatable<NetPdf.Pdf.CornerRadii>
+    .ctor(System.Double TopLeftX, System.Double TopLeftY, System.Double TopRightX, System.Double TopRightY, System.Double BottomRightX, System.Double BottomRightY, System.Double BottomLeftX, System.Double BottomLeftY)
+    method NetPdf.Pdf.CornerRadii NormalizedFor(System.Double width, System.Double height)
+    method NetPdf.Pdf.CornerRadii Uniform(System.Double radius)
+    method System.Boolean Equals(NetPdf.Pdf.CornerRadii other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean IsUniformCircular(out System.Double radius)
+    method System.Boolean op_Equality(NetPdf.Pdf.CornerRadii left, NetPdf.Pdf.CornerRadii right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.CornerRadii left, NetPdf.Pdf.CornerRadii right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double TopLeftX, out System.Double TopLeftY, out System.Double TopRightX, out System.Double TopRightY, out System.Double BottomRightX, out System.Double BottomRightY, out System.Double BottomLeftX, out System.Double BottomLeftY)
+    property System.Boolean AnyPositive { get; }
+    property System.Double BottomLeftX { get;set; }
+    property System.Double BottomLeftY { get;set; }
+    property System.Double BottomRightX { get;set; }
+    property System.Double BottomRightY { get;set; }
+    property System.Double TopLeftX { get;set; }
+    property System.Double TopLeftY { get;set; }
+    property System.Double TopRightX { get;set; }
+    property System.Double TopRightY { get;set; }
+struct NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation : System.IEquatable<NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation>
+    .ctor(System.Int32 GlyphIndexByteOffset, System.UInt16 GlyphIndex)
+    method System.Boolean Equals(NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation left, NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation left, NetPdf.Pdf.Fonts.CompositeGlyph+ComponentLocation right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Int32 GlyphIndexByteOffset, out System.UInt16 GlyphIndex)
+    property System.Int32 GlyphIndexByteOffset { get;set; }
+    property System.UInt16 GlyphIndex { get;set; }
+struct NetPdf.Pdf.Images.ConicGradientRasterizer+Stop : System.IEquatable<NetPdf.Pdf.Images.ConicGradientRasterizer+Stop>
+    .ctor(System.Double Position, System.Double R, System.Double G, System.Double B, System.Double A)
+    method System.Boolean Equals(NetPdf.Pdf.Images.ConicGradientRasterizer+Stop other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.Images.ConicGradientRasterizer+Stop left, NetPdf.Pdf.Images.ConicGradientRasterizer+Stop right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.Images.ConicGradientRasterizer+Stop left, NetPdf.Pdf.Images.ConicGradientRasterizer+Stop right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double Position, out System.Double R, out System.Double G, out System.Double B, out System.Double A)
+    property System.Double A { get;set; }
+    property System.Double B { get;set; }
+    property System.Double G { get;set; }
+    property System.Double Position { get;set; }
+    property System.Double R { get;set; }
+static class NetPdf.Pdf.Images.ImageSafetyValidator
+    field const System.Int32 MaxBytes
+    field const System.Int32 MaxDimension
+    field const System.Int32 MaxRasterDimension
+    field const System.Int64 MaxPixelArea
+    field const System.Int64 MaxRasterPixelArea
+    method NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat SniffFormat(System.ReadOnlySpan<System.Byte> bytes)
+    method NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult Validate(System.ReadOnlySpan<System.Byte> bytes)
+enum NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat Avif
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat Bmp
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat Gif
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat Jpeg
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat Png
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat Unknown
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat WebP
+enum NetPdf.Pdf.Images.ImageSafetyValidator+ImageSafetyVerdict : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageSafetyVerdict Safe
+    field const NetPdf.Pdf.Images.ImageSafetyValidator+ImageSafetyVerdict Unsafe
+struct NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult : System.IEquatable<NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult>
+    .ctor(NetPdf.Pdf.Images.ImageSafetyValidator+ImageSafetyVerdict Verdict, System.String? Reason, NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat DetectedFormat)
+    method System.Boolean Equals(NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult left, NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult left, NetPdf.Pdf.Images.ImageSafetyValidator+ValidationResult right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out NetPdf.Pdf.Images.ImageSafetyValidator+ImageSafetyVerdict Verdict, out System.String? Reason, out NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat DetectedFormat)
+    property NetPdf.Pdf.Images.ImageSafetyValidator+ImageFormat DetectedFormat { get;set; }
+    property NetPdf.Pdf.Images.ImageSafetyValidator+ImageSafetyVerdict Verdict { get;set; }
+    property System.Boolean IsSafe { get; }
+    property System.String? Reason { get;set; }
+struct NetPdf.Pdf.Images.LinearGradientRasterizer+Stop : System.IEquatable<NetPdf.Pdf.Images.LinearGradientRasterizer+Stop>
+    .ctor(System.Double Offset, System.Double R, System.Double G, System.Double B, System.Double A)
+    method System.Boolean Equals(NetPdf.Pdf.Images.LinearGradientRasterizer+Stop other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.Images.LinearGradientRasterizer+Stop left, NetPdf.Pdf.Images.LinearGradientRasterizer+Stop right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.Images.LinearGradientRasterizer+Stop left, NetPdf.Pdf.Images.LinearGradientRasterizer+Stop right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double Offset, out System.Double R, out System.Double G, out System.Double B, out System.Double A)
+    property System.Double A { get;set; }
+    property System.Double B { get;set; }
+    property System.Double G { get;set; }
+    property System.Double Offset { get;set; }
+    property System.Double R { get;set; }
+struct NetPdf.Pdf.Images.RadialGradientRasterizer+Stop : System.IEquatable<NetPdf.Pdf.Images.RadialGradientRasterizer+Stop>
+    .ctor(System.Double Offset, System.Double R, System.Double G, System.Double B, System.Double A)
+    method System.Boolean Equals(NetPdf.Pdf.Images.RadialGradientRasterizer+Stop other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.Images.RadialGradientRasterizer+Stop left, NetPdf.Pdf.Images.RadialGradientRasterizer+Stop right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.Images.RadialGradientRasterizer+Stop left, NetPdf.Pdf.Images.RadialGradientRasterizer+Stop right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double Offset, out System.Double R, out System.Double G, out System.Double B, out System.Double A)
+    property System.Double A { get;set; }
+    property System.Double B { get;set; }
+    property System.Double G { get;set; }
+    property System.Double Offset { get;set; }
+    property System.Double R { get;set; }
+struct NetPdf.Pdf.PdfGradientStop : System.IEquatable<NetPdf.Pdf.PdfGradientStop>
+    .ctor(System.Double Offset, System.Double R, System.Double G, System.Double B)
+    method System.Boolean Equals(NetPdf.Pdf.PdfGradientStop other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.PdfGradientStop left, NetPdf.Pdf.PdfGradientStop right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.PdfGradientStop left, NetPdf.Pdf.PdfGradientStop right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double Offset, out System.Double R, out System.Double G, out System.Double B)
+    property System.Double B { get;set; }
+    property System.Double G { get;set; }
+    property System.Double Offset { get;set; }
+    property System.Double R { get;set; }
+struct NetPdf.Pdf.PdfPathSegment : System.IEquatable<NetPdf.Pdf.PdfPathSegment>
+    .ctor(NetPdf.Pdf.PdfPathVerb Verb, System.Double X1, System.Double Y1, System.Double X2, System.Double Y2, System.Double X3, System.Double Y3)
+    method NetPdf.Pdf.PdfPathSegment Curve(System.Double x1, System.Double y1, System.Double x2, System.Double y2, System.Double x3, System.Double y3)
+    method NetPdf.Pdf.PdfPathSegment Line(System.Double x, System.Double y)
+    method NetPdf.Pdf.PdfPathSegment Move(System.Double x, System.Double y)
+    method System.Boolean Equals(NetPdf.Pdf.PdfPathSegment other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Pdf.PdfPathSegment left, NetPdf.Pdf.PdfPathSegment right)
+    method System.Boolean op_Inequality(NetPdf.Pdf.PdfPathSegment left, NetPdf.Pdf.PdfPathSegment right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out NetPdf.Pdf.PdfPathVerb Verb, out System.Double X1, out System.Double Y1, out System.Double X2, out System.Double Y2, out System.Double X3, out System.Double Y3)
+    property NetPdf.Pdf.PdfPathSegment Close { get; }
+    property NetPdf.Pdf.PdfPathVerb Verb { get;set; }
+    property System.Double X1 { get;set; }
+    property System.Double X2 { get;set; }
+    property System.Double X3 { get;set; }
+    property System.Double Y1 { get;set; }
+    property System.Double Y2 { get;set; }
+    property System.Double Y3 { get;set; }
+enum NetPdf.Pdf.PdfPathVerb : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Byte value__
+    field const NetPdf.Pdf.PdfPathVerb Close
+    field const NetPdf.Pdf.PdfPathVerb CurveTo
+    field const NetPdf.Pdf.PdfPathVerb LineTo
+    field const NetPdf.Pdf.PdfPathVerb MoveTo

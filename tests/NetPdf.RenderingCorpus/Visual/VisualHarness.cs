@@ -27,15 +27,19 @@ public static class VisualHarness
     public static IReadOnlyList<string> DiffableInvoices { get; } = new[]
     {
         "01-classic-pure-css.html",
+        // Vendored self-contained copy in CorpusDir — the two remote raster logos/heart of the upstream
+        // Anvil invoice are replaced by inline SVG data: URIs, so it renders fetch-free and deterministically
+        // (running elements + @page margin boxes + page counters exercise paged-media). RH-4.
+        "04-anvil-running-elements.html",
     };
 
     /// <summary>Upstream corpus invoices deliberately left out of the visual gate, with the reason (NO silent
-    /// caps). Tailwind needs runtime JS; the Anvil invoice still carries remote images pending vendoring.</summary>
+    /// caps). Only the Tailwind-CDN invoices remain excluded — they need runtime JS to emit their utility CSS,
+    /// so they render unstyled and can't be diffed against a browser reference.</summary>
     public static IReadOnlyDictionary<string, string> ExcludedInvoices { get; } = new Dictionary<string, string>
     {
         ["02-tailwind-cdn.html"] = "Tailwind CDN needs runtime JS to emit utility CSS; renders unstyled without it.",
         ["03-tailwind-cdn-responsive.html"] = "Tailwind CDN (responsive) — same runtime-JS limitation.",
-        ["04-anvil-running-elements.html"] = "Carries remote logo/heart images; vendor them as data: URIs into the harness corpus first.",
     };
 
     /// <summary>The repo root (the directory containing <c>NetPdf.slnx</c>), located by walking up from the

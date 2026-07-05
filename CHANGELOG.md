@@ -8,6 +8,14 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
 
+### Added — Phase 5 (packaging): release hardening — API lock, paint proofs, corpus + diagnostics coverage
+
+- **Public-API surface lock** — `PublicApiSurfaceTests` snapshots the frozen-for-v1 public surface of the six shipping assemblies (facade + five language packs) to committed goldens under `tests/NetPdf.UnitTests/Api/PublicApi/`; any accidental add/remove/signature change fails CI (re-baseline with `UPDATE_API_GOLDEN=1`). Guards the surface in-repo now, ahead of `EnablePackageValidation`'s baseline (which can't exist until 1.0.0 is on nuget.org).
+- **Paint-proof assertions** — `PaintOperatorTests` proves at the PDF-operator level that backgrounds fill (`rg` + `re f` in the exact color), borders render, `transform` applies (a non-identity `cm` rotation matrix), and gradients paint as native shadings (`/Sh … sh`) — the paint-fidelity axis the layout-conformance suite can't cover.
+- **Corpus expansion** — added self-contained (data:-URI-asset) real-document samples beyond invoices: a bank statement (`Corpus/Statements/`) and a paginating quarterly report (`Corpus/Reports/`), auto-covered by the corpus acceptance gate.
+- **`04-anvil` is now visually diffable** — vendored a self-contained copy into `NetPdf.RenderingCorpus` with its two remote raster logos replaced by inline SVG data: URIs, and moved it from the visual gate's excluded list to `DiffableInvoices` (only the runtime-JS Tailwind samples remain excluded).
+- **Diagnostics doc-completeness gate** — `DiagnosticsCodeDocCompletenessTests` reflects every `*DiagnosticCodes` constant across the `NetPdf.*` assemblies and asserts each is documented in `docs/diagnostics-codes.md`, so a new code can't ship undocumented (all 63 current codes are documented).
+
 ### Added — Phase 5 (packaging): release gates — package validation, corpus acceptance, W3C pass-rates, publish workflow (work-breakdown tasks 20–24)
 
 - **Package validation on (task 20)** — `EnablePackageValidation` is enabled for the six packable projects in `Directory.Build.props`; the baseline-free validators run at `dotnet pack` time. All six packages verified to still pack cleanly. The breaking-change baseline (`PackageValidationBaselineVersion=1.0.0`) is set at v1.0.1 (needs 1.0.0 on nuget.org to diff against).

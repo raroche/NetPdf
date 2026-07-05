@@ -1,0 +1,309 @@
+class NetPdf.CachePolicy
+    .ctor()
+    property NetPdf.CachePolicy Default { get; }
+    property System.Int32 MaxCachedFontFaces { get;set; }
+    property System.Int32 MaxCachedGlyphRuns { get;set; }
+    property System.Int32 MaxCachedStylesheets { get;set; }
+enum NetPdf.CssMediaType : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.CssMediaType Print
+    field const NetPdf.CssMediaType Screen
+struct NetPdf.Diagnostic : System.IEquatable<NetPdf.Diagnostic>
+    .ctor(System.String Code, System.String Message, NetPdf.DiagnosticSeverity Severity, NetPdf.SourceLocation Location)
+    .ctor(System.String code, System.String message, NetPdf.DiagnosticSeverity severity)
+    method System.Boolean Equals(NetPdf.Diagnostic other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.Diagnostic left, NetPdf.Diagnostic right)
+    method System.Boolean op_Inequality(NetPdf.Diagnostic left, NetPdf.Diagnostic right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.String Code, out System.String Message, out NetPdf.DiagnosticSeverity Severity, out NetPdf.SourceLocation Location)
+    property NetPdf.DiagnosticSeverity Severity { get;set; }
+    property NetPdf.SourceLocation Location { get;set; }
+    property System.String Code { get;set; }
+    property System.String Message { get;set; }
+enum NetPdf.DiagnosticSeverity : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.DiagnosticSeverity Error
+    field const NetPdf.DiagnosticSeverity Info
+    field const NetPdf.DiagnosticSeverity Warning
+enum NetPdf.FeatureFlags : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.FeatureFlags Default
+    field const NetPdf.FeatureFlags DeterministicTimestamps
+    field const NetPdf.FeatureFlags EnableContainerQueries
+    field const NetPdf.FeatureFlags EnableSubgrid
+    field const NetPdf.FeatureFlags GenerateOutlines
+    field const NetPdf.FeatureFlags StrictUnsupportedCss
+class NetPdf.FontFaceData
+    .ctor()
+    property System.Nullable<NetPdf.FontStyle> Style { get;set; }
+    property System.Nullable<System.Int32> StretchCss { get;set; }
+    property System.Nullable<System.Int32> WeightCss { get;set; }
+    property System.ReadOnlyMemory<System.Byte> Bytes { get;set; }
+    property System.String? Family { get;set; }
+    property System.String? PostScriptName { get;set; }
+    property System.Uri? Source { get;set; }
+struct NetPdf.FontQuery : System.IEquatable<NetPdf.FontQuery>
+    method System.Boolean Equals(NetPdf.FontQuery other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.FontQuery left, NetPdf.FontQuery right)
+    method System.Boolean op_Inequality(NetPdf.FontQuery left, NetPdf.FontQuery right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    property NetPdf.FontStyle Style { get;set; }
+    property System.Int32 WeightCss { get;set; }
+    property System.Nullable<System.Int32> StretchCss { get;set; }
+    property System.String Family { get;set; }
+    property System.String? Language { get;set; }
+    property System.String? Script { get;set; }
+enum NetPdf.FontStyle : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.FontStyle Italic
+    field const NetPdf.FontStyle Normal
+    field const NetPdf.FontStyle Oblique
+static class NetPdf.HtmlPdf
+    method NetPdf.PdfRenderResult ConvertDetailed(System.String html, NetPdf.HtmlPdfOptions? options = null)
+    method System.Byte[] Convert(System.ReadOnlySpan<System.Char> html, NetPdf.HtmlPdfOptions? options = null)
+    method System.Byte[] Convert(System.String html, NetPdf.HtmlPdfOptions? options = null)
+    method System.Threading.Tasks.ValueTask ConvertAsync(System.String html, System.IO.Stream output, NetPdf.HtmlPdfOptions? options = null, System.Threading.CancellationToken ct = null)
+    method System.Threading.Tasks.ValueTask<System.Byte[]> ConvertAsync(System.String html, NetPdf.HtmlPdfOptions? options = null, System.Threading.CancellationToken ct = null)
+    property System.String Version { get; }
+class NetPdf.HtmlPdfException : System.Exception, System.Runtime.Serialization.ISerializable
+    .ctor(System.String code, System.String message)
+    .ctor(System.String code, System.String message, System.Exception innerException)
+    property System.String Code { get; }
+class NetPdf.HtmlPdfOptions
+    .ctor()
+    property NetPdf.CachePolicy CachePolicy { get;set; }
+    property NetPdf.CssMediaType MediaType { get;set; }
+    property NetPdf.FeatureFlags Features { get;set; }
+    property NetPdf.IDiagnosticsSink? Diagnostics { get;set; }
+    property NetPdf.IFontResolver? FontResolver { get;set; }
+    property NetPdf.IResourceLoader? ResourceLoader { get;set; }
+    property NetPdf.PageMargins Margins { get;set; }
+    property NetPdf.PageSize PageSize { get;set; }
+    property NetPdf.PdfVersion EmittedPdfVersion { get;set; }
+    property NetPdf.SecurityPolicy SecurityPolicy { get;set; }
+    property System.Boolean ExactColors { get;set; }
+    property System.Boolean NativeSvgRendering { get;set; }
+    property System.Boolean PreferCssPageSize { get;set; }
+    property System.Boolean PrintBackgrounds { get;set; }
+    property System.Nullable<System.TimeSpan> Timeout { get;set; }
+    property System.String? Author { get;set; }
+    property System.String? Language { get;set; }
+    property System.String? Title { get;set; }
+    property System.Uri? BaseUri { get;set; }
+interface NetPdf.IDiagnosticsSink
+    method System.Void Emit(NetPdf.Diagnostic diagnostic)
+interface NetPdf.IFontResolver
+    method System.Threading.Tasks.ValueTask<NetPdf.FontFaceData> ResolveAsync(NetPdf.FontQuery query, System.Threading.CancellationToken ct)
+interface NetPdf.IResourceLoader
+    method System.Threading.Tasks.ValueTask<NetPdf.ResourceResponse> LoadAsync(System.Uri uri, NetPdf.ResourceKind kind, System.Threading.CancellationToken ct)
+class NetPdf.LayoutMetrics
+    .ctor()
+    property System.Int32 BlockCount { get;set; }
+    property System.Int32 FontFaceCount { get;set; }
+    property System.Int32 FontGlyphCount { get;set; }
+    property System.Int32 ImageCount { get;set; }
+    property System.Int32 InlineCount { get;set; }
+    property System.Int32 PageCount { get;set; }
+    property System.Int32 PaginationOptimizerStateCount { get;set; }
+    property System.Int32 RasterFallbackCount { get;set; }
+    property System.Int32 TextRunCount { get;set; }
+    property System.Int64 TotalDisplayCommands { get;set; }
+struct NetPdf.PageMargins : System.IEquatable<NetPdf.PageMargins>
+    .ctor(System.Double TopPx, System.Double RightPx, System.Double BottomPx, System.Double LeftPx)
+    method NetPdf.PageMargins Symmetric(System.Double verticalPx, System.Double horizontalPx)
+    method NetPdf.PageMargins Uniform(System.Double px)
+    method System.Boolean Equals(NetPdf.PageMargins other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.PageMargins left, NetPdf.PageMargins right)
+    method System.Boolean op_Inequality(NetPdf.PageMargins left, NetPdf.PageMargins right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double TopPx, out System.Double RightPx, out System.Double BottomPx, out System.Double LeftPx)
+    property NetPdf.PageMargins Default { get; }
+    property NetPdf.PageMargins None { get; }
+    property System.Double BottomPx { get;set; }
+    property System.Double LeftPx { get;set; }
+    property System.Double RightPx { get;set; }
+    property System.Double TopPx { get;set; }
+struct NetPdf.PageSize : System.IEquatable<NetPdf.PageSize>
+    .ctor(System.Double WidthPx, System.Double HeightPx)
+    method System.Boolean Equals(NetPdf.PageSize other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.PageSize left, NetPdf.PageSize right)
+    method System.Boolean op_Inequality(NetPdf.PageSize left, NetPdf.PageSize right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Double WidthPx, out System.Double HeightPx)
+    property NetPdf.PageSize A0 { get; }
+    property NetPdf.PageSize A1 { get; }
+    property NetPdf.PageSize A2 { get; }
+    property NetPdf.PageSize A3 { get; }
+    property NetPdf.PageSize A4 { get; }
+    property NetPdf.PageSize A5 { get; }
+    property NetPdf.PageSize A6 { get; }
+    property NetPdf.PageSize B4 { get; }
+    property NetPdf.PageSize B5 { get; }
+    property NetPdf.PageSize Executive { get; }
+    property NetPdf.PageSize Landscape { get; }
+    property NetPdf.PageSize Legal { get; }
+    property NetPdf.PageSize Letter { get; }
+    property NetPdf.PageSize Tabloid { get; }
+    property System.Boolean IsLandscape { get; }
+    property System.Double HeightPx { get;set; }
+    property System.Double WidthPx { get;set; }
+class NetPdf.PdfRenderResult
+    .ctor()
+    property NetPdf.LayoutMetrics LayoutMetrics { get;set; }
+    property NetPdf.TimingBreakdown Timing { get;set; }
+    property System.Byte[] Pdf { get;set; }
+    property System.Collections.Generic.IReadOnlyList<NetPdf.Diagnostic> Warnings { get;set; }
+    property System.Collections.Generic.IReadOnlyList<NetPdf.ResourceFailure> ResourceFailures { get;set; }
+    property System.Collections.Generic.IReadOnlyList<NetPdf.UnsupportedFeature> UnsupportedFeatures { get;set; }
+    property System.Int32 PageCount { get;set; }
+enum NetPdf.PdfVersion : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.PdfVersion V1_4
+    field const NetPdf.PdfVersion V1_5
+    field const NetPdf.PdfVersion V1_6
+    field const NetPdf.PdfVersion V1_7
+    field const NetPdf.PdfVersion V2_0
+class NetPdf.ResourceFailure
+    .ctor()
+    property NetPdf.ResourceKind Kind { get;set; }
+    property System.Exception? Exception { get;set; }
+    property System.String Reason { get;set; }
+    property System.Uri Uri { get;set; }
+class NetPdf.ResourceFetchContext
+    .ctor(NetPdf.SecurityPolicy policy, System.Uri? baseUri, System.Threading.CancellationToken cancellationToken)
+    method System.String? TryAddBytes(System.Int64 bytes)
+    method System.String? TryReserveSlot()
+    property NetPdf.SecurityPolicy Policy { get; }
+    property System.Int32 FetchedCount { get; }
+    property System.Int64 FetchedBytes { get; }
+    property System.Threading.CancellationToken CancellationToken { get; }
+    property System.Uri? BaseUri { get; }
+enum NetPdf.ResourceKind : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.ResourceKind Font
+    field const NetPdf.ResourceKind Image
+    field const NetPdf.ResourceKind Other
+    field const NetPdf.ResourceKind Stylesheet
+struct NetPdf.ResourceResponse : System.IEquatable<NetPdf.ResourceResponse>
+    method System.Boolean Equals(NetPdf.ResourceResponse other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.ResourceResponse left, NetPdf.ResourceResponse right)
+    method System.Boolean op_Inequality(NetPdf.ResourceResponse left, NetPdf.ResourceResponse right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    property System.ReadOnlyMemory<System.Byte> Content { get;set; }
+    property System.String? CharSet { get;set; }
+    property System.String? MimeType { get;set; }
+class NetPdf.SafeHttpResourceLoader : NetPdf.IResourceLoader, System.IDisposable
+    .ctor(NetPdf.SecurityPolicy? policy = null)
+    method System.Threading.Tasks.ValueTask<NetPdf.ResourceResponse> LoadAsync(System.Uri uri, NetPdf.ResourceKind kind, System.Threading.CancellationToken ct)
+    method System.Void Dispose()
+    property NetPdf.SecurityPolicy Policy { get; }
+class NetPdf.SafeResourceLoader
+    .ctor(NetPdf.IResourceLoader? inner, NetPdf.ResourceFetchContext context)
+    method NetPdf.SafeResourceLoaderWithHttp CreateWithSafeHttp(NetPdf.ResourceFetchContext context)
+    method System.Threading.Tasks.ValueTask<NetPdf.SafeResourceResult> FetchAsync(System.Uri uri, NetPdf.ResourceKind kind)
+class NetPdf.SafeResourceLoaderWithHttp : System.IDisposable
+    method System.Void Dispose()
+    property NetPdf.SafeHttpResourceLoader UnderlyingHttpLoader { get; }
+    property NetPdf.SafeResourceLoader Wrapper { get; }
+struct NetPdf.SafeResourceResult : System.IEquatable<NetPdf.SafeResourceResult>
+    .ctor(System.Boolean Success, NetPdf.ResourceResponse Response, NetPdf.ResourceFailure? Failure)
+    method NetPdf.SafeResourceResult Failed(System.Uri uri, NetPdf.ResourceKind kind, System.String reason)
+    method NetPdf.SafeResourceResult Loaded(NetPdf.ResourceResponse response)
+    method System.Boolean Equals(NetPdf.SafeResourceResult other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.SafeResourceResult left, NetPdf.SafeResourceResult right)
+    method System.Boolean op_Inequality(NetPdf.SafeResourceResult left, NetPdf.SafeResourceResult right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.Boolean Success, out NetPdf.ResourceResponse Response, out NetPdf.ResourceFailure? Failure)
+    property NetPdf.ResourceFailure? Failure { get;set; }
+    property NetPdf.ResourceResponse Response { get;set; }
+    property System.Boolean Success { get;set; }
+class NetPdf.SecurityPolicy
+    .ctor()
+    property NetPdf.SecurityPolicy SafeDefault { get; }
+    property NetPdf.SecurityPolicy TrustedTemplate { get; }
+    property NetPdf.SecurityPolicy UntrustedHtml { get; }
+    property System.Boolean AllowDataUri { get;set; }
+    property System.Boolean AllowFileScheme { get;set; }
+    property System.Boolean AllowFileSchemeUnderBaseUri { get;set; }
+    property System.Boolean AllowHttpScheme { get;set; }
+    property System.Boolean AllowHttpsScheme { get;set; }
+    property System.Collections.Generic.IReadOnlyList<System.String> AllowedHosts { get;set; }
+    property System.Int32 MaxPages { get;set; }
+    property System.Int32 MaxRedirectHops { get;set; }
+    property System.Int32 MaxResourcesPerRender { get;set; }
+    property System.Int64 MaxOutputBytes { get;set; }
+    property System.Int64 MaxResourceBytes { get;set; }
+    property System.Int64 MaxTotalResourceBytes { get;set; }
+    property System.TimeSpan ResourceTimeout { get;set; }
+struct NetPdf.SourceLocation : System.IEquatable<NetPdf.SourceLocation>
+    .ctor(System.String? File, System.Int32 Line, System.Int32 Column)
+    method System.Boolean Equals(NetPdf.SourceLocation other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.SourceLocation left, NetPdf.SourceLocation right)
+    method System.Boolean op_Inequality(NetPdf.SourceLocation left, NetPdf.SourceLocation right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.String? File, out System.Int32 Line, out System.Int32 Column)
+    property NetPdf.SourceLocation Unknown { get; }
+    property System.Int32 Column { get;set; }
+    property System.Int32 Line { get;set; }
+    property System.String? File { get;set; }
+class NetPdf.SystemFontResolver : NetPdf.IFontResolver
+    .ctor()
+    method System.Threading.Tasks.ValueTask<NetPdf.FontFaceData> ResolveAsync(NetPdf.FontQuery query, System.Threading.CancellationToken ct)
+struct NetPdf.TimingBreakdown : System.IEquatable<NetPdf.TimingBreakdown>
+    .ctor(System.TimeSpan Parse, System.TimeSpan Style, System.TimeSpan BoxGeneration, System.TimeSpan Layout, System.TimeSpan Pagination, System.TimeSpan Paint, System.TimeSpan Emit, System.TimeSpan Total)
+    method System.Boolean Equals(NetPdf.TimingBreakdown other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.TimingBreakdown left, NetPdf.TimingBreakdown right)
+    method System.Boolean op_Inequality(NetPdf.TimingBreakdown left, NetPdf.TimingBreakdown right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out System.TimeSpan Parse, out System.TimeSpan Style, out System.TimeSpan BoxGeneration, out System.TimeSpan Layout, out System.TimeSpan Pagination, out System.TimeSpan Paint, out System.TimeSpan Emit, out System.TimeSpan Total)
+    property System.TimeSpan BoxGeneration { get;set; }
+    property System.TimeSpan Emit { get;set; }
+    property System.TimeSpan Layout { get;set; }
+    property System.TimeSpan Pagination { get;set; }
+    property System.TimeSpan Paint { get;set; }
+    property System.TimeSpan Parse { get;set; }
+    property System.TimeSpan Style { get;set; }
+    property System.TimeSpan Total { get;set; }
+class NetPdf.UnsupportedFeature
+    .ctor()
+    property System.Int32 OccurrenceCount { get;set; }
+    property System.String Code { get;set; }
+    property System.String Description { get;set; }
+static class NetPdf.UriSafetyValidator
+    method NetPdf.UriSafetyValidator+Verdict Validate(System.Uri uri, NetPdf.SecurityPolicy policy)
+    method NetPdf.UriSafetyValidator+Verdict ValidateRedirect(System.Uri origin, System.Uri redirectTarget, NetPdf.SecurityPolicy policy, System.Int32 hopsAlreadyFollowed)
+    method NetPdf.UriSafetyValidator+Verdict ValidateScheme(System.Uri uri, NetPdf.SecurityPolicy policy)
+    method System.Boolean IsBlockedIp(System.Net.IPAddress ip, out System.String reason)
+enum NetPdf.UriSafetyValidator+SafetyOutcome : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.UriSafetyValidator+SafetyOutcome RequiresBasePathCheck
+    field const NetPdf.UriSafetyValidator+SafetyOutcome Safe
+    field const NetPdf.UriSafetyValidator+SafetyOutcome Unsafe
+struct NetPdf.UriSafetyValidator+Verdict : System.IEquatable<NetPdf.UriSafetyValidator+Verdict>
+    .ctor(NetPdf.UriSafetyValidator+SafetyOutcome Outcome, System.String? Reason)
+    method System.Boolean Equals(NetPdf.UriSafetyValidator+Verdict other)
+    method System.Boolean Equals(System.Object obj)
+    method System.Boolean op_Equality(NetPdf.UriSafetyValidator+Verdict left, NetPdf.UriSafetyValidator+Verdict right)
+    method System.Boolean op_Inequality(NetPdf.UriSafetyValidator+Verdict left, NetPdf.UriSafetyValidator+Verdict right)
+    method System.Int32 GetHashCode()
+    method System.String ToString()
+    method System.Void Deconstruct(out NetPdf.UriSafetyValidator+SafetyOutcome Outcome, out System.String? Reason)
+    property NetPdf.UriSafetyValidator+SafetyOutcome Outcome { get;set; }
+    property System.Boolean IsSafe { get; }
+    property System.String? Reason { get;set; }

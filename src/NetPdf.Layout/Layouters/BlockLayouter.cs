@@ -141,7 +141,7 @@ namespace NetPdf.Layout.Layouters;
 /// so containers with overflowing block-level descendants silently
 /// clipped past the fragmentainer boundary + subsequent siblings
 /// visually overlapped the overflow. Cycle 2c adds
-/// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/> — a pre-measure
+/// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/> — a pre-measure
 /// pass that returns the maximum block-axis extent reached by any
 /// descendant. The break-fit chunk size + cursor advance both use
 /// this measured extent (max of own border-box + descendant bottoms),
@@ -2304,7 +2304,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // inside `EmitBlockSubtreeRecursive`. Deferred to cycle
             // 2d.
             var subtreeBlockExtent = MeasureSubtreeVisualBlockExtent(
-                child, cancellationToken, parentContentBlockSize: fragmentainer.BlockSize);
+                child, cancellationToken, parentContentBlockSize: fragmentainer.BlockSize,
+                // This child's block-start offset on the current page — threaded so a table nested in its
+                // subtree (below preceding content / wrapper padding) reserves the correct remaining page
+                // space in its dry-run, instead of over-committing and tripping a false forced-overflow
+                // that clips the table (offset-table clip fix).
+                blockOffsetOnPage: fragmentainer.UsedBlockSize + topShift);
             // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — for
             // Table / InlineTable wrappers in the OUTER dispatch path,
             // the subtree extent must reflect the SINGLE-PAGE-COMMITTED
@@ -2576,6 +2581,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // of cumulative cross-page extent.
                 var nothingEmittedThisAttempt = emittedThisAttempt == 0;
                 var atTopOfPage = fragmentainer.UsedBlockSize == initialUsed;
+
 
                 if (nothingEmittedThisAttempt && atTopOfPage)
                 {
@@ -4544,7 +4550,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///
     /// <para><b>Cycle 2c subtree-aware cursor advance (this revision).</b>
     /// Per cycle 2c post-PR-29 review #2 — the recursion now also calls
-    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/>
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>
     /// for each child + advances the inner cursor by
     /// <c>max(childBorderBox, childSubtreeExtent)</c>, mirroring the
     /// outer loop's behavior. Pre-cycle-2c-fix the recursion advanced
@@ -9495,12 +9501,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// outer-loop child + the depth cap bounds the work; the outer
     /// loop's CT check still runs between children.</para></summary>
     private double MeasureSubtreeVisualBlockExtent(
-        Box parent, CancellationToken cancellationToken, double parentContentBlockSize = 0)
+        Box parent, CancellationToken cancellationToken, double parentContentBlockSize = 0,
+        double blockOffsetOnPage = 0)
         => MeasureSubtreeVisualBlockExtentRecursive(
-            parent, cancellationToken, depth: 0, parentContentBlockSize);
+            parent, cancellationToken, depth: 0, parentContentBlockSize, blockOffsetOnPage);
 
     /// <summary>Per cycle 2c post-PR-29 review #1 (P0) + #3 (P1) —
-    /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/>.
+    /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>.
     /// Renamed from the same-name overload to fix CS0419 ambiguous cref
     /// errors in class-level XML docs. CT plumbing matches
     /// <see cref="EmitBlockSubtreeRecursive"/> so an oversized broad
@@ -9512,7 +9519,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // DEFINITE containing height — its own `height: N%` resolves against it, and ITS resolved
         // content height chains to the children, mirroring the EMIT pass exactly (a desync here
         // under-reserved the cursor/pagination for %-height subtrees). 0 = indefinite → auto.
-        double parentContentBlockSize = 0)
+        double parentContentBlockSize = 0,
+        // This box's block-start offset on the CURRENT page (accumulated through the recursion). Used so a
+        // nested TABLE's dry-run reserves only the remaining page space when the table starts below the
+        // page top — otherwise the subtree extent overshoots the page and a false forced-overflow clips
+        // the table (offset-table clip fix). 0 = top of page (byte-identical to the pre-fix behavior).
+        double blockOffsetOnPage = 0)
     {
         if (depth > MaxRecursionDepth)
         {
@@ -9616,7 +9628,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // PAGINATION-FORCED-OVERFLOW-001.
             var contentHeight = MeasureNestedTableContentExtent(
                 parent, contentInlineSize, cancellationToken,
-                useDryRunCommittedHeight: true);
+                useDryRunCommittedHeight: true,
+                // The table's rows start after the wrapper's top chrome, at this page offset — so the
+                // dry-run reserves only the remaining page space (offset-table clip fix).
+                tableStartOffsetOnPage: blockOffsetOnPage + pBorderStart + pPaddingStart);
             var wrapperBorderPaddingBlock = pBorderStart + pPaddingStart
                 + pPaddingEnd + pBorderEnd;
             var tableDriven = contentHeight + wrapperBorderPaddingBlock;
@@ -9788,11 +9803,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
             var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
             var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
-            // Recurse — child's subtree extent (= max of child's own
-            // border-box + its descendants).
-            var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
-                child, cancellationToken, depth + 1,
-                parentContentBlockSize: pHeight);   // % height base chains (percent-height cycle).
 
             double topShift;
             if (!hasPrior)
@@ -9805,8 +9815,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 topShift = gap - prevMarginEnd;
             }
 
-            // Child's bottom edge in parent's border-box coordinates.
+            // Child's top edge in the parent's border-box coordinates. Computed BEFORE the recursion so we
+            // can thread the child's page offset (this box's page offset + the child's top within it) — a
+            // nested table's dry-run then reserves only the remaining page space (offset-table clip fix).
             var childTopInParent = contentAreaTop + childCursor + topShift;
+
+            // Recurse — child's subtree extent (= max of child's own border-box + its descendants).
+            var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
+                child, cancellationToken, depth + 1,
+                parentContentBlockSize: pHeight,   // % height base chains (percent-height cycle).
+                blockOffsetOnPage: blockOffsetOnPage + childTopInParent);
             var childBottomInParent = childTopInParent + childSubtreeExtent;
             if (childBottomInParent > maxExtent)
             {
@@ -9987,7 +10005,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var resumeSplitOffset = resumeCont?.RowSplitOffset ?? 0.0;
             var dryRunCommitted = tableLayouter.DryRunCommittedBlockSize(
                 fragmentainer, resumeAt,
-                out _, out _, resumeSplitOffset);
+                out _, out _, resumeSplitOffset,
+                // Size the wrapper for the rows that fit at the table's ACTUAL page offset. In the outer
+                // emit path this equals fragmentainer.UsedBlockSize, but in the nested-recursion path
+                // UsedBlockSize is 0 while the table really starts at `wrapperBlockOffsetExpected` — using
+                // the latter keeps the wrapper's committed size in lockstep with what the emission places,
+                // so an offset table isn't over-sized (which clipped its last-fitting row).
+                startOffsetOverride: wrapperBlockOffsetExpected);
             tableContentHeight = dryRunCommitted;
         }
         else
@@ -10027,7 +10051,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         Box wrapper,
         double contentInlineSize,
         CancellationToken cancellationToken,
-        bool useDryRunCommittedHeight = false)
+        bool useDryRunCommittedHeight = false,
+        // The table's block-start offset on the current page within the subtree being measured. Passed to
+        // the dry-run so it reserves only the REMAINING page space when the table starts below the page top
+        // (offset-table clip fix). < 0 = fall back to fragmentainer.UsedBlockSize (the top-of-page default).
+        double tableStartOffsetOnPage = -1.0)
     {
         _measuredTableContentHeightCache ??= new Dictionary<Box, double>();
         if (!useDryRunCommittedHeight
@@ -10108,7 +10136,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             var dryRunCommitted = transientLayouter.DryRunCommittedBlockSize(
                 _capturedFragmentainer, resumeAtRow: 0,
-                out _, out _);
+                out _, out _,
+                startOffsetOverride: tableStartOffsetOnPage);
             // Caller doesn't cache the dry-run mode — different pages
             // may have different committed extents.
             return dryRunCommitted;
@@ -10236,7 +10265,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 —
     /// compute the flex wrapper's auto cross-extent WITHOUT stacking
     /// its children vertically. The default
-    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/>
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>
     /// path (used by every non-flex wrapper) sums the children's
     /// block-axis extents as if they were laid out in block-flow — for
     /// a flex container with <c>height: auto</c> + items 50/100/75 it

@@ -9,24 +9,21 @@ internal static class Program
 {
     public static int Main(string[] args)
     {
-        // The snippets below mirror the README. Each is wrapped in a try/catch because
-        // the public HtmlPdf.Convert facade still throws NotImplementedException at the
-        // 0.1.0-alpha milestone — the internal byte writer, font subsetter, image
-        // embedders, and text shaping shipped in Phase 1, but the HTML parsing + CSS
-        // cascade glue that this facade depends on lands in Phase 2 (`0.3.0-alpha`).
-        // Once Phase 2 ships, the catches are removed and the snippets become a
-        // CI-validated doc test.
-
+        // The snippets below mirror the README examples 1:1 (one-liner, options, async streaming, detailed).
+        // They run against the live HtmlPdf facade and write their output to the temp directory; every
+        // failure — a typed render failure OR an unexpected fault — is reported and counted so this stays a
+        // CI-validatable doc test (non-zero exit on any failure).
         Console.WriteLine($"NetPdf version {HtmlPdf.Version}");
-        Console.WriteLine("(Phase 1 alpha — internal engine shipped; HtmlPdf.Convert wires up in Phase 2.)");
 
-        TryRun("README example #1: one-liner", static () =>
+        var failures = 0;
+
+        failures += TryRun("README example #1: one-liner", static () =>
         {
             var pdf = HtmlPdf.Convert("<h1>Invoice #1234</h1><p>Hello world.</p>");
             File.WriteAllBytes(Path.Combine(Path.GetTempPath(), "out.pdf"), pdf);
         });
 
-        TryRun("README example #2: with options", static () =>
+        failures += TryRun("README example #2: with options", static () =>
         {
             var html = "<p>Letter-sized doc</p>";
             var pdf = HtmlPdf.Convert(html, new HtmlPdfOptions
@@ -38,31 +35,48 @@ internal static class Program
             File.WriteAllBytes(Path.Combine(Path.GetTempPath(), "letter.pdf"), pdf);
         });
 
-        TryRun("README example #4: detailed mode", static () =>
+        failures += TryRun("README example #3: async streaming", static () =>
+        {
+            var html = "<p>Streaming report body</p>";
+            using var fs = File.Create(Path.Combine(Path.GetTempPath(), "report.pdf"));
+            HtmlPdf.ConvertAsync(html, fs, new HtmlPdfOptions { PreferCssPageSize = true })
+                .AsTask().GetAwaiter().GetResult();
+        });
+
+        failures += TryRun("README example #4: detailed mode", static () =>
         {
             var result = HtmlPdf.ConvertDetailed("<p>hello</p>");
             foreach (var d in result.Warnings)
+            {
                 Console.WriteLine($"  warn [{d.Code}]: {d.Message}");
+            }
         });
 
-        return 0;
+        return failures == 0 ? 0 : 1;
     }
 
-    private static void TryRun(string label, Action body)
+    private static int TryRun(string label, Action body)
     {
         Console.WriteLine($"-- {label}");
         try
         {
             body();
             Console.WriteLine("   ok");
+            return 0;
         }
-        catch (NotImplementedException)
+        catch (HtmlPdfException ex)
         {
-            Console.WriteLine("   skipped (Phase 1 alpha — HtmlPdf.Convert wires up in Phase 2)");
+            // NetPdf surfaces a hard render failure as a typed exception carrying a stable diagnostic code.
+            Console.WriteLine($"   FAILED [{ex.Code}]: {ex.Message}");
+            return 1;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"   FAILED: {ex.GetType().Name}: {ex.Message}");
+            // An UNEXPECTED failure (temp-path I/O, an unforeseen runtime fault) must still be counted and
+            // reported — not abort the process — so the remaining snippets keep running and this stays a
+            // useful CI doc-test diagnostic (review P3 / Copilot).
+            Console.WriteLine($"   FAILED (unexpected {ex.GetType().Name}): {ex.Message}");
+            return 1;
         }
     }
 }

@@ -139,6 +139,34 @@ public sealed class PerformanceGateTests
             + "for 4× pages signals the table is being re-measured per page again).");
     }
 
+    [Fact]
+    [Trait("Category", "Performance")]
+    public void Total_allocation_grows_linearly_across_three_page_counts()
+    {
+        // CLAUDE.md performance gate — "memory grows linearly with page count", stated EXPLICITLY across
+        // THREE points (the guard above is a 2-point per-page check). Render ~1×/2×/4× page workloads and
+        // assert per-page allocation stays in a tight band — i.e. total allocation is ~linear in page count.
+        var a = AllocBytesPerPage(PerfFixtures.Invoice(lineItems: 130), out var pagesA);
+        var b = AllocBytesPerPage(PerfFixtures.Invoice(lineItems: 260), out var pagesB);
+        var c = AllocBytesPerPage(PerfFixtures.Invoice(lineItems: 520), out var pagesC);
+
+        Assert.True(pagesA < pagesB && pagesB < pagesC,
+            $"the fixtures should scale page count monotonically ({pagesA} < {pagesB} < {pagesC}).");
+
+        var min = Math.Min(a, Math.Min(b, c));
+        var max = Math.Max(a, Math.Max(b, c));
+        // Guard the ratio math: a measurement anomaly yielding a zero per-page figure would otherwise turn
+        // the assertion message into a DivideByZero/Infinity instead of a clear failure (review P3 / Copilot).
+        Assert.True(min > 0,
+            $"per-page allocation must be positive; got [{a}, {b}, {c}] bytes/pg — measurement anomaly.");
+        // A super-linear (e.g. O(n²)) total would make the larger renders' per-page allocation climb; a
+        // 1.5× ceiling on the per-page span tolerates fixed-overhead amortization + GC noise but catches it.
+        Assert.True(max < min * 1.5,
+            "allocation should be ~linear in page count: per-page bytes "
+            + $"[{pagesA}pg={a / 1048576.0:F1}, {pagesB}pg={b / 1048576.0:F1}, {pagesC}pg={c / 1048576.0:F1}] "
+            + $"MiB/pg span {max / min:F2}× (> 1.5× signals super-linear growth).");
+    }
+
     private static double AllocBytesPerPage(string html, out int pages)
     {
         var opts = new HtmlPdfOptions { FontResolver = new PerfFixtures.SynthResolver() };

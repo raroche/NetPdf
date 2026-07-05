@@ -129,6 +129,102 @@ See [`docs/compatibility-matrix.md`](docs/compatibility-matrix.md) for the suppo
 See [`docs/diagnostics-codes.md`](docs/diagnostics-codes.md) for the stable diagnostic code registry.
 See [`docs/phases/`](docs/phases/) for per-phase execution guides — what to build, in what order, with exit criteria.
 
+## Recipes: pagination, repeating headers & page numbers
+
+NetPdf is a true **paged-media** engine, so multi-page documents, repeating headers, and page numbers are all **plain CSS** — there is no special API to call. You render the HTML the same way; the layout engine splits it across pages for you. The recipes below are the ones you'll reach for most on invoices, statements, and reports.
+
+### Long documents split across pages automatically
+
+Just render — content that doesn't fit flows onto as many pages as it needs. No option, no flag:
+
+```csharp
+byte[] pdf = HtmlPdf.Convert(longInvoiceHtml);   // a 120-row table → ~6 pages, automatically
+```
+
+### Repeat a table's column headers on every page
+
+Put the headings in `<thead>` — they repeat at the top of each page the table spans. `<tfoot>` repeats a totals row at the bottom:
+
+```css
+thead { display: table-header-group; }   /* column headers repeat on every page */
+tfoot { display: table-footer-group; }   /* optional running totals repeat on every page */
+```
+
+### Repeat a document banner (logo / title) on every page
+
+Two ways — pick whichever fits:
+
+**Simplest — `position: fixed`** (the element is painted on every page):
+
+```css
+@page  { size: A4; margin: 28mm 20mm; }         /* leave headroom for the banner */
+header { position: fixed; top: -20mm; left: 0; right: 0;
+         border-bottom: 2px solid #14396b; font-weight: bold; }
+```
+```html
+<header>ACME Corp — Invoice</header>
+<!-- body content -->
+```
+
+**CSS Paged Media — `@page` margin boxes** (ideal for text headers/footers + page numbers):
+
+```css
+@page {
+  size: A4; margin: 20mm;
+  @top-center   { content: "ACME — Invoice"; }
+  @bottom-right { content: "Page " counter(page) " of " counter(pages); }
+}
+```
+
+For a **rich** running header (e.g. a logo image), mark it as a running element and place it in a margin box: `header { position: running(hdr); }` + `@top-center { content: element(hdr); }`. All 16 `@page` margin boxes plus `counter(page)` / `counter(pages)` / `string()` / `element()` are supported.
+
+### Put each invoice on its own page (one PDF)
+
+Force a page break before each invoice section:
+
+```css
+.invoice              { break-before: page; }
+.invoice:first-child  { break-before: auto; }   /* no blank leading page */
+```
+```html
+<section class="invoice">…invoice 1…</section>
+<section class="invoice">…invoice 2…</section>   <!-- starts on page 2 -->
+```
+
+### One PDF **file** per invoice
+
+NetPdf renders one HTML → one PDF, so split the source and call the API per invoice:
+
+```csharp
+foreach (var (name, html) in invoices)
+    File.WriteAllBytes($"{name}.pdf", HtmlPdf.Convert(html));
+```
+
+### Keep things from breaking awkwardly
+
+```css
+h2 { break-after: avoid; }    /* keep a heading with the content that follows it */
+tr { break-inside: avoid; }   /* never split a line-item row across a page boundary */
+figure, .keep-together { break-inside: avoid; }
+```
+
+### A complete invoice stylesheet
+
+```css
+@page {
+  size: A4; margin: 20mm;
+  @top-left     { content: "Invoice #1234"; }
+  @bottom-right { content: "Page " counter(page) " / " counter(pages); }
+}
+table { width: 100%; border-collapse: collapse; }
+thead { display: table-header-group; }   /* headers repeat every page */
+tfoot { display: table-footer-group; }   /* totals repeat every page */
+tr    { break-inside: avoid; }           /* rows stay whole */
+h2    { break-after: avoid; }            /* section headings stay with their content */
+```
+
+> Two ready-to-run references live in the repo: [`Corpus/Reports/01-quarterly-report.html`](tests/NetPdf.RealDocuments/Corpus/Reports/01-quarterly-report.html) (repeating `thead` + `@page` footer) and [`Corpus/Invoices/04-anvil-running-elements.html`](tests/NetPdf.RealDocuments/Corpus/Invoices/04-anvil-running-elements.html) (running elements + page counters).
+
 ## Language packs
 
 The core `NetPdf` package bundles **en-US** hyphenation. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. Hyphenation then activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`):

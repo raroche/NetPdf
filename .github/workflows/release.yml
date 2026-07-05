@@ -1,0 +1,93 @@
+# Phase-5 task 24 — NuGet publish. Fires when the maintainer pushes a `v*` tag (e.g. `v1.0.0`) after the
+# release PR merges. It rebuilds Release, runs the full test suite, packs the six shipping packages
+# (NetPdf + the five NetPdf.Languages.* packs; the internal NetPdf.* libs are IsPackable=false and bundled
+# into the facade), verifies the tag matches the packed version, and pushes to NuGet.org.
+#
+# SAFETY:
+#   * Publishing is gated on the `nuget-release` GitHub Environment — configure it with a required reviewer
+#     so the push waits for a human approval, and scope the NUGET_API_KEY secret to that environment.
+#   * The version-parity step fails the run if the git tag (`vX.Y.Z`) disagrees with the version MSBuild
+#     actually packed, so a mistagged release can never publish mismatched bytes.
+#   * `--skip-duplicate` makes a re-run idempotent (a package already on nuget.org is skipped, not an error).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to pack + publish (e.g. v1.0.0). Must match Directory.Build.props version."
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: pack + publish to NuGet.org
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Bind the NUGET_API_KEY secret to this environment; add a required reviewer there to hold the push
+    # for manual approval (Settings → Environments → nuget-release).
+    environment: nuget-release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::Release tag '$TAG' must start with 'v' (e.g. v1.0.0)."; exit 1;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (Release, 0 warnings)
+        run: dotnet build NetPdf.slnx -c Release --nologo
+
+      - name: Test
+        run: dotnet test NetPdf.slnx -c Release --no-build --nologo
+
+      # Pack the whole solution; only the 6 IsPackable=true projects emit a package (EnablePackageValidation
+      # runs here). Symbols (.snupkg) are produced alongside via IncludeSymbols in Directory.Build.props.
+      - name: Pack (6 packages + symbols)
+        run: dotnet pack NetPdf.slnx -c Release --no-build --nologo -o artifacts
+
+      - name: Verify the tag matches the packed version
+        shell: bash
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          if [ ! -f "artifacts/NetPdf.${VERSION}.nupkg" ]; then
+            echo "::error::Tag ${{ steps.tag.outputs.tag }} implies version ${VERSION}, but no artifacts/NetPdf.${VERSION}.nupkg was produced."
+            echo "Packed packages:"; ls -1 artifacts/*.nupkg || true
+            exit 1
+          fi
+          COUNT=$(ls -1 artifacts/*.nupkg | wc -l | tr -d ' ')
+          if [ "$COUNT" -ne 6 ]; then
+            echo "::error::Expected 6 packages (NetPdf + 5 language packs); packed ${COUNT}."
+            ls -1 artifacts/*.nupkg
+            exit 1
+          fi
+          echo "Verified: 6 packages at version ${VERSION}."
+
+      - name: Push to NuGet.org
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push "artifacts/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

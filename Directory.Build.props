@@ -66,10 +66,23 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
 
-    <!-- Package validation: warn on breaking changes once we have a baseline. -->
-    <!-- Will be flipped on at v1.0:
-         <EnablePackageValidation>true</EnablePackageValidation>
-         <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion> -->
+    <!--
+      Package validation (task 20). ON from v1.0+ so the release-line's public
+      surface is validated at `dotnet pack` time. Without a baseline version this
+      runs the baseline-free validators (compatible-framework + compatible-runtime:
+      every RID/compile asset a package advertises must resolve), which catch a
+      malformed package before it reaches nuget.org.
+
+      The BREAKING-CHANGE baseline (`PackageValidationBaselineVersion`) is
+      deliberately NOT set at 1.0.0: there is no prior release to diff against
+      until 1.0.0 itself ships. Starting at 1.0.1 the maintainer sets
+      `PackageValidationBaselineVersion` to `1.0.0` (the package must exist on
+      nuget.org to be downloaded as the baseline), which then fails the build on
+      any accidental public-API break vs. the last release. See
+      docs/phases/phase-5-packaging-and-release.md.
+    -->
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <!-- <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion> set at v1.0.1 -->
 
     <!-- NuGet client requirement. -->
     <MinClientVersion>5.0.0</MinClientVersion>

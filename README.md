@@ -11,7 +11,7 @@ NetPdf is a true paged-media renderer written from scratch in managed code. It d
 
 Both are loaded as in-process libraries via the official `*.NativeAssets.{Linux,macOS,Win32}` packages — no `Process.Start`, no executable spawning, no IPC. AOT publish + execution is verified on every commit via `scripts/aot-parity.sh`, which asserts the published native binary produces byte-identical PDF output to the JIT path.
 
-> **Status:** Phase 1 ✅ + Phase 2 ✅ + Phase 3 ✅ — **`0.7.0-beta` staged for tagging** (the first user-useful release). Phase 1 (`0.1.0-alpha`, tagged 2026-05-03) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`, staged) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wires the facade end-to-end**: `HtmlPdf.Convert(html)` now returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. All four W3C conformance exit criteria are met (CSS 2.2 96.7% / Flexbox 100% / Grid 100% / Fragmentation 90%); perf + memory are signed off measured-with-documented-residuals. **Still pending before `1.0.0`:** Phase 4 visual-parity hardening (gradients, shadows, filters, full SVG — `0.9.0-rc1`). The `0.7.0-beta` git tag is created by the maintainer after merge; repository is private until v1.0 launch.
+> **Status:** Phase 1 ✅ + Phase 2 ✅ + Phase 3 ✅ — **`0.7.0-beta` staged for tagging** (the first user-useful release). Phase 1 (`0.1.0-alpha`, tagged 2026-05-03) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`, staged) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wires the facade end-to-end**: `HtmlPdf.Convert(html)` now returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. All six W3C conformance exit criteria are met (CSS 2.2 / Flexbox / Grid / Fragmentation / Backgrounds & Borders / Transforms — see the [pass-rate table](#w3c-conformance-pass-rates) below); perf + memory are signed off measured-with-documented-residuals. **Still pending before `1.0.0`:** Phase 4 visual-parity hardening (gradients, shadows, filters, full SVG — `0.9.0-rc1`). The `0.7.0-beta` git tag is created by the maintainer after merge; repository is private until v1.0 launch.
 
 ## Why another HTML-to-PDF library?
 
@@ -115,6 +115,30 @@ Below is the v1 contract — what `HtmlPdf.Convert(html)` supports. The Phase 1�
 - CSS Grid Level 2 (subgrid), container queries, `:has()` rendering, anchor positioning
 
 **Post-v1 roadmap:** tagged PDF (PDF/UA-1) → PDF/A-3u → Grid L2 → container queries → `:has()` → anchor positioning.
+
+## W3C conformance pass-rates
+
+NetPdf ships a **curated W3C conformance suite** (`tests/NetPdf.W3cConformance/`) — each
+case is an HTML fragment plus the spec-correct border-box geometry the layout must
+produce, measured against the internal layout pipeline. It is a clean-room assertion
+suite, not vendored web-platform-tests (which fits the deterministic + AOT ethos). The
+numbers below are measured by the `ConformanceGates` tests and gated per-case in CI —
+a regression or a silently-closed gap turns the build red.
+
+| Category | Spec | Pass-rate | Target |
+|---|---|---|---|
+| CSS 2.2 layout | CSS 2.1/2.2 §8–10 (block, box model, margins, floats, sizing) | **100%** (30/30) | ≥ 90% |
+| Fragmentation | CSS Fragmentation L3 (breaks, widows/orphans) | **100%** (12/12) | ≥ 80% |
+| Flexbox | CSS Flexbox L1 | **100%** (19/19) | ≥ 85% |
+| Grid | CSS Grid L1 | **100%** (15/15) | ≥ 70% |
+| Backgrounds & Borders | CSS Backgrounds & Borders L3 (border insets, box-sizing, radius, background) | **100%** (6/6) | ≥ 90% |
+| Transforms | CSS Transforms L1 (paint-only; layout box unaffected) | **100%** (6/6) | ≥ 85% |
+
+**All six exit criteria are met — 88/88 curated cases pass** (measured 2026-07-05). See
+[`tests/NetPdf.W3cConformance/README.md`](tests/NetPdf.W3cConformance/README.md) for the
+per-case breakdown, the per-case regression gate, and why the suite is curated rather
+than vendored. Paint-fidelity beyond layout geometry (gradients, shadows, filters, SVG)
+is covered separately by the visual-regression corpus (`tests/NetPdf.RenderingCorpus/`).
 
 ## Performance gates (enforced in CI)
 

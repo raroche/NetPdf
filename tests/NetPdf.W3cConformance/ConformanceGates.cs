@@ -32,6 +32,8 @@ public sealed class ConformanceGates
     private const double FragmentationTarget = 0.80;
     private const double FlexboxTarget = 0.85;
     private const double GridTarget = 0.70;
+    private const double BackgroundsBordersTarget = 0.90;
+    private const double TransformsTarget = 0.85;
 
     [Fact]
     public void Css22_layout_conformance_baseline()
@@ -48,6 +50,14 @@ public sealed class ConformanceGates
     [Fact]
     public void Grid_conformance_baseline()
         => AssertBaseline("Grid", GridCases.All, GridTarget);
+
+    [Fact]
+    public void BackgroundsBorders_conformance_baseline()
+        => AssertBaseline("Backgrounds & Borders", BackgroundsBordersCases.All, BackgroundsBordersTarget);
+
+    [Fact]
+    public void Transforms_conformance_baseline()
+        => AssertBaseline("Transforms", TransformsCases.All, TransformsTarget);
 
     private void AssertBaseline(
         string category, IReadOnlyList<ConformanceCase> cases, double target)

@@ -112,13 +112,13 @@ Full inventory and rotation policy in [docs/secrets-and-credentials.md](../secre
 The release-candidate gate. All of:
 1. Every file in `tests/NetPdf.RealDocuments/Corpus/Invoices/` renders within Chrome reference tolerance.
 2. Every file in any other `Corpus/` subfolders (statements, contracts, reports, certificates, catalogs, dense tables added in Phase 4) renders within tolerance.
-3. Pass-rates published to README:
-   - W3C CSS 2.2 layout: ≥ 90%
-   - W3C Flexbox: ≥ 85%
-   - W3C Grid L1: ≥ 70%
-   - W3C Fragmentation: ≥ 80%
-   - W3C Backgrounds & Borders: ≥ 90%
-   - W3C Transforms: ≥ 85%
+3. ✅ Pass-rates published to README (measured 2026-07-05; all 6 categories MET at 100%):
+   - W3C CSS 2.2 layout: ≥ 90% → **100%** (30/30)
+   - W3C Flexbox: ≥ 85% → **100%** (19/19)
+   - W3C Grid L1: ≥ 70% → **100%** (15/15)
+   - W3C Fragmentation: ≥ 80% → **100%** (12/12)
+   - W3C Backgrounds & Borders: ≥ 90% → **100%** (6/6)
+   - W3C Transforms: ≥ 85% → **100%** (6/6)
 
 ## Spec references
 
@@ -196,11 +196,11 @@ The release-candidate gate. All of:
 | 17 | ✅ Memory-linearity test — 3-point allocation-linearity gate added (complements the existing retained-heap + per-page gates in `PerformanceGateTests`) | 1 d | 16 |
 | 18 | ✅ Allocation hot-path audit — profile + techniques + guards documented in `docs/design/performance.md` (linear/amortizing; box-pool is a documented post-v1 win) | 1 d | 17 |
 | 19 | ✅ NuGet pack + review — all 6 packages pack + inspected; `NetPdfPackageShapeTests` pins the single-package bundle (internal DLLs in lib/, real external deps, no phantom NetPdf.* deps) | 1 d | 1, 5–9 |
-| 20 | `EnablePackageValidation` baseline at v1.0 | 0.5 d | 19 |
-| 21 | Run full corpus acceptance gate | 1 d | all-of-above |
-| 22 | Publish W3C pass-rates to README | 0.5 d | 21 |
-| 23 | Tag `1.0.0` + release notes + GitHub release | 0.5 d | all |
-| 24 | Push to NuGet.org | 0.5 d | 23 |
+| 20 | ✅ `EnablePackageValidation` ON for packable projects (`Directory.Build.props`) — baseline-free validators run at pack time; all 6 packages verified to still pack cleanly. Breaking-change baseline (`PackageValidationBaselineVersion=1.0.0`) is set at v1.0.1 (needs 1.0.0 on nuget to diff against) | 0.5 d | 19 |
+| 21 | 🔶 Full corpus acceptance gate — render-acceptance half LIVE (`CorpusAcceptanceGate` globs `Corpus/**` → every doc converts to a structurally-valid PDF, ≥1 page; new samples auto-gate). Pixel-tolerance half (vs Chrome refs in `NetPdf.RenderingCorpus`) activates when the maintainer commits the reference PNGs | 1 d | all-of-above |
+| 22 | ✅ W3C pass-rates published in README — dedicated table, all 6 categories at 100% (88/88): CSS 2.2 30/30, Fragmentation 12/12, Flexbox 19/19, Grid 15/15, Backgrounds & Borders 6/6, Transforms 6/6. Added the last two categories to the conformance harness (`BackgroundsBordersCases`, `TransformsCases`) so the numbers are measured + per-case gated | 0.5 d | 21 |
+| 23 | 🔶 Release runbook + notes finalized (`docs/RELEASE.md`; CHANGELOG promotion steps + parity guard). Actual `<VersionPrefix>1.0.0</VersionPrefix>` bump on a `release/1.0.0` branch, the `[1.0.0]` CHANGELOG promotion, the `v1.0.0` tag, and the GitHub release are the maintainer's launch steps | 0.5 d | all |
+| 24 | 🔶 NuGet publish WORKFLOW authored + verified (`.github/workflows/release.yml`: `v*` tag → build + test + pack the 6 packages + tag/version parity guard → `dotnet nuget push`, gated on the `nuget-release` environment). Verified `dotnet pack NetPdf.slnx` emits exactly the 6 packages. Actual publish needs the maintainer to set the `NUGET_API_KEY` secret + push the tag | 0.5 d | 23 |
 
 **Total: ~20 days. With Claude Opus 4.7 high + daily Roland review: 1–2 calendar weeks.**
 
@@ -242,6 +242,11 @@ Every NuGet package in the family ships with:
 Each tagged release on GitHub gets release notes auto-generated from `CHANGELOG.md`'s `[Unreleased]` section, which we then promote to `[1.0.0]` heading and start a fresh `[Unreleased]`.
 
 ### Release workflow
+
+> The actionable maintainer checklist is [docs/RELEASE.md](../RELEASE.md) (task 23); the
+> pack + publish mechanics are automated by [.github/workflows/release.yml](../../.github/workflows/release.yml)
+> (task 24). The summary below is kept for context.
+
 1. Branch `release/1.0.0` from main.
 2. Bump `<VersionPrefix>` in `Directory.Build.props` to `1.0.0`; clear `<VersionSuffix>`.
 3. Promote `[Unreleased]` to `[1.0.0]` in CHANGELOG; start a new `[Unreleased]`.
@@ -277,7 +282,7 @@ Phase 5 (and v1.0) is complete when:
 5. ✅ All NuGet packages produced cleanly: `NetPdf`, `NetPdf.Languages.European`, `NetPdf.Languages.Cjk`, `NetPdf.Languages.Indic`, `NetPdf.Languages.Arabic`, `NetPdf.Languages.All`.
 6. ✅ Documentation site builds and deploys.
 7. ✅ Samples are polished and produce valid PDFs.
-8. ✅ W3C pass-rates published in README.
+8. ✅ W3C pass-rates published in README (dedicated table; all 6 categories 100%, 88/88 cases).
 9. ✅ CHANGELOG `[1.0.0]` section finalized.
 10. ✅ `v1.0.0` tag created.
 11. ✅ Packages published to nuget.org.

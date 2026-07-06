@@ -1436,14 +1436,28 @@ grepping the ID).
       re-rendered wholly (duplicated content) + the sibling cursor
       under-advanced (a trailing block overlapped the flex content).
       Verified by `FlexPageSplitResumeTests` (fails without the change).
-      **RESIDUAL (still open):** the travel-corpus `03-itinerary`
-      document shows a related but content-specific footer overlap that
-      this does NOT fully resolve — the note still interleaves with the
-      day content on page 2 for that exact document. The minimal repro is
-      fixed; the real-document trigger is content-dependent and needs a
-      further, focused root-cause. Row-WRAP line-split resume (no
-      dual-input resize consumer) is likewise still unfixed on a fresh
-      resume page.
+      **RESIDUAL (still open, PRECISELY root-caused):** the travel-corpus
+      `03-itinerary` footer overlap is a SEPARATE bug — an AUTO-HEIGHT,
+      non-paginatable flex container (a row-nowrap `.day`) is measured as
+      its CHROME-ONLY border box in `MeasureSubtreeVisualBlockExtentRecursive`
+      (the `if (!IsBlockFlowContainerOwnedByBlockLayouter(parent)) return
+      parentBorderBoxBlockSize;` fallthrough at `BlockLayouter.cs:~9743`) —
+      its flex CONTENT height is never measured. So a block-flow container
+      that stacks such flex items (the `.timeline`, of `.day` rows) is
+      grossly under-measured (each `.day` contributes ~chrome ≈ 24px
+      instead of its ~149px emitted height), the container's cursor
+      under-advances, and the trailing sibling (`.note`) is placed at the
+      container's too-small bottom and overlaps the flex content — most
+      visibly on the resume page (verified via a per-page fragment trace:
+      `timeline bs=282` while its day children reach `bo≈522`). **FIX
+      APPROACH:** measure an auto-height flex (and grid) container's true
+      content block extent — e.g. a discarding-sink FlexLayouter dry-run,
+      mirroring the multicol dry-run already at `~9764` — instead of
+      returning the chrome-only border box. This changes the pagination
+      MEASURE for every auto-height-flex-in-block-flow document, so it
+      needs golden re-pinning + visual re-verification (a focused change,
+      not byte-identical). Row-WRAP line-split resume (no dual-input resize
+      consumer) is a separate residual, also unfixed on a fresh resume page.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107

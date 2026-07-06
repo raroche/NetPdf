@@ -200,7 +200,11 @@ internal static class GridSizing
         ResolveTrackSizes(
             gridBox.Style.ReadGridTemplateColumns(),
             contentInlineSize, isInlineIndefinite,
-            colInfos, ctx, cancellationToken, columnGap);
+            colInfos, ctx, cancellationToken, columnGap,
+            // Inline axis: a positive, finite used inline size is DEFINITE even when the `width` slot is
+            // `auto` (definite containing chain), so fr columns resolve exactly — suppress the spurious
+            // fr-under-indefinite diagnostic (10 event-ticket). See the gate in ResolveTrackSizes.
+            axisExtentIsDefinite: double.IsFinite(contentInlineSize) && contentInlineSize > 0);
 
         // Per Phase 3 Task 18 cycle 6 + PR-#103 review F1+F2 — capture
         // the explicit-grid extents NOW (before any implicit growth)
@@ -869,7 +873,7 @@ internal static class GridSizing
     private static void ResolveTrackSizes(
         TrackList trackList, double containerExtent, bool isAxisIndefinite,
         List<TrackSizingInfo> infoOut, SizingContext ctx,
-        CancellationToken ct, double gap)
+        CancellationToken ct, double gap, bool axisExtentIsDefinite = false)
     {
         // Per Phase 3 Task 18 cycle 7c + post-PR-#107 review F1 #1 —
         // pass container extent so auto-fill / auto-fit derive their
@@ -909,7 +913,17 @@ internal static class GridSizing
         }
 
         // Per PR-#93 review F3 — fr under indefinite axis approximated.
-        if (isAxisIndefinite)
+        // Corpus-fidelity (10 event-ticket false positive) — the `isAxisIndefinite` flag keys purely on
+        // the computed `width`/`height` SLOT being auto/unset. On the INLINE axis an `auto`-width grid
+        // nested in a definite containing chain (e.g. inside a `flex:1 1 auto` item) still receives a real,
+        // finite, positive USED width; per CSS Grid L1 §5.2 its used inline size is then DEFINITE, so fr
+        // resolves normally against `containerExtent` (ResolveFrTracks below already does exactly that) —
+        // no approximation, no warning. The caller passes `axisExtentIsDefinite: true` in that case.
+        // The BLOCK axis keeps the slot-based behavior: an auto-height grid's `containerExtent` is the
+        // fragmentainer fallback (a bound, NOT a definite size), so fr rows genuinely approximate and the
+        // diagnostic must still fire. Byte-identical for the rendered PDF (fr distribution is unchanged);
+        // this only suppresses the SPURIOUS inline diagnostic for auto-width-in-definite-CB grids.
+        if (isAxisIndefinite && !axisExtentIsDefinite)
         {
             for (var i = 0; i < infoOut.Count; i++)
             {

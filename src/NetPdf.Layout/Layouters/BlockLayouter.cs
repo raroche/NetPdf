@@ -293,6 +293,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// nested flex is measured at its FULL extent, not projected to one page).</summary>
     private readonly bool _disableFlexPagination;
 
+    /// <summary>RC2 residual (1) — suppress this layouter's out-of-flow (abspos) EMISSION pass while still
+    /// running a real <see cref="MeasurePurpose.Layout"/> pass (in-flow content persists for paint). Set
+    /// by <see cref="FlexLayouter"/> when it lays a flex item's content into a buffer that will be flushed:
+    /// FlexLayouter is NOT an abspos delegation boundary, so the flex item's abspos DESCENDANTS are owned +
+    /// emitted by the TOP-LEVEL pass (which resolves them against the geometry the buffer flush records).
+    /// Without this the nested item-content pass ALSO runs the abspos pass — always dropping the descendant
+    /// (its containing block isn't recorded in this transient nested map) and leaking a spurious
+    /// LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001 even though the top-level pass renders the box correctly.
+    /// Grid items / table cells DON'T set this — they ARE delegation boundaries and own their abspos.</summary>
+    private readonly bool _suppressOutOfFlowEmission;
+
     /// <summary>PR #218 review [P1 #1 / P2 #5] — the PURPOSE of this layout pass, captured at
     /// <see cref="AttemptLayout"/> entry from <c>layout.MeasurePurpose</c> so it is TRANSITIVE: a
     /// nested specialized layouter (flex / grid / table) inherits the measure via the by-ref
@@ -538,7 +549,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IShaperResolver? shaperResolver = null,
         bool disableGridPagination = false,
         bool layoutRootInlineContent = false,
-        bool disableFlexPagination = false)
+        bool disableFlexPagination = false,
+        bool suppressOutOfFlowEmission = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -574,6 +586,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _disableGridPagination = disableGridPagination;
         _layoutRootInlineContent = layoutRootInlineContent;
         _disableFlexPagination = disableFlexPagination;
+        _suppressOutOfFlowEmission = suppressOutOfFlowEmission;
     }
 
     /// <inheritdoc />
@@ -619,6 +632,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         if (_incomingContinuation is null
             && !_absoluteChildrenEmitted
             && !_measurePurpose.SuppressesOutOfFlowEmission()
+            && !_suppressOutOfFlowEmission
             && result.Outcome is LayoutAttemptOutcome.AllDone
                 or LayoutAttemptOutcome.PageComplete)
         {

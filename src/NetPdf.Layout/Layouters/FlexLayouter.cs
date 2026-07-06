@@ -1729,7 +1729,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     {
                         var insetI = contentBuf.ContainsDecorationOwnerFragment ? 0 : contentInsetInline;
                         var insetB = contentBuf.ContainsDecorationOwnerFragment ? 0 : contentInsetBlock;
-                        contentBuf.FlushTo(_sink, inlineOffset + insetI, blockOffset + insetB);
+                        // RC2 residual (1) — also record positioned-CB geometry for any positioned BLOCK
+                        // DESCENDANT flushed from this item's content buffer, so an abspos box anchored to a
+                        // `position:relative` block nested inside the flex item (not just the item itself)
+                        // resolves against it instead of being dropped. The callback self-filters to
+                        // CB-establishers; no-op for the common all-static item content.
+                        contentBuf.FlushTo(_sink, inlineOffset + insetI, blockOffset + insetB,
+                            _recordPositionedGeometry);
                     }
                     // PR-#182 review P2 — surface this committed item's buffered
                     // content diagnostics now (deferred items' diagnostics stay
@@ -3376,10 +3382,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             cancellationToken: cancellationToken,
             diagnostics: itemDiagnostics,
             // This buffer FLUSHES into the final tree at the item's position (the flex item
-            // emission), so it requests a real Layout pass (out-of-flow descendants emit, % padding
-            // resolves real). PR #218 review [P1 #1] — but if the flex CONTAINER is itself being
+            // emission), so it requests a real Layout pass (% padding resolves real, in-flow persists
+            // for paint). PR #218 review [P1 #1] — but if the flex CONTAINER is itself being
             // measured intrinsically, ForNested inherits that so the flush stays a measure too.
-            purpose: _measurePurpose.ForNested(MeasurePurpose.Layout));
+            purpose: _measurePurpose.ForNested(MeasurePurpose.Layout),
+            // RC2 residual (1) — but SKIP this nested pass's abspos emission: FlexLayouter is not an
+            // abspos delegation boundary, so a flex item's abspos DESCENDANTS are owned + placed by the
+            // TOP-LEVEL pass (which resolves them against the positioned-CB geometry the buffer flush
+            // records). Letting the nested pass also run it only ever drops the descendant (unrecorded CB
+            // in the transient nested map) + leaks a spurious LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001.
+            suppressOutOfFlowEmission: true);
 
     /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
     /// is content-determined (so content measurement should size it). True iff

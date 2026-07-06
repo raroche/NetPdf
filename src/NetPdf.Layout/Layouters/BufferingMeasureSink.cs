@@ -368,17 +368,27 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
     /// (content commits once). The inner fragments carry offsets relative to
     /// the content box's origin (0,0), so adding the final origin yields
     /// absolute fragmentainer coordinates.</summary>
-    public void FlushTo(IBlockFragmentSink target, double inlineTranslation, double blockTranslation)
+    public void FlushTo(IBlockFragmentSink target, double inlineTranslation, double blockTranslation,
+        System.Action<Box, double, double, double, double>? recordPositionedGeometry = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         for (var i = 0; i < _buffered.Count; i++)
         {
             var f = _buffered[i];
+            var finalInline = f.InlineOffset + inlineTranslation;
+            var finalBlock = f.BlockOffset + blockTranslation;
             target.Emit(f with
             {
-                InlineOffset = f.InlineOffset + inlineTranslation,
-                BlockOffset = f.BlockOffset + blockTranslation,
+                InlineOffset = finalInline,
+                BlockOffset = finalBlock,
             });
+            // RC2 residual (1) — a positioned BLOCK DESCENDANT inside a flex item's buffered content (e.g.
+            // a `position:relative` <li> in a flex-item <ul>) is the containing block for an abspos box the
+            // top-level pass places later. Its geometry is only known HERE (final, re-anchored position),
+            // so surface it through the same callback the item-level record uses. The callback self-filters
+            // to CB-establishers (RecordPositionedBoxGeometry no-ops otherwise), so passing every fragment
+            // is safe. Whole-item commit only — the page-sliced FlushRangeTo keeps abspos deferred.
+            recordPositionedGeometry?.Invoke(f.Box, finalInline, finalBlock, f.InlineSize, f.BlockSize);
         }
         _buffered.Clear();
     }

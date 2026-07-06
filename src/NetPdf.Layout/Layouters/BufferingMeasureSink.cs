@@ -230,15 +230,43 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         }
         else
         {
-            var innerRight = fragment.InlineOffset + fragment.InlineSize;
-            if (innerRight > ContentInlineExtent)
+            // A block fragment with NO inline layout (a block whose children are themselves blocks) would
+            // otherwise contribute its FILLED border-box inline size. During an intrinsic (max-content)
+            // measure the available inline size is huge (1e6), so a `width:auto` block fills it and poisons
+            // the content extent (the nested-block-in-flex over-measurement bug). Its real content extent is
+            // already tracked via its DESCENDANT fragments (their line advances + nested DEFINITE blocks).
+            // So it contributes its OWN box width here only for a DEFINITE inline contribution:
+            //   * an explicit absolute width, or a replaced element's intrinsic size → its filled InlineSize
+            //     (which, being definite, is NOT the huge auto-fill), OR
+            //   * an explicit absolute `min-width` floor (review #275 [P2]) → the min-width border box, so a
+            //     `<div style="min-width:200px"><div/></div>` with no line descendants still floors the
+            //     parent's intrinsic extent at 200px (NOT the huge auto-filled InlineSize).
+            // An auto / percentage-width block with no min-width floor contributes nothing (a percentage
+            // resolves against the huge available too, so it behaves as auto for max-content).
+            var definiteInline = HasDefiniteInlineSize(fragment.Box)
+                ? fragment.InlineSize
+                : fragment.Box.Style.CrossBorderBoxSizePx(PropertyId.MinWidth);
+            if (definiteInline > 0)
             {
-                ContentInlineExtent = innerRight;
+                var innerRight = fragment.InlineOffset + definiteInline;
+                if (innerRight > ContentInlineExtent)
+                {
+                    ContentInlineExtent = innerRight;
+                }
             }
         }
 
         _buffered.Add(fragment);
     }
+
+    /// <summary>Whether <paramref name="box"/> has a DEFINITE inline (main) size for the purpose of an
+    /// intrinsic content measure — a replaced element (its intrinsic size), or an explicit ABSOLUTE
+    /// <c>width</c> (a length; a percentage resolves against the huge measure width, so it behaves as
+    /// auto for max-content). An auto-width block does NOT contribute its filled box width — its content
+    /// extent comes from its descendants.</summary>
+    private static bool HasDefiniteInlineSize(Box box) =>
+        box.IsReplaced
+        || box.Style.Get(PropertyId.Width).Tag == NetPdf.Css.ComputedValues.ComputedSlotTag.LengthPx;
 
     /// <summary>Per-run last-line metrics (PR-3 task 9; PR #198 review P2) — the style of the run on
     /// <paramref name="inline"/>'s LAST line with the DEEPEST descent below the baseline (computed from each

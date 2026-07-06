@@ -36,8 +36,10 @@ namespace NetPdf.Layout.Boxes;
 /// <b>Excluded</b> from cycle 1: form-control elements (<c>input</c>,
 /// <c>textarea</c>, <c>select</c>, <c>button</c>) — they're "replaced-ish"
 /// with internal anonymous structure that needs more thought; <c>ruby</c>
-/// + descendants — ruby layout is post-v1; SVG inline elements — handled
-/// by the SVG pipeline.
+/// + descendants — ruby layout is post-v1. An inline <c>&lt;svg&gt;</c> is now a
+/// <b>replaced element</b> (default display <c>inline</c>, per
+/// <see cref="HtmlReplacedElements"/>) rendered by the SVG pipeline — its
+/// SVG-namespaced children are not laid out as HTML boxes.
 /// </para>
 /// </remarks>
 internal static class HtmlDefaultDisplay
@@ -124,6 +126,7 @@ internal static class HtmlDefaultDisplay
             ["img"] = "inline", ["video"] = "inline", ["audio"] = "inline",
             ["canvas"] = "inline", ["iframe"] = "inline",
             ["object"] = "inline", ["embed"] = "inline", ["picture"] = "inline",
+            ["svg"] = "inline",
         };
         return dict.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
     }

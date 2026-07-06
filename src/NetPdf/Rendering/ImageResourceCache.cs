@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using NetPdf.Css.Cascade;
+using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
@@ -337,47 +338,19 @@ internal sealed class ImageResourceCache
             }
             else
             {
-                // object-fit rides along as the COMPUTED keyword index (object-fit cycle;
-                // the registered property's slot — 0 = fill, the initial); object-position as
-                // the RAW winner (object-position cycle — unregistered, the documented seam).
-                var imgRules = box.SourceElement is { } imgEl ? cascade.TryGetStylesFor(imgEl) : null;
-                // filter (Phase 4 PR 2) — the box's OWN declared value (filter doesn't inherit),
-                // parsed into the function chain; the painter applies it to the decoded image.
-                var filterRaw = imgRules?.GetWinner("filter")?.ResolvedValue;
-                CssFilter? filter = null;
-                if (!string.IsNullOrWhiteSpace(filterRaw)
-                    && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
-                {
-                    filter = CssFilter_Parser.TryParse(filterRaw);
-                    // A non-none value that won't parse (url(#id) SVG ref, unknown function, bad arg /
-                    // color) is DROPPED — surface it (PR 227 review [P2]) instead of silently ignoring.
-                    if (filter is null && !filterValueReported)
+                // <img> is an image-like replaced box; build its spec (object-fit / object-position /
+                // filter / mask) via the shared path that inline <svg> also uses.
+                cache.ImageBoxes[box] = await BuildReplacedImageSpecAsync(
+                    cache, box, key, cascade, loader, options, diagnostics,
+                    reportFilterUnsupported: () =>
                     {
-                        diagnostics.Emit(new Diagnostic(
-                            DiagnosticCodes.CssFilterUnsupported001,
-                            "A CSS filter value on an <img> could not be parsed (a url(#id) SVG-filter "
-                            + "reference, an unknown function, or a bad argument / color); the filter was "
-                            + "dropped and the image painted unfiltered.",
-                            DiagnosticSeverity.Warning));
-                        filterValueReported = true;
-                    }
-                }
-                // mask / mask-image (Phase 4 PR 4) — on an <img>, a url() mask source is fetched + applied
-                // as an alpha mask (the raster path). mask-image wins over the mask shorthand. A non-url
-                // value (gradient / none) → no mask; a general element's mask is handled in CollectReferences.
-                // The `mask` shorthand is expanded into `mask-image` by the preprocessor (source order
-                // respected; PR-229 review [P2]), so reading the mask-image winner alone is correct.
-                var maskRaw = imgRules?.GetWinner("mask-image")?.ResolvedValue;
-                string? maskKey = null;
-                if (ExtractFirstUrl(maskRaw) is { } maskUrl)
-                    maskKey = await ResolveAndFetchAsync(
-                        cache, loader, maskUrl, options.BaseUri, diagnostics, cancellationToken)
-                        .ConfigureAwait(false);
-                cache.ImageBoxes[box] = new ImgSpec(
-                    key,
-                    box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
-                    imgRules?.GetWinner("object-position")?.ResolvedValue,
-                    filter, maskKey);
+                        if (!filterValueReported)
+                        {
+                            EmitFilterUnsupported(diagnostics);
+                            filterValueReported = true;
+                        }
+                    },
+                    cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -411,7 +384,137 @@ internal sealed class ImageResourceCache
                 if (key is not null) cache.ExtraImagesByRawUrl[rawUrl] = key;
             }
         }
+
+        // Inline <svg> elements (RC3) — serialize each inline SVG's own markup + render it through the
+        // SAME SVG pipeline as an <img> SVG source (SvgRasterizer + the security guards). No fetch: the
+        // element's markup IS the content. Runs after the URL passes so a data-URI <img src=svg> is
+        // unaffected.
+        await RegisterInlineSvgsAsync(
+            boxRoot, cache, cascade, loader, options, diagnostics, () =>
+            {
+                if (!filterValueReported) { EmitFilterUnsupported(diagnostics); filterValueReported = true; }
+            }, cancellationToken).ConfigureAwait(false);
         return cache;
+    }
+
+    /// <summary>The once-per-render "a CSS filter on an image-like replaced element could not be parsed"
+    /// warning (shared by <c>&lt;img&gt;</c> and inline <c>&lt;svg&gt;</c>).</summary>
+    private static void EmitFilterUnsupported(IDiagnosticsSink diagnostics) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssFilterUnsupported001,
+            "A CSS filter value on an image-like replaced element (<img> / inline <svg>) could not be "
+            + "parsed (a url(#id) SVG-filter reference, an unknown function, or a bad argument / color); "
+            + "the filter was dropped and the image painted unfiltered.",
+            DiagnosticSeverity.Warning));
+
+    /// <summary>Build the <see cref="ImgSpec"/> for an image-like replaced box — object-fit (computed
+    /// keyword), object-position (raw winner), <c>filter</c> (parsed, non-inheriting), and <c>mask-image</c>
+    /// (a url() source fetched as an alpha mask). Shared by <c>&lt;img&gt;</c> and inline <c>&lt;svg&gt;</c>
+    /// so both honor these properties consistently (review #275 [P2]).</summary>
+    private static async Task<ImgSpec> BuildReplacedImageSpecAsync(
+        ImageResourceCache cache, Box box, string key, ResolvedCascadeResult cascade,
+        SafeResourceLoader loader, HtmlPdfOptions options, IDiagnosticsSink diagnostics,
+        Action reportFilterUnsupported, CancellationToken cancellationToken)
+    {
+        var rules = box.SourceElement is { } el ? cascade.TryGetStylesFor(el) : null;
+        var filterRaw = rules?.GetWinner("filter")?.ResolvedValue;
+        CssFilter? filter = null;
+        if (!string.IsNullOrWhiteSpace(filterRaw)
+            && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            filter = CssFilter_Parser.TryParse(filterRaw);
+            if (filter is null) reportFilterUnsupported();
+        }
+        var maskRaw = rules?.GetWinner("mask-image")?.ResolvedValue;
+        string? maskKey = null;
+        if (ExtractFirstUrl(maskRaw) is { } maskUrl)
+            maskKey = await ResolveAndFetchAsync(
+                cache, loader, maskUrl, options.BaseUri, diagnostics, cancellationToken).ConfigureAwait(false);
+        return new ImgSpec(
+            key,
+            box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
+            rules?.GetWinner("object-position")?.ResolvedValue,
+            filter, maskKey);
+    }
+
+    /// <summary>Walk the box tree for replaced inline <c>&lt;svg&gt;</c> boxes, serialize each element's own
+    /// markup, and decode it through the SVG pipeline (identical to an <c>&lt;img&gt;</c> SVG source),
+    /// registering an <see cref="Entry"/> keyed by content so identical SVGs dedup. The box's computed
+    /// <c>color</c> is seeded onto the serialized SVG root so <c>fill="currentColor"</c> resolves to the
+    /// HTML context's color (review #275 [P2]). A parse failure is diagnosed (SVG-PARSE-FAILED-001) and the
+    /// box paints nothing.
+    /// <para>LIMITATION: the SVG is rendered as SELF-CONTAINED replaced content — document-level CSS that
+    /// targets SVG descendants (e.g. <c>.logo svg path { fill: … }</c>) is NOT applied; only the SVG's own
+    /// presentation attributes / inline <c>style</c> and the seeded root <c>color</c> take effect.</para></summary>
+    private static async Task RegisterInlineSvgsAsync(
+        Box box, ImageResourceCache cache, ResolvedCascadeResult cascade, SafeResourceLoader loader,
+        HtmlPdfOptions options, IDiagnosticsSink diagnostics, Action reportFilterUnsupported,
+        CancellationToken cancellationToken)
+    {
+        if (box.Kind is BoxKind.BlockReplacedElement or BoxKind.InlineReplacedElement
+            && box.SourceElement is { } element
+            && string.Equals(element.LocalName, "svg", StringComparison.OrdinalIgnoreCase))
+        {
+            var markup = SeedInlineSvgRootColor(element, box.Style);
+            if (!string.IsNullOrWhiteSpace(markup))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(markup);
+                // Content key — identical inline SVGs (repeated logos) share one rendered XObject.
+                var key = "inline-svg:" + Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(bytes));
+                if (!cache._byUri.ContainsKey(key) && !cache._failedUris.Contains(key))
+                {
+                    try
+                    {
+                        cache._byUri[key] = Decode(bytes, diagnostics);
+                    }
+                    catch (SvgImageParseException ex)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.SvgParseFailed001,
+                            ex.Status == NetPdf.Svg.SvgParseStatus.Blocked
+                                ? "An inline <svg> was rejected by the parser's security guards (a prohibited "
+                                  + "<!DOCTYPE / <!ENTITY, or an over-size document). It was not rendered."
+                                : "An inline <svg> could not be parsed as well-formed XML. It was not rendered.",
+                            DiagnosticSeverity.Warning));
+                        cache._failedUris.Add(key);
+                    }
+                }
+                if (cache._byUri.ContainsKey(key))
+                {
+                    cache.ImageBoxes[box] = await BuildReplacedImageSpecAsync(
+                        cache, box, key, cascade, loader, options, diagnostics,
+                        reportFilterUnsupported, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+
+        foreach (var child in box.Children)
+            await RegisterInlineSvgsAsync(
+                child, cache, cascade, loader, options, diagnostics, reportFilterUnsupported, cancellationToken)
+                .ConfigureAwait(false);
+    }
+
+    /// <summary>Serialize the inline <c>&lt;svg&gt;</c> element's markup, seeding its root <c>color</c> from
+    /// the box's computed <c>color</c> (so <c>currentColor</c> in the SVG resolves to the HTML context's
+    /// color) when the element doesn't already carry a <c>color</c> presentation attribute.</summary>
+    private static string SeedInlineSvgRootColor(AngleSharp.Dom.IElement element, ComputedStyle style)
+    {
+        var markup = element.OuterHtml;
+        if (string.IsNullOrWhiteSpace(markup)
+            || element.GetAttribute("color") is { Length: > 0 }
+            || style.Get(PropertyId.Color).Tag != ComputedSlotTag.Color)
+        {
+            return markup;   // no seed: already has one, or no concrete computed color
+        }
+
+        var argb = style.Get(PropertyId.Color).AsColor();
+        var color = $"rgb({(argb >> 16) & 0xFF},{(argb >> 8) & 0xFF},{argb & 0xFF})";
+        // Inject a color presentation attribute into the opening <svg ...> tag.
+        var open = markup.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
+        if (open < 0) return markup;
+        var insertAt = open + 4;   // just after "<svg"
+        return markup[..insertAt] + $" color=\"{color}\"" + markup[insertAt..];
     }
 
     /// <summary>Resolve <paramref name="rawUrl"/> + fetch/decode it once (per-URI memo incl. a

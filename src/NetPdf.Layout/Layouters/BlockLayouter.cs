@@ -5531,6 +5531,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // Per Phase 3 Task 19 — also suppressed inside a FLOAT subtree: the
                 // flex emits atomically (full natural extent, no page clamp) so its
                 // items are lossless rather than truncated past a discarded split.
+                // Corpus-fidelity (03 footer overlap) — is this child RESUMING a prior DUAL-INPUT flex
+                // split (column item split OR row-nowrap content split)? Such a child MUST re-enter the
+                // pagination path even when the (fresh) resume page has room for it, so FlexLayouter
+                // honors the incoming continuation's resume-cut instead of re-emitting the WHOLE item.
+                // Pre-fix, the would-overflow gate below stayed OFF on a fresh page → allowPagination
+                // false → the resume-cut was ignored → the item re-rendered wholly (duplicated content)
+                // AND the wrapper wasn't resized, so the sibling cursor under-advanced and the trailing
+                // block (e.g. `.note`) overlapped the flex content. The row-WRAP line-split resume is a
+                // separate residual (no dual-input resize consumer) and is left unchanged here.
+                var isDualInputFlexResume = incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is FlexContinuation
+                    && (childFlexDirection.IsFlexColumnDirection() || !childIsWrapping);
                 if (IsPaginatableFlex(child)
                     && !_disableFlexPagination
                     && !_inAtomicFloatSubtree
@@ -5547,9 +5560,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // FlexLayouter would receive a non-positive content
                     // budget which it rejects via
                     // ConfigureEmission's argument validation.
-                    if (pageRemainingForFlex > 0
-                        && pageRemainingForFlex < childBorderBoxBlockSize
-                        && pageRemainingForFlex > nFlexBorderPaddingBlock)
+                    // OR — the child is resuming a dual-input split (above): activate pagination so the
+                    // resume-cut is honored, even though the fresh page doesn't overflow.
+                    var flexWouldOverflow = pageRemainingForFlex > 0
+                        && pageRemainingForFlex < childBorderBoxBlockSize;
+                    if (pageRemainingForFlex > nFlexBorderPaddingBlock
+                        && (flexWouldOverflow || isDualInputFlexResume))
                     {
                         // Column nowrap (item split) AND row nowrap (intra-item
                         // content split): remember the natural (pre-clamp)

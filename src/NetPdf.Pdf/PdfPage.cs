@@ -1183,6 +1183,37 @@ internal sealed class PdfPage
         (_annotations ??= new List<PdfObject>()).Add(annot);
     }
 
+    /// <summary>Add an INTERNAL <c>/Link</c> annotation over the page-space rectangle (PDF points,
+    /// bottom-left origin) whose destination is a <c>/GoTo</c> to <paramref name="targetPageRef"/> at
+    /// <paramref name="targetTopPt"/> (a <c>/XYZ</c> destination — left + zoom unchanged). Emitted as a
+    /// direct <c>/Dest</c> array (ISO 32000-2 §12.3.2.2). A non-positive rect no-ops; non-finite
+    /// coordinates throw. Used for <c>&lt;a href="#id"&gt;</c> same-document links.</summary>
+    public void AddInternalLinkAnnotation(
+        double x, double y, double width, double height, PdfIndirectRef targetPageRef, double targetTopPt)
+    {
+        ArgumentNullException.ThrowIfNull(targetPageRef);
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height)
+            || !double.IsFinite(targetTopPt))
+            throw new ArgumentException(
+                $"AddInternalLinkAnnotation rect/target must be finite; got ({x},{y},{width},{height},{targetTopPt}).");
+        if (!(width > 0) || !(height > 0)) return;
+
+        var dest = new PdfArray()
+            .Add(targetPageRef).Add(PdfNames.XYZ)
+            .Add(PdfNull.Instance).Add(new PdfReal(targetTopPt)).Add(PdfNull.Instance);
+        var annot = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Annot)
+            .Set(PdfNames.Subtype, PdfNames.Link)
+            .Set(PdfNames.Rect, new PdfArray()
+                .Add(new PdfReal(x)).Add(new PdfReal(y))
+                .Add(new PdfReal(x + width)).Add(new PdfReal(y + height)))
+            .Set(PdfNames.Border, new PdfArray()
+                .Add(new PdfInteger(0)).Add(new PdfInteger(0)).Add(new PdfInteger(0)))
+            .Set(PdfNames.Dest, dest);
+        (_annotations ??= new List<PdfObject>()).Add(annot);
+    }
+
     /// <summary>Phase 4 links (PR 4) — the page's pending annotation dictionaries (direct objects), which
     /// <see cref="PdfDocument.SaveTo"/> promotes to INDIRECT objects + references from <c>/Annots</c> (ISO
     /// 32000 §12.5.2: a page's <c>/Annots</c> entries are indirect references). Null when no annotations.</summary>

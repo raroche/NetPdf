@@ -269,6 +269,28 @@ byte[] pdf = HtmlPdf.Convert(html, new HtmlPdfOptions
 
 Everything is deterministic: no timestamp is read unless you set one, and a document with **no** metadata emits none of these entries, so its bytes are unchanged. The XMP stream mirrors the descriptive fields in Dublin Core, which also lays the groundwork for a future PDF/A pass.
 
+## Navigation & initial view
+
+Same-document links work as plain HTML — an `<a href="#id">` becomes a clickable **`/GoTo`** jump to the element with that `id`, resolved across the whole document (the target can be on a later page). The `#id` fragment is percent-decoded the way a browser navigates (`href="#r%C3%A9sum%C3%A9"` matches `id="résumé"`). A **block, inline-block, or inline-flow** element can be the target — an inline target (e.g. `<span id="summary">`) resolves to its containing block/line position. A dangling `#id` (no such element) is reported as a diagnostic and the text still renders. On the **link** side, like external links, the anchor needs its own box (a `display:block` / `inline-block` `<a>`); an inline-flow anchor's precise rectangle is a documented follow-up.
+
+```html
+<a href="#summary" style="display:inline-block">Jump to summary</a>
+…
+<h2 id="summary">Summary</h2>
+```
+
+You can also control how the document **opens** in a reader — for example, show the bookmarks panel and use a two-column layout:
+
+```csharp
+byte[] pdf = HtmlPdf.Convert(html, new HtmlPdfOptions
+{
+    PageMode = PdfPageMode.UseOutlines,      // open with the bookmarks panel showing
+    PageLayout = PdfPageLayout.TwoColumnLeft, // two continuous columns
+});
+```
+
+Both options default to omitted (the reader's own default), so a document that doesn't set them is unchanged. Headings (`<h1>`–`<h6>`) already become the PDF outline (bookmarks) automatically.
+
 ## Language packs
 
 The core `NetPdf` package bundles **English** hyphenation, registered under the primary subtag `en` (American-English Liang patterns) — so `en`, `en-GB`, `en-US`, etc. all resolve to it. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).

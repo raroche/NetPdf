@@ -90,6 +90,8 @@ class NetPdf.HtmlPdfOptions
     property System.Boolean PreferCssPageSize { get;set; }
     property System.Boolean PrintBackgrounds { get;set; }
     property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? DocumentProperties { get;set; }
+    property System.Nullable<NetPdf.PdfPageLayout> PageLayout { get;set; }
+    property System.Nullable<NetPdf.PdfPageMode> PageMode { get;set; }
     property System.Nullable<System.DateTimeOffset> CreationDate { get;set; }
     property System.Nullable<System.DateTimeOffset> ModDate { get;set; }
     property System.Nullable<System.TimeSpan> Timeout { get;set; }
@@ -161,6 +163,22 @@ struct NetPdf.PageSize : System.IEquatable<NetPdf.PageSize>
     property System.Boolean IsLandscape { get; }
     property System.Double HeightPx { get;set; }
     property System.Double WidthPx { get;set; }
+enum NetPdf.PdfPageLayout : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.PdfPageLayout OneColumn
+    field const NetPdf.PdfPageLayout SinglePage
+    field const NetPdf.PdfPageLayout TwoColumnLeft
+    field const NetPdf.PdfPageLayout TwoColumnRight
+    field const NetPdf.PdfPageLayout TwoPageLeft
+    field const NetPdf.PdfPageLayout TwoPageRight
+enum NetPdf.PdfPageMode : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+    field System.Int32 value__
+    field const NetPdf.PdfPageMode FullScreen
+    field const NetPdf.PdfPageMode UseAttachments
+    field const NetPdf.PdfPageMode UseNone
+    field const NetPdf.PdfPageMode UseOC
+    field const NetPdf.PdfPageMode UseOutlines
+    field const NetPdf.PdfPageMode UseThumbs
 class NetPdf.PdfRenderResult
     .ctor()
     property NetPdf.LayoutMetrics LayoutMetrics { get;set; }

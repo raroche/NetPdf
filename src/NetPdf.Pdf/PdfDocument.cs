@@ -78,6 +78,78 @@ internal sealed class PdfDocument
     /// <summary>Document modification date. Null = omit. Same determinism rule as <see cref="CreationDate"/>.</summary>
     public DateTimeOffset? ModDate { get; set; }
 
+    /// <summary>Document language tag (BCP-47) emitted as the catalog <c>/Lang</c> and in the XMP
+    /// metadata. Null / blank = omit. Used by assistive technology + reading-order heuristics.</summary>
+    public string? Lang { get; set; }
+
+    /// <summary>Custom <c>/Info</c> entries beyond the standard keys, populated via
+    /// <see cref="SetCustomInfoProperties"/>. Null until set.</summary>
+    private List<KeyValuePair<string, string>>? _customInfo;
+
+    /// <summary>Reserved <c>/Info</c> keys that <see cref="SetCustomInfoProperties"/> refuses to let a
+    /// custom entry shadow — the standard metadata fields have dedicated setters + sanitization.</summary>
+    private static readonly HashSet<string> ReservedInfoKeys = new(StringComparer.Ordinal)
+    {
+        "Title", "Author", "Subject", "Keywords", "Creator", "Producer", "CreationDate", "ModDate",
+    };
+
+    /// <summary>Register custom document-information entries emitted as extra <c>/Info</c> keys. Entries
+    /// whose key is empty/whitespace or collides with a reserved standard key are skipped. Keys + values
+    /// are sanitized with the same rules as the standard metadata strings at emit time. Calling this
+    /// replaces any previously-registered custom set.
+    /// <para>Entries are emitted in <see cref="StringComparer.Ordinal"/> key order — NOT the caller's
+    /// enumeration order — so output stays byte-stable even when the source is an
+    /// <see cref="IReadOnlyDictionary{TKey,TValue}"/> whose iteration order is implementation-defined.</para></summary>
+    public void SetCustomInfoProperties(IEnumerable<KeyValuePair<string, string>> properties)
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+        var byKey = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var kvp in properties)
+        {
+            if (string.IsNullOrWhiteSpace(kvp.Key)) continue;
+            var key = kvp.Key.Trim();
+            if (ReservedInfoKeys.Contains(key)) continue;
+            // A PdfName only emits bytes ≤ 0xFF (higher chars throw at Save); skip exotic keys
+            // rather than crash the render. Values are unrestricted — they go through the text-string
+            // encoder (UTF-16BE) like any other metadata string.
+            if (!IsEmittableInfoKey(key)) continue;
+            byKey.TryAdd(key, kvp.Value ?? string.Empty);   // first value wins on duplicate keys
+        }
+
+        if (byKey.Count == 0)
+        {
+            _customInfo = null;
+            return;
+        }
+
+        // Ordinal key sort → deterministic emission order regardless of source iteration order.
+        var list = new List<KeyValuePair<string, string>>(byKey);
+        list.Sort(static (a, b) => string.CompareOrdinal(a.Key, b.Key));
+        _customInfo = list;
+    }
+
+    /// <summary>True when every char of <paramref name="key"/> is in the byte range a
+    /// <see cref="PdfName"/> can emit (≤ 0xFF; non-printables + delimiters are #-escaped there).</summary>
+    private static bool IsEmittableInfoKey(string key)
+    {
+        foreach (var c in key)
+        {
+            if (c > 0xFF) return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Trim <paramref name="value"/>, returning <see langword="null"/> for null/blank input.</summary>
+    private static string? NullIfBlank(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>Sanitize + length-cap <paramref name="value"/> the same way <c>/Info</c> metadata is
+    /// (<see cref="SanitizeMetadataString"/>), returning <see langword="null"/> for null/blank input —
+    /// so the XMP stream carries the same bounded, control-char-scrubbed text as the Info dictionary.</summary>
+    private static string? SanitizeIfPresent(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : SanitizeMetadataString(value);
+
     /// <summary>Phase 4 links (PR 4) — opt into emitting hyperlink <c>/URI</c> link-annotation actions
     /// (the active-content preflight blocks <c>/URI</c> by default). When set, ONLY well-formed URI
     /// actions (<c>/S /URI</c>) pass; JavaScript / Launch / SubmitForm / embedded files stay blocked.</summary>
@@ -818,6 +890,36 @@ internal sealed class PdfDocument
         // Phase 4 outlines (PR 4) — the document outline (bookmarks) from <h1>–<h6>.
         if (_outlineHeadings is { Count: > 0 })
             catalogDict.Set(PdfNames.Outlines, BuildOutlineTree(_outlineHeadings));
+
+        // Document properties — /Lang (content language), /ViewerPreferences (show the /Title in the
+        // viewer chrome instead of the filename), and the XMP /Metadata stream. Each is emitted ONLY
+        // when the relevant metadata is present, so a bare document's catalog is byte-for-byte unchanged.
+        // Sanitize + cap author-controlled metadata ONCE (SanitizeMetadataString strips control chars +
+        // caps at MaxMetadataChars) and reuse for BOTH the catalog /Lang and the XMP stream, so /Info and
+        // XMP are consistent and the XMP stream can't be inflated past the same cap by hostile input.
+        var lang = SanitizeIfPresent(Lang);
+        if (lang is not null)
+            catalogDict.Set(PdfNames.Lang, EncodeMetadataString(lang));
+        if (NullIfBlank(Title) is not null)
+        {
+            catalogDict.Set(PdfNames.ViewerPreferences,
+                new PdfDictionary().Set(PdfNames.DisplayDocTitle, PdfBoolean.True));
+        }
+
+        var xmp = XmpMetadataBuilder.Build(
+            SanitizeIfPresent(Title), SanitizeIfPresent(Author), SanitizeIfPresent(Subject),
+            SanitizeIfPresent(Keywords), SanitizeIfPresent(Creator), lang, Producer,
+            CreationDate, ModDate);
+        if (xmp is not null)
+        {
+            var metaDict = new PdfDictionary()
+                .Set(PdfNames.Type, PdfNames.Metadata)
+                .Set(PdfNames.Subtype, PdfNames.XML);
+            var metaRef = _writer.Objects.Allocate();
+            _writer.Objects.Assign(metaRef, new PdfStream(xmp, metaDict));
+            catalogDict.Set(PdfNames.Metadata, metaRef);
+        }
+
         _writer.Objects.Assign(_catalogRef, catalogDict);
         _writer.Trailer.Set(PdfNames.Root, _catalogRef);
 
@@ -931,6 +1033,17 @@ internal sealed class PdfDocument
         if (Creator is not null) info.Set(PdfNames.Creator, EncodeMetadataString(SanitizeMetadataString(Creator)));
         if (CreationDate is { } cd) info.Set(PdfNames.CreationDate, new PdfLiteralString(FormatPdfDate(cd)));
         if (ModDate is { } md) info.Set(PdfNames.ModDate, new PdfLiteralString(FormatPdfDate(md)));
+
+        // Custom /Info entries (SetCustomInfoProperties) — emitted after the standard keys, in
+        // StringComparer.Ordinal key order (SetCustomInfoProperties sorts them), so the output is
+        // deterministic regardless of the caller's dictionary iteration order. Keys are pre-validated
+        // emittable; values go through the same sanitize + text-string encoder as the standard fields.
+        if (_customInfo is { } custom)
+        {
+            foreach (var kvp in custom)
+                info.Set(new PdfName(kvp.Key), EncodeMetadataString(SanitizeMetadataString(kvp.Value)));
+        }
+
         return info;
     }
 

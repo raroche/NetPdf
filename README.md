@@ -232,6 +232,43 @@ h2    { break-after: avoid; }            /* section headings stay with their con
 
 > Two ready-to-run references live in the repo: [`Corpus/Reports/01-quarterly-report.html`](tests/NetPdf.RealDocuments/Corpus/Reports/01-quarterly-report.html) (repeating `thead` + `@page` footer) and [`Corpus/Invoices/04-anvil-running-elements.html`](tests/NetPdf.RealDocuments/Corpus/Invoices/04-anvil-running-elements.html) (running elements + page counters).
 
+## Document metadata
+
+The document's `<title>`, standard `<meta>` descriptors, and `<html lang>` flow automatically into the PDF's `/Info` dictionary, its XMP `/Metadata` stream, and the catalog `/Lang` — so the generated file is catalogued and searched by name, and PDF readers show its title instead of the filename:
+
+```html
+<html lang="en">
+  <head>
+    <title>Invoice #1234</title>
+    <meta name="author" content="ACME Billing">
+    <meta name="description" content="March 2026 statement">
+    <meta name="keywords" content="invoice, acme, march">
+  </head>
+  <body>…</body>
+</html>
+```
+
+Anything you'd rather set from code — or that isn't in the HTML — goes through `HtmlPdfOptions`, which **overrides** the harvested values and can add arbitrary custom `/Info` entries:
+
+```csharp
+byte[] pdf = HtmlPdf.Convert(html, new HtmlPdfOptions
+{
+    Title = "Invoice #1234",              // overrides <title>
+    Author = "ACME Billing",
+    Subject = "March 2026 statement",
+    Keywords = "invoice, acme, march",
+    Creator = "Acme Billing Service",
+    CreationDate = DateTimeOffset.UtcNow, // omitted by default (deterministic output)
+    DocumentProperties = new Dictionary<string, string>
+    {
+        ["InvoiceNumber"] = "1234",       // extra /Info keys
+        ["AccountId"] = "AC-99",
+    },
+});
+```
+
+Everything is deterministic: no timestamp is read unless you set one, and a document with **no** metadata emits none of these entries, so its bytes are unchanged. The XMP stream mirrors the descriptive fields in Dublin Core, which also lays the groundwork for a future PDF/A pass.
+
 ## Language packs
 
 The core `NetPdf` package bundles **English** hyphenation, registered under the primary subtag `en` (American-English Liang patterns) — so `en`, `en-GB`, `en-US`, etc. all resolve to it. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).

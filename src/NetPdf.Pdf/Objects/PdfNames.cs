@@ -142,6 +142,13 @@ internal static class PdfNames
     public static readonly PdfName CreationDate = new("CreationDate");
     public static readonly PdfName ModDate = new("ModDate");
 
+    // Catalog document properties + XMP metadata stream
+    public static readonly PdfName Lang = new("Lang");
+    public static readonly PdfName ViewerPreferences = new("ViewerPreferences");
+    public static readonly PdfName DisplayDocTitle = new("DisplayDocTitle");
+    public static readonly PdfName Metadata = new("Metadata");
+    public static readonly PdfName XML = new("XML");
+
     // Trailer
     public static readonly PdfName Root = new("Root");
     public static readonly PdfName Info = new("Info");

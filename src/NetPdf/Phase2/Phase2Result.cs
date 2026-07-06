@@ -65,11 +65,15 @@ namespace NetPdf.Phase2;
 /// available so consumers can re-resolve specific elements / pseudos for
 /// ad-hoc inspection.</param>
 /// <param name="Sheets">The adapted stylesheets in cascade order.</param>
+/// <param name="Metadata">Document metadata harvested from the HTML head
+/// (<c>&lt;title&gt;</c> / <c>&lt;meta&gt;</c> / <c>&lt;html lang&gt;</c>) —
+/// feeds the PDF <c>/Info</c> dictionary, XMP stream, and catalog <c>/Lang</c>.</param>
 internal readonly record struct Phase2Result(
     Box BoxRoot,
     SemanticNode SemanticRoot,
     ResolvedCascadeResult Cascade,
-    ImmutableArray<CssStylesheet> Sheets) : IDisposable
+    ImmutableArray<CssStylesheet> Sheets,
+    HtmlDocumentMetadata Metadata) : IDisposable
 {
     /// <summary>Walks <see cref="BoxRoot"/> + releases every unique
     /// box-owned <see cref="ComputedStyle"/> back to the pool. Per the

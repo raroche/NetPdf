@@ -89,9 +89,15 @@ class NetPdf.HtmlPdfOptions
     property System.Boolean NativeSvgRendering { get;set; }
     property System.Boolean PreferCssPageSize { get;set; }
     property System.Boolean PrintBackgrounds { get;set; }
+    property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>? DocumentProperties { get;set; }
+    property System.Nullable<System.DateTimeOffset> CreationDate { get;set; }
+    property System.Nullable<System.DateTimeOffset> ModDate { get;set; }
     property System.Nullable<System.TimeSpan> Timeout { get;set; }
     property System.String? Author { get;set; }
+    property System.String? Creator { get;set; }
+    property System.String? Keywords { get;set; }
     property System.String? Language { get;set; }
+    property System.String? Subject { get;set; }
     property System.String? Title { get;set; }
     property System.Uri? BaseUri { get;set; }
 interface NetPdf.IDiagnosticsSink

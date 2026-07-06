@@ -1035,8 +1035,9 @@ internal sealed class PdfDocument
         if (ModDate is { } md) info.Set(PdfNames.ModDate, new PdfLiteralString(FormatPdfDate(md)));
 
         // Custom /Info entries (SetCustomInfoProperties) — emitted after the standard keys, in
-        // insertion order (deterministic). Keys are pre-validated emittable; values go through the
-        // same sanitize + text-string encoder as the standard fields.
+        // StringComparer.Ordinal key order (SetCustomInfoProperties sorts them), so the output is
+        // deterministic regardless of the caller's dictionary iteration order. Keys are pre-validated
+        // emittable; values go through the same sanitize + text-string encoder as the standard fields.
         if (_customInfo is { } custom)
         {
             foreach (var kvp in custom)

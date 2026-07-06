@@ -119,8 +119,9 @@ internal static class XmpMetadataBuilder
     private static string Escape(string value)
     {
         var sb = new StringBuilder(value.Length + 8);
-        foreach (var c in value)
+        for (var i = 0; i < value.Length; i++)
         {
+            var c = value[i];
             switch (c)
             {
                 case '&': sb.Append("&amp;"); break;
@@ -129,13 +130,33 @@ internal static class XmpMetadataBuilder
                 case '"': sb.Append("&quot;"); break;
                 case '\'': sb.Append("&apos;"); break;
                 default:
-                    // Drop control chars that are illegal in XML 1.0 (except TAB/CR/LF).
-                    if (c < 0x20 && c is not ('\t' or '\r' or '\n')) break;
-                    sb.Append(c);
+                    // A valid astral character arrives as a high+low surrogate PAIR — emit both.
+                    if (char.IsHighSurrogate(c) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+                    {
+                        sb.Append(c).Append(value[i + 1]);
+                        i++;
+                        break;
+                    }
+
+                    // Otherwise keep only characters legal in an XML 1.0 document: drop C0 controls
+                    // (except TAB/CR/LF), LONE surrogates, and the U+FFFE/U+FFFF noncharacters — any of
+                    // which would make the RDF/XML packet unparseable.
+                    if (IsXmlChar(c)) sb.Append(c);
                     break;
             }
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>True when <paramref name="c"/> (a single UTF-16 unit, surrogate pairs handled by the
+    /// caller) is a legal XML 1.0 character: not a C0 control other than TAB/CR/LF, not a lone
+    /// surrogate, and not U+FFFE/U+FFFF.</summary>
+    private static bool IsXmlChar(char c)
+    {
+        if (c < 0x20) return c is '\t' or '\r' or '\n';
+        if (c is >= '\uD800' and <= '\uDFFF') return false;   // lone surrogate
+        if (c is '\uFFFE' or '\uFFFF') return false;          // U+FFFE / U+FFFF noncharacters
+        return true;
     }
 }

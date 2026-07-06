@@ -46,9 +46,12 @@ internal readonly record struct HtmlDocumentMetadata(
         string? author = null, description = null, keywords = null;
 
         // Only <head> descriptors are document metadata — a <meta name="author"> in the body is
-        // content, not document-level metadata, so scope the scan to the head element.
-        var metaScope = (IParentNode?)document.Head ?? document;
-        foreach (var meta in metaScope.QuerySelectorAll("meta"))
+        // content, not document-level metadata. Scope the scan strictly to the head element; if there
+        // is no head (malformed HTML), harvest NO meta descriptors rather than falling back to the whole
+        // document (which would wrongly pick up body <meta> tags). AngleSharp synthesizes a <head> for
+        // conformant documents, so the null branch is the defensive malformed-input case.
+        var headMetas = document.Head?.QuerySelectorAll("meta");
+        foreach (var meta in headMetas ?? Enumerable.Empty<IElement>())
         {
             var name = meta.GetAttribute("name");
             if (string.IsNullOrEmpty(name)) continue;

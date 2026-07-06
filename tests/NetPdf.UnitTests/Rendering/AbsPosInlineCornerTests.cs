@@ -62,4 +62,29 @@ public sealed class AbsPosInlineCornerTests
         foreach (var w in res.Warnings)
             Assert.DoesNotContain("ABSOLUTE", w.Code);
     }
+
+    [Fact]
+    public void Two_overlapping_inline_abspos_children_keep_dom_paint_order()
+    {
+        // Review (P3) — excluding out-of-flow boxes from the anonymous-block wrap reorders them relative to
+        // the surrounding inline runs. Verify that (a) an abspos inline child interleaved with inline text
+        // BEFORE and AFTER it still renders, and (b) two overlapping abspos children keep DOM paint order
+        // (the LATER one paints on top): the equal-`z-index` positioned siblings paint in tree order, and
+        // the fix preserves their relative order (it appends them as encountered).
+        var res = Render(
+            "<div class=\"frame\">before"
+            + "<span class=\"c red\"></span>middle<span class=\"c blue\"></span>after"
+            + "<h1>H</h1><p>body</p></div>",
+            ".frame{position:relative;width:200px;height:120px;margin:0;padding:0}"
+            + ".c{position:absolute;top:10px;left:10px;width:40px;height:40px}"
+            + ".red{background:#ff0000}.blue{background:#0000ff}");
+        var pdf = Encoding.Latin1.GetString(res.Pdf);
+        var redAt = pdf.IndexOf("1 0 0 rg", System.StringComparison.Ordinal);
+        var blueAt = pdf.IndexOf("0 0 1 rg", System.StringComparison.Ordinal);
+        Assert.True(redAt >= 0, "red abspos child rendered");
+        Assert.True(blueAt >= 0, "blue abspos child rendered");
+        Assert.True(blueAt > redAt, "the later (blue) abspos child must paint AFTER the earlier (red) one");
+        foreach (var w in res.Warnings)
+            Assert.DoesNotContain("ABSOLUTE", w.Code);
+    }
 }

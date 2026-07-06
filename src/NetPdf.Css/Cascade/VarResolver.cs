@@ -263,11 +263,26 @@ internal static class VarResolver
                 && BorderShorthandExpander.TryExpand(name, resolved.Value, out var borderLonghands))
             {
                 foreach (var (longhandProperty, longhandValue) in borderLonghands)
+                {
+                    // Cascade order (review) — the cascade already pre-expanded this `border` shorthand into
+                    // its 12 longhands, but the shorthand-derived longhands carry an EMPTY raw value (the
+                    // pre-substitution `var(--rule)` couldn't be split into per-side values — which is why
+                    // the border rendered nothing before this fix), whereas an EXPLICIT author override for a
+                    // side (`border-top-color: blue`, incl. via `border-color` / a side shorthand / an
+                    // `!important`) is resolved by the cascade to that side's WINNER with a NON-empty value.
+                    // So re-expand the substituted value only where the cascade winner is still the (empty)
+                    // shorthand contribution; where an explicit longhand won the side, leave it. This keeps
+                    // the whole-value-var expansion consistent with the normal shorthand↔longhand cascade
+                    // across both source orders + importance/specificity (the cascade already ranked them).
+                    if (matched.GetWinner(longhandProperty) is { } longhandWinner
+                        && !string.IsNullOrWhiteSpace(longhandWinner.Declaration.Value.RawText))
+                        continue;
                     targetSet.Add(new ResolvedDeclaration(
                         Property: longhandProperty,
                         ResolvedValue: longhandValue,
                         OriginalDeclaration: winner.Declaration,
                         Key: winner.Key));
+                }
                 continue;
             }
 

@@ -3514,7 +3514,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     cursorAdvanceForFlex = topShift + resizedFlexWrapperBlockSize + marginEnd;
                 }
                 else if (IsFlexContainer(child) && IsHeightAuto(child)
-                    && !child.Style.ReadFlexDirection().IsFlexColumnDirection())
+                    && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
+                    && !child.Style.ReadFlexWrap().IsFlexWrapping())
                 {
                     // Corpus-fidelity (03 itinerary footer overlap), mirror of the recursive site — an
                     // AUTO-height ROW flex's used cross size is its content cross extent (FlexLinePacker
@@ -6103,7 +6104,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     childEffectiveBlockSize = resizedFlexWrapperBlockSize;
                 }
                 else if (IsFlexContainer(child) && IsHeightAuto(child)
-                    && !child.Style.ReadFlexDirection().IsFlexColumnDirection())
+                    && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
+                    && !child.Style.ReadFlexWrap().IsFlexWrapping())
                 {
                     // Corpus-fidelity (03 itinerary footer overlap) — an AUTO-height ROW flex's used cross
                     // (block) size is its content cross extent, but FlexLinePacker sizes lines from the

@@ -74,6 +74,17 @@ public sealed class VarShorthandRecoveryTests
     }
 
     [Fact]
+    public void Whole_value_var_border_shorthand_yields_a_side_to_a_later_explicit_longhand()
+    {
+        // Cascade order (review) — `border: var(--rule)` [red] then an explicit `border-top-color: blue`
+        // that comes LATER + wins the cascade: the top edge is blue, the other three edges stay the
+        // shorthand's red. The whole-value-var expansion must not clobber the winning explicit longhand.
+        var pdf = Render(".box{--rule:3px solid #ff0000;border:var(--rule);border-top-color:#0000ff;width:100px;height:20px}");
+        Assert.Contains("0 0 1 rg", pdf);   // the later explicit top color (blue) survives
+        Assert.Contains("1 0 0 rg", pdf);   // the shorthand still supplies the other three edges (red)
+    }
+
+    [Fact]
     public void Whole_value_var_border_side_shorthand_renders_after_substitution()
     {
         // The per-side form (`border-bottom: var(--edge)`) takes the same whole-value path.

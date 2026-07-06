@@ -1460,9 +1460,15 @@ grepping the ID).
       **atomic** granularity (the cycle-2c/2d "mid-split" limitation — a subtree
       commits on one page or breaks between children, without filling the trailing
       page). Closing that is the deferred mid-split engine work, tracked here. The
-      overlap (the visible defect) is resolved. Row-WRAP line-split resume (no
-      dual-input resize consumer) is a separate residual, also unfixed on a fresh
-      resume page.
+      overlap (the visible defect) is resolved. **SCOPE (review):** the fix is
+      NOWRAP single-line row flex — `autoRowContentCross` is `max(item cross)`
+      (the single line's cross), and both dispatch resize consumers gate on
+      `!IsFlexWrapping()`. A `flex-wrap: wrap` auto-height row flex still
+      under-reports its cross (the wrap pre-measure `FlexLinePacker.SumCrossExtent`
+      reads DECLARED cross sizes, 0 for content-determined items; the correct value
+      is Σ per-line max content cross + row gaps) — a following sibling can still
+      overlap. Separate open case. Row-WRAP line-split resume (no dual-input resize
+      consumer) is a separate residual, also unfixed on a fresh resume page.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107
@@ -2401,9 +2407,19 @@ flags the categories):
     `border[-side]` shorthand into its width/style/color longhands AFTER
     substituting the `var()` (the cascade's first + only shorthand-expansion
     site; fires only for a whole-value-var border, so byte-identical
-    otherwise). `Whole_value_var_border_shorthand_renders_after_substitution`
-    + `..._side_...`. A COMPONENT var (`border: 1px solid var(--c)`) still
-    takes the preprocessor's pre-substitution longhand path.
+    otherwise). It fills only the SIDES the shorthand actually won the cascade
+    for: an EXPLICIT author longhand that wins a side (`border: var(--base)` +
+    a later `border-top-color: blue`, incl. `!important`) is left untouched —
+    the cascade already ranked them, and the shorthand-derived longhand is
+    recognizable by its empty raw value. `Whole_value_var_border_shorthand_*`
+    (render, side, `..._yields_a_side_to_a_later_explicit_longhand`). **Known
+    edge:** an explicit border longhand declared BEFORE a resetting
+    `border: var(...)` in the SAME rule isn't recovered (AngleSharp keeps the
+    longhand + drops the shorthand, and the recovery is suppressed when a
+    same-side longhand precedes it) → that side keeps the explicit value
+    rather than the reset. Rare; the dominant base-plus-override pattern is
+    correct. A COMPONENT var (`border: 1px solid var(--c)`) still takes the
+    preprocessor's pre-substitution longhand path.
   - ~~**`position: relative` offset application (to the CB)**~~ —
     SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos

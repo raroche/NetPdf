@@ -821,6 +821,16 @@ internal static class CssPreprocessor
                   // % form verbatim (the number form AngleSharp keeps isn't duplicate-recovered) — same
                   // value-gated precedent as the intrinsic `flex-basis` / recto-verso `break-*` keywords.
                   || (lowerName == "opacity" && IsPercentageValue(rawValue))
+                  // Corpus-fidelity: AngleSharp.Css 1.0.0-beta.144 DROPS a `background` or
+                  // `border[-side]` shorthand whose value contains `var()` (it rejects the shorthand
+                  // atomically because the reference can't be validated pre-substitution), even though
+                  // the same `var()` in the equivalent longhand survives + resolves. Recover such a
+                  // shorthand by re-expanding it to longhands with the `var()` intact (emission below),
+                  // so `background: linear-gradient(..., var(--a), var(--b))` / `background: var(--c)` /
+                  // `border-bottom: 1px solid var(--d)` render. Gated to var() so the non-var forms
+                  // AngleSharp already expands aren't duplicate-recovered.
+                  || ((lowerName == "background" || BorderShorthandExpander.IsBorderShorthand(lowerName))
+                      && ContainsVar(rawValue))
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
@@ -1117,6 +1127,27 @@ internal static class CssPreprocessor
                 else if (normalizedName == "mask")
                 {
                     output.Add(new CssDeclarationRecovery("mask-image", cleanValue, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                }
+                // Corpus-fidelity — a var()-carrying `background` shorthand AngleSharp dropped. Route the
+                // value to the single longhand that carries it: an <image> (gradient / url / …) →
+                // `background-image`, otherwise a <color> → `background-color`. Covers the corpus's
+                // single-purpose backgrounds (`background: linear-gradient(…var()…)`, `background:
+                // var(--c)`). A pure `var()` whose custom property resolves to an image (rare) can't be
+                // distinguished here and defaults to `background-color`.
+                else if (normalizedName == "background")
+                {
+                    var bgLonghand = ContainsImageFunction(cleanValue) ? "background-image" : "background-color";
+                    output.Add(new CssDeclarationRecovery(bgLonghand, cleanValue, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                }
+                // Corpus-fidelity — a var()-carrying `border` / `border-<side>` shorthand AngleSharp
+                // dropped. Re-expand to the width/style/color longhands (validation deferred: the
+                // `var()` color validates post-substitution, at VarResolver). A malformed value fails
+                // TryExpand and falls through to the verbatim recovery below.
+                else if (BorderShorthandExpander.IsBorderShorthand(normalizedName)
+                    && BorderShorthandExpander.TryExpand(normalizedName, cleanValue, deferValidation: true, out var borderVarLonghands))
+                {
+                    foreach (var (property, value) in borderVarLonghands)
+                        output.Add(new CssDeclarationRecovery(property, value, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
                 }
                 else
                 {
@@ -1472,6 +1503,69 @@ internal static class CssPreprocessor
                 // false positive (e.g. "calc(" inside an unquoted url()) is benign — the
                 // recovery delivers the raw verbatim and a kept AngleSharp copy stays
                 // last-wins-identical (see the recovery gate's doc).
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="value"/> contains a <c>var(</c> reference.
+    /// AngleSharp.Css 1.0.0-beta.144 DROPS a <c>background</c> / <c>border[-side]</c> shorthand whose
+    /// value contains <c>var()</c> (it can't validate the reference pre-substitution, and rejects the
+    /// whole shorthand atomically), even though the same <c>var()</c> in the equivalent LONGHAND survives
+    /// and resolves normally. The recovery re-expands such a shorthand to its longhands with the
+    /// <c>var()</c> intact. Tokenized so a <c>var(</c> inside a quoted string isn't matched.</summary>
+    private static bool ContainsVar(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(' && ident.Equals("var", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>CSS <c>&lt;image&gt;</c>-producing functions (CSS Images 3/4) — used to decide whether a
+    /// recovered <c>background</c> shorthand value is an image (→ <c>background-image</c>) or a color
+    /// (→ <c>background-color</c>). Not exhaustive; covers the gradient + url forms the corpus + common
+    /// stylesheets use.</summary>
+    private static readonly FrozenSet<string> ImageFunctionNames = new[]
+    {
+        "url", "linear-gradient", "radial-gradient", "conic-gradient",
+        "repeating-linear-gradient", "repeating-radial-gradient", "repeating-conic-gradient",
+        "image", "image-set", "cross-fade", "element", "paint",
+        "-webkit-linear-gradient", "-webkit-radial-gradient", "-webkit-gradient", "-webkit-image-set",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary><see langword="true"/> when <paramref name="value"/> contains a CSS
+    /// <c>&lt;image&gt;</c>-producing function (a gradient, <c>url()</c>, …). Tokenized so a match inside
+    /// a quoted string isn't counted.</summary>
+    private static bool ContainsImageFunction(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(' && ImageFunctionNames.Contains(ident.ToString()))
+                    return true;
                 continue;
             }
             tok.ReadChar();

@@ -71,6 +71,16 @@ internal static class BorderShorthandExpander
     /// (caller keeps the raw declaration) for a malformed value, a duplicated component, or any part
     /// that fails resolver validation.</summary>
     public static bool TryExpand(string propertyName, string rawValue, out List<(string Property, string Value)> longhands)
+        => TryExpand(propertyName, rawValue, deferValidation: false, out longhands);
+
+    /// <summary>As <see cref="TryExpand(string, string, out List{ValueTuple{string, string}})"/>, but
+    /// with <paramref name="deferValidation"/> the caller can skip the atomic leaf-validation loop. Used
+    /// for a shorthand whose value contains <c>var()</c>: the reference can't be validated before
+    /// substitution (that happens later, at the cascade's <c>VarResolver</c>), and a raw <c>var(--x)</c>
+    /// color would otherwise be rejected — so the expander still splits the components and the recovered
+    /// longhands (e.g. <c>border-bottom-color: var(--accent)</c>) flow through the normal var pipeline,
+    /// which resolves them exactly as an authored longhand does.</summary>
+    public static bool TryExpand(string propertyName, string rawValue, bool deferValidation, out List<(string Property, string Value)> longhands)
     {
         longhands = new List<(string, string)>(12);
         if (!EdgePrefixes.TryGetValue(propertyName, out var prefixes)) return false;
@@ -125,13 +135,15 @@ internal static class BorderShorthandExpander
             longhands.Add(($"{prefix}-color", color));
         }
 
-        // Atomic validation: every emitted longhand must resolve (or none applies).
-        foreach (var (property, value) in longhands)
-            if (!IsValidLonghand(property, value))
-            {
-                longhands.Clear();
-                return false;
-            }
+        // Atomic validation: every emitted longhand must resolve (or none applies). Skipped when the
+        // caller defers validation (a var()-carrying value — validated post-substitution by VarResolver).
+        if (!deferValidation)
+            foreach (var (property, value) in longhands)
+                if (!IsValidLonghand(property, value))
+                {
+                    longhands.Clear();
+                    return false;
+                }
         return true;
     }
 

@@ -1640,7 +1640,7 @@ internal static class ComputedStyleLayoutExtensions
                     // Non-finite container size — the only defensive
                     // fallback. A definite 0 IS valid per CSS Values L4 §6.5;
                     // only NaN / ±Infinity indicates a contract violation.
-                    return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
+                    return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome, containerMainSize);
                 }
                 var pct = Math.Max(0, basis.Value / 100.0 * containerMainSize);
                 return BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome);
@@ -1652,24 +1652,34 @@ internal static class ComputedStyleLayoutExtensions
             case FlexBasisKind.MaxContent:
             case FlexBasisKind.MinContent:
             default:
-                return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome);
+                return ResolveDeclaredMainBorderBox(item, mainSizeProperty, mainChrome, containerMainSize);
         }
     }
 
     /// <summary>Flex box-sizing cycle — the item's DECLARED main size mapped to a BORDER box
-    /// (via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>) when DEFINITE (a <c>LengthPx</c>
-    /// slot, INCLUDING an explicit 0 — which floors at the chrome), else 0 (auto / unresolved
-    /// percentage / content-determined; the chrome is added by content sizing). Gating on the
-    /// slot TAG (not <c>value &gt; 0</c>) keeps an explicit <c>0</c> definite — post-PR-#190
-    /// Copilot review. Shared by the auto/content flex-basis branch + the non-finite-container
-    /// fallback above.</summary>
+    /// (via <see cref="BoxSizingHelper.DeclaredToBorderBox"/>) when DEFINITE: a <c>LengthPx</c>
+    /// slot (INCLUDING an explicit 0 — which floors at the chrome), or a <c>Percentage</c> slot
+    /// resolved against a FINITE <paramref name="containerMainSize"/> (e.g. <c>width: 48%</c> with
+    /// the default <c>flex-basis: auto</c> — mirrors the flex-basis percentage branch). Else 0
+    /// (auto / percentage-against-indefinite-container / content-determined; the chrome is added by
+    /// content sizing). Gating on the slot TAG (not <c>value &gt; 0</c>) keeps an explicit <c>0</c>
+    /// definite — post-PR-#190 Copilot review.
+    /// <para>The percentage resolution (corpus-fidelity) fixes a <c>width:%</c> flex item collapsing
+    /// to its chrome (0): with <c>justify-content: space-between</c> the leftover space then
+    /// distributed as inter-item spacing and shoved the second column off the page (07 Bill-To
+    /// off-page, 09 "Accepted by" clipped).</para></summary>
     private static double ResolveDeclaredMainBorderBox(
-        Boxes.Box item, PropertyId mainSizeProperty, double mainChrome)
+        Boxes.Box item, PropertyId mainSizeProperty, double mainChrome, double containerMainSize)
     {
         var slot = item.Style.Get(mainSizeProperty);
-        return slot.Tag == ComputedSlotTag.LengthPx
-            ? BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, slot.AsLengthPx()), mainChrome)
-            : 0;
+        if (slot.Tag == ComputedSlotTag.LengthPx)
+            return BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, slot.AsLengthPx()), mainChrome);
+        if (slot.Tag == ComputedSlotTag.Percentage && double.IsFinite(containerMainSize))
+        {
+            var pct = Math.Max(0, slot.AsPercentage() / 100.0 * containerMainSize);
+            return BoxSizingHelper.DeclaredToBorderBox(item.Style, pct, mainChrome);
+        }
+        return 0;
     }
 
     /// <summary>Per Phase 3 Task 15 L12 — read the item's

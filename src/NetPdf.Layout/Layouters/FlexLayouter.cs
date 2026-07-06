@@ -244,6 +244,21 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
+    /// <summary>Per RC2 (abspos-in-flex-item fidelity) — the dispatching
+    /// <see cref="BlockLayouter"/>'s <c>RecordPositionedBoxGeometry</c>, invoked
+    /// as each flex ITEM's border box is emitted so an item that establishes an
+    /// absolute containing block (<c>position</c> != <c>static</c>) is recorded
+    /// in the outer layouter's positioned-geometry map. FlexLayouter is NOT a
+    /// delegation boundary (it spawns no per-item nested BlockLayouter), so an
+    /// abspos descendant of a positioned flex item is resolved by the OUTER
+    /// abspos pass — which walks <c>Box.Parent</c> to the item and needs its
+    /// geometry here, else it defers (drops) the descendant. No-ops for the
+    /// non-positioned item (the callee filters). Null when unused (tests /
+    /// measure passes). Args: (item box, inlineOffset, blockOffset, inlineSize,
+    /// blockSize) in sink coordinates — the same values passed to
+    /// <see cref="_sink"/>.<c>Emit</c>.</summary>
+    private readonly System.Action<Box, double, double, double, double>? _recordPositionedGeometry;
+
     private double _contentInlineOffset;
     private double _contentBlockOffset;
     private double _contentInlineSize;
@@ -299,6 +314,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// for future cycles that lay out inline content inside flex
     /// items. Cycle 1 doesn't yet route through the inline pass so
     /// the parameter is stashed but unused.</param>
+    /// <param name="recordPositionedGeometry">Per RC2 — optional callback
+    /// (the dispatching <see cref="BlockLayouter"/>'s
+    /// <c>RecordPositionedBoxGeometry</c>) invoked as each flex ITEM's border
+    /// box is emitted, so a positioned item is recorded in the outer layouter's
+    /// abspos-geometry map and an abspos descendant anchors to it. Null (the
+    /// default) disables recording — used by tests / measure passes.</param>
     /// <exception cref="ArgumentNullException">When
     /// <paramref name="rootBox"/> or <paramref name="sink"/> is null.</exception>
     /// <exception cref="ArgumentException">When
@@ -311,7 +332,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         IBlockFragmentSink sink,
         LayoutContinuation? incomingContinuation = null,
         IPaginateDiagnosticsSink? diagnostics = null,
-        IShaperResolver? shaperResolver = null)
+        IShaperResolver? shaperResolver = null,
+        System.Action<Box, double, double, double, double>? recordPositionedGeometry = null)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -351,6 +373,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         _sink = sink;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
+        _recordPositionedGeometry = recordPositionedGeometry;
     }
 
     /// <summary>Per Phase 3 Task 16 cycle 1 — the incoming
@@ -1677,6 +1700,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                         BlockOffset: blockOffset,
                         InlineSize: inlineSize,
                         BlockSize: blockSize));
+                    // RC2 — record this item's border-box geometry IFF it establishes an
+                    // absolute containing block, so an abspos descendant anchors to the item
+                    // (FlexLayouter is not a delegation boundary; the outer abspos pass resolves
+                    // it). The callback no-ops for the common non-positioned item. Only the
+                    // whole-item emit records — a page-sliced item (the row-nowrap branch above)
+                    // leaves its abspos descendant deferred, consistent with abspos-pagination.
+                    _recordPositionedGeometry?.Invoke(item, inlineOffset, blockOffset, inlineSize, blockSize);
 
                     // Non-block-pagination arc (flex item CONTENT layout) — re-emit the
                     // item's measured inner content at its FINAL (re-anchored) position.

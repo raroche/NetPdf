@@ -10923,7 +10923,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             sink: _sink,
             incomingContinuation: incomingContinuation,
             diagnostics: _diagnostics,
-            shaperResolver: _shaperResolver);
+            shaperResolver: _shaperResolver,
+            // RC2 — flex is not a delegation boundary, so a positioned flex ITEM's
+            // geometry must be recorded in THIS layouter's map for the outer abspos
+            // pass to anchor an abspos descendant to it (else it defers/drops).
+            recordPositionedGeometry: RecordPositionedBoxGeometry);
         // Per the flex-column pagination dual-input (mirrors DispatchGridInner's
         // grid page-budget): for a paginating column the contentBlockSize stays
         // the NATURAL main extent (so flex-grow/shrink resolve correctly) while

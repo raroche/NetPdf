@@ -2313,12 +2313,21 @@ flags the categories):
     per-item nested BlockLayouter, so an abspos box inside a flex item's
     content is emitted by the top-level pass; adding flex to the
     boundary would DROP it.)
-    Remaining gap: **positioned GRID / FLEX / TABLE containers (the
-    WRAPPER) as CB establishers** — a positioned ancestor that sits
-    ABOVE a nested layouter's subtree (e.g., a positioned grid container
-    with a static item holding the abspos box) still isn't recorded on a
-    path the abspos pass can read, so such a box anchors to the ICB or a
-    higher recorded ancestor / is dropped + diagnosed. Later cycle.
+    Per RC2 (travel-doc corpus fidelity): a positioned **FLEX ITEM** now
+    records its border-box geometry as it's emitted (a
+    `recordPositionedGeometry` callback from the dispatching
+    `BlockLayouter` into `FlexLayouter`), so an abspos decoration anchored
+    to a positioned flex item (card corner / day-badge / bullet) resolves
+    to the item instead of being dropped. A positioned flex/grid CONTAINER
+    is already recorded via the block-flow emit path, and a positioned grid
+    ITEM via its nested BlockLayouter — so those work too.
+    Remaining gap: (1) a positioned GRID / TABLE container (the WRAPPER)
+    sitting ABOVE a nested layouter's subtree with a STATIC item holding
+    the abspos box — that ancestor isn't recorded on a path the nested
+    abspos pass can read, so the box anchors to a higher recorded ancestor
+    / is dropped + diagnosed; (2) an abspos descendant of a PAGE-SLICED
+    flex item (row-nowrap taller-than-page) stays deferred, consistent with
+    abspos-pagination. Later cycle.
   - ~~**`position: relative` offset application (to the CB)**~~ —
     SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos

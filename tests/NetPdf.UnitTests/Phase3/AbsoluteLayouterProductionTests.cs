@@ -354,6 +354,48 @@ public sealed class AbsoluteLayouterProductionTests
     }
 
     [Fact]
+    public async Task Rc2_abspos_in_positioned_flex_item_emits_once_anchored_to_item()
+    {
+        // RC2 — a POSITIONED flex item containing an absolute child. Unlike a grid
+        // item (which GridLayouter lays out via a nested BlockLayouter that owns the
+        // child), flex is NOT a delegation boundary — FlexLayouter emits item border
+        // boxes only, so the OUTER abspos pass resolves the child. Before the fix the
+        // flex item's geometry wasn't recorded → ResolveContainingBlock deferred →
+        // the child was DROPPED with LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001. Now the
+        // flex-item emit records its geometry, so the child anchors to the item.
+        // The .spacer item is 100px wide → the .item main-start is 100; the abspos
+        // (top:5 left:5) anchored to the item lands at (105, 5) — proving it emitted
+        // ONCE against the item (not the page origin, which would be (5, 5)).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .spacer { width: 100px; height: 50px; }
+                .item { position: relative; width: 120px; height: 50px; }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="spacer"></div>
+              <div class="item"><div class="abs"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diag) = await RenderAsync(html);
+        var absFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("abs") == true)
+            .ToList();
+        Assert.Single(absFrags);
+        Assert.Equal(105.0, absFrags[0].InlineOffset, precision: 3);  // item main-start 100 + left 5
+        Assert.Equal(5.0, absFrags[0].BlockOffset, precision: 3);     // item cross-start 0 + top 5
+        // Not deferred — no unsupported-feature diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
+    }
+
+    [Fact]
     public async Task PostPr114_abspos_in_grid_item_content_emits_once_not_doubled()
     {
         // Per post-PR-#114 review P2#4 — the genuine double-emit case: an
@@ -779,9 +821,12 @@ public sealed class AbsoluteLayouterProductionTests
     // `Cycle2a_abspos_anchors_to_positioned_ancestor_padding_box`
     // (which sets BorderTopWidth/etc explicitly). A production-CSS
     // version is entangled with `border` shorthand + border-style
-    // cascade interaction; positioned GRID/FLEX containers as CB
-    // establishers are a cycle-2b item (only block-flow positioned
-    // ancestors record their geometry today — see deferrals.md).
+    // cascade interaction. As of RC2, a positioned FLEX ITEM now records
+    // its geometry (see Rc2_abspos_in_positioned_flex_item_… above); a
+    // positioned grid item works via its nested BlockLayouter, and a
+    // positioned flex/grid CONTAINER via the block-flow emit path. The
+    // remaining unfixed edge is an abspos descendant of a PAGE-SLICED flex
+    // item (deferred with abspos-pagination — see deferrals.md).
 
     // ================================================================
     //  Speculative-measure cycle — out-of-flow descendants are SKIPPED

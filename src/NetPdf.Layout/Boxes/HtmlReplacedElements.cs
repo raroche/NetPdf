@@ -42,5 +42,9 @@ internal static class HtmlReplacedElements
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "img", "video", "audio", "canvas", "iframe", "object", "embed",
+            // An inline <svg> element is treated as a replaced element (atomic; its intrinsic size
+            // comes from width/height/viewBox and it renders via the SVG pipeline, like <img> SVG).
+            // Its SVG-namespaced children (<circle>/<path>/…) are NOT laid out as HTML boxes.
+            "svg",
         }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 }

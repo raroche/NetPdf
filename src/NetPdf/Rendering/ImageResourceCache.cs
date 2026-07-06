@@ -411,7 +411,62 @@ internal sealed class ImageResourceCache
                 if (key is not null) cache.ExtraImagesByRawUrl[rawUrl] = key;
             }
         }
+
+        // Inline <svg> elements (RC3) — serialize each inline SVG's own markup + render it through the
+        // SAME SVG pipeline as an <img> SVG source (SvgRasterizer + the security guards). No fetch: the
+        // element's markup IS the content. Runs after the URL passes so a data-URI <img src=svg> is
+        // unaffected.
+        RegisterInlineSvgs(boxRoot, cache, diagnostics);
         return cache;
+    }
+
+    /// <summary>Walk the box tree for replaced inline <c>&lt;svg&gt;</c> boxes, serialize each element's
+    /// own markup, and decode it through the SVG pipeline (identical to an <c>&lt;img&gt;</c> SVG source),
+    /// registering an <see cref="Entry"/> keyed by content so identical SVGs dedup. A parse failure is
+    /// diagnosed (SVG-PARSE-FAILED-001) and the box simply paints nothing.</summary>
+    private static void RegisterInlineSvgs(Box box, ImageResourceCache cache, IDiagnosticsSink diagnostics)
+    {
+        if (box.Kind is BoxKind.BlockReplacedElement or BoxKind.InlineReplacedElement
+            && box.SourceElement is { } element
+            && string.Equals(element.LocalName, "svg", StringComparison.OrdinalIgnoreCase))
+        {
+            var markup = element.OuterHtml;
+            if (!string.IsNullOrWhiteSpace(markup))
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(markup);
+                // Content key — identical inline SVGs (repeated logos) share one rendered XObject.
+                var key = "inline-svg:" + Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(bytes));
+                if (!cache._byUri.ContainsKey(key) && !cache._failedUris.Contains(key))
+                {
+                    try
+                    {
+                        cache._byUri[key] = Decode(bytes, diagnostics);
+                    }
+                    catch (SvgImageParseException ex)
+                    {
+                        diagnostics.Emit(new Diagnostic(
+                            DiagnosticCodes.SvgParseFailed001,
+                            ex.Status == NetPdf.Svg.SvgParseStatus.Blocked
+                                ? "An inline <svg> was rejected by the parser's security guards (a prohibited "
+                                  + "<!DOCTYPE / <!ENTITY, or an over-size document). It was not rendered."
+                                : "An inline <svg> could not be parsed as well-formed XML. It was not rendered.",
+                            DiagnosticSeverity.Warning));
+                        cache._failedUris.Add(key);
+                    }
+                }
+                if (cache._byUri.ContainsKey(key))
+                {
+                    cache.ImageBoxes[box] = new ImgSpec(
+                        key,
+                        box.Style.ReadKeywordOrDefault(PropertyId.ObjectFit, defaultIndex: 0),
+                        ObjectPositionRaw: null);
+                }
+            }
+        }
+
+        foreach (var child in box.Children)
+            RegisterInlineSvgs(child, cache, diagnostics);
     }
 
     /// <summary>Resolve <paramref name="rawUrl"/> + fetch/decode it once (per-URI memo incl. a

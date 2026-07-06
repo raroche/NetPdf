@@ -124,6 +124,7 @@ internal static class HtmlDefaultDisplay
             ["img"] = "inline", ["video"] = "inline", ["audio"] = "inline",
             ["canvas"] = "inline", ["iframe"] = "inline",
             ["object"] = "inline", ["embed"] = "inline", ["picture"] = "inline",
+            ["svg"] = "inline",
         };
         return dict.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
     }

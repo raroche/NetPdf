@@ -228,8 +228,16 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
                 }
             }
         }
-        else
+        else if (HasDefiniteInlineSize(fragment.Box))
         {
+            // A block fragment with NO inline layout (a block whose children are themselves blocks) would
+            // otherwise contribute its FILLED border-box inline size. During an intrinsic (max-content)
+            // measure the available inline size is huge (1e6), so a `width:auto` block fills it and poisons
+            // the content extent (the nested-block-in-flex over-measurement bug). Its real content extent is
+            // already tracked via its DESCENDANT fragments (their line advances + nested DEFINITE blocks), so
+            // only a box with a DEFINITE inline size — an explicit absolute width, or a replaced element's
+            // intrinsic size — contributes its own box width here. An auto / percentage-width block does not
+            // (a percentage resolves against the huge available too, so it behaves as auto for max-content).
             var innerRight = fragment.InlineOffset + fragment.InlineSize;
             if (innerRight > ContentInlineExtent)
             {
@@ -239,6 +247,15 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
 
         _buffered.Add(fragment);
     }
+
+    /// <summary>Whether <paramref name="box"/> has a DEFINITE inline (main) size for the purpose of an
+    /// intrinsic content measure — a replaced element (its intrinsic size), or an explicit ABSOLUTE
+    /// <c>width</c> (a length; a percentage resolves against the huge measure width, so it behaves as
+    /// auto for max-content). An auto-width block does NOT contribute its filled box width — its content
+    /// extent comes from its descendants.</summary>
+    private static bool HasDefiniteInlineSize(Box box) =>
+        box.IsReplaced
+        || box.Style.Get(PropertyId.Width).Tag == NetPdf.Css.ComputedValues.ComputedSlotTag.LengthPx;
 
     /// <summary>Per-run last-line metrics (PR-3 task 9; PR #198 review P2) — the style of the run on
     /// <paramref name="inline"/>'s LAST line with the DEEPEST descent below the baseline (computed from each

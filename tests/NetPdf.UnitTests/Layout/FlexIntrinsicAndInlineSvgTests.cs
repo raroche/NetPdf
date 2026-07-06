@@ -51,11 +51,11 @@ public sealed class FlexIntrinsicAndInlineSvgTests
             + "<div>Curated Ocean Voyages</div></div></div>"
             + "<div class='right'>Sailing with Meridian Cruise Line</div></div>"), Opts());
 
-        // The right block is one logical line; if it collapsed to min-content it would wrap into MANY
-        // rows (one per word). Count the distinct text rows on the right half of the page.
+        // The right block is one logical line on EXACTLY one row: a collapse-to-min-content would wrap
+        // it into many rows (one per word), and a `== 1` (not `<= 1`) also fails the degenerate case
+        // where the block disappeared / moved off the right half (0 rows) — review #275 [P3].
         var rightRows = DistinctTextRowsInRightHalf(pdf);
-        Assert.True(rightRows <= 1,
-            $"the right block collapsed and wrapped into {rightRows} rows — the flex over-measurement regressed.");
+        Assert.Equal(1, rightRows);
     }
 
     [Fact]
@@ -66,7 +66,7 @@ public sealed class FlexIntrinsicAndInlineSvgTests
             "<div class='bar'>"
             + "<div class='brand'><div><div><div class='name'>Azure Horizon Travel</div></div></div></div>"
             + "<div class='right'>Issued March 12 2026</div></div>"), Opts());
-        Assert.True(DistinctTextRowsInRightHalf(pdf) <= 1);
+        Assert.Equal(1, DistinctTextRowsInRightHalf(pdf));
     }
 
     // ── RC3: inline <svg> renders as a replaced element ─────────────────────────────────────
@@ -95,7 +95,97 @@ public sealed class FlexIntrinsicAndInlineSvgTests
             + "<circle cx='23' cy='23' r='20' fill='#0d5c7a'/></svg>"
             + "<div><div class='name'>Azure Horizon Travel</div></div></div>"
             + "<div class='right'>Sailing with Meridian Cruise Line</div></div>"), Opts());
-        Assert.True(DistinctTextRowsInRightHalf(pdf) <= 1);
+        Assert.Equal(1, DistinctTextRowsInRightHalf(pdf));
+    }
+
+    [Fact]
+    public void Min_width_only_block_child_keeps_its_floor_in_flex_intrinsic_measurement()
+    {
+        // Review #275 [P2] — a nowrap flex row (flex-start) whose FIRST item's only content is an empty
+        // block with `min-width:200px` (≈150pt) and no line descendants / explicit width. The intrinsic
+        // measure must floor the item at 200px, so the SECOND item's text ("Y") starts ~150pt in. If the
+        // floor were lost (the fix's else-branch only counting explicit widths), item 1 would measure 0 and
+        // "Y" would sit at the left edge.
+        var pdf = Encoding.Latin1.GetString(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page{margin:16mm}*{box-sizing:border-box}"
+            + "body{font-family:sans-serif;margin:0}.row{display:flex;justify-content:flex-start}</style></head><body>"
+            + "<div class='row'><div><div style='min-width:200px;height:6px'></div></div><div>Y</div></div>"
+            + "</body></html>", Opts()));
+
+        var yx = FirstTextX(pdf);
+        Assert.True(yx > 120, $"'Y' at x={yx:0.#}pt — the min-width floor was lost (expected ≳150pt).");
+    }
+
+    [Fact]
+    public void Inline_svg_current_color_resolves_to_the_html_context_color()
+    {
+        // Review #275 [P2] — fill="currentColor" must resolve to the surrounding HTML color (seeded onto
+        // the SVG root), so the same SVG under color:red vs color:blue rasterizes to DIFFERENT images.
+        byte[] Render(string color) => HtmlPdf.Convert(
+            $"<!DOCTYPE html><html><body><span style=\"color:{color}\">"
+            + "<svg width='30' height='30' viewBox='0 0 30 30'><rect x='3' y='3' width='24' height='24' "
+            + "fill='currentColor'/></svg></span></body></html>", Opts());
+
+        var red = Render("red");
+        var blue = Render("blue");
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(red));
+        Assert.NotEqual(red, blue);   // currentColor was applied (else both would be identical)
+    }
+
+    [Theory]
+    [InlineData("filter:grayscale(1)")]
+    [InlineData("filter:drop-shadow(1px 1px 1px #000)")]
+    public void Inline_svg_filter_is_supported_not_diagnosed_unsupported(string style)
+    {
+        // Review #275 [P2] — inline <svg> reuses the <img> image-spec path, so a valid CSS filter parses
+        // and applies rather than being reported unsupported.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + $"<svg style=\"{style}\" width='30' height='30' viewBox='0 0 30 30'>"
+            + "<rect x='3' y='3' width='24' height='24' fill='#333'/></svg></body></html>");
+        Assert.DoesNotContain(result.Warnings, w => w.Code == "CSS-FILTER-UNSUPPORTED-001");
+        Assert.Contains("/Subtype /Image", Encoding.Latin1.GetString(result.Pdf));
+    }
+
+    [Fact]
+    public void Inline_svg_with_only_a_viewbox_is_intrinsically_sized_and_renders()
+    {
+        // Review #275 [P3] — no width/height attributes: intrinsic size comes from the viewBox.
+        var pdf = Encoding.Latin1.GetString(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>"
+            + "<svg viewBox='0 0 80 40'><rect x='2' y='2' width='76' height='36' fill='#28a'/></svg>"
+            + "</body></html>", Opts()));
+        Assert.Contains("/Subtype /Image", pdf);
+        Assert.Matches(@"/[A-Za-z0-9]+ Do", pdf);
+    }
+
+    [Fact]
+    public void Repeated_identical_inline_svgs_share_the_same_image_xobjects()
+    {
+        // Review #275 [P3] — content-keyed dedup: a SECOND identical inline SVG adds NO new image XObjects
+        // (the count is the same as with a single SVG). (An RGBA SVG contributes an image + its /SMask, so
+        // the absolute count isn't 1 — the point is that the duplicate is free.)
+        const string svg = "<svg width='20' height='20' viewBox='0 0 20 20'>"
+            + "<circle cx='10' cy='10' r='8' fill='#c33'/></svg>";
+        int Images(string body) => Regex.Matches(
+            Encoding.Latin1.GetString(HtmlPdf.Convert($"<!DOCTYPE html><html><body>{body}</body></html>", Opts())),
+            "/Subtype /Image").Count;
+
+        Assert.Equal(Images(svg), Images(svg + svg));
+    }
+
+    [Fact]
+    public void Native_svg_opt_in_renders_inline_svg_without_error()
+    {
+        // Review #275 [P3] — the native-vector opt-in path also applies to inline <svg>.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + "<svg width='30' height='30' viewBox='0 0 30 30'><rect x='3' y='3' width='24' height='24' fill='#333'/></svg>"
+            + "</body></html>", new HtmlPdfOptions { NativeSvgRendering = true, FontResolver = new SynthResolver() });
+        var pdf = Encoding.Latin1.GetString(result.Pdf);
+        // Painted either as native vector ops or the raster fallback — either way, content is emitted.
+        Assert.True(pdf.Contains("/Subtype /Image") || Regex.IsMatch(pdf, @"\d+\.?\d* \d+\.?\d* \d+\.?\d* rg"),
+            "inline SVG under NativeSvgRendering rendered nothing");
     }
 
     /// <summary>Number of distinct text baseline rows whose x-origin is on the RIGHT half of an A4 page
@@ -121,6 +211,22 @@ public sealed class FlexIntrinsicAndInlineSvgTests
     }
 
     private static double D(string v) => double.Parse(v, CultureInfo.InvariantCulture);
+
+    /// <summary>The x-origin of the first shown text run (handles the <c>Tm</c> and <c>Td</c> forms).</summary>
+    private static double FirstTextX(string pdf)
+    {
+        foreach (Match m in Regex.Matches(pdf, @"BT(.*?)ET", RegexOptions.Singleline))
+        {
+            var blk = m.Groups[1].Value;
+            if (!Regex.IsMatch(blk, @"<[0-9A-Fa-f]+>")) continue;
+            var tm = Regex.Match(blk, @"(-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) (-?[\d.]+) Tm");
+            if (tm.Success) return D(tm.Groups[5].Value);
+            var td = Regex.Match(blk, @"(-?[\d.]+) (-?[\d.]+) (?:Td|TD)");
+            if (td.Success) return D(td.Groups[1].Value);
+        }
+
+        return -1;
+    }
 
     private sealed class SynthResolver : IFontResolver
     {

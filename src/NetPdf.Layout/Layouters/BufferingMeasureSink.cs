@@ -228,20 +228,31 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
                 }
             }
         }
-        else if (HasDefiniteInlineSize(fragment.Box))
+        else
         {
             // A block fragment with NO inline layout (a block whose children are themselves blocks) would
             // otherwise contribute its FILLED border-box inline size. During an intrinsic (max-content)
             // measure the available inline size is huge (1e6), so a `width:auto` block fills it and poisons
             // the content extent (the nested-block-in-flex over-measurement bug). Its real content extent is
-            // already tracked via its DESCENDANT fragments (their line advances + nested DEFINITE blocks), so
-            // only a box with a DEFINITE inline size — an explicit absolute width, or a replaced element's
-            // intrinsic size — contributes its own box width here. An auto / percentage-width block does not
-            // (a percentage resolves against the huge available too, so it behaves as auto for max-content).
-            var innerRight = fragment.InlineOffset + fragment.InlineSize;
-            if (innerRight > ContentInlineExtent)
+            // already tracked via its DESCENDANT fragments (their line advances + nested DEFINITE blocks).
+            // So it contributes its OWN box width here only for a DEFINITE inline contribution:
+            //   * an explicit absolute width, or a replaced element's intrinsic size → its filled InlineSize
+            //     (which, being definite, is NOT the huge auto-fill), OR
+            //   * an explicit absolute `min-width` floor (review #275 [P2]) → the min-width border box, so a
+            //     `<div style="min-width:200px"><div/></div>` with no line descendants still floors the
+            //     parent's intrinsic extent at 200px (NOT the huge auto-filled InlineSize).
+            // An auto / percentage-width block with no min-width floor contributes nothing (a percentage
+            // resolves against the huge available too, so it behaves as auto for max-content).
+            var definiteInline = HasDefiniteInlineSize(fragment.Box)
+                ? fragment.InlineSize
+                : fragment.Box.Style.CrossBorderBoxSizePx(PropertyId.MinWidth);
+            if (definiteInline > 0)
             {
-                ContentInlineExtent = innerRight;
+                var innerRight = fragment.InlineOffset + definiteInline;
+                if (innerRight > ContentInlineExtent)
+                {
+                    ContentInlineExtent = innerRight;
+                }
             }
         }
 

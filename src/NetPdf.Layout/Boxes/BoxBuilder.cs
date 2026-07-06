@@ -868,7 +868,22 @@ internal static class BoxBuilder
         List<Box>? currentRun = null;
         foreach (var c in snapshot)
         {
-            if (c.IsBlockLevel)
+            // Corpus-fidelity (11 certificate corners) — an OUT-OF-FLOW (absolute / fixed) inline-level
+            // box does NOT participate in the inline/block anonymous-box split (CSS 2.1 §9.2.4: it
+            // generates no in-flow line boxes; it's placed by the abspos pass). Keep it as a DIRECT child
+            // of `parent` rather than sweeping it into an anonymous inline-only wrapper. The wrapper would
+            // reuse `parent`'s style ref (incl. any `position:relative`) and be emitted through the
+            // inline-only path, which NEVER calls RecordPositionedBoxGeometry — so an abspos descendant
+            // resolving its containing block against that wrapper finds no geometry and is DROPPED
+            // (LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001, ×4 for the certificate's tl/tr/bl/br svg corners).
+            // As a direct child its containing-block ancestor is the real `parent`, whose geometry IS
+            // recorded via the block-flow emit path. Does NOT break the surrounding inline run (an
+            // out-of-flow box is transparent to inline continuity), so `currentRun` is left intact.
+            if (c.Style.IsOutOfFlow())
+            {
+                parent.AppendChild(c);
+            }
+            else if (c.IsBlockLevel)
             {
                 FlushRun(parent, ref currentRun);
                 parent.AppendChild(c);

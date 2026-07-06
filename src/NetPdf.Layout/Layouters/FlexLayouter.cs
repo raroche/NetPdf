@@ -1152,6 +1152,31 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 ComputeRowBaselineData(itemContentBuffers, flexDirection, crossSizeProperty);
         }
 
+        // Corpus-fidelity (03 itinerary footer overlap) — an AUTO-height ROW flex container's used cross
+        // (block) size is its CONTENT cross extent (CSS Flexbox L1 §9.4: the sum/max of the flex lines'
+        // used cross sizes). FlexLinePacker sizes each line from the items' DECLARED cross only (0 for an
+        // auto-height item — it doesn't content-measure), so `containerCrossSize` / `maxEmittedCrossBottom`
+        // come out 0 and the container reports a chrome-only block box even though its item content paints
+        // tall. `itemBaselineCrossSizes` (already computed for every row flex, above) holds each item's
+        // content-measured cross border box, so the max is the real content cross. Fold it into
+        // `LastEmittedBlockExtent` (below) so the dispatching BlockLayouter resizes the wrapper + advances
+        // the sibling cursor past the real content — otherwise a trailing sibling overlaps the flex content
+        // (03 `.note` over the `.timeline`). Byte-identical when the content is no taller than the resolved
+        // cross (max ≤ existing).
+        // SCOPE (review) — NOWRAP single-line only: `max(item cross)` is the line's cross size for one
+        // line. For `flex-wrap: wrap` the auto cross is the SUM of each packed line's max content cross +
+        // row gaps, and the wrap cross pre-measure (FlexLinePacker.SumCrossExtent) still reads DECLARED
+        // cross sizes — so a content-sized wrapped flex is a separate (still-open) case; not folded here to
+        // avoid under/over-counting. An explicit height is the used block size, so gate that out too.
+        var autoRowContentCross = 0.0;
+        var isAutoHeightRow = !isColumn && !isWrapping
+            && _rootBox.Style.Get(PropertyId.Height).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        if (isAutoHeightRow && itemBaselineCrossSizes is not null)
+        {
+            foreach (var cs in itemBaselineCrossSizes)
+                if (!double.IsNaN(cs) && cs > autoRowContentCross) autoRowContentCross = cs;
+        }
+
         // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
         // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
         // an item whose measured content REACHES it was clipped by the single atomic pass.
@@ -1729,7 +1754,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     {
                         var insetI = contentBuf.ContainsDecorationOwnerFragment ? 0 : contentInsetInline;
                         var insetB = contentBuf.ContainsDecorationOwnerFragment ? 0 : contentInsetBlock;
-                        contentBuf.FlushTo(_sink, inlineOffset + insetI, blockOffset + insetB);
+                        // RC2 residual (1) — also record positioned-CB geometry for any positioned BLOCK
+                        // DESCENDANT flushed from this item's content buffer, so an abspos box anchored to a
+                        // `position:relative` block nested inside the flex item (not just the item itself)
+                        // resolves against it instead of being dropped. The callback self-filters to
+                        // CB-establishers; no-op for the common all-static item content.
+                        contentBuf.FlushTo(_sink, inlineOffset + insetI, blockOffset + insetB,
+                            _recordPositionedGeometry);
                     }
                     // PR-#182 review P2 — surface this committed item's buffered
                     // content diagnostics now (deferred items' diagnostics stay
@@ -1833,7 +1864,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 ? (rowNowrapAnyRemaining
                     ? System.Math.Min(rowNowrapEmittedExtent, rowNowrapBudget)
                     : rowNowrapEmittedExtent)
-                : maxEmittedCrossBottom;
+                // Auto-height row (03 fix) — the packer-derived maxEmittedCrossBottom is 0 for
+                // content-determined items; use the content cross extent so the wrapper resizes to fit.
+                : System.Math.Max(maxEmittedCrossBottom, autoRowContentCross);
 
         // Row-nowrap intra-item content split — if ANY item still has content (or
         // box) below this page's cross window, resume on the next page at the
@@ -3376,10 +3409,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             cancellationToken: cancellationToken,
             diagnostics: itemDiagnostics,
             // This buffer FLUSHES into the final tree at the item's position (the flex item
-            // emission), so it requests a real Layout pass (out-of-flow descendants emit, % padding
-            // resolves real). PR #218 review [P1 #1] — but if the flex CONTAINER is itself being
+            // emission), so it requests a real Layout pass (% padding resolves real, in-flow persists
+            // for paint). PR #218 review [P1 #1] — but if the flex CONTAINER is itself being
             // measured intrinsically, ForNested inherits that so the flush stays a measure too.
-            purpose: _measurePurpose.ForNested(MeasurePurpose.Layout));
+            purpose: _measurePurpose.ForNested(MeasurePurpose.Layout),
+            // RC2 residual (1) — but SKIP this nested pass's abspos emission: FlexLayouter is not an
+            // abspos delegation boundary, so a flex item's abspos DESCENDANTS are owned + placed by the
+            // TOP-LEVEL pass (which resolves them against the positioned-CB geometry the buffer flush
+            // records). Letting the nested pass also run it only ever drops the descendant (unrecorded CB
+            // in the transient nested map) + leaks a spurious LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001.
+            suppressOutOfFlowEmission: true);
 
     /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
     /// is content-determined (so content measurement should size it). True iff

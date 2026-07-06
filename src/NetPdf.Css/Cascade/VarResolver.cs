@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using AngleSharp.Dom;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Parser.Preprocessing;
 
 namespace NetPdf.Css.Cascade;
 
@@ -247,6 +248,44 @@ internal static class VarResolver
             targetSet ??= isPseudo
                 ? result.StylesForPseudo(element, pseudoName!, customProperties)
                 : result.StylesFor(element, customProperties);
+
+            // Corpus-fidelity — a WHOLE-VALUE var() `border` shorthand (`border: var(--rule)`) can't be
+            // split into width/style/color BEFORE substitution (the component classification needs the
+            // literal tokens), so `CssPreprocessor` recovers it as the SHORTHAND itself (rather than
+            // longhands), and AngleSharp.Css dropped it outright. Now that `var()` is substituted, expand
+            // the `border[-side]` shorthand into its width/style/color longhands here — the ONLY place a
+            // shorthand survives to (there is no other cascade-stage shorthand expander). A component var
+            // (`border: 1px solid var(--c)`) already arrives pre-expanded from the preprocessor, so only a
+            // real border SHORTHAND name reaches this branch; a value still carrying `var()` (unresolved)
+            // or that fails to parse falls through to the plain add (its longhands then resolve to initial).
+            if (BorderShorthandExpander.IsBorderShorthand(name)
+                && !resolved.Value.Contains("var(", StringComparison.OrdinalIgnoreCase)
+                && BorderShorthandExpander.TryExpand(name, resolved.Value, out var borderLonghands))
+            {
+                foreach (var (longhandProperty, longhandValue) in borderLonghands)
+                {
+                    // Cascade order (review) — the cascade already pre-expanded this `border` shorthand into
+                    // its 12 longhands, but the shorthand-derived longhands carry an EMPTY raw value (the
+                    // pre-substitution `var(--rule)` couldn't be split into per-side values — which is why
+                    // the border rendered nothing before this fix), whereas an EXPLICIT author override for a
+                    // side (`border-top-color: blue`, incl. via `border-color` / a side shorthand / an
+                    // `!important`) is resolved by the cascade to that side's WINNER with a NON-empty value.
+                    // So re-expand the substituted value only where the cascade winner is still the (empty)
+                    // shorthand contribution; where an explicit longhand won the side, leave it. This keeps
+                    // the whole-value-var expansion consistent with the normal shorthand↔longhand cascade
+                    // across both source orders + importance/specificity (the cascade already ranked them).
+                    if (matched.GetWinner(longhandProperty) is { } longhandWinner
+                        && !string.IsNullOrWhiteSpace(longhandWinner.Declaration.Value.RawText))
+                        continue;
+                    targetSet.Add(new ResolvedDeclaration(
+                        Property: longhandProperty,
+                        ResolvedValue: longhandValue,
+                        OriginalDeclaration: winner.Declaration,
+                        Key: winner.Key));
+                }
+                continue;
+            }
+
             targetSet.Add(new ResolvedDeclaration(
                 Property: name,
                 ResolvedValue: resolved.Value,

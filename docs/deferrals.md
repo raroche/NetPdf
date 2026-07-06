@@ -1436,27 +1436,38 @@ grepping the ID).
       re-rendered wholly (duplicated content) + the sibling cursor
       under-advanced (a trailing block overlapped the flex content).
       Verified by `FlexPageSplitResumeTests` (fails without the change).
-      **RESIDUAL (still open, PRECISELY root-caused):** the travel-corpus
-      `03-itinerary` footer overlap is a SEPARATE bug — an AUTO-HEIGHT,
-      non-paginatable flex container (a row-nowrap `.day`) is measured as
-      its CHROME-ONLY border box in `MeasureSubtreeVisualBlockExtentRecursive`
-      (the `if (!IsBlockFlowContainerOwnedByBlockLayouter(parent)) return
-      parentBorderBoxBlockSize;` fallthrough at `BlockLayouter.cs:~9743`) —
-      its flex CONTENT height is never measured. So a block-flow container
-      that stacks such flex items (the `.timeline`, of `.day` rows) is
-      grossly under-measured (each `.day` contributes ~chrome ≈ 24px
-      instead of its ~149px emitted height), the container's cursor
-      under-advances, and the trailing sibling (`.note`) is placed at the
-      container's too-small bottom and overlaps the flex content — most
-      visibly on the resume page (verified via a per-page fragment trace:
-      `timeline bs=282` while its day children reach `bo≈522`). **FIX
-      APPROACH:** measure an auto-height flex (and grid) container's true
-      content block extent — e.g. a discarding-sink FlexLayouter dry-run,
-      mirroring the multicol dry-run already at `~9764` — instead of
-      returning the chrome-only border box. This changes the pagination
-      MEASURE for every auto-height-flex-in-block-flow document, so it
-      needs golden re-pinning + visual re-verification (a focused change,
-      not byte-identical). Row-WRAP line-split resume (no dual-input resize
+      **`03-itinerary` footer overlap — OVERLAP FIXED (batch-3 T1); page-count
+      optimization remains.** Root cause: an AUTO-HEIGHT row `.day` flex's used
+      cross (block) size is its CONTENT cross extent, but `FlexLinePacker` sizes
+      each line from the items' DECLARED cross ONLY (0 for a content-determined
+      item — it never content-measures), so `containerCrossSize` /
+      `maxEmittedCrossBottom` come out 0. A block that STACKS such flex rows (the
+      `.timeline` of `.day` rows) then reported a chrome-only block box, its cursor
+      under-advanced, and the trailing `.note` overlapped the flex content. **FIX
+      (shipped):** (1) `FlexLayouter` folds the already-computed per-item content
+      cross (`ComputeRowBaselineData`'s `itemBaselineCrossSizes`) into
+      `LastEmittedBlockExtent` for an auto-height row; (2) both the outer + recursive
+      BlockLayouter flex-dispatch resize consumers now resize the wrapper + advance
+      the sibling cursor by that extent for a non-paginating auto-height row flex
+      (previously only dual-input-paginating wrappers were resized); (3) the
+      pagination measure (`MeasureSubtreeVisualBlockExtentRecursive`, the
+      `IsPaginatableFlex` clamp at `~9745`) folds the content extent in so an
+      ancestor block's measure includes it. The `.note` now lands below the timeline
+      — verified `AutoHeightFlexTimelineFooterTests` + byte-identical for every
+      golden suite. **STILL OPEN — page-count / density:** with the timeline now
+      correctly measured tall, the body paginates it CONSERVATIVELY (real `03` →
+      4 pages where ~2 suffice), because a large block subtree is committed with
+      **atomic** granularity (the cycle-2c/2d "mid-split" limitation — a subtree
+      commits on one page or breaks between children, without filling the trailing
+      page). Closing that is the deferred mid-split engine work, tracked here. The
+      overlap (the visible defect) is resolved. **SCOPE (review):** the fix is
+      NOWRAP single-line row flex — `autoRowContentCross` is `max(item cross)`
+      (the single line's cross), and both dispatch resize consumers gate on
+      `!IsFlexWrapping()`. A `flex-wrap: wrap` auto-height row flex still
+      under-reports its cross (the wrap pre-measure `FlexLinePacker.SumCrossExtent`
+      reads DECLARED cross sizes, 0 for content-determined items; the correct value
+      is Σ per-line max content cross + row gaps) — a following sibling can still
+      overlap. Separate open case. Row-WRAP line-split resume (no dual-input resize
       consumer) is a separate residual, also unfixed on a fresh resume page.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
@@ -2358,25 +2369,57 @@ flags the categories):
     recorded via the block-flow emit path, and a positioned grid ITEM via
     its nested BlockLayouter — so those work too.
     Remaining gaps (confirmed still-dropping on a re-render of the travel
-    corpus, so #277 was PARTIAL): **(1)** an abspos box anchored to a
-    `position: relative` **block descendant nested inside** a flex item —
-    the common real shape (e.g. a bullet `li::before` whose CB is a
-    positioned `<li>` inside a flex-item `<ul>`, `.opt ul{flex:1}` in
-    `02-travel-quote`). The `<li>`'s geometry is emitted through the flex
-    item's CONTENT BUFFER (`FlushRangeTo`/`FlushTo`), which does NOT call
-    `RecordPositionedBoxGeometry`, so the descendant CB is unrecorded and
-    the box is dropped. The proper fix records positioned geometry for
-    block descendants flushed from flex-item buffered content (more
-    regression-sensitive than the item-level callback). **(2)** a positioned
+    corpus, so #277 was PARTIAL): ~~**(1)** an abspos box anchored to a
+    `position: relative` **block descendant nested inside** a flex item~~ —
+    **FIXED (batch-3 T2).** The flex item's content buffer flush
+    (`BufferingMeasureSink.FlushTo`) now records positioned-CB geometry for
+    every CB-establishing block descendant it flushes (via the same
+    `recordPositionedGeometry` callback the item-level record uses), so an
+    abspos box whose CB is a positioned `<li>` inside a flex-item `<ul>`
+    (`.opt ul{flex:1}` in `02-travel-quote`) resolves against it. The
+    redundant nested item-content abspos pass — which only ever dropped the
+    descendant (unrecorded CB in the transient nested map) and leaked a
+    spurious `LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001` — is now suppressed
+    (`suppressOutOfFlowEmission`: FlexLayouter is not an abspos delegation
+    boundary, the TOP-LEVEL pass owns flex-item abspos). Real `02` went from
+    34 abspos drops to 0. **(2)** a positioned
     GRID / TABLE container (the WRAPPER) sitting ABOVE a nested layouter's
     subtree with a STATIC item holding the abspos box — that ancestor isn't
     recorded on a path the nested abspos pass can read. **(3)** an abspos
     descendant of a PAGE-SLICED flex item (row-nowrap taller-than-page)
-    stays deferred, consistent with abspos-pagination. **(4)** `position:
-    absolute` inline-`<svg>` boxes (RC3 made inline `<svg>` a replaced
-    element) anchored to a positioned block still drop in
-    `11-course-completion-certificate` (the `.corner` flourishes) — cause
-    not yet isolated; needs its own diagnosis. Later cycle.
+    stays deferred, consistent with abspos-pagination. ~~**(4)** `position:
+    absolute` inline-`<svg>` boxes anchored to a positioned block still drop
+    in `11-course-completion-certificate` (the `.corner` flourishes)~~ —
+    **FIXED (batch-3 T5).** The abspos inline boxes were being swept into an
+    anonymous inline-only block (`BoxBuilder.FixupAnonymousBlocks`) whose
+    inline-only emit path never records positioned geometry → CB unresolved
+    → dropped ×4. Out-of-flow boxes are now EXCLUDED from the anonymous-block
+    run-wrapping (CSS 2.1 §9.2.4 — they don't participate in the inline/block
+    split), so they stay direct children of the real positioned parent
+    (whose geometry IS recorded). All four certificate corners now render.
+  - ~~**Whole-value `var()` shorthand — `border: var(--rule)`**~~ — **FIXED
+    (batch-3 T4).** A shorthand whose ENTIRE value is a single `var()` can't
+    be split into width/style/color before substitution, and AngleSharp.Css
+    drops it. `CssPreprocessor` now recovers the SHORTHAND itself (not
+    longhands — the "emit every longhand with the same var" trick that works
+    for `background: var(--x)` fails for `border`, whose resolved value is
+    multi-token) so it reaches the cascade, and `VarResolver` expands the
+    `border[-side]` shorthand into its width/style/color longhands AFTER
+    substituting the `var()` (the cascade's first + only shorthand-expansion
+    site; fires only for a whole-value-var border, so byte-identical
+    otherwise). It fills only the SIDES the shorthand actually won the cascade
+    for: an EXPLICIT author longhand that wins a side (`border: var(--base)` +
+    a later `border-top-color: blue`, incl. `!important`) is left untouched —
+    the cascade already ranked them, and the shorthand-derived longhand is
+    recognizable by its empty raw value. `Whole_value_var_border_shorthand_*`
+    (render, side, `..._yields_a_side_to_a_later_explicit_longhand`). **Known
+    edge:** an explicit border longhand declared BEFORE a resetting
+    `border: var(...)` in the SAME rule isn't recovered (AngleSharp keeps the
+    longhand + drops the shorthand, and the recovery is suppressed when a
+    same-side longhand precedes it) → that side keeps the explicit value
+    rather than the reset. Rare; the dominant base-plus-override pattern is
+    correct. A COMPONENT var (`border: 1px solid var(--c)`) still takes the
+    preprocessor's pre-substitution longhand path.
   - ~~**`position: relative` offset application (to the CB)**~~ —
     SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos

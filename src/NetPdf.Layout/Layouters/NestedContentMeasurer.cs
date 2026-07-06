@@ -84,7 +84,12 @@ internal static class NestedContentMeasurer
         // instead of starting a fresh real-layout pass that would emit out-of-flow content or persist
         // a probe-derived percentage inset). DEFAULT IntrinsicContribution (the *Measurer*'s common
         // case); emission callers that FLUSH this buffer pass MeasurePurpose.Layout.
-        MeasurePurpose purpose = MeasurePurpose.IntrinsicContribution)
+        MeasurePurpose purpose = MeasurePurpose.IntrinsicContribution,
+        // RC2 residual (1) — when true, the nested layouter runs a real Layout pass (in-flow persists for
+        // paint) but SKIPS its own abspos emission pass. FlexLayouter's flushed item-content buffer sets
+        // it: FlexLayouter is not an abspos delegation boundary, so a flex item's abspos descendants are
+        // owned by the TOP-LEVEL pass. Grid / table nested layouts leave it false (they own their abspos).
+        bool suppressOutOfFlowEmission = false)
     {
         // Recursion-depth budget — ONLY for speculative (non-Layout) measures: a Layout pass FLUSHES
         // its buffer into the final tree, so capping it would silently DROP real content (PR #218
@@ -136,7 +141,8 @@ internal static class NestedContentMeasurer
             // The common item (`<div>text</div>`) has DIRECT inline children;
             // opt the nested layouter into emitting the inline-only ROOT's own
             // content (else the block-only child loop skips the box's text).
-            layoutRootInlineContent: true);
+            layoutRootInlineContent: true,
+            suppressOutOfFlowEmission: suppressOutOfFlowEmission);
         // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
         // opportunities so they don't collapse min-content to glyph width (mirrors the
         // table cell min-content pass via TableLayouter.MeasureCellContent).

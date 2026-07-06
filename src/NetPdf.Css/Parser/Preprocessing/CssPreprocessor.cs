@@ -1138,14 +1138,20 @@ internal static class CssPreprocessor
                 // `var()` color validates post-substitution, at VarResolver).
                 else if (BorderShorthandExpander.IsBorderShorthand(normalizedName))
                 {
-                    // A WHOLE-VALUE var() (`border: var(--rule)`) can NOT be expanded here: the
-                    // component classification runs BEFORE substitution, so `var(--rule)` would be
-                    // misclassified as a color (emitting width:medium / style:none) and VarResolver
-                    // can't recover the width/style from an already-expanded longhand. Skip it
-                    // (unrecovered — same as AngleSharp's own drop) rather than misexpand. A var() that
-                    // is a COMPONENT (`border: 1px solid var(--c)`) still expands correctly.
-                    if (!IsWholeValueVar(cleanValue)
-                        && BorderShorthandExpander.TryExpand(normalizedName, cleanValue, deferValidation: true, out var borderVarLonghands))
+                    if (IsWholeValueVar(cleanValue))
+                    {
+                        // A WHOLE-VALUE var() (`border: var(--rule)`) can NOT be split into
+                        // width/style/color HERE — the component classification runs BEFORE substitution,
+                        // so `var(--rule)` would be misclassified as a color (emitting width:medium /
+                        // style:none). Recover the SHORTHAND itself so it survives AngleSharp's drop and
+                        // reaches the cascade; `VarResolver` substitutes the `var()` then expands the
+                        // shorthand into longhands (the only cascade-stage shorthand expander). A COMPONENT
+                        // var (`border: 1px solid var(--c)`) still takes the pre-substitution longhand path
+                        // below (its non-var components classify fine).
+                        output.Add(new CssDeclarationRecovery(
+                            normalizedName, cleanValue, isImportant, SourceOrdinal: ordinal));
+                    }
+                    else if (BorderShorthandExpander.TryExpand(normalizedName, cleanValue, deferValidation: true, out var borderVarLonghands))
                     {
                         foreach (var (property, value) in borderVarLonghands)
                             output.Add(new CssDeclarationRecovery(property, value, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));

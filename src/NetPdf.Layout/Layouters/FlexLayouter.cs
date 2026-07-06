@@ -1152,6 +1152,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 ComputeRowBaselineData(itemContentBuffers, flexDirection, crossSizeProperty);
         }
 
+        // Corpus-fidelity (03 itinerary footer overlap) — an AUTO-height ROW flex container's used cross
+        // (block) size is its CONTENT cross extent (CSS Flexbox L1 §9.4: the sum/max of the flex lines'
+        // used cross sizes). FlexLinePacker sizes each line from the items' DECLARED cross only (0 for an
+        // auto-height item — it doesn't content-measure), so `containerCrossSize` / `maxEmittedCrossBottom`
+        // come out 0 and the container reports a chrome-only block box even though its item content paints
+        // tall. `itemBaselineCrossSizes` (already computed for every row flex, above) holds each item's
+        // content-measured cross border box, so the max is the real content cross. Fold it into
+        // `LastEmittedBlockExtent` (below) so the dispatching BlockLayouter resizes the wrapper + advances
+        // the sibling cursor past the real content — otherwise a trailing sibling overlaps the flex content
+        // (03 `.note` over the `.timeline`). Gated to an AUTO-height row: an explicit height is the used
+        // block size. Byte-identical when the content is no taller than the resolved cross (max ≤ existing).
+        var autoRowContentCross = 0.0;
+        var isAutoHeightRow = !isColumn
+            && _rootBox.Style.Get(PropertyId.Height).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        if (isAutoHeightRow && itemBaselineCrossSizes is not null)
+        {
+            foreach (var cs in itemBaselineCrossSizes)
+                if (!double.IsNaN(cs) && cs > autoRowContentCross) autoRowContentCross = cs;
+        }
+
         // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
         // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
         // an item whose measured content REACHES it was clipped by the single atomic pass.
@@ -1839,7 +1859,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 ? (rowNowrapAnyRemaining
                     ? System.Math.Min(rowNowrapEmittedExtent, rowNowrapBudget)
                     : rowNowrapEmittedExtent)
-                : maxEmittedCrossBottom;
+                // Auto-height row (03 fix) — the packer-derived maxEmittedCrossBottom is 0 for
+                // content-determined items; use the content cross extent so the wrapper resizes to fit.
+                : System.Math.Max(maxEmittedCrossBottom, autoRowContentCross);
 
         // Row-nowrap intra-item content split — if ANY item still has content (or
         // box) below this page's cross window, resume on the next page at the

@@ -3513,6 +3513,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     _sink.UpdateFragmentBlockSize(wrapperCursor, resizedFlexWrapperBlockSize);
                     cursorAdvanceForFlex = topShift + resizedFlexWrapperBlockSize + marginEnd;
                 }
+                else if (IsFlexContainer(child) && IsHeightAuto(child)
+                    && !child.Style.ReadFlexDirection().IsFlexColumnDirection())
+                {
+                    // Corpus-fidelity (03 itinerary footer overlap), mirror of the recursive site — an
+                    // AUTO-height ROW flex's used cross size is its content cross extent (FlexLinePacker
+                    // sizes lines from the items' DECLARED cross only, 0 for auto). `outerFlexLastEmittedExtent`
+                    // carries the real content cross; resize the wrapper + advance the cursor by it so a
+                    // trailing sibling doesn't overlap the flex content. Byte-identical when content fits.
+                    var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
+                    var resizedFlexWrapperBlockSize = flexChromeBlock + outerFlexLastEmittedExtent;
+                    if (resizedFlexWrapperBlockSize > marginBoxBlockSizeForCursor - topShift - marginEnd)
+                    {
+                        _sink.UpdateFragmentBlockSize(wrapperCursor, resizedFlexWrapperBlockSize);
+                        cursorAdvanceForFlex = topShift + resizedFlexWrapperBlockSize + marginEnd;
+                    }
+                }
 
                 // Cursor advance + bookkeeping mirror the multicol
                 // dispatch above.
@@ -6085,6 +6101,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     var resizedFlexWrapperBlockSize = flexChromeBlock + nestedFlexLastEmittedExtent;
                     _sink.UpdateFragmentBlockSize(recursiveWrapperCursor, resizedFlexWrapperBlockSize);
                     childEffectiveBlockSize = resizedFlexWrapperBlockSize;
+                }
+                else if (IsFlexContainer(child) && IsHeightAuto(child)
+                    && !child.Style.ReadFlexDirection().IsFlexColumnDirection())
+                {
+                    // Corpus-fidelity (03 itinerary footer overlap) — an AUTO-height ROW flex's used cross
+                    // (block) size is its content cross extent, but FlexLinePacker sizes lines from the
+                    // items' DECLARED cross only (0 for auto-height items), so the wrapper's resolved
+                    // border box is chrome-only. `nestedFlexLastEmittedExtent` now carries the real content
+                    // cross (FlexLayouter's `autoRowContentCross`); resize the wrapper + advance the cursor
+                    // by it so a trailing sibling (`.note` after a `.timeline` of flex `.day` rows) lands
+                    // below the content instead of overlapping it. Byte-identical when content fits the
+                    // resolved box (the guard keeps the larger value only).
+                    var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
+                    var resizedFlexWrapperBlockSize = flexChromeBlock + nestedFlexLastEmittedExtent;
+                    if (resizedFlexWrapperBlockSize > childEffectiveBlockSize)
+                    {
+                        _sink.UpdateFragmentBlockSize(recursiveWrapperCursor, resizedFlexWrapperBlockSize);
+                        childEffectiveBlockSize = resizedFlexWrapperBlockSize;
+                    }
                 }
 
                 // Per Task 16 cycle 3 P1 #2 — propagate
@@ -9746,8 +9781,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             && !_disableFlexPagination
             && _capturedFragmentainer is not null)
         {
-            return Math.Min(parentBorderBoxBlockSize,
-                _capturedFragmentainer.BlockSize);
+            var flexNatural = parentBorderBoxBlockSize;
+            // Corpus-fidelity (03 itinerary footer overlap) — fold in an AUTO-height flex's CONTENT extent
+            // so a block that STACKS such flex rows (a `.timeline` of `.day` rows) reports its true block
+            // extent and a trailing sibling (`.note`) lands below the content instead of overlapping it.
+            // FlexLinePacker sizes the flex from the items' DECLARED cross only (0 for auto), so without
+            // this the measure is chrome-only. The emission independently resizes the wrapper via the
+            // dispatch's LastEmittedBlockExtent consumer, so painted geometry stays consistent.
+            if (IsHeightAuto(parent))
+            {
+                var flexChrome = pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd;
+                var flexBorderBoxInline = Math.Max(0.0,
+                    _bfcContentInlineSize
+                    - parent.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
+                    - parent.Style.ReadLengthPxOrZero(PropertyId.MarginRight));
+                var flexContentExtent = parent.Style.ReadFlexDirection().IsFlexColumnDirection()
+                    ? PreMeasureFlexMainExtent(parent, flexBorderBoxInline, cancellationToken)
+                    : PreMeasureFlexCrossExtent(parent, flexBorderBoxInline, cancellationToken);
+                flexNatural = Math.Max(flexNatural, flexContentExtent + flexChrome);
+            }
+            return Math.Min(flexNatural, _capturedFragmentainer.BlockSize);
         }
 
         // Non-flow block kinds (Flex/Grid/Replaced) are atomic to the

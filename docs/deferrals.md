@@ -1436,38 +1436,33 @@ grepping the ID).
       re-rendered wholly (duplicated content) + the sibling cursor
       under-advanced (a trailing block overlapped the flex content).
       Verified by `FlexPageSplitResumeTests` (fails without the change).
-      **RESIDUAL (still open, PRECISELY root-caused — batch-3 T1
-      investigated + a candidate fix built, verified, and REVERTED):** the
-      travel-corpus `03-itinerary` footer overlap is a SEPARATE bug — an
-      AUTO-HEIGHT row-nowrap `.day` flex is measured as its CHROME-ONLY
-      border box in `MeasureSubtreeVisualBlockExtentRecursive`. The exact
-      return site is the **`IsPaginatableFlex` clamp at `BlockLayouter.cs:~9731`**
-      (a row-nowrap flex IS "paginatable per style", so it returns
-      `min(parentBorderBoxBlockSize, page)` there — chrome-only for auto
-      height — BEFORE reaching the `!IsBlockFlowContainerOwnedByBlockLayouter`
-      fallthrough at `~9743`). So a block-flow container that stacks such
-      flex items (the `.timeline` of `.day` rows) is grossly under-measured
-      (each `.day` contributes ~chrome ≈ 24px instead of its ~112px emitted
-      height); the container's cursor under-advances and the trailing sibling
-      (`.note`) is placed at the container's too-small bottom and overlaps
-      the flex content — most visibly on the resume page. **CANDIDATE FIX
-      TRIED (T1):** fold the flex's natural content extent
-      (`PreMeasureFlexCrossExtent` for row / `PreMeasureFlexMainExtent` for
-      column, clamped to the page) into the `~9731` clamp. This DID remove
-      the overlap (the note lands after the timeline; all content stays on
-      page). BUT the pre-measure runs **~12% OVER** the emitted per-day
-      height (the pre-measure line-heights don't match the real flex
-      emission), and because that same measure drives the break/advance
-      decisions, the accumulated over-measure OVER-PAGINATES: real `03` went
-      2 pages → 4 pages with large blank gaps. Reverted — trading a footer
-      overlap for a doubled page count is not a net win. **REAL FIX NEEDS
-      measure/emit LOCKSTEP:** the auto-height-flex content extent used in
-      the pagination measure must equal what `FlexLayouter` actually emits
-      (share extents, or make the pre-measure use the emission's exact line
-      metrics), otherwise any content-aware fix mis-paginates. This is an
-      engine refinement, not a residual tweak. Row-WRAP line-split resume
-      (no dual-input resize consumer) is a separate residual, also unfixed
-      on a fresh resume page.
+      **`03-itinerary` footer overlap — OVERLAP FIXED (batch-3 T1); page-count
+      optimization remains.** Root cause: an AUTO-HEIGHT row `.day` flex's used
+      cross (block) size is its CONTENT cross extent, but `FlexLinePacker` sizes
+      each line from the items' DECLARED cross ONLY (0 for a content-determined
+      item — it never content-measures), so `containerCrossSize` /
+      `maxEmittedCrossBottom` come out 0. A block that STACKS such flex rows (the
+      `.timeline` of `.day` rows) then reported a chrome-only block box, its cursor
+      under-advanced, and the trailing `.note` overlapped the flex content. **FIX
+      (shipped):** (1) `FlexLayouter` folds the already-computed per-item content
+      cross (`ComputeRowBaselineData`'s `itemBaselineCrossSizes`) into
+      `LastEmittedBlockExtent` for an auto-height row; (2) both the outer + recursive
+      BlockLayouter flex-dispatch resize consumers now resize the wrapper + advance
+      the sibling cursor by that extent for a non-paginating auto-height row flex
+      (previously only dual-input-paginating wrappers were resized); (3) the
+      pagination measure (`MeasureSubtreeVisualBlockExtentRecursive`, the
+      `IsPaginatableFlex` clamp at `~9745`) folds the content extent in so an
+      ancestor block's measure includes it. The `.note` now lands below the timeline
+      — verified `AutoHeightFlexTimelineFooterTests` + byte-identical for every
+      golden suite. **STILL OPEN — page-count / density:** with the timeline now
+      correctly measured tall, the body paginates it CONSERVATIVELY (real `03` →
+      4 pages where ~2 suffice), because a large block subtree is committed with
+      **atomic** granularity (the cycle-2c/2d "mid-split" limitation — a subtree
+      commits on one page or breaks between children, without filling the trailing
+      page). Closing that is the deferred mid-split engine work, tracked here. The
+      overlap (the visible defect) is resolved. Row-WRAP line-split resume (no
+      dual-input resize consumer) is a separate residual, also unfixed on a fresh
+      resume page.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107
@@ -2396,23 +2391,19 @@ flags the categories):
     run-wrapping (CSS 2.1 §9.2.4 — they don't participate in the inline/block
     split), so they stay direct children of the real positioned parent
     (whose geometry IS recorded). All four certificate corners now render.
-  - **Whole-value `var()` shorthand — `border: var(--rule)` (batch-3 T4, STILL
-    DEFERRED, NOT corpus-visible).** A COMPONENT var (`border: 1px solid
-    var(--c)`) is recovered by `CssPreprocessor` (expanded to longhands with
-    the `var()` intact). But a shorthand whose ENTIRE value is a single
-    `var()` can't be split into width/style/color before substitution, and
-    the "emit every longhand with the same var" trick that recovers
-    `background: var(--x)` fails for `border` (its resolved value is
-    multi-token — no single `border-*` longhand accepts `"1px solid red"`).
-    AngleSharp.Css drops the shorthand, and NetPdf has NO cascade-stage
-    shorthand expander (all shorthand expansion is preprocessor-only,
-    pre-substitution). So `border: var(--rule)` currently renders NO border
-    (safe: the `IsWholeValueVar` guard prevents the earlier MISexpansion —
-    `Whole_value_var_border_shorthand_is_not_misexpanded`). **FIX NEEDS** a
-    post-var-substitution shorthand-expansion stage in the cascade
-    (`VarResolver.EmitNonCustomDeclarations`), fed by a declaration that
-    survives AngleSharp (a synthetic marker custom property). New machinery,
-    not a residual tweak — deferred until a corpus doc needs it.
+  - ~~**Whole-value `var()` shorthand — `border: var(--rule)`**~~ — **FIXED
+    (batch-3 T4).** A shorthand whose ENTIRE value is a single `var()` can't
+    be split into width/style/color before substitution, and AngleSharp.Css
+    drops it. `CssPreprocessor` now recovers the SHORTHAND itself (not
+    longhands — the "emit every longhand with the same var" trick that works
+    for `background: var(--x)` fails for `border`, whose resolved value is
+    multi-token) so it reaches the cascade, and `VarResolver` expands the
+    `border[-side]` shorthand into its width/style/color longhands AFTER
+    substituting the `var()` (the cascade's first + only shorthand-expansion
+    site; fires only for a whole-value-var border, so byte-identical
+    otherwise). `Whole_value_var_border_shorthand_renders_after_substitution`
+    + `..._side_...`. A COMPONENT var (`border: 1px solid var(--c)`) still
+    takes the preprocessor's pre-substitution longhand path.
   - ~~**`position: relative` offset application (to the CB)**~~ —
     SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos

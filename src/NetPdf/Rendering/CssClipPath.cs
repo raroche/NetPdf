@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 
 namespace NetPdf.Rendering;
 
@@ -53,7 +54,11 @@ internal static class CssClipPath_Parser
     {
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var v = raw.Trim();
-        if (v.Equals("none", StringComparison.OrdinalIgnoreCase)) return null;
+        if (v.Equals("none", StringComparison.OrdinalIgnoreCase) || CssWideKeyword.Is(v)) return null;
+        // A CSS-wide keyword (initial/inherit/unset/revert) is the CASCADE's value, not a
+        // paint value; treat it as the property's initial (= none / no effect) — never a parse
+        // failure that would fire a spurious "unsupported" diagnostic (every corpus doc hits
+        // `background:#color` → `background-image: initial`).
 
         var open = v.IndexOf('(');
         if (open < 0 || !v.EndsWith(")", StringComparison.Ordinal)) return null;

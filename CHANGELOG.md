@@ -8,6 +8,17 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
 
+### Fixed — CSS-wide keywords on paint properties no longer emit spurious "unsupported" diagnostics
+
+The paint properties are read as **raw** cascade winners (bypassing the typed resolver), so a CSS-wide keyword (`initial` / `inherit` / `unset` / `revert`) reached the value parsers verbatim and was rejected as unsupported — firing a spurious diagnostic on nearly every document (the extremely common `background: #color` shorthand expands to `background-image: initial`). All of these properties are non-inherited, so `initial` and `unset` are exactly the reset (`none` / no effect); `inherit` and `revert` are *approximated* to the same reset here (the raw-read path doesn't resolve cross-origin or parent-computed values — a rare case, and the reset is the near-universal result). Either way the keyword is not itself a paint value, so it's now treated as the reset with no diagnostic. Extends the central CSS-wide-keyword handling (from the `PropertyResolverDispatch` fix) to the raw-read paint path across:
+
+- **`background-image`** (single-layer) — `background: #color` no longer warns.
+- **`box-shadow`** + **`text-shadow`**.
+- **`transform`**, **`filter`**, **`clip-path`**.
+- **`border-image`** and the element-level **`filter`** / **`mask`** references (the shared `<img>` / inline-`<svg>` image-spec path included).
+
+Byte-identical output (a CSS-wide keyword already produced the same no-effect result — only the misleading diagnostic is gone). Tests: `CssWideKeywordPaintTests`, with a guard that a real gradient still renders.
+
 ### Fixed — Rendering fidelity: flex intrinsic over-measurement + inline `<svg>` rendering
 
 - **Flex over-measurement collapse (RC1)** — a flex item whose content was block-level children measured at the huge max-content available width (a `width:auto` block filled it), so its flex base size blew up, the flex line falsely overflowed, and the default `flex-shrink` collapsed the *sibling* toward min-content — the "header wraps one word per line", card, and label/value-collision failures. `BufferingMeasureSink` now contributes a block fragment's box width to the intrinsic content extent only when it has a **definite** inline size (an explicit absolute width, a replaced element's intrinsic size, or an explicit length `min-width` floor); an auto/`%`-width block's extent comes from its descendants.

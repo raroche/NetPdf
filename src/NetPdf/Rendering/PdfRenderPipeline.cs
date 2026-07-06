@@ -479,6 +479,11 @@ internal static class PdfRenderPipeline
         // order) so the level-nesting builds the right tree; the seen-set dedups a split heading.
         var seenHeadings = new System.Collections.Generic.HashSet<AngleSharp.Dom.IElement>();
         var linkSchemeReported = false; // PR-229 review [P1] — once-per-render blocked-scheme Warning.
+        // Same-document navigation: id → destination (populated as pages paint) + the deferred #fragment
+        // links (resolved after the loop, since a target may live on a later page).
+        var destinations = new System.Collections.Generic.Dictionary<string, NavigationCollector.Destination>(StringComparer.Ordinal);
+        var pendingInternalLinks = new System.Collections.Generic.List<NavigationCollector.PendingLink>();
+        var internalLinkUnresolvedReported = false;
         for (var pageIndex = 0; pageIndex < pageFragments.Count; pageIndex++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -539,6 +544,12 @@ internal static class PdfRenderPipeline
             // Document outline (Phase 4 PR 4): <h1>–<h6> headings → /Outlines bookmarks.
             OutlineCollector.Collect(
                 document, page, bodyFragments, ppMediaBox.HeightPts, ppMargins.TopPx, seenHeadings);
+
+            // Same-document navigation: record this page's id destinations + accumulate its #fragment links.
+            NavigationCollector.CollectDestinations(
+                page, bodyFragments, ppMediaBox.HeightPts, ppMargins.TopPx, destinations);
+            NavigationCollector.CollectInternalLinks(
+                page, bodyFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx, pendingInternalLinks);
 
             var textFragments = bodyFragments;
             if (hasMarginBoxes)
@@ -607,6 +618,16 @@ internal static class PdfRenderPipeline
             textSession.CollectPage(page, textFragments, ppMediaBox.HeightPts, ppMargins.LeftPx, ppMargins.TopPx,
                 effectiveTransforms);
         }
+
+        // Same-document navigation — every page (and thus every destination) is now known, so resolve the
+        // deferred #fragment links into /GoTo annotations before the page objects are finalized in Save().
+        NavigationCollector.ResolveInternalLinks(
+            pendingInternalLinks, destinations, diagnostics, ref internalLinkUnresolvedReported);
+
+        // Catalog initial view (how the reader opens the document) — omitted entirely when unset so a
+        // document that doesn't request an initial view is byte-for-byte unchanged.
+        document.PageLayoutName = MapPageLayout(options.PageLayout);
+        document.PageModeName = MapPageMode(options.PageMode);
 
         // Inline overflow / the page-count cap / per-page-geometry clipping (review F3) surfaced once.
         // Block content past page 1 FLOWS onto further pages, so it is not truncated. Emitted here (after
@@ -855,4 +876,28 @@ internal static class PdfRenderPipeline
         if (!string.IsNullOrWhiteSpace(fallback)) return fallback;
         return null;
     }
+
+    /// <summary>Map the public <see cref="PdfPageLayout"/> to its PDF <c>/PageLayout</c> name, or
+    /// <see langword="null"/> when unset (so the catalog entry is omitted).</summary>
+    private static string? MapPageLayout(PdfPageLayout? layout) => layout switch
+    {
+        PdfPageLayout.SinglePage => "SinglePage",
+        PdfPageLayout.OneColumn => "OneColumn",
+        PdfPageLayout.TwoColumnLeft => "TwoColumnLeft",
+        PdfPageLayout.TwoColumnRight => "TwoColumnRight",
+        PdfPageLayout.TwoPageLeft => "TwoPageLeft",
+        PdfPageLayout.TwoPageRight => "TwoPageRight",
+        _ => null,
+    };
+
+    /// <summary>Map the public <see cref="PdfPageMode"/> to its PDF <c>/PageMode</c> name, or
+    /// <see langword="null"/> when unset (so the catalog entry is omitted).</summary>
+    private static string? MapPageMode(PdfPageMode? mode) => mode switch
+    {
+        PdfPageMode.UseNone => "UseNone",
+        PdfPageMode.UseOutlines => "UseOutlines",
+        PdfPageMode.UseThumbs => "UseThumbs",
+        PdfPageMode.FullScreen => "FullScreen",
+        _ => null,
+    };
 }

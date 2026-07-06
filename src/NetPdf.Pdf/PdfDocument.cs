@@ -82,6 +82,13 @@ internal sealed class PdfDocument
     /// metadata. Null / blank = omit. Used by assistive technology + reading-order heuristics.</summary>
     public string? Lang { get; set; }
 
+    /// <summary>The catalog <c>/PageLayout</c> name (e.g. <c>"TwoColumnLeft"</c>). Null = omit — the
+    /// value is a validated PDF name supplied by the render pipeline.</summary>
+    public string? PageLayoutName { get; set; }
+
+    /// <summary>The catalog <c>/PageMode</c> name (e.g. <c>"UseOutlines"</c>). Null = omit.</summary>
+    public string? PageModeName { get; set; }
+
     /// <summary>Custom <c>/Info</c> entries beyond the standard keys, populated via
     /// <see cref="SetCustomInfoProperties"/>. Null until set.</summary>
     private List<KeyValuePair<string, string>>? _customInfo;
@@ -900,6 +907,11 @@ internal sealed class PdfDocument
         var lang = SanitizeIfPresent(Lang);
         if (lang is not null)
             catalogDict.Set(PdfNames.Lang, EncodeMetadataString(lang));
+        // Initial view (how the reader opens the document) — omitted unless requested (byte-stable default).
+        if (NullIfBlank(PageLayoutName) is { } pageLayout)
+            catalogDict.Set(PdfNames.PageLayout, new PdfName(pageLayout));
+        if (NullIfBlank(PageModeName) is { } pageMode)
+            catalogDict.Set(PdfNames.PageMode, new PdfName(pageMode));
         if (NullIfBlank(Title) is not null)
         {
             catalogDict.Set(PdfNames.ViewerPreferences,

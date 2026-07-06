@@ -124,4 +124,13 @@ public sealed class HtmlPdfOptions
 
     /// <summary>Hard cap on conversion time. <c>null</c> = no cap.</summary>
     public TimeSpan? Timeout { get; init; }
+
+    /// <summary>The page layout a reader uses when it first opens the document (catalog <c>/PageLayout</c>).
+    /// <see langword="null"/> (the default) omits the entry, leaving the reader's own default.</summary>
+    public PdfPageLayout? PageLayout { get; init; }
+
+    /// <summary>How a reader presents its navigation UI when the document opens (catalog <c>/PageMode</c>) —
+    /// e.g. <see cref="PdfPageMode.UseOutlines"/> opens the bookmarks panel. <see langword="null"/> (the
+    /// default) omits the entry, leaving the reader's own default.</summary>
+    public PdfPageMode? PageMode { get; init; }
 }

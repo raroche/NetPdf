@@ -8,6 +8,11 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
 
+### Added — Document navigation: internal `#fragment` links + catalog initial view
+
+- **Same-document links** — `<a href="#id">` now emits an internal `/GoTo` `/Link` annotation that jumps to the target element's page + position (a `/Dest [page /XYZ null top null]`). Resolution is document-wide and two-phase, so a link can target an element on a *later* page. A dangling target (no element with that id) is reported once as `LINK-FRAGMENT-UNRESOLVED-001` and the link text still renders. As with external links, the anchor must produce its own box fragment (block / inline-block); inline-flow anchors remain the documented shared follow-up.
+- **Initial view** — `HtmlPdfOptions.PageLayout` (`PdfPageLayout`: SinglePage / OneColumn / TwoColumn{Left,Right} / TwoPage{Left,Right}) and `PageMode` (`PdfPageMode`: UseNone / UseOutlines / UseThumbs / FullScreen) set the catalog `/PageLayout` and `/PageMode` — e.g. open a report with the bookmarks panel showing. Both default to omitted, so a document that requests no initial view is byte-for-byte unchanged.
+
 ### Added — Document metadata: HTML-driven `/Info`, XMP `/Metadata`, catalog `/Lang` + `/ViewerPreferences`
 
 - **HTML head → PDF metadata** — the document `<title>`, `<meta name="author|description|keywords">`, and root `<html lang>` are now harvested and flow into the PDF `/Info` dictionary (`/Title`, `/Author`, `/Subject`, `/Keywords`) and the catalog `/Lang`. Previously metadata was set only via options and never read from the HTML, so generated PDFs were catalogued by filename rather than by name.

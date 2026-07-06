@@ -251,6 +251,14 @@ internal static class DiagnosticCodes
     public const string LinkUriUnsupported001 = "LINK-URI-UNSUPPORTED-001";
 
     /// <summary>
+    /// A same-document link (<c>&lt;a href="#id"&gt;</c>) pointed at a fragment id that no element in the
+    /// document declares, so no clickable <c>/GoTo</c> jump was emitted. The link text still renders; only
+    /// the internal navigation annotation is dropped. Surfaced once per render.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LinkFragmentUnresolved001 = "LINK-FRAGMENT-UNRESOLVED-001";
+
+    /// <summary>
     /// Phase 4 — a rendered SVG image used a feature the renderer doesn't support, so part of it did not
     /// draw: an <c>&lt;image&gt;</c> with an EXTERNAL / non-<c>data:</c> href (no fetch), a <c>filter</c> with
     /// an unsupported primitive (the supported set is <c>feGaussianBlur</c> / <c>feOffset</c> /

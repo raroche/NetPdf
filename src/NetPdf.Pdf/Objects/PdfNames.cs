@@ -149,6 +149,11 @@ internal static class PdfNames
     public static readonly PdfName Metadata = new("Metadata");
     public static readonly PdfName XML = new("XML");
 
+    // Navigation — internal GoTo links + catalog initial view
+    public static readonly PdfName XYZ = new("XYZ");
+    public static readonly PdfName PageMode = new("PageMode");
+    public static readonly PdfName PageLayout = new("PageLayout");
+
     // Trailer
     public static readonly PdfName Root = new("Root");
     public static readonly PdfName Info = new("Info");

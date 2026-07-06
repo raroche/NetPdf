@@ -2317,7 +2317,9 @@ flags the categories):
     now records its border-box geometry as it's emitted (a
     `recordPositionedGeometry` callback from the dispatching
     `BlockLayouter` into `FlexLayouter`), so an abspos box whose containing
-    block **is** the flex item (a DIRECT child) resolves to the item
+    block **is** the flex item (i.e. the flex item is its NEAREST POSITIONED
+    ANCESTOR — including when the abspos box is nested under STATIC
+    descendants of the item, not only a direct child) resolves to the item
     instead of being dropped. A positioned flex/grid CONTAINER is already
     recorded via the block-flow emit path, and a positioned grid ITEM via
     its nested BlockLayouter — so those work too.

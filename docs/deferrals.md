@@ -2313,21 +2313,34 @@ flags the categories):
     per-item nested BlockLayouter, so an abspos box inside a flex item's
     content is emitted by the top-level pass; adding flex to the
     boundary would DROP it.)
-    Per RC2 (travel-doc corpus fidelity): a positioned **FLEX ITEM** now
-    records its border-box geometry as it's emitted (a
+    Per RC2 (travel-doc corpus fidelity, #277): a positioned **FLEX ITEM**
+    now records its border-box geometry as it's emitted (a
     `recordPositionedGeometry` callback from the dispatching
-    `BlockLayouter` into `FlexLayouter`), so an abspos decoration anchored
-    to a positioned flex item (card corner / day-badge / bullet) resolves
-    to the item instead of being dropped. A positioned flex/grid CONTAINER
-    is already recorded via the block-flow emit path, and a positioned grid
-    ITEM via its nested BlockLayouter — so those work too.
-    Remaining gap: (1) a positioned GRID / TABLE container (the WRAPPER)
-    sitting ABOVE a nested layouter's subtree with a STATIC item holding
-    the abspos box — that ancestor isn't recorded on a path the nested
-    abspos pass can read, so the box anchors to a higher recorded ancestor
-    / is dropped + diagnosed; (2) an abspos descendant of a PAGE-SLICED
-    flex item (row-nowrap taller-than-page) stays deferred, consistent with
-    abspos-pagination. Later cycle.
+    `BlockLayouter` into `FlexLayouter`), so an abspos box whose containing
+    block **is** the flex item (a DIRECT child) resolves to the item
+    instead of being dropped. A positioned flex/grid CONTAINER is already
+    recorded via the block-flow emit path, and a positioned grid ITEM via
+    its nested BlockLayouter — so those work too.
+    Remaining gaps (confirmed still-dropping on a re-render of the travel
+    corpus, so #277 was PARTIAL): **(1)** an abspos box anchored to a
+    `position: relative` **block descendant nested inside** a flex item —
+    the common real shape (e.g. a bullet `li::before` whose CB is a
+    positioned `<li>` inside a flex-item `<ul>`, `.opt ul{flex:1}` in
+    `02-travel-quote`). The `<li>`'s geometry is emitted through the flex
+    item's CONTENT BUFFER (`FlushRangeTo`/`FlushTo`), which does NOT call
+    `RecordPositionedBoxGeometry`, so the descendant CB is unrecorded and
+    the box is dropped. The proper fix records positioned geometry for
+    block descendants flushed from flex-item buffered content (more
+    regression-sensitive than the item-level callback). **(2)** a positioned
+    GRID / TABLE container (the WRAPPER) sitting ABOVE a nested layouter's
+    subtree with a STATIC item holding the abspos box — that ancestor isn't
+    recorded on a path the nested abspos pass can read. **(3)** an abspos
+    descendant of a PAGE-SLICED flex item (row-nowrap taller-than-page)
+    stays deferred, consistent with abspos-pagination. **(4)** `position:
+    absolute` inline-`<svg>` boxes (RC3 made inline `<svg>` a replaced
+    element) anchored to a positioned block still drop in
+    `11-course-completion-certificate` (the `.corner` flourishes) — cause
+    not yet isolated; needs its own diagnosis. Later cycle.
   - ~~**`position: relative` offset application (to the CB)**~~ —
     SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos

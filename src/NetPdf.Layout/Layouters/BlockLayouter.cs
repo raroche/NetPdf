@@ -2582,7 +2582,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nothingEmittedThisAttempt = emittedThisAttempt == 0;
                 var atTopOfPage = fragmentainer.UsedBlockSize == initialUsed;
 
-
                 if (nothingEmittedThisAttempt && atTopOfPage)
                 {
                     // Forced overflow: the block is taller than the
@@ -9496,10 +9495,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// are treated as opaque (return their own border-box size; their
     /// inner geometry belongs to a dedicated layouter). Pathologically
     /// deep trees throw <see cref="InvalidOperationException"/> at
-    /// the same depth limit. Note: the measure pass does NOT accept a
-    /// CancellationToken — it's a pure traversal called once per
-    /// outer-loop child + the depth cap bounds the work; the outer
-    /// loop's CT check still runs between children.</para></summary>
+    /// the same depth limit. The measure pass accepts a
+    /// <see cref="CancellationToken"/> and threads it into
+    /// <see cref="MeasureSubtreeVisualBlockExtentRecursive"/>, which checks it
+    /// so a large-fan-out subtree (not just deep nesting) stays responsive to
+    /// cancellation between children.</para></summary>
     private double MeasureSubtreeVisualBlockExtent(
         Box parent, CancellationToken cancellationToken, double parentContentBlockSize = 0,
         double blockOffsetOnPage = 0)
@@ -10054,8 +10054,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         bool useDryRunCommittedHeight = false,
         // The table's block-start offset on the current page within the subtree being measured. Passed to
         // the dry-run so it reserves only the REMAINING page space when the table starts below the page top
-        // (offset-table clip fix). < 0 = fall back to fragmentainer.UsedBlockSize (the top-of-page default).
-        double tableStartOffsetOnPage = -1.0)
+        // (offset-table clip fix). NaN = "no override" → fall back to fragmentainer.UsedBlockSize (the
+        // top-of-page default); a NaN sentinel (not < 0) keeps a legitimately NEGATIVE offset — from
+        // margin collapsing / negative margins — distinct from "unset".
+        double tableStartOffsetOnPage = double.NaN)
     {
         _measuredTableContentHeightCache ??= new Dictionary<Box, double>();
         if (!useDryRunCommittedHeight

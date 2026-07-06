@@ -1423,7 +1423,27 @@ grepping the ID).
       can't simply move to post-dispatch. Cycle 4f will add a
       sink-mutation or pre-emit-with-backfill API to let the
       wrapper's BlockSize be retro-adjusted to the actual emitted
-      extent.
+      extent. (The dual-input resize consumer using
+      `IBlockFragmentSink.UpdateFragmentBlockSize` DID ship in PR-#180
+      at both dispatch sites — see the corpus-fidelity note below.)
+    - ✅ **Resume-cut on a fresh page (corpus-fidelity batch-2)** — a
+      flex child RESUMING a dual-input split (column item split /
+      row-nowrap content split) is now dispatched with pagination
+      enabled even when the resume page has room, so FlexLayouter
+      honors the incoming `FlexContinuation`'s resume-cut instead of
+      re-emitting the WHOLE item. Pre-fix the would-overflow gate stayed
+      OFF on a fresh page → `allowPagination` false → the item
+      re-rendered wholly (duplicated content) + the sibling cursor
+      under-advanced (a trailing block overlapped the flex content).
+      Verified by `FlexPageSplitResumeTests` (fails without the change).
+      **RESIDUAL (still open):** the travel-corpus `03-itinerary`
+      document shows a related but content-specific footer overlap that
+      this does NOT fully resolve — the note still interleaves with the
+      day content on page 2 for that exact document. The minimal repro is
+      fixed; the real-document trigger is content-dependent and needs a
+      further, focused root-cause. Row-WRAP line-split resume (no
+      dual-input resize consumer) is likewise still unfixed on a fresh
+      resume page.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107

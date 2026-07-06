@@ -803,7 +803,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         int resumeAtRow,
         out bool needsSplitting,
         out bool willForceOverflowOnSingleRow,
-        double incomingRowSplitOffset = 0.0)
+        double incomingRowSplitOffset = 0.0,
+        // The table's block-start offset on the CURRENT page. In the EMIT path this equals
+        // fragmentainer.UsedBlockSize (the live cursor), so the default (NaN = "no override") reads it
+        // from there — the pre-fix behavior. But a MEASURE-pass caller walking a subtree (a table nested
+        // below a spacer / preceding content) sees fragmentainer.UsedBlockSize == 0 even though the table
+        // actually starts lower on the page; it passes the real subtree offset here so the row-fit loop
+        // reserves only the REMAINING page space. Without this the dry-run over-commits by ~one row, the
+        // ancestor's subtree extent overshoots the page, and a false forced-overflow clips the table
+        // (offset-table clip bug). NaN (not < 0) is the sentinel so a legitimately NEGATIVE start offset
+        // — from margin collapsing / negative margins pushing the table above the page-start cursor —
+        // is still honored instead of being mistaken for "no override".
+        double startOffsetOverride = double.NaN)
     {
         needsSplitting = false;
         willForceOverflowOnSingleRow = false;
@@ -848,8 +859,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // border + padding aren't precisely accounted for; sub-cycle
         // 6+ may revise.
         var topCaptionsBlock = isFirstPage ? _measuredTopCaptionsTotal : 0.0;
+        var pageStartOffset = !double.IsNaN(startOffsetOverride)
+            ? startOffsetOverride
+            : fragmentainer.UsedBlockSize;
         var rowStackOriginInFragmentainer =
-            fragmentainer.UsedBlockSize + topCaptionsBlock;
+            pageStartOffset + topCaptionsBlock;
         // Per cycle 2 — the body row window emits AFTER the header
         // stack + reserves footerStackHeight at the bottom of the
         // page. So the effective per-page body budget is

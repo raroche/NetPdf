@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.ComputedValues;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Properties;
 using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
@@ -419,8 +420,11 @@ internal sealed class ImageResourceCache
         var rules = box.SourceElement is { } el ? cascade.TryGetStylesFor(el) : null;
         var filterRaw = rules?.GetWinner("filter")?.ResolvedValue;
         CssFilter? filter = null;
+        // A CSS-wide keyword (initial/inherit/unset/revert) is treated as the reset (`none`), not a
+        // filter chain — skip it like `none` so it doesn't fire a spurious CSS-FILTER-UNSUPPORTED-001.
         if (!string.IsNullOrWhiteSpace(filterRaw)
-            && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+            && !filterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+            && !CssWideKeyword.Is(filterRaw.Trim()))
         {
             filter = CssFilter_Parser.TryParse(filterRaw);
             if (filter is null) reportFilterUnsupported();
@@ -607,7 +611,7 @@ internal sealed class ImageResourceCache
             var rules = cascade.TryGetStylesFor(element);
             var transformRaw = rules?.GetWinner("transform")?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(transformRaw)
-                && !transformRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                && !transformRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) && !CssWideKeyword.Is(transformRaw.Trim()))
             {
                 // Font context for em/rem in the transform / transform-origin lengths (recovered raw, so the
                 // cascade hasn't resolved their units): em = this box's font-size, rem = the root element's.
@@ -644,7 +648,7 @@ internal sealed class ImageResourceCache
             // collected (it clips text + image too, not just backgrounds).
             var clipPathRaw = rules?.GetWinner("clip-path")?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(clipPathRaw)
-                && !clipPathRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                && !clipPathRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) && !CssWideKeyword.Is(clipPathRaw.Trim()))
             {
                 if (CssClipPath_Parser.TryParse(clipPathRaw) is { } clip)
                     clipPathBoxes[box] = clip;
@@ -661,7 +665,7 @@ internal sealed class ImageResourceCache
             // (the painter slices it into the 9 border regions).
             var biSource = rules?.GetWinner("border-image-source")?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(biSource)
-                && !biSource.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                && !biSource.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) && !CssWideKeyword.Is(biSource.Trim()))
             {
                 var biSlice = rules?.GetWinner("border-image-slice")?.ResolvedValue;
                 var biRepeat = rules?.GetWinner("border-image-repeat")?.ResolvedValue;
@@ -690,7 +694,7 @@ internal sealed class ImageResourceCache
             var isReplacedImg = box.Kind is BoxKind.BlockReplacedElement or BoxKind.InlineReplacedElement
                 && string.Equals(element.LocalName, "img", StringComparison.OrdinalIgnoreCase);
             if (!string.IsNullOrWhiteSpace(elementFilterRaw)
-                && !elementFilterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !elementFilterRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) && !CssWideKeyword.Is(elementFilterRaw.Trim())
                 && !isReplacedImg)
             {
                 Report(diagnostics, ref filterElementReported, DiagnosticCodes.CssFilterElementUnsupported001,
@@ -703,7 +707,7 @@ internal sealed class ImageResourceCache
             // Skia subtree renderer, so the element paints UNMASKED + CSS-MASK-ELEMENT-UNSUPPORTED-001 once.
             var elementMaskRaw = rules?.GetWinner("mask-image")?.ResolvedValue; // `mask` shorthand → mask-image (preprocessor)
             if (!string.IsNullOrWhiteSpace(elementMaskRaw)
-                && !elementMaskRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !elementMaskRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) && !CssWideKeyword.Is(elementMaskRaw.Trim())
                 && !isReplacedImg)
             {
                 Report(diagnostics, ref maskElementReported, DiagnosticCodes.CssMaskElementUnsupported001,
@@ -788,7 +792,7 @@ internal sealed class ImageResourceCache
             {
                 var shadowRaw = rules?.GetWinner("box-shadow")?.ResolvedValue; // reuse `rules` (Copilot #210)
                 if (!string.IsNullOrWhiteSpace(shadowRaw)
-                    && !shadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                    && !shadowRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase) && !CssWideKeyword.Is(shadowRaw.Trim()))
                 {
                     var shadows = CssBoxShadow_Parser.TryParse(shadowRaw);
                     if (shadows is not null)
@@ -814,8 +818,13 @@ internal sealed class ImageResourceCache
             var bgRaw = collectBackgrounds
                 ? rules?.GetWinner("background-image")?.ResolvedValue // reuse `rules` (Copilot #210)
                 : null;
+            // A CSS-wide keyword (initial/inherit/unset/revert) is NOT a background image — it's the
+            // cascade's value, resolving to the initial (`none`). Skip it like `none` so the very common
+            // `background: #color` → `background-image: initial` expansion doesn't fire a spurious
+            // CSS-BACKGROUND-IMAGE-UNSUPPORTED-001 on nearly every document.
             if (!string.IsNullOrWhiteSpace(bgRaw)
-                && !bgRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+                && !bgRaw.Trim().Equals("none", StringComparison.OrdinalIgnoreCase)
+                && !CssWideKeyword.Is(bgRaw.Trim()))
             {
                 // Multi-layer: a comma-separated background-image list (paren-aware, so a gradient's own
                 // commas don't split it). A SINGLE layer goes through the existing single-layer dispatch

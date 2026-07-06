@@ -827,7 +827,8 @@ internal static class PdfRenderPipeline
     ///   wins; otherwise the HTML <c>&lt;title&gt;</c> / <c>&lt;meta&gt;</c> descriptor is used.</item>
     ///   <item>Creator — options only (no HTML equivalent).</item>
     ///   <item><c>/Lang</c> — the HTML root <c>&lt;html lang&gt;</c> wins (it declares the content
-    ///   language); otherwise <see cref="HtmlPdfOptions.Language"/> (default <c>"en"</c>).</item>
+    ///   language); otherwise <see cref="HtmlPdfOptions.Language"/> (default <see langword="null"/> —
+    ///   no <c>/Lang</c> is manufactured).</item>
     ///   <item>Custom <c>/Info</c> entries — <see cref="HtmlPdfOptions.DocumentProperties"/>.</item>
     /// </list>
     /// Empty / whitespace values are treated as unset so a blank option never clears a harvested value.

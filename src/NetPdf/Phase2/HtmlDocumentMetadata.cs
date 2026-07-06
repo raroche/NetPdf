@@ -45,7 +45,10 @@ internal readonly record struct HtmlDocumentMetadata(
         var title = NullIfBlank(document.Title);
         string? author = null, description = null, keywords = null;
 
-        foreach (var meta in document.QuerySelectorAll("meta"))
+        // Only <head> descriptors are document metadata — a <meta name="author"> in the body is
+        // content, not document-level metadata, so scope the scan to the head element.
+        var metaScope = (IParentNode?)document.Head ?? document;
+        foreach (var meta in metaScope.QuerySelectorAll("meta"))
         {
             var name = meta.GetAttribute("name");
             if (string.IsNullOrEmpty(name)) continue;

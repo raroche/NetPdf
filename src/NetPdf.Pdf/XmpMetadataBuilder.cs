@@ -32,14 +32,18 @@ internal static class XmpMetadataBuilder
         string? title, string? author, string? subject, string? keywords,
         string? creator, string? lang, string producer)
     {
+        // Blank (whitespace-only) values count as unset — a caller that forgets to trim must not
+        // trip an otherwise-empty packet into existence (and break the bare-document byte stability).
         var hasDescriptive =
-            !string.IsNullOrEmpty(title) || !string.IsNullOrEmpty(author) ||
-            !string.IsNullOrEmpty(subject) || !string.IsNullOrEmpty(keywords) ||
-            !string.IsNullOrEmpty(creator) || !string.IsNullOrEmpty(lang);
+            !string.IsNullOrWhiteSpace(title) || !string.IsNullOrWhiteSpace(author) ||
+            !string.IsNullOrWhiteSpace(subject) || !string.IsNullOrWhiteSpace(keywords) ||
+            !string.IsNullOrWhiteSpace(creator) || !string.IsNullOrWhiteSpace(lang);
         if (!hasDescriptive) return null;
 
         var sb = new StringBuilder(512);
-        sb.Append("<?xpacket begin=\"﻿\" id=\"").Append(PacketId).Append("\"?>\n");
+        // The xpacket header's begin marker is the UTF-8 BOM (U+FEFF) — written as an explicit escape
+        // so it can't be silently stripped/normalized by an editor (which would change the bytes).
+        sb.Append("<?xpacket begin=\"\uFEFF\" id=\"").Append(PacketId).Append("\"?>\n");
         sb.Append("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n");
         sb.Append(" <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n");
         sb.Append("  <rdf:Description rdf:about=\"\"");
@@ -47,26 +51,26 @@ internal static class XmpMetadataBuilder
         sb.Append(" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"");
         sb.Append(" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\">\n");
 
-        if (!string.IsNullOrEmpty(title))
+        if (!string.IsNullOrWhiteSpace(title))
         {
             sb.Append("   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">")
               .Append(Escape(title)).Append("</rdf:li></rdf:Alt></dc:title>\n");
         }
 
-        if (!string.IsNullOrEmpty(author))
+        if (!string.IsNullOrWhiteSpace(author))
         {
             // dc:creator is an ordered array (rdf:Seq) of authors.
             sb.Append("   <dc:creator><rdf:Seq><rdf:li>")
               .Append(Escape(author)).Append("</rdf:li></rdf:Seq></dc:creator>\n");
         }
 
-        if (!string.IsNullOrEmpty(subject))
+        if (!string.IsNullOrWhiteSpace(subject))
         {
             sb.Append("   <dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">")
               .Append(Escape(subject)).Append("</rdf:li></rdf:Alt></dc:description>\n");
         }
 
-        if (!string.IsNullOrEmpty(keywords))
+        if (!string.IsNullOrWhiteSpace(keywords))
         {
             // Keywords live in pdf:Keywords (the classic-Info mirror), a plain text property.
             sb.Append("   <pdf:Keywords>").Append(Escape(keywords)).Append("</pdf:Keywords>\n");
@@ -75,12 +79,12 @@ internal static class XmpMetadataBuilder
         // Producer is always emitted alongside descriptive metadata (mirrors /Info /Producer).
         sb.Append("   <pdf:Producer>").Append(Escape(producer)).Append("</pdf:Producer>\n");
 
-        if (!string.IsNullOrEmpty(creator))
+        if (!string.IsNullOrWhiteSpace(creator))
         {
             sb.Append("   <xmp:CreatorTool>").Append(Escape(creator)).Append("</xmp:CreatorTool>\n");
         }
 
-        if (!string.IsNullOrEmpty(lang))
+        if (!string.IsNullOrWhiteSpace(lang))
         {
             sb.Append("   <dc:language><rdf:Bag><rdf:li>")
               .Append(Escape(lang)).Append("</rdf:li></rdf:Bag></dc:language>\n");

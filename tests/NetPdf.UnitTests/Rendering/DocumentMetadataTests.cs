@@ -47,6 +47,17 @@ public sealed class DocumentMetadataTests
         Assert.Contains("/Author (Jane)", pdf);
     }
 
+    [Fact]
+    public void A_meta_in_the_body_is_content_not_document_metadata()
+    {
+        // Only <head> descriptors count — a body <meta name="author"> is page content.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><title>T</title></head>" +
+            "<body><meta name=\"author\" content=\"Not The Author\"><p>x</p></body></html>"));
+        Assert.DoesNotContain("/Author", pdf);
+        Assert.DoesNotContain("Not The Author", pdf);
+    }
+
     // ── Task 1 precedence: explicit options win over the HTML ───────────────────────────────
 
     [Fact]

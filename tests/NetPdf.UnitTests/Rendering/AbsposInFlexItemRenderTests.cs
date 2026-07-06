@@ -4,6 +4,7 @@
 using System.Linq;
 using System.Text;
 using NetPdf;
+using NetPdf.Paginate.Diagnostics;
 using Xunit;
 
 namespace NetPdf.UnitTests.Rendering;
@@ -47,7 +48,7 @@ public sealed class AbsposInFlexItemRenderTests
         Assert.Contains("1 0 0 rg", pdf);
         // The decoration was NOT deferred/dropped.
         Assert.DoesNotContain(warnings, w =>
-            w.Code == "LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001");
+            w.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
     }
 
     [Fact]
@@ -69,6 +70,6 @@ public sealed class AbsposInFlexItemRenderTests
         var (pdf, warnings) = Render(html);
         Assert.Contains("0 0 1 rg", pdf);   // blue dot paints
         Assert.DoesNotContain(warnings, w =>
-            w.Code == "LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001");
+            w.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
     }
 }

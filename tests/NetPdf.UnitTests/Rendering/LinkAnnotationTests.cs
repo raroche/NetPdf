@@ -42,14 +42,16 @@ public sealed class LinkAnnotationTests
     }
 
     [Fact]
-    public void In_document_fragment_link_is_not_emitted_as_a_uri_annotation()
+    public void In_document_fragment_link_is_a_goto_destination_not_a_uri_action()
     {
-        // #fragment links need a name→destination map (a follow-up) — they are NOT URI actions.
+        // A resolved #fragment link is emitted as an internal /GoTo (a direct /Dest), NOT a /URI action.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><body>" +
             "<a href=\"#section\" style=\"display:block;width:100px;height:20px\">jump</a>" +
-            "</body></html>"));
-        Assert.DoesNotContain("/Subtype /Link", pdf);
+            "<h2 id=\"section\">Section</h2></body></html>"));
+        Assert.Contains("/Subtype /Link", pdf);
+        Assert.Contains("/Dest [", pdf);
+        Assert.DoesNotContain("/S /URI", pdf);
     }
 
     [Fact]

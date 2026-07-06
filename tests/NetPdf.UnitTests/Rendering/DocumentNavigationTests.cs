@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Text;
+using System.Text.RegularExpressions;
 using NetPdf;
 using NetPdf.Diagnostics;
 using Xunit;
@@ -46,8 +47,68 @@ public sealed class DocumentNavigationTests
             "<h2 id=\"end\">The End</h2></body></html>"));
 
         Assert.Contains("/Subtype /Link", pdf);
-        // A /GoTo destination array: [<page> /XYZ left top zoom].
-        Assert.Matches(@"/Dest \[\d+ 0 R /XYZ", pdf);
+        // Resolve the /Dest's page object number + top, and prove it points at the LAST page (page 2),
+        // not merely "some page" — a link that wrongly targeted page 1 or a bad top would fail here.
+        var dest = Regex.Match(pdf, @"/Dest \[(\d+) 0 R /XYZ null ([\d.]+) null\]");
+        Assert.True(dest.Success, "no resolvable /GoTo /Dest array found");
+        var destPageObj = int.Parse(dest.Groups[1].Value);
+        var destTop = double.Parse(dest.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture);
+
+        var pageObjs = PageObjectNumbersInOrder(pdf);
+        Assert.True(pageObjs.Count >= 2, "the document should paginate to multiple pages");
+        Assert.Equal(pageObjs[^1], destPageObj);               // the destination is the LAST page's object
+        Assert.NotEqual(pageObjs[0], destPageObj);             // and NOT the first page (proves cross-page)
+        Assert.True(destTop > 0 && destTop < 900,              // a plausible /XYZ top (A4 ≈ 842pt tall)
+            $"destination top {destTop} is not a plausible page coordinate");
+    }
+
+    /// <summary>The object numbers of every <c>/Type /Page</c> object, in file order (= page order).</summary>
+    private static System.Collections.Generic.List<int> PageObjectNumbersInOrder(string pdf)
+    {
+        var nums = new System.Collections.Generic.List<int>();
+        foreach (Match m in Regex.Matches(pdf, @"(\d+) 0 obj\s*<<[^>]*?/Type\s*/Page[ /\r\n>]"))
+            nums.Add(int.Parse(m.Groups[1].Value));
+        return nums;
+    }
+
+    // ── Review #274 [P2]: fragment hrefs follow browser percent-decoding ────────────────────
+
+    [Theory]
+    [InlineData("r%C3%A9sum%C3%A9", "résumé")]   // UTF-8 percent-encoded non-ASCII id
+    [InlineData("sec%2F2", "sec/2")]              // reserved char (/) percent-encoded
+    [InlineData("plain", "plain")]               // unencoded — unchanged
+    public void Fragment_href_is_percent_decoded_before_matching_the_id(string hrefFrag, string id)
+    {
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + $"<a href=\"#{hrefFrag}\" style=\"display:block;width:120px;height:16px\">go</a>"
+            + $"<h2 id=\"{id}\">Target</h2></body></html>");
+        var pdf = Latin1(result.Pdf);
+
+        // The (decoded) href matches the raw id → a /GoTo annotation, and NO unresolved warning.
+        Assert.Contains("/Subtype /Link", pdf);
+        Assert.Contains("/Dest [", pdf);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.LinkFragmentUnresolved001);
+    }
+
+    // ── Review #274 [P3]: target-side element types (block / inline-block / inline-flow) ─────
+
+    [Theory]
+    [InlineData("display:block")]         // block target — its own fragment
+    [InlineData("display:inline-block")]  // atomic-inline target — its own fragment
+    [InlineData("")]                       // inline-flow target — no own fragment; anchors to its line/ancestor
+    public void Inline_flow_and_block_targets_all_resolve(string targetStyle)
+    {
+        var style = targetStyle.Length == 0 ? "" : $" style=\"{targetStyle}\"";
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>"
+            + "<a href=\"#t\" style=\"display:block;width:120px;height:16px\">go</a>"
+            + $"<p>See the <span id=\"t\"{style}>summary</span> below.</p></body></html>");
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Contains("/Subtype /Link", pdf);
+        Assert.Contains("/Dest [", pdf);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.LinkFragmentUnresolved001);
     }
 
     [Fact]

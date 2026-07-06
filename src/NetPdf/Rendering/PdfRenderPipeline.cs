@@ -902,6 +902,8 @@ internal static class PdfRenderPipeline
         PdfPageMode.UseOutlines => "UseOutlines",
         PdfPageMode.UseThumbs => "UseThumbs",
         PdfPageMode.FullScreen => "FullScreen",
+        PdfPageMode.UseOC => "UseOC",
+        PdfPageMode.UseAttachments => "UseAttachments",
         _ => throw new ArgumentOutOfRangeException(
             nameof(mode), mode, "Unknown PdfPageMode value."),
     };

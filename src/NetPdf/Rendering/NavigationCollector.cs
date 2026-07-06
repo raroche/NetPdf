@@ -42,11 +42,27 @@ internal static class NavigationCollector
     {
         foreach (var frag in fragments)
         {
-            if (frag.Box.SourceElement is not { } el) continue;
-            var id = el.GetAttribute("id");
-            if (string.IsNullOrEmpty(id) || destinations.ContainsKey(id)) continue;
             var topPt = pageHeightPt - PdfUnits.PxToPt(contentOriginTopPx + frag.BlockOffset);
+            RegisterFragmentTargetIds(frag.Box, page, topPt, destinations);
+        }
+    }
+
+    /// <summary>Register the <c>id</c> of <paramref name="box"/> and of its NON-ATOMIC inline descendants
+    /// (which do not emit their own fragment — e.g. <c>&lt;span id="summary"&gt;</c> inside a paragraph)
+    /// at this fragment's top. Block-level and atomic-inline descendants get their OWN fragment (a more
+    /// precise position), so the walk does not descend into them. First occurrence of an id wins.
+    /// <para>Approximation: an inline-flow target resolves to its containing block/line-bearing box's
+    /// top, not the exact inline glyph position.</para></summary>
+    private static void RegisterFragmentTargetIds(
+        Box box, PdfPage page, double topPt, Dictionary<string, Destination> destinations)
+    {
+        if (box.SourceElement?.GetAttribute("id") is { Length: > 0 } id && !destinations.ContainsKey(id))
             destinations[id] = new Destination(page, topPt);
+
+        foreach (var child in box.Children)
+        {
+            if (child.IsInlineLevel && !child.IsAtomicInline)
+                RegisterFragmentTargetIds(child, page, topPt, destinations);
         }
     }
 
@@ -109,8 +125,11 @@ internal static class NavigationCollector
     }
 
     /// <summary>Walk the box's ancestor chain (including itself) for the nearest <c>&lt;a&gt;</c> whose
-    /// href is a same-document <c>#fragment</c>; returns the anchor element + the target id (without the
-    /// leading <c>#</c>), or <see langword="null"/>. An empty fragment (bare <c>#</c>) is ignored.</summary>
+    /// href is a same-document <c>#fragment</c>; returns the anchor element + the PERCENT-DECODED target id
+    /// (without the leading <c>#</c>), or <see langword="null"/>. An empty fragment (bare <c>#</c>) is
+    /// ignored. The fragment is UTF-8 percent-decoded (browser fragment-navigation semantics) so
+    /// <c>href="#r%C3%A9sum%C3%A9"</c> matches <c>id="résumé"</c> and <c>href="#sec%2F2"</c> matches
+    /// <c>id="sec/2"</c>.</summary>
     private static (IElement El, string Target)? FindFragmentAnchor(Box? box)
     {
         for (var b = box; b is not null; b = b.Parent)
@@ -120,9 +139,14 @@ internal static class NavigationCollector
             {
                 var href = el.GetAttribute("href")?.Trim();
                 if (!string.IsNullOrEmpty(href) && href.StartsWith('#') && href.Length > 1)
-                    return (el, href.Substring(1));
+                    return (el, DecodeFragment(href.Substring(1)));
             }
         }
         return null;
     }
+
+    /// <summary>UTF-8 percent-decode a URL fragment (browser fragment-navigation semantics). Malformed
+    /// escapes are left as-is (<c>Uri.UnescapeDataString</c> does not throw).</summary>
+    private static string DecodeFragment(string raw) =>
+        raw.Contains('%') ? Uri.UnescapeDataString(raw) : raw;
 }

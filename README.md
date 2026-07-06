@@ -271,7 +271,7 @@ Everything is deterministic: no timestamp is read unless you set one, and a docu
 
 ## Navigation & initial view
 
-Same-document links work as plain HTML — an `<a href="#id">` becomes a clickable **`/GoTo`** jump to the element with that `id`, resolved across the whole document (the target can be on a later page). A dangling `#id` (no such element) is reported as a diagnostic and the text still renders. Like external links, the anchor needs its own box (a `display:block` / `inline-block` `<a>`); an inline-flow anchor's precise rectangle is a documented follow-up.
+Same-document links work as plain HTML — an `<a href="#id">` becomes a clickable **`/GoTo`** jump to the element with that `id`, resolved across the whole document (the target can be on a later page). The `#id` fragment is percent-decoded the way a browser navigates (`href="#r%C3%A9sum%C3%A9"` matches `id="résumé"`). A **block, inline-block, or inline-flow** element can be the target — an inline target (e.g. `<span id="summary">`) resolves to its containing block/line position. A dangling `#id` (no such element) is reported as a diagnostic and the text still renders. On the **link** side, like external links, the anchor needs its own box (a `display:block` / `inline-block` `<a>`); an inline-flow anchor's precise rectangle is a documented follow-up.
 
 ```html
 <a href="#summary" style="display:inline-block">Jump to summary</a>

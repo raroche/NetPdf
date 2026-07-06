@@ -46,4 +46,10 @@ public enum PdfPageMode
 
     /// <summary>Open in full-screen presentation mode (no menu bar, window controls, or panels).</summary>
     FullScreen,
+
+    /// <summary>Open with the optional-content (layers) panel visible.</summary>
+    UseOC,
+
+    /// <summary>Open with the attachments panel visible.</summary>
+    UseAttachments,
 }

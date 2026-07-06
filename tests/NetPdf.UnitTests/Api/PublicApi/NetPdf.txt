@@ -174,7 +174,9 @@ enum NetPdf.PdfPageLayout : System.IComparable, System.IConvertible, System.IFor
 enum NetPdf.PdfPageMode : System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
     field System.Int32 value__
     field const NetPdf.PdfPageMode FullScreen
+    field const NetPdf.PdfPageMode UseAttachments
     field const NetPdf.PdfPageMode UseNone
+    field const NetPdf.PdfPageMode UseOC
     field const NetPdf.PdfPageMode UseOutlines
     field const NetPdf.PdfPageMode UseThumbs
 class NetPdf.PdfRenderResult

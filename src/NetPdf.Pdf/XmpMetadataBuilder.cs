@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
+using System.Globalization;
 using System.Text;
 
 namespace NetPdf.Pdf;
@@ -24,21 +26,26 @@ internal static class XmpMetadataBuilder
 
     /// <summary>
     /// Build the XMP packet bytes (UTF-8) for the given metadata, or <see langword="null"/> when no
-    /// descriptive field is present (so a bare document emits no <c>/Metadata</c> stream). The
+    /// field is present (so a bare document emits no <c>/Metadata</c> stream). The
     /// <paramref name="producer"/> is always available but on its own is not enough to warrant an XMP
-    /// packet — at least one of title/author/subject/keywords/creator/lang must be set.
+    /// packet — at least one of title/author/subject/keywords/creator/lang or a date must be set.
+    /// Callers are expected to pass values already sanitized + length-capped (the packet only
+    /// XML-escapes); the <paramref name="createDate"/>/<paramref name="modDate"/> are emitted as
+    /// ISO 8601 <c>xmp:CreateDate</c>/<c>xmp:ModifyDate</c>, mirroring <c>/Info</c>'s dates.
     /// </summary>
     public static byte[]? Build(
         string? title, string? author, string? subject, string? keywords,
-        string? creator, string? lang, string producer)
+        string? creator, string? lang, string producer,
+        DateTimeOffset? createDate = null, DateTimeOffset? modDate = null)
     {
         // Blank (whitespace-only) values count as unset — a caller that forgets to trim must not
         // trip an otherwise-empty packet into existence (and break the bare-document byte stability).
-        var hasDescriptive =
+        var hasContent =
             !string.IsNullOrWhiteSpace(title) || !string.IsNullOrWhiteSpace(author) ||
             !string.IsNullOrWhiteSpace(subject) || !string.IsNullOrWhiteSpace(keywords) ||
-            !string.IsNullOrWhiteSpace(creator) || !string.IsNullOrWhiteSpace(lang);
-        if (!hasDescriptive) return null;
+            !string.IsNullOrWhiteSpace(creator) || !string.IsNullOrWhiteSpace(lang) ||
+            createDate is not null || modDate is not null;
+        if (!hasContent) return null;
 
         var sb = new StringBuilder(512);
         // The xpacket header's begin marker is the UTF-8 BOM (U+FEFF) — written as an explicit escape
@@ -90,6 +97,11 @@ internal static class XmpMetadataBuilder
               .Append(Escape(lang)).Append("</rdf:li></rdf:Bag></dc:language>\n");
         }
 
+        if (createDate is { } cd)
+            sb.Append("   <xmp:CreateDate>").Append(FormatDate(cd)).Append("</xmp:CreateDate>\n");
+        if (modDate is { } md)
+            sb.Append("   <xmp:ModifyDate>").Append(FormatDate(md)).Append("</xmp:ModifyDate>\n");
+
         sb.Append("  </rdf:Description>\n");
         sb.Append(" </rdf:RDF>\n");
         sb.Append("</x:xmpmeta>\n");
@@ -97,6 +109,11 @@ internal static class XmpMetadataBuilder
 
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
+
+    /// <summary>Format a timestamp as an XMP/ISO 8601 date (e.g. <c>2026-07-05T09:30:00+00:00</c>).
+    /// The offset is preserved as <c>±HH:mm</c> (invariant), so the same input is always the same bytes.</summary>
+    private static string FormatDate(DateTimeOffset value)
+        => value.ToString("yyyy-MM-ddTHH:mm:ssK", CultureInfo.InvariantCulture);
 
     /// <summary>XML-escape the five predefined entities so metadata text can't break the RDF/XML.</summary>
     private static string Escape(string value)

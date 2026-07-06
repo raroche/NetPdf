@@ -119,9 +119,11 @@ public sealed class PdfDocumentDeterminismHarnessTests
     private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> s_pinsByPlatform =
         new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
         {
-            // Captured 2026-05-03 on .NET 10 / macOS arm64. Re-pinned 2026-07-05 for the four
+            // Captured 2026-05-03 on .NET 10 / macOS arm64. Re-pinned 2026-07-05 for the
             // metadata-bearing shapes when the document-metadata feature added the catalog
-            // /ViewerPreferences + XMP /Metadata stream (verified: only those entries changed).
+            // /ViewerPreferences + XMP /Metadata stream, and again when XMP gained xmp:CreateDate/
+            // ModifyDate (so the explicit-date shapes now carry an XMP stream too). Verified: only
+            // those entries changed.
             // Re-pin protocol on legitimate drift:
             //   1. Run the Capture_all_shape_hashes_for_pinning helper (un-Skip first).
             //   2. Verify a sample of the new bytes round-trip through qpdf --check
@@ -142,12 +144,12 @@ public sealed class PdfDocumentDeterminismHarnessTests
                 ["image-dedup-three-references"] = "9C3AD0D366F3A060EB1352D79B848166F04C130EA5B77542862A488BA359E7FE",
                 ["mixed-images-alpha-and-opaque"] = "D0FDB9294BF608D64B7F7F2A8BB12FD84C7D5FD3D068F3C4AC40C0086C836EB0",
                 ["raw-content-stream-byte-overload"] = "C4FD09D25493A45B24E179F360E863450657BFF6E4D60A38974E177C83C9D611",
-                ["explicit-creation-date-utc"] = "16B5A5C9E50E071691A04B498A9BB5DD040B6EFC373B63943340FF7C1DAA6883",
-                ["explicit-creation-date-positive-half-hour-offset"] = "C6742A1C67C12D3DDB8FD58CD86DECCAABA357B38DB34B315D5E79318FC185E1",
-                ["explicit-creation-date-negative-offset"] = "0CD67242DDD425FDCB3E8D51F3ED74DF36DA6CD3F3FDFC7FE4100BA27665FA5A",
+                ["explicit-creation-date-utc"] = "7FA5AF9559CB06E85F91DD8C90CA18BFA2A5F6D8EE6B450C0C55E7001EE64359",
+                ["explicit-creation-date-positive-half-hour-offset"] = "046409DF6DDC6A78A6DEE6899D5BA6EB7F86D22B49F6C1A083FB9126B26C215B",
+                ["explicit-creation-date-negative-offset"] = "3B46834D0F610142FD716ECACCB3904B0CAC7AA2EA2797876CEE40C226044FD5",
                 ["long-metadata-strings"] = "0AF485E8803A40270509AF0FEE5B8EA669DD4602784CF76EF2B8CD8FCFECCFFB",
                 ["many-append-content-calls"] = "8748DD7639984FC90D18DA5C4AC7284243B8E54C28000B24F9E104673AC81D8A",
-                ["canonical-everything"] = "60FCC54841BB242A2279BC1457279D48E098A1DCD01B7902B3A7911B1535F6C8",
+                ["canonical-everything"] = "EA50F81C883055A27548462E8504F2764AFB6F99D1140E72FE0976435EDC0A79",
             },
             // Other platforms (linux-x64, win-x64, linux-arm64) intentionally absent
             // until pins captured on those environments. The snapshot test will skip

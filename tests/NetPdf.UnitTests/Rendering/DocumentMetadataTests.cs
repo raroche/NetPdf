@@ -200,6 +200,107 @@ public sealed class DocumentMetadataTests
         Assert.DoesNotContain("/ModDate", pdf);
     }
 
+    // ── Review [P2]: XMP shares the /Info sanitize + length cap ─────────────────────────────
+
+    [Fact]
+    public void Oversized_metadata_is_capped_in_both_info_and_xmp()
+    {
+        // A hostile multi-KB <title> must not inflate the XMP stream any more than /Info: both go
+        // through the same sanitize + MaxMetadataChars (~4096) cap. If XMP were unbounded, a run of
+        // the title char near the raw 10k length would appear.
+        var huge = new string('A', 10_000);
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>x</body></html>", new HtmlPdfOptions { Title = huge }));
+
+        var maxRun = MaxConsecutive(pdf, 'A');
+        Assert.True(maxRun is > 4000 and < 4200, $"title not capped as expected: longest A-run={maxRun}");
+    }
+
+    [Fact]
+    public void Control_characters_are_scrubbed_from_the_xmp_packet()
+    {
+        // Control chars (0x01/0x07) in author-controlled metadata must never reach the XMP packet raw —
+        // the shared sanitizer replaces them with U+FFFD before the builder XML-escapes. Isolate the
+        // xpacket region so binary font bytes elsewhere in the PDF don't confuse the assertion.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>x</body></html>",
+            new HtmlPdfOptions { Title = "CleanTitleEnd" }));
+
+        var start = pdf.IndexOf("<?xpacket begin", System.StringComparison.Ordinal);
+        var end = pdf.IndexOf("<?xpacket end", System.StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "no XMP packet found");
+        var packet = pdf.Substring(start, end - start);
+        foreach (var c in packet)
+            Assert.False(c < 0x20 && c is not ('\t' or '\r' or '\n'), $"raw control char U+{(int)c:X4} in XMP");
+        Assert.Contains("CleanTitleEnd".Substring(0, 5), packet);   // the clean text survives
+    }
+
+    private static int MaxConsecutive(string s, char c)
+    {
+        int max = 0, run = 0;
+        foreach (var ch in s)
+        {
+            run = ch == c ? run + 1 : 0;
+            if (run > max) max = run;
+        }
+
+        return max;
+    }
+
+    // ── Review [P3]: creation / modification dates in XMP (not just /Info) ───────────────────
+
+    [Fact]
+    public void Dates_are_mirrored_in_the_xmp_stream()
+    {
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><title>Dated</title></head><body>x</body></html>",
+            new HtmlPdfOptions
+            {
+                CreationDate = new System.DateTimeOffset(2026, 7, 5, 9, 30, 0, System.TimeSpan.Zero),
+                ModDate = new System.DateTimeOffset(2026, 7, 5, 10, 0, 0, System.TimeSpan.Zero),
+            }));
+
+        Assert.Contains("<xmp:CreateDate>2026-07-05T09:30:00+00:00</xmp:CreateDate>", pdf);
+        Assert.Contains("<xmp:ModifyDate>2026-07-05T10:00:00+00:00</xmp:ModifyDate>", pdf);
+    }
+
+    [Fact]
+    public void A_date_only_document_still_emits_an_xmp_stream()
+    {
+        // Even with no descriptive metadata, a set date warrants an XMP packet (mirrors /Info).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>x</body></html>",
+            new HtmlPdfOptions { CreationDate = new System.DateTimeOffset(2026, 1, 2, 3, 4, 5, System.TimeSpan.Zero) }));
+        Assert.Contains("/Type /Metadata", pdf);
+        Assert.Contains("<xmp:CreateDate>2026-01-02T03:04:05+00:00</xmp:CreateDate>", pdf);
+    }
+
+    // ── Review [P3]: custom /Info entries emit in deterministic (ordinal) key order ──────────
+
+    [Fact]
+    public void Custom_properties_emit_in_ordinal_key_order_regardless_of_insertion_order()
+    {
+        static byte[] Build(params (string k, string v)[] entries)
+        {
+            var d = new Dictionary<string, string>();
+            foreach (var (k, v) in entries) d[k] = v;
+            return HtmlPdf.Convert("<!DOCTYPE html><html><body>x</body></html>",
+                new HtmlPdfOptions { DocumentProperties = d });
+        }
+
+        // Two different insertion orders of the same entries must produce byte-identical output.
+        var a = Build(("Zebra", "1"), ("Alpha", "2"), ("Mango", "3"));
+        var b = Build(("Mango", "3"), ("Zebra", "1"), ("Alpha", "2"));
+        Assert.Equal(a, b);
+
+        // And the emitted order is ordinal: Alpha before Mango before Zebra.
+        var pdf = Latin1(a);
+        var iAlpha = pdf.IndexOf("/Alpha", System.StringComparison.Ordinal);
+        var iMango = pdf.IndexOf("/Mango", System.StringComparison.Ordinal);
+        var iZebra = pdf.IndexOf("/Zebra", System.StringComparison.Ordinal);
+        Assert.True(iAlpha >= 0 && iAlpha < iMango && iMango < iZebra, "custom keys not in ordinal order");
+    }
+
     // ── Byte-stability guard: a bare document emits none of the new catalog entries ─────────
 
     [Fact]

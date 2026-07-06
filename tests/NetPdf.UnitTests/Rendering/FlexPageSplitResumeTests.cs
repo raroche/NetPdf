@@ -52,11 +52,10 @@ public sealed class FlexPageSplitResumeTests
         return pages;
     }
 
-    [Fact]
-    public void Paginated_nested_flex_row_resumes_and_the_trailing_note_does_not_overlap()
+    private static string BuildTimelineDoc(string pageSize)
     {
         var sb = new StringBuilder();
-        sb.Append("<!DOCTYPE html><html><head><style>@page{size:A4;margin:16mm}");
+        sb.Append("<!DOCTYPE html><html><head><style>@page{size:").Append(pageSize).Append(";margin:16mm}");
         sb.Append(".day{display:flex;gap:16px;padding:12px 0;border-left:3px solid #ccc;margin-left:18px;padding-left:22px}");
         sb.Append(".body{flex:1}.acts li{display:flex;gap:10px;padding:2px 0}");
         sb.Append(".note{margin-top:22px;border-top:1px solid #ccc;padding-top:10px}");
@@ -67,28 +66,51 @@ public sealed class FlexPageSplitResumeTests
             for (var a = 0; a < 4; a++) sb.Append("<li><span>0").Append(a).Append(":00</span><span>Activity number ").Append(a).Append(" at port ").Append(d).Append("</span></li>");
             sb.Append("</ul></div></div>");
         }
-        // A distinctive long note we can find by glyph count.
         sb.Append("</div><div class=\"note\">Times are local to each port and subject to change based on weather conditions</div></body></html>");
+        return sb.ToString();
+    }
 
-        var result = HtmlPdf.ConvertDetailed(sb.ToString(), new HtmlPdfOptions { PrintBackgrounds = true });
-        var pdf = Encoding.Latin1.GetString(result.Pdf);
-        var pages = RunsPerPage(pdf);
-        _out.WriteLine($"pages={pages.Count}");
-        Assert.True(pages.Count >= 2, "expected the timeline to paginate to >=2 pages");
+    private static List<(double y, int glyphs, int page)> AllRuns(string html)
+    {
+        var result = HtmlPdf.ConvertDetailed(html, new HtmlPdfOptions { PrintBackgrounds = true });
+        var pages = RunsPerPage(Encoding.Latin1.GetString(result.Pdf));
+        var all = new List<(double, int, int)>();
+        for (var p = 0; p < pages.Count; p++) foreach (var (y, g) in pages[p]) all.Add((y, g, p));
+        return all;
+    }
 
-        // The note is the longest run in the document. Find it + assert no other run on its page sits
-        // within its line band (± the ~13pt line height) — i.e. nothing overlaps the note vertically.
-        foreach (var page in pages)
+    [Fact]
+    public void Paginated_nested_flex_row_resumes_without_duplication_or_note_overlap()
+    {
+        var paginated = AllRuns(BuildTimelineDoc("A4"));
+        // Ground-truth single-page render of the SAME content (very tall page → no split).
+        var single = AllRuns(BuildTimelineDoc("210mm 3000mm"));
+
+        var pageCount = 0; foreach (var r in paginated) pageCount = System.Math.Max(pageCount, r.page + 1);
+        _out.WriteLine($"paginated pages={pageCount} runs={paginated.Count} single runs={single.Count}");
+        Assert.True(pageCount >= 2, "expected the timeline to paginate to >=2 pages");
+
+        // Pagination SPLITS content across pages; it must not DUPLICATE or DROP any — so the total
+        // text-run count is invariant vs the single-page render. (The resume bug re-rendered the whole
+        // split day → more runs.)
+        Assert.Equal(single.Count, paginated.Count);
+
+        // The note is the single longest run and appears EXACTLY ONCE.
+        var noteGlyphs = 0; foreach (var r in paginated) noteGlyphs = System.Math.Max(noteGlyphs, r.glyphs);
+        var noteRuns = paginated.FindAll(r => r.glyphs == noteGlyphs);
+        Assert.Single(noteRuns);
+        var note = noteRuns[0];
+
+        // Nothing on the note's page overlaps its line band …
+        foreach (var (y, g, p) in paginated)
         {
-            (double y, int g) noteRun = (double.NaN, 0);
-            foreach (var r in page) if (r.glyphs > noteRun.g) noteRun = r;
-            if (noteRun.g < 60) continue;   // this page doesn't hold the (long) note
-            foreach (var (y, g) in page)
-            {
-                if (g == noteRun.g && y == noteRun.y) continue;              // the note itself
-                var overlap = System.Math.Abs(y - noteRun.y) < 11.0;        // within one line height
-                Assert.False(overlap, $"a text run (glyphs={g}) at y={y:0.#} overlaps the footer note at y={noteRun.y:0.#}");
-            }
+            if (p != note.page || (g == note.glyphs && y == note.y)) continue;
+            Assert.False(System.Math.Abs(y - note.y) < 11.0,
+                $"a text run (glyphs={g}) at y={y:0.#} overlaps the footer note at y={note.y:0.#}");
         }
+        // … and the note is the LAST content on its page (lowest y — nothing below it).
+        foreach (var (y, _, p) in paginated)
+            if (p == note.page)
+                Assert.True(y >= note.y - 0.5, $"content at y={y:0.#} sits BELOW the footer note (y={note.y:0.#}) — the note is not last.");
     }
 }

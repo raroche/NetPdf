@@ -10741,6 +10741,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             isColumn ? double.NaN : containerMainSize);
         var crossGap = flexContainer.Style.ReadFlexGridGapOrZero(
             isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
+        // Percentage cross-size (review P3-4): `containerDefiniteCrossSize` is intentionally left at the
+        // default NaN here, so a `%` cross size a child declares reads 0 in this pre-measure. That is
+        // CORRECT for what this sum feeds: it sizes an AUTO-cross-size (auto-height) wrap container from
+        // its content, and a `%` cross against an INDEFINITE parent is auto → 0 (CSS Sizing 3 §5.1.1) —
+        // matching emission's own `blockGapBase = auto ? NaN` gate. A DEFINITE-cross-size container
+        // takes its declared cross size, not this sum, so the sum is discarded there (the resolved `%`
+        // cross flows through `PackLines` + emission, which DO receive the definite size). No desync.
         return FlexLinePacker.SumCrossExtent(
             flexContainer, sortedChildIndices, direction,
             containerMainSize, isWrapping: true, cancellationToken, mainGap, crossGap);

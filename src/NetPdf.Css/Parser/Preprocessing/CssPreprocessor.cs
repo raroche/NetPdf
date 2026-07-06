@@ -1128,26 +1128,28 @@ internal static class CssPreprocessor
                 {
                     output.Add(new CssDeclarationRecovery("mask-image", cleanValue, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
                 }
-                // Corpus-fidelity — a var()-carrying `background` shorthand AngleSharp dropped. Route the
-                // value to the single longhand that carries it: an <image> (gradient / url / …) →
-                // `background-image`, otherwise a <color> → `background-color`. Covers the corpus's
-                // single-purpose backgrounds (`background: linear-gradient(…var()…)`, `background:
-                // var(--c)`). A pure `var()` whose custom property resolves to an image (rare) can't be
-                // distinguished here and defaults to `background-color`.
+                // Corpus-fidelity — a var()-carrying `background` shorthand AngleSharp dropped.
                 else if (normalizedName == "background")
                 {
-                    var bgLonghand = ContainsImageFunction(cleanValue) ? "background-image" : "background-color";
-                    output.Add(new CssDeclarationRecovery(bgLonghand, cleanValue, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    EmitBackgroundVarRecovery(output, cleanValue, isImportant, ordinal);
                 }
                 // Corpus-fidelity — a var()-carrying `border` / `border-<side>` shorthand AngleSharp
                 // dropped. Re-expand to the width/style/color longhands (validation deferred: the
-                // `var()` color validates post-substitution, at VarResolver). A malformed value fails
-                // TryExpand and falls through to the verbatim recovery below.
-                else if (BorderShorthandExpander.IsBorderShorthand(normalizedName)
-                    && BorderShorthandExpander.TryExpand(normalizedName, cleanValue, deferValidation: true, out var borderVarLonghands))
+                // `var()` color validates post-substitution, at VarResolver).
+                else if (BorderShorthandExpander.IsBorderShorthand(normalizedName))
                 {
-                    foreach (var (property, value) in borderVarLonghands)
-                        output.Add(new CssDeclarationRecovery(property, value, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    // A WHOLE-VALUE var() (`border: var(--rule)`) can NOT be expanded here: the
+                    // component classification runs BEFORE substitution, so `var(--rule)` would be
+                    // misclassified as a color (emitting width:medium / style:none) and VarResolver
+                    // can't recover the width/style from an already-expanded longhand. Skip it
+                    // (unrecovered — same as AngleSharp's own drop) rather than misexpand. A var() that
+                    // is a COMPONENT (`border: 1px solid var(--c)`) still expands correctly.
+                    if (!IsWholeValueVar(cleanValue)
+                        && BorderShorthandExpander.TryExpand(normalizedName, cleanValue, deferValidation: true, out var borderVarLonghands))
+                    {
+                        foreach (var (property, value) in borderVarLonghands)
+                            output.Add(new CssDeclarationRecovery(property, value, isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+                    }
                 }
                 else
                 {
@@ -1537,6 +1539,18 @@ internal static class CssPreprocessor
         return false;
     }
 
+    /// <summary><see langword="true"/> when <paramref name="value"/>'s ENTIRE value is a single
+    /// <c>var()</c> reference (e.g. <c>var(--rule)</c> or <c>var(--rule, 1px solid red)</c>) — as
+    /// opposed to a <c>var()</c> used as one COMPONENT of a larger value (<c>1px solid var(--c)</c>).
+    /// A whole-value <c>var()</c> can't be safely token-classified into shorthand components before
+    /// substitution (the reference may expand to the whole grammar), so the recovery skips it.</summary>
+    private static bool IsWholeValueVar(string value)
+    {
+        if (!CssShorthandHelpers.SplitTopLevel(value, out var comps) || comps.Count != 1) return false;
+        var c = comps[0].AsSpan().TrimStart();
+        return c.Length >= 4 && c[..4].Equals("var(", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>CSS <c>&lt;image&gt;</c>-producing functions (CSS Images 3/4) — used to decide whether a
     /// recovered <c>background</c> shorthand value is an image (→ <c>background-image</c>) or a color
     /// (→ <c>background-color</c>). Not exhaustive; covers the gradient + url forms the corpus + common
@@ -1548,6 +1562,44 @@ internal static class CssPreprocessor
         "image", "image-set", "cross-fade", "element", "paint",
         "-webkit-linear-gradient", "-webkit-radial-gradient", "-webkit-gradient", "-webkit-image-set",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Recover a var()-carrying <c>background</c> shorthand (which AngleSharp.Css drops) into
+    /// the two longhands the painter consumes — <c>background-image</c> + <c>background-color</c> —
+    /// preserving the shorthand's RESET semantics (CSS Backgrounds 3 §3.10: the shorthand first resets
+    /// every background longhand to its initial value, then applies the specified components). Emitting
+    /// BOTH longhands (the unset one at its initial <c>none</c> / <c>transparent</c>) is what makes a
+    /// later <c>background: var(--color)</c> correctly CLEAR a prior <c>background-image: url(...)</c>.
+    /// <para>Components the painter doesn't render (position / size / repeat / origin / clip /
+    /// attachment) are not recovered. A SINGLE component routes cleanly (image vs color). A MULTI-token
+    /// value's <see cref="ContainsImageFunction"/> component becomes the image (the rest — keywords /
+    /// position — are dropped, as they aren't rendered); a multi-token value with no image routes to
+    /// <c>background-color</c> (best effort; the color resolver diagnoses it if invalid).</para></summary>
+    private static void EmitBackgroundVarRecovery(
+        ImmutableArray<CssDeclarationRecovery>.Builder output, string value, bool isImportant, int ordinal)
+    {
+        string? image = null, color = null;
+        if (CssShorthandHelpers.SplitTopLevel(value, out var comps) && comps.Count > 0)
+        {
+            if (comps.Count == 1)
+            {
+                if (ContainsImageFunction(comps[0])) image = comps[0];
+                else color = comps[0];
+            }
+            else
+            {
+                foreach (var comp in comps)
+                    if (ContainsImageFunction(comp)) { image = comp; break; }
+                if (image is null) color = value;   // no image component → treat the whole value as a color
+            }
+        }
+        else
+        {
+            color = value;   // un-splittable → best-effort color
+        }
+        // Initial values (CSS Backgrounds 3): background-image → none, background-color → transparent.
+        output.Add(new CssDeclarationRecovery("background-image", image ?? "none", isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+        output.Add(new CssDeclarationRecovery("background-color", color ?? "transparent", isImportant, IsFromShorthandExpansion: true, SourceOrdinal: ordinal));
+    }
 
     /// <summary><see langword="true"/> when <paramref name="value"/> contains a CSS
     /// <c>&lt;image&gt;</c>-producing function (a gradient, <c>url()</c>, …). Tokenized so a match inside

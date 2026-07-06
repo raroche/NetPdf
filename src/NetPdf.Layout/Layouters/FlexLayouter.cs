@@ -692,6 +692,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // always definite for a block-level flex container, so it needs no gate.
         var inlineGapBase = _contentInlineSize;
         var blockGapBase = _rootBox.IsHeightAuto() ? double.NaN : _contentBlockSize;
+        // Corpus-fidelity — the container's DEFINITE cross-axis content extent for resolving a flex
+        // item's PERCENTAGE cross size (e.g. `height: 100%` bars in a definite-height row-flex, 10's
+        // barcodes). Row cross = block: definite only when the container height isn't auto (the same
+        // indefinite-reference rule blockGapBase uses); column cross = inline: always definite. NaN →
+        // a `%` cross size stays 0 (auto against an indefinite parent, so auto-height flex stays
+        // byte-identical).
+        var containerDefiniteCrossSize = isColumn ? _contentInlineSize : blockGapBase;
         var mainGap = _rootBox.Style.ReadFlexGridGapOrZero(
             isColumn ? PropertyId.RowGap : PropertyId.ColumnGap,
             isColumn ? blockGapBase : inlineGapBase);
@@ -747,7 +754,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var lines = PackLines(
             _rootBox, _sortedFlexChildIndices, flexDirection,
             containerMainSize, isWrapping, cancellationToken, mainGap,
-            intrinsicBaseSizes);
+            intrinsicBaseSizes, containerDefiniteCrossSize);
 
         // Per Phase 3 Task 16 cycle 1 (Hello World) — multi-page flex
         // split fragment range determination per CSS Flexbox L1 §10
@@ -1416,7 +1423,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // extent instead — ComputeAlignItemsPlacement reads itemIsCrossSizeAuto). The
                 // shared helper keeps this in lockstep with FlexLinePacker's line-cross packing
                 // (post-PR-#190 Copilot review — a percentage cross no longer floors to chrome).
-                var itemCrossSize = item.Style.CrossBorderBoxSizePx(crossSizeProperty);
+                var itemCrossSize = item.Style.CrossBorderBoxSizePx(crossSizeProperty, containerDefiniteCrossSize);
 
                 // Per Phase 3 Task 15 L6 — pass the line's cross
                 // extent (= max(item cross-size on this line) for
@@ -1947,6 +1954,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// <param name="precomputedIntrinsicBaseSizes">Flex intrinsic-basis cycle —
     /// optional pre-measured max-content / min-content base sizes for ROW items with
     /// an explicit intrinsic <c>flex-basis</c> (null for column / wrap / no-shaper).</param>
+    /// <param name="containerDefiniteCrossSize">Corpus-fidelity — the container's DEFINITE cross-axis
+    /// content extent for resolving a flex item's PERCENTAGE cross size; <see cref="double.NaN"/> when
+    /// indefinite (percentage cross reads 0).</param>
     /// <returns>The packed flex lines; never null. Returns an empty list
     /// when the container has no block-level children (matches the L1-L5
     /// behavior of emitting no item fragments). Per Phase 3 Task 15 L10,
@@ -1980,11 +1990,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         bool isWrapping,
         CancellationToken cancellationToken,
         double mainGap,
-        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null,
+        double containerDefiniteCrossSize = double.NaN)
         => FlexLinePacker.Pack(
             flexContainer, sortedChildIndices, direction,
             containerMainSize, isWrapping, cancellationToken, mainGap,
-            precomputedIntrinsicBaseSizes);
+            precomputedIntrinsicBaseSizes, containerDefiniteCrossSize);
 
     /// <summary>Per Phase 3 Task 15 L6 — resolve the container's cross-
     /// axis extent for the L1-L5 single-line case + the L6 wrap case.

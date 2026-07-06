@@ -182,12 +182,29 @@ internal static class ComputedStyleLayoutExtensions
     /// than flooring it to the chrome — so the emission cross-size read AND
     /// <c>FlexLinePacker.CrossBorderBoxSize</c> (line packing) AGREE.</summary>
     public static double CrossBorderBoxSizePx(this ComputedStyle s, PropertyId crossSizeProperty)
+        => s.CrossBorderBoxSizePx(crossSizeProperty, double.NaN);
+
+    /// <summary>As <see cref="CrossBorderBoxSizePx(ComputedStyle, PropertyId)"/>, but a
+    /// <c>Percentage</c> cross size resolves against a FINITE
+    /// <paramref name="containerDefiniteCrossSize"/> (the container's own definite cross extent) instead
+    /// of collapsing to 0. Corpus-fidelity: a flex item with <c>height: 100%</c> inside a definite-height
+    /// row-flex container (10's barcodes: <c>.barcode{height:58px} .bar{height:100%}</c>) was resolving
+    /// to 0 → zero-height bars. When the container cross size is INDEFINITE
+    /// (<paramref name="containerDefiniteCrossSize"/> non-finite, e.g. an auto-height container) the
+    /// percentage still resolves to 0 — a percentage against an indefinite parent is auto per CSS Sizing
+    /// 3 §5.1.1 — so existing auto-height layouts stay byte-identical.</summary>
+    public static double CrossBorderBoxSizePx(this ComputedStyle s, PropertyId crossSizeProperty, double containerDefiniteCrossSize)
     {
         var slot = s.Get(crossSizeProperty);
-        return slot.Tag == ComputedSlotTag.LengthPx
-            ? BoxSizingHelper.DeclaredToBorderBox(
-                s, Math.Max(0, slot.AsLengthPx()), s.AxisBorderPaddingPx(crossSizeProperty))
-            : 0.0;
+        if (slot.Tag == ComputedSlotTag.LengthPx)
+            return BoxSizingHelper.DeclaredToBorderBox(
+                s, Math.Max(0, slot.AsLengthPx()), s.AxisBorderPaddingPx(crossSizeProperty));
+        if (slot.Tag == ComputedSlotTag.Percentage && double.IsFinite(containerDefiniteCrossSize))
+        {
+            var pct = Math.Max(0, slot.AsPercentage() / 100.0 * containerDefiniteCrossSize);
+            return BoxSizingHelper.DeclaredToBorderBox(s, pct, s.AxisBorderPaddingPx(crossSizeProperty));
+        }
+        return 0.0;
     }
 
     /// <summary>Body text-align cycle — the horizontal line-alignment FACTOR (CSS Text 3 §7.1)

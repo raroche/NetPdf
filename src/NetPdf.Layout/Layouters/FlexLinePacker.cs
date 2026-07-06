@@ -110,6 +110,10 @@ internal static class FlexLinePacker
     /// <c>flex-basis</c>; an item present in the map uses that base size as its
     /// hypothetical main size. Null (the default, and for wrap / column containers)
     /// keeps the declared-size path.</param>
+    /// <param name="containerDefiniteCrossSize">Corpus-fidelity — the container's DEFINITE cross-axis
+    /// content extent, against which a flex item's PERCENTAGE cross size resolves (a bar's
+    /// <c>height: 100%</c>). <see cref="double.NaN"/> (the default) when the container cross size is
+    /// indefinite → a percentage cross reads 0 (auto against an indefinite parent).</param>
     /// <returns>The packed lines. Empty when
     /// <paramref name="sortedChildIndices"/> is empty (= no items to
     /// pack; the caller short-circuits emission).</returns>
@@ -121,7 +125,8 @@ internal static class FlexLinePacker
         bool isWrapping,
         CancellationToken cancellationToken,
         double mainGap = 0.0,
-        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null,
+        double containerDefiniteCrossSize = double.NaN)
     {
         var lines = new List<FlexLine>();
         // Per PR-#84 review P3 #5 — axis mapping comes from the
@@ -146,7 +151,7 @@ internal static class FlexLinePacker
                 var item = flexContainer.Children[idx];
                 totalMain += item.ResolveFlexItemHypotheticalMainSize(
                     mainProp, containerMainSize, precomputedIntrinsicBaseSizes);
-                var c = CrossBorderBoxSize(item, crossProp);
+                var c = CrossBorderBoxSize(item, crossProp, containerDefiniteCrossSize);
                 if (c > maxCross) maxCross = c;
             }
             lines.Add(new FlexLine(
@@ -173,7 +178,7 @@ internal static class FlexLinePacker
             var item = flexContainer.Children[domIdx];
             var itemMain = item.ResolveFlexItemHypotheticalMainSize(
                 mainProp, containerMainSize, precomputedIntrinsicBaseSizes);
-            var itemCross = CrossBorderBoxSize(item, crossProp);
+            var itemCross = CrossBorderBoxSize(item, crossProp, containerDefiniteCrossSize);
 
             // §8 — adding this item to the current line costs `currentCount`
             // gutters (one before each of the existing items' successor); the line
@@ -255,7 +260,8 @@ internal static class FlexLinePacker
         bool isWrapping,
         CancellationToken cancellationToken,
         double mainGap = 0.0,
-        double crossGap = 0.0)
+        double crossGap = 0.0,
+        double containerDefiniteCrossSize = double.NaN)
     {
         var (mainProp, crossProp) = direction.GetAxisProperties();
 
@@ -273,7 +279,7 @@ internal static class FlexLinePacker
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var item = flexContainer.Children[idx];
-                var c = CrossBorderBoxSize(item, crossProp);
+                var c = CrossBorderBoxSize(item, crossProp, containerDefiniteCrossSize);
                 if (c > maxCross) maxCross = c;
             }
             return maxCross;
@@ -295,7 +301,7 @@ internal static class FlexLinePacker
             var item = flexContainer.Children[domIdx];
             var itemMain = item.ResolveFlexItemHypotheticalMainSize(
                 mainProp, containerMainSize);
-            var itemCross = CrossBorderBoxSize(item, crossProp);
+            var itemCross = CrossBorderBoxSize(item, crossProp, containerDefiniteCrossSize);
 
             // §8 — wrap accounts for the main-axis gutters (currentCount of them
             // once this item joins the line). Mirrors Pack so the pre-measure
@@ -327,13 +333,15 @@ internal static class FlexLinePacker
     }
 
     /// <summary>Flex box-sizing cycle — the item's BORDER-box cross size for line packing,
-    /// delegating to the shared <see cref="ComputedStyleLayoutExtensions.CrossBorderBoxSizePx"/>
+    /// delegating to the shared <c>ComputedStyleLayoutExtensions.CrossBorderBoxSizePx</c>
     /// so the wrapping line's cross extent (which positions the next line + the wrapper height +
     /// align-content) uses the SAME border-box mapping as the emission (post-PR-#190 Copilot
-    /// review consolidated the two copies). A DEFINITE cross length maps through box-sizing; an
-    /// <c>auto</c> / percentage / unset cross reads 0 (content / stretch sizes it later).</summary>
-    private static double CrossBorderBoxSize(Box item, PropertyId crossProp) =>
-        item.Style.CrossBorderBoxSizePx(crossProp);
+    /// review consolidated the two copies). A DEFINITE cross length maps through box-sizing; a
+    /// percentage cross resolves against <paramref name="containerDefiniteCrossSize"/> when finite,
+    /// else (auto / unset / indefinite-container percentage) reads 0 (content / stretch sizes it
+    /// later).</summary>
+    private static double CrossBorderBoxSize(Box item, PropertyId crossProp, double containerDefiniteCrossSize) =>
+        item.Style.CrossBorderBoxSizePx(crossProp, containerDefiniteCrossSize);
 }
 
 /// <summary>Per Phase 3 Task 15 L6 → cycle 4c — packed flex line as

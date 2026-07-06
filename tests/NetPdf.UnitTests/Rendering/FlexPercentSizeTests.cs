@@ -64,4 +64,21 @@ public sealed class FlexPercentSizeTests
         // starts at ~549pt). Pre-fix the RIGHTCOL text started well beyond that.
         Assert.True(maxX < 520, $"a flex column's text starts at x={maxX:0.#}pt — the percentage width collapsed and pushed it off-page.");
     }
+
+    [Fact]
+    public void Percent_cross_size_flex_item_fills_a_definite_height_container()
+    {
+        // 10's barcodes: `.barcode{display:flex;align-items:flex-end;height:58px}` with bars
+        // `.bar{width:6px;height:100%;background:#000}`. Pre-fix the height:100% resolved to 0 →
+        // zero-height bars → no rect emitted. Now it resolves against the container's definite 58px.
+        // 58px ≈ 43.5pt; assert a black fill whose rect height is ≳ 40pt is emitted.
+        var pdf = Render(
+            "<div class=\"barcode\"><span class=\"bar\"></span><span class=\"bar\"></span></div>",
+            ".barcode{display:flex;align-items:flex-end;height:58px}.bar{width:6px;height:100%;background:#000000}");
+        // A filled rect is `x y w h re f`. Find a black fill (`0 0 0 rg`) followed by a re with h≳40pt.
+        Assert.Contains("0 0 0 rg", pdf);
+        var tallRect = Regex.IsMatch(pdf, @"-?[\d.]+ -?[\d.]+ [\d.]+ (4[0-9]|[5-9][0-9])(\.\d+)? re",
+            RegexOptions.None);
+        Assert.True(tallRect, "no tall (≳40pt) filled rect — the height:100% bar collapsed to 0.");
+    }
 }

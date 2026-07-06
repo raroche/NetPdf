@@ -877,27 +877,32 @@ internal static class PdfRenderPipeline
         return null;
     }
 
-    /// <summary>Map the public <see cref="PdfPageLayout"/> to its PDF <c>/PageLayout</c> name, or
-    /// <see langword="null"/> when unset (so the catalog entry is omitted).</summary>
+    /// <summary>Map the public <see cref="PdfPageLayout"/> to its PDF <c>/PageLayout</c> name.
+    /// <see langword="null"/> (unset) → <see langword="null"/> (the catalog entry is omitted); an unknown
+    /// non-null value (an invalid cast) throws rather than silently dropping the request.</summary>
     private static string? MapPageLayout(PdfPageLayout? layout) => layout switch
     {
+        null => null,
         PdfPageLayout.SinglePage => "SinglePage",
         PdfPageLayout.OneColumn => "OneColumn",
         PdfPageLayout.TwoColumnLeft => "TwoColumnLeft",
         PdfPageLayout.TwoColumnRight => "TwoColumnRight",
         PdfPageLayout.TwoPageLeft => "TwoPageLeft",
         PdfPageLayout.TwoPageRight => "TwoPageRight",
-        _ => null,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(layout), layout, "Unknown PdfPageLayout value."),
     };
 
-    /// <summary>Map the public <see cref="PdfPageMode"/> to its PDF <c>/PageMode</c> name, or
-    /// <see langword="null"/> when unset (so the catalog entry is omitted).</summary>
+    /// <summary>Map the public <see cref="PdfPageMode"/> to its PDF <c>/PageMode</c> name.
+    /// <see langword="null"/> (unset) → <see langword="null"/> (omitted); an unknown non-null value throws.</summary>
     private static string? MapPageMode(PdfPageMode? mode) => mode switch
     {
+        null => null,
         PdfPageMode.UseNone => "UseNone",
         PdfPageMode.UseOutlines => "UseOutlines",
         PdfPageMode.UseThumbs => "UseThumbs",
         PdfPageMode.FullScreen => "FullScreen",
-        _ => null,
+        _ => throw new ArgumentOutOfRangeException(
+            nameof(mode), mode, "Unknown PdfPageMode value."),
     };
 }

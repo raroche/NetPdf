@@ -3,6 +3,7 @@
 
 using System.Text;
 using NetPdf;
+using NetPdf.Diagnostics;
 using Xunit;
 
 namespace NetPdf.UnitTests.Rendering;
@@ -58,7 +59,7 @@ public sealed class DocumentNavigationTests
             "</body></html>");
         var pdf = Latin1(result.Pdf);
 
-        Assert.Contains(result.Warnings, d => d.Code == "LINK-FRAGMENT-UNRESOLVED-001");
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.LinkFragmentUnresolved001);
         Assert.DoesNotContain("/Subtype /Link", pdf);   // no clickable jump for a dangling target
     }
 
@@ -83,5 +84,14 @@ public sealed class DocumentNavigationTests
         var pdf = Latin1(HtmlPdf.Convert("<!DOCTYPE html><html><body><p>plain</p></body></html>"));
         Assert.DoesNotContain("/PageLayout", pdf);
         Assert.DoesNotContain("/PageMode", pdf);
+    }
+
+    [Fact]
+    public void An_invalid_cast_enum_value_throws_rather_than_silently_dropping_the_request()
+    {
+        // A bogus (cast) enum value is programmer error — surface it instead of silently omitting /PageLayout.
+        Assert.ThrowsAny<System.ArgumentException>(() => HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><p>x</p></body></html>",
+            new HtmlPdfOptions { PageLayout = (PdfPageLayout)999 }));
     }
 }

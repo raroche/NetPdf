@@ -60,7 +60,9 @@ public sealed class AbsPosInFlexItemDescendantTests
             + "<div class=\"opt\"><ul><li><span class=\"bullet\"></span>B</li></ul></div></div>");
         var pdf = Encoding.Latin1.GetString(res.Pdf);
         var xs = new System.Collections.Generic.List<double>();
-        foreach (Match m in Regex.Matches(pdf, @"([\d.]+) [\d.]+ [\d.]+ [\d.]+ re\s*f"))
+        // Only the RED bullet fills (`1 0 0 rg` then the rect) — not any other filled rectangle (Copilot
+        // review: an unfiltered `re f` could pick up backgrounds and make the count flaky).
+        foreach (Match m in Regex.Matches(pdf, @"1 0 0 rg\s+([\d.]+) [\d.]+ [\d.]+ [\d.]+ re\s*f"))
             xs.Add(double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
         Assert.Equal(2, xs.Count);
         Assert.True(System.Math.Abs(xs[0] - xs[1]) > 50,

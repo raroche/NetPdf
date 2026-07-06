@@ -201,10 +201,12 @@ internal static class GridSizing
             gridBox.Style.ReadGridTemplateColumns(),
             contentInlineSize, isInlineIndefinite,
             colInfos, ctx, cancellationToken, columnGap,
-            // Inline axis: a positive, finite used inline size is DEFINITE even when the `width` slot is
-            // `auto` (definite containing chain), so fr columns resolve exactly — suppress the spurious
-            // fr-under-indefinite diagnostic (10 event-ticket). See the gate in ResolveTrackSizes.
-            axisExtentIsDefinite: double.IsFinite(contentInlineSize) && contentInlineSize > 0);
+            // Inline axis: a FINITE used inline size is DEFINITE even when the `width` slot is `auto`
+            // (definite containing chain), so fr columns resolve exactly — suppress the spurious
+            // fr-under-indefinite diagnostic (10 event-ticket). Copilot review: use `>= 0` not `> 0` — a
+            // definite inline size can legitimately be 0 (auto-width grid in a zero-width definite block);
+            // it's still definite, so the diagnostic should stay suppressed. See the gate in ResolveTrackSizes.
+            axisExtentIsDefinite: double.IsFinite(contentInlineSize) && contentInlineSize >= 0);
 
         // Per Phase 3 Task 18 cycle 6 + PR-#103 review F1+F2 — capture
         // the explicit-grid extents NOW (before any implicit growth)

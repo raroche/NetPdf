@@ -5531,6 +5531,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // Per Phase 3 Task 19 — also suppressed inside a FLOAT subtree: the
                 // flex emits atomically (full natural extent, no page clamp) so its
                 // items are lossless rather than truncated past a discarded split.
+                // Corpus-fidelity (03 footer overlap) — is this child RESUMING a prior DUAL-INPUT flex
+                // split (column item split OR row-nowrap content split)? Such a child MUST re-enter the
+                // pagination path even when the (fresh) resume page has room for it, so FlexLayouter
+                // honors the incoming continuation's resume-cut instead of re-emitting the WHOLE item.
+                // Pre-fix, the would-overflow gate below stayed OFF on a fresh page → allowPagination
+                // false → the resume-cut was ignored → the item re-rendered wholly (duplicated content)
+                // AND the wrapper wasn't resized, so the sibling cursor under-advanced and the trailing
+                // block (e.g. `.note`) overlapped the flex content. The row-WRAP line-split resume is a
+                // separate residual (no dual-input resize consumer) and is left unchanged here.
+                var isDualInputFlexResume = incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is FlexContinuation
+                    && (childFlexDirection.IsFlexColumnDirection() || !childIsWrapping);
                 if (IsPaginatableFlex(child)
                     && !_disableFlexPagination
                     && !_inAtomicFloatSubtree
@@ -5547,9 +5560,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // FlexLayouter would receive a non-positive content
                     // budget which it rejects via
                     // ConfigureEmission's argument validation.
-                    if (pageRemainingForFlex > 0
-                        && pageRemainingForFlex < childBorderBoxBlockSize
-                        && pageRemainingForFlex > nFlexBorderPaddingBlock)
+                    // OR — the child is resuming a dual-input split (above): activate pagination so the
+                    // resume-cut is honored, even though the fresh page doesn't overflow.
+                    var flexWouldOverflow = pageRemainingForFlex > 0
+                        && pageRemainingForFlex < childBorderBoxBlockSize;
+                    if (pageRemainingForFlex > nFlexBorderPaddingBlock
+                        && (flexWouldOverflow || isDualInputFlexResume))
                     {
                         // Column nowrap (item split) AND row nowrap (intra-item
                         // content split): remember the natural (pre-clamp)
@@ -9535,24 +9551,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Corpus-fidelity — an AnonymousBlock wrapper (block-in-inline / whitespace fixup,
+        // BoxBuilder.FixupAnonymousBlocks) REUSES its real parent's ComputedStyle, so reading
+        // padding / border / height / min-max off `parent.Style` here would charge the parent's chrome
+        // to a box that PAINTS none (FragmentPainter skips anonymous boxes). The measure must match the
+        // painter: an anonymous box has zero OWN chrome (its inline content still contributes its line
+        // extent below). Without this, a padded auto-height container whose block children are separated
+        // by pretty-print whitespace inflated by ~padding per whitespace gap (05 receipt box, 06
+        // code-band).
+        var isAnonymous = parent.Kind == BoxKind.AnonymousBlock;
         // Parent's own border-box block size from style.
-        var pBorderStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-        var pPaddingStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-        var pBorderEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-        var pPaddingEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-        var pHeight = parent.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
+        var pBorderStart = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var pPaddingStart = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var pBorderEnd = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+        var pPaddingEnd = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+        var pHeight = isAnonymous ? 0 : parent.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
         // Box-sizing + min/max-height MUST mirror the EMIT paths (the recursive
         // emit ~line 4784 + the main dispatch ~line 1372), else this measure
         // reserves a different block extent than the fragment paints — a
         // `box-sizing: border-box` block emits at its declared height while the
         // measure would over-reserve `declared + chrome`, opening a phantom gap or
         // a premature page break (PR #203 review [P1]). Byte-identical for
-        // content-box without min/max (the common case).
-        var parentBorderBoxBlockSize = BoxSizingHelper.DeclaredToBorderBox(
-            parent.Style, pHeight, pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd);
-        parentBorderBoxBlockSize = parent.ClampBorderBoxToMinMax(
-            parentBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight,
-            parentContentBlockSize);
+        // content-box without min/max (the common case). An anonymous box skips
+        // the box-model + min/max clamp (its own chrome is zero, above).
+        var parentBorderBoxBlockSize = isAnonymous
+            ? 0
+            : BoxSizingHelper.DeclaredToBorderBox(
+                parent.Style, pHeight, pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd);
+        if (!isAnonymous)
+            parentBorderBoxBlockSize = parent.ClampBorderBoxToMinMax(
+                parentBorderBoxBlockSize, PropertyId.MinHeight, PropertyId.MaxHeight,
+                parentContentBlockSize);
 
         // Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening review
         // Finding #2 — inline-only blocks contribute their wrapped-
@@ -9789,6 +9818,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         foreach (var child in parent.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Corpus-fidelity — skip out-of-flow (absolute / fixed) children, mirroring the EMIT loop
+            // (~line 1122). They don't advance the in-flow cursor and are placed by the post-flow abspos
+            // / fixed passes; counting their subtree extent here over-inflated the container (05's
+            // `.paid-stamp` added ~48pt). Preserve margin adjacency across them (same as the emit skip).
+            if (child.Style.IsOutOfFlow())
+            {
+                continue;
+            }
             if (!child.IsBlockLevel)
             {
                 // Non-block content (inline / atomic) breaks margin
@@ -10704,6 +10741,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             isColumn ? double.NaN : containerMainSize);
         var crossGap = flexContainer.Style.ReadFlexGridGapOrZero(
             isColumn ? PropertyId.ColumnGap : PropertyId.RowGap);
+        // Percentage cross-size (review P3-4): `containerDefiniteCrossSize` is intentionally left at the
+        // default NaN here, so a `%` cross size a child declares reads 0 in this pre-measure. That is
+        // CORRECT for what this sum feeds: it sizes an AUTO-cross-size (auto-height) wrap container from
+        // its content, and a `%` cross against an INDEFINITE parent is auto → 0 (CSS Sizing 3 §5.1.1) —
+        // matching emission's own `blockGapBase = auto ? NaN` gate. A DEFINITE-cross-size container
+        // takes its declared cross size, not this sum, so the sum is discarded there (the resolved `%`
+        // cross flows through `PackLines` + emission, which DO receive the definite size). No desync.
         return FlexLinePacker.SumCrossExtent(
             flexContainer, sortedChildIndices, direction,
             containerMainSize, isWrapping: true, cancellationToken, mainGap, crossGap);

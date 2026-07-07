@@ -3,21 +3,17 @@
 NetPdf is a **browserless, non-subprocess** HTML+CSS-to-PDF engine — a managed C# layer over a small set of
 vetted native libraries (HarfBuzz shaping, Skia raster) — that renders **attacker-influenceable input** (HTML,
 CSS, SVG, images, fonts) server-side. Security is a first-class concern. This document covers how to report a
-vulnerability and what is in scope; the full threat model + hardening roadmap lives in
-[`docs/security/security-hardening-plan.md`](docs/security/security-hardening-plan.md), and operational
-guidance for running NetPdf on untrusted HTML is in the
+vulnerability and what is in scope; operational guidance for running NetPdf on untrusted HTML is in the
 [README](README.md#running-netpdf-on-untrusted-html).
 
 ## Supported versions
 
-NetPdf is **private and pre-1.0**; there is no public NuGet release yet — the public repository and the NuGet
-package are both published at `1.0.0`. Until then, security fixes land on the latest development version only
-(`main` / the most recent `-rc`). A formal supported-version matrix begins at `1.0.0`.
+Security fixes land on the latest `1.x` release line and `main`.
 
 | Version | Supported |
 |---|---|
-| `main` / latest `-rc` (currently `0.9.0-rc1`) | ✅ fixes land here |
-| Older pre-1.0 tags (`0.1.0-alpha`, `0.7.0-beta`) | ❌ superseded — upgrade to the latest |
+| Latest `1.x` release / `main` | ✅ fixes land here |
+| Older releases | ❌ superseded — upgrade to the latest |
 
 ## Reporting a vulnerability
 
@@ -30,7 +26,7 @@ security advisories). This opens a private channel with the maintainer. Include:
 - a minimal reproducing input (the HTML/CSS/SVG/font/image) and the `HtmlPdfOptions` / `SecurityPolicy` used;
 - the observed impact (data read, outbound request made, crash/OOM, malicious PDF construct emitted).
 
-**Response targets** (best-effort while pre-1.0): acknowledgement within **3 business days**, an initial
+**Response targets** (best-effort): acknowledgement within **3 business days**, an initial
 assessment within **10 business days**, and a fix or documented mitigation for confirmed High/Critical issues
 before the next release. We will credit reporters who wish to be named once a fix ships.
 
@@ -55,8 +51,8 @@ before the next release. We will credit reporters who wish to be named once a fi
 **Out of scope** — please report these to the appropriate party instead:
 
 - Vulnerabilities in a **native dependency** itself (SkiaSharp / HarfBuzz / libwebp / PDFium) — report upstream;
-  we track and bump per [`docs/legal/dependency-dossier.md`](docs/legal/dependency-dossier.md). A *validator
-  bypass* that lets crafted bytes reach such a decoder **is** in scope.
+  we track advisories and bump the affected package. A *validator bypass* that lets crafted bytes reach such a
+  decoder **is** in scope.
 - Your **deployment configuration** (missing container isolation, an open egress route, exposed secrets) —
   see the [untrusted-HTML checklist](README.md#running-netpdf-on-untrusted-html); the library cannot substitute
   for OS-level isolation.
@@ -68,4 +64,4 @@ before the next release. We will credit reporters who wish to be named once a fi
 To calibrate reports: NetPdf has **no JavaScript engine and no embedded browser**, **spawns no processes at
 render time**, and does **no untrusted-input-driven type activation or deserialization**. So classic
 HTML-to-PDF RCE paths that rely on a JS engine (V8 CVEs), CLI argument injection, or object deserialization do
-not apply. See the threat model for the full class-by-class analysis.
+not apply.

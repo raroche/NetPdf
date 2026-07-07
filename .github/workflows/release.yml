@@ -10,7 +10,7 @@
 #
 # This ordering matters: GitHub applies the environment's required-reviewer gate to the `publish` job, so
 # the reviewer approves AFTER validation has run and the packed-artifact list is visible in the run — which
-# is what docs/RELEASE.md tells the maintainer to review before approving. A non-environment job cannot
+# is what the maintainer reviews before approving. A non-environment job cannot
 # publish (no secret), and the environment job does nothing but push already-validated bytes.
 #
 # SAFETY:

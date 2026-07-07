@@ -49,6 +49,29 @@ src/**/Generated/
 # Plan files (already external)
 plans/
 
+# ── Internal development docs (kept on disk, out of the public repo) ─────────
+# These are development/process/governance docs and the AI-agent bootstrap. They
+# are intentionally NOT published so the public repo stays consumer-focused. They
+# remain in the working tree for local reference. Consumer-relevant docs (README,
+# CHANGELOG, compatibility-matrix, diagnostics-codes, authoring guide, SECURITY,
+# clean-room-policy, deployment, docs-site) stay tracked.
+CLAUDE.md
+PROGRESS.md
+DEV-NOTES.local.md
+CHANGELOG.dev.local.md
+docs/progress-archive.md
+docs/coding-standards.md
+docs/pdf-spec-notes.md
+docs/secrets-and-credentials.md
+docs/accessibility.md
+docs/RELEASE.md
+docs/phases/
+docs/design/
+docs/legal/
+docs/security/security-hardening-plan.md
+docs/security/fuzzing.md
+.claude/skills/
+
 # macOS Finder / iCloud / Time Machine duplicate files (e.g., `Foo 2.cs`).
 # Scoped to source-shaped extensions only — these are the file types where
 # a duplicate produces real build damage (CS source: duplicate-type defs;

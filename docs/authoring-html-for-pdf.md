@@ -44,7 +44,7 @@ NetPdf renders offline and deterministically, and it blocks remote fetches by de
 
 - Embed raster images as `data:` URIs: `<img src="data:image/png;base64,…">`.
 - Embed logos and icons as **inline `<svg>`** (a broad subset is supported — paths, strokes, fills, gradients, `<use>`/`<symbol>`, text) or as an SVG `data:` URI. Inline SVG is a robust, resolution-independent choice for self-contained graphics. It is a **supported subset**, not a full SVG 1.1/2 implementation — check [`docs/compatibility-matrix.md`](compatibility-matrix.md) and [`docs/deferrals.md`](deferrals.md) for the current SVG boundaries, and note that an inline `<svg>` used as an absolutely-positioned decoration inside a flex/grid item can hit the positioned-layout residuals tracked there.
-- If you must load remote assets, opt into it explicitly via the resource-loader policy (see `docs/secrets-and-credentials.md` / `SecurityPolicy`) — and understand the security trade-off.
+- If you must load remote assets, opt into it explicitly via the resource-loader policy (`SecurityPolicy`) — and understand the security trade-off.
 
 **Watch out for:**
 

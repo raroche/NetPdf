@@ -1,14 +1,10 @@
 # Known Deferrals
 
 Approximation contracts: features the codebase **approximates** or **rejects
-loudly** today, with the conditions under which each gets picked up.
-
-This file is **not** a status tracker for in-progress work — that lives in
-[PROGRESS.md](../PROGRESS.md) (active state) and
-[docs/phases/](phases/) (planned breakdown). It is also not a duplicate of
-those files. Update this file when (a) you ship a cycle that adds a new
-approximation/throw, or (b) you pick up a deferral and replace the
-approximation with full behavior.
+loudly** today, with the conditions under which each gets picked up. This is the
+companion to the [compatibility matrix](compatibility-matrix.md) and the
+[diagnostics code registry](diagnostics-codes.md) — it explains the boundary
+behind a `…-APPROXIMATED-…` or `…-UNSUPPORTED-…` diagnostic.
 
 ## Schema
 
@@ -25,7 +21,6 @@ can verify entries don't drift away from source. Required labels:
 - **Missing** — what's not implemented relative to the spec.
 - **Trigger** — the condition that moves this off the deferral list.
 - **Owner files** — files (and rough locations) that change when picked up.
-- **Added** — PR or cycle that documented the deferral.
 - **Removal condition** — explicit criterion for deleting the entry.
 
 When you add a deferral, also add its ID to the expected list in
@@ -33,7 +28,7 @@ When you add a deferral, also add its ID to the expected list in
 approximation comment in source so a future agent can find the entry by
 grepping the ID).
 
----
+
 
 ## uax-24-script-detection
 
@@ -47,8 +42,8 @@ grepping the ID).
   (`src/NetPdf.Text/Bidi/UnicodeScripts.cs`) is a sorted Unicode-BLOCK range
   table covering the ~30 major scripts, which APPROXIMATES the exact UAX #24
   Script property: a few blocks mix scripts at their edges (Coptic is carved out
-  of the Greek block; others are not), and the long tail of rare scripts +
-  supplementary-plane extensions (CJK Ext C–G past U+2A6DF, Arabic Extended-A/B,
+  of the Greek block; others are not), and the long tail of rare scripts
+  supplementary-plane extensions (CJK Ext C–G past U+2A6DF, Arabic Extended-A/B
   etc.) is not enumerated.
 - **Missing** — an EXACT per-codepoint Script-property table generated from the
   UCD `Scripts.txt`, replacing the block approximation, so a codepoint in an
@@ -56,25 +51,22 @@ grepping the ID).
   `Common` (= the surrounding / caller-uniform script). The current behavior
   feeds HarfBuzz the surrounding script tag for those codepoints (no worse than
   the pre-detection single-script approximation, but not exact).
-- **Trigger** — corpus content in an uncovered assigned range (e.g. CJK Ext C+,
+- **Trigger** — corpus content in an uncovered assigned range (e.g. CJK Ext C
   Arabic Extended-A) misshapes, OR a script-boundary edge inside a mixed block
   is reported.
 - **Owner files** — `src/NetPdf.Text/Bidi/UnicodeScripts.cs` (replace the block
   ranges with a generated exact table); `tests/NetPdf.UnitTests/Text/Bidi/UnicodeScriptsTests.cs`
   (lock the uncovered-range behavior + the exact table once generated).
-- **Added** — Phase 3 Task 10 cycle 1 documented the original deferral; the
-  detection mechanism shipped in the residual long-tail batch 3 (narrowed to the
-  table-completeness residual here per PR #214 review).
 - **Removal condition** — `UnicodeScripts.GetScript` returns the exact UAX #24
   Script property (UCD-derived) for every assigned codepoint, and `Shape`
   consumes it; tests cover representative uncovered-today ranges.
 
----
+
 
 ## hyphens-auto-language-routing
 
 - **ID** — `hyphens-auto-language-routing`
-- **Status** — `approximated` (Phase 5: **block-level language routing shipped**; per-run + tokenization +
+- **Status** — `approximated` (**block-level language routing shipped**; per-run + tokenization
   `hyphenate-*` remain).
 - **Behavior** — `Hyphens.Auto` now selects the hyphenator by the block's **effective HTML `lang`** — the
   nearest `lang` (or `xml:lang`) up the ancestor chain, with an empty value treated as "unknown" per the
@@ -84,43 +76,40 @@ grepping the ID).
   unless a `NetPdf.Languages.*` pack registered the language. What is still approximated: the hyphenator is
   resolved **once per inline-only block** (not per source TextRun — a single block that mixes languages uses
   the block language throughout); word tokenization in `ApplyLiangPatterns` accepts only ASCII letters
-  [A-Za-z] (+ U+00AD) — apostrophes split contractions ("don't" → "don"/"t") and non-ASCII letter sequences
+  [A-Za-z] (U+00AD) — apostrophes split contractions ("don't" → "don"/"t") and non-ASCII letter sequences
   (umlaut, Cyrillic, accented Latin Extended) are skipped; and CSS Text L4 `hyphenate-*` is not implemented.
-- **Now closed (Phase 5)** — block effective-`lang` routing; the public `HyphenationRegistry` seam; the
+- **Now closed** — block effective-`lang` routing; the public `HyphenationRegistry` seam; the
   `NetPdf.Languages.*` pack mechanism (European de/fr real patterns; CJK/Arabic no-hyphenation; Indic + the
   remaining European languages registered as routing-aware placeholders).
-- **Still missing** —
+- **Still missing**
   - **Per-RUN** (mixed-language within one block) hyphenator routing keyed off each source TextRun's `lang`.
   - UAX #29 word-segmentation so apostrophes inside contractions don't truncate words + non-ASCII letter
     sequences participate.
-  - CSS Text L4 `hyphenate-character`, `hyphenate-limit-chars`, `hyphenate-limit-lines`,
+  - CSS Text L4 `hyphenate-character`, `hyphenate-limit-chars`, `hyphenate-limit-lines`
     `hyphenate-limit-zone` properties.
-  - The full CTAN `hyph-utf8` (LPPL) per-language pattern data (real patterns for the remaining European +
+  - The full CTAN `hyph-utf8` (LPPL) per-language pattern data (real patterns for the remaining European
     all Indic languages) — maintainer-vendored behind the same `Register` calls, no API change.
 - **Trigger** — a document mixes languages within one paragraph; OR a contraction / accented-letter case
   mis-wraps; OR a corpus sample needs a `hyphenate-*` property.
-- **Owner files** —
+- **Owner files**
   - `src/NetPdf.Text/Hyphenation/HyphenationRegistry.cs` — the BCP-47 lookup → Hyphenator (shipped).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `ResolveEffectiveLanguage` + the `LayoutPerRun` call
     site (block-level routing shipped; extend to per-run for mixed-language blocks).
   - `src/NetPdf.Layout/Inline/LineBuilder.cs::ApplyLiangPatterns` — replace the ASCII-letter check with
     UAX #29 word boundaries + per-run hyphenator selection.
   - `src/NetPdf.Languages.*` packs — vendor the real CTAN pattern data.
-- **Added** — Phase 3 Task 9 cycle 3b sub-cycle 3 (en-US-only Liang + ASCII tokenization); cycle 3d
-  sub-cycle 1 Rec #6 (soft-hyphen suppression). **Narrowed** — Phase 5 (block effective-`lang` routing +
-  the `HyphenationRegistry` seam + the language packs shipped).
 - **Removal condition** — per-run mixed-language routing lands, the tokenizer uses UAX #29, AND at least
   one CSS Text L4 `hyphenate-*` property is implemented.
 
----
+
 
 ## fragmentation-control-residuals
 
 - **ID** — `fragmentation-control-residuals`
 - **Status** — `approximated`. CSS Fragmentation L3 control is wired (the control PR):
-  `break-before` / `break-after` (+ legacy `page-break-*` aliases) force page breaks that
+  `break-before` / `break-after` (legacy `page-break-*` aliases) force page breaks that
   propagate through fitting ancestors (Fragmentation conformance **100%**); `break-inside:
-  avoid` / `break-before:avoid` / `break-after:avoid` set the boundary `AvoidBreak` flag;
+  avoid` / `break-before:avoid` / `break-after:avoid` set the boundary `AvoidBreak` flag
   `orphans` / `widows` are registered + drive `BreakResolver.OrphansRequired` /
   `WidowsRequired`. The residuals below don't block a criterion.
 - **Behavior** — Forced page breaks (`page` / `left` / `right` / `recto` / `verso` + legacy
@@ -130,7 +119,7 @@ grepping the ID).
   `BlockLayouter.ForcedBreakParityForNextPage`), and the driver (`PdfRenderPipeline`) inserts a
   blank `@page :blank` page when the resumed content would otherwise land on the wrong-parity page
   (CSS Page L3 §3.4.1; `recto`/`verso` are direction-independent page-number parities
-  (recto = odd, verso = even) while the PHYSICAL `left`/`right` swap in RTL (right = odd in LTR,
+  (recto = odd, verso = even) while the PHYSICAL `left`/`right` swap in RTL (right = odd in LTR
   even in RTL), and a forced first-page side shifts page 1's parity). `recto` / `verso` / `all`
   are registered + handled by the reader AND parsed — AngleSharp.Css 1.0.0-beta.144 dropped those
   three values before the cascade, so a `CssPreprocessor` value-gated recovery
@@ -138,8 +127,8 @@ grepping the ID).
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
   production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
   (block-flow children are already emitted atomically, so this is not visibly wrong today).
-  `orphans` / `widows` flow to the resolver (read once off the document BODY box — PR #207
-  review [P2], NOT the synthetic root, which holds the initial default). Line-level paragraph
+  `orphans` / `widows` flow to the resolver (read once off the document BODY box
+  , NOT the synthetic root, which holds the initial default). Line-level paragraph
   splitting has since landed, and it honors per-paragraph `orphans` / `widows` at the cut (read
   off the paragraph's OWN computed value); the resolver-level body value still drives only the
   cost model (inert under the production greedy resolver, as above).
@@ -150,21 +139,19 @@ grepping the ID).
   first-page starting side, + `recto`/`verso`/`all` parsing all SHIPPED.)
 - **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
   on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
-- **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration);
+- **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration)
   `src/NetPdf.Css/Parser/Preprocessing/CssPreprocessor.cs` (`IsRectoVersoAllBreakValue`
-  recovery for the dropped values);
+  recovery for the dropped values)
   `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` (`ForcesPageBreak*` /
   `ForcedPageBreakParity*` / `AvoidsBreak*` / `ReadOrphans/WidowsOrDefault`); `BlockLayouter.cs`
-  (the three break-decision sites that set `_forcedBreakParityForNextPage` — top-level loop +
+  (the three break-decision sites that set `_forcedBreakParityForNextPage` — top-level loop
   `EmitBlockSubtreeRecursive` + `DispatchInlineOnlyBlock`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`
   (the blank-page parity insertion `PageNumberHasParity` + orphans/widows → resolver). The
   optimizing-resolver-in-production + line-splitting are the deeper follow-ups.
-- **Added** — the CSS Fragmentation control PR (registration + cascade→resolver wiring); the
-  blank-page side parity (Phase-3 residual long-tail).
 - **Removal condition** — the optimizing resolver drives production (so `*:avoid` bites), and
   per-paragraph orphans/widows resolve at line-break time. (RTL page-side parity SHIPPED.)
 
----
+
 
 ## phase-4-painter-wiring
 
@@ -172,14 +159,14 @@ grepping the ID).
 - **Status** — `not-started` (the wiring; the IR project itself exists).
 - **Behavior** — `BlockLayouter` emits `BoxFragment` records (with
   `LineFragment[]` carried on `BoxFragment.InlineLines` for inline-only
-  blocks per Task 11 sub-cycle 1). `src/NetPdf.Paint/` already exists with
+  blocks per sub-). `src/NetPdf.Paint/` already exists with
   the **display-list IR** types: `DisplayList`, `DisplayCommand`
-  (`TextRunPayload`, `RectFillPayload`, `ImageDrawPayload`,
-  `TransformPushPayload`, `OpacityPushPayload`), `TextRun`,
+  (`TextRunPayload`, `RectFillPayload`, `ImageDrawPayload`
+  `TransformPushPayload`, `OpacityPushPayload`), `TextRun`
   `RasterImage`, `RgbaColor`, `ImageEncoding`. What's missing is the
-  Phase 3 → Phase 4 **bridge** that consumes layouter output + emits
+   → **bridge** that consumes layouter output + emits
   display commands.
-- **Missing** — A bridge service (e.g.,
+- **Missing** — A bridge service (e.g.
   `NetPdf.Paint.LayoutFragmentEmitter` — final name TBD) that:
   - Consumes `IReadOnlyList<BoxFragment>` (the layouter's sink output).
   - For each fragment, emits the appropriate
@@ -191,21 +178,17 @@ grepping the ID).
     `BlockOffset`).
   - Renders the visible-hyphen glyph at line ends where
     `LineFragment.EndsWithHyphenationBreak == true`.
-- **Trigger** — Phase 4 start, sequenced after Phase 3 task list
-  completes — see
-  [docs/phases/phase-4-visual-parity.md](phases/phase-4-visual-parity.md).
-- **Owner files** —
+- **Trigger** — visual-parity work (gradients/shadows/filters).
+- **Owner files**
   - `src/NetPdf.Paint/` (existing) — add the bridge type next to
     `DisplayList` + `DisplayCommand`; no new project needed.
   - `src/NetPdf.Pdf/` (existing) — `DisplayList` → PDF content-stream
     operator emission already lives here; the inline-text path needs
     per-line baseline + glyph-position math wired through.
-- **Added** — Phase 3 Task 11 sub-cycle 1 documented the wiring gap
-  (the layouter side of the contract shipped, painter side awaits).
 - **Removal condition** — The bridge service ships + a corpus invoice
   renders text via the layouter → painter → PDF path end-to-end.
 
----
+
 
 ## inline-atomic-boxes
 
@@ -216,7 +199,7 @@ grepping the ID).
   participates in line layout as an ATOMIC box: `BlockLayouter.CollectInlineTextRuns` converts it into a
   one-char `U+FFFC` `TextRun` carrying an `InlineAtomic` (box + used border-box width/height); the
   glyph-centric pipeline (`TextRun → Itemize → Shape → Wrap`) reserves its advance (a synthetic
-  single-glyph `ShapedRun` whose advance is the used width, shaped WITHOUT HarfBuzz — `LineBuilder.Shape`),
+  single-glyph `ShapedRun` whose advance is the used width, shaped WITHOUT HarfBuzz — `LineBuilder.Shape`)
   the white-space preprocessor passes the atomic through verbatim (preserving the payload), the line box
   grows to fit a tall atomic (`BlockLayouter.ComputeInlineAtomicLayout` → per-line heights), and
   `BlockLayouter` emits a positioned `BoxFragment` for the box (so `ImagePainter` paints it from the image
@@ -231,28 +214,28 @@ grepping the ID).
   placed `BoxFragment` is the inline-block's BORDER box (painted by `FragmentPainter`). The OTHER atomic
   kinds (`InlineFlexContainer` / `InlineGridContainer` / `InlineTable`, and an unsized inline-replaced /
   a failed inline-block layout) still SKIP + emit `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` (Warning).
-- **Box model (post-PR-#186 review P1)** — the img's own padding + border + margin are honored: the line
+- **Box model** — the img's own padding + border + margin are honored: the line
   reserves the MARGIN-box advance, the emitted fragment is the BORDER box (so `ImagePainter`, which
   subtracts the img's padding/border to recover the content box, paints correctly), and the margin-box
   bottom sits on the baseline. A plain inline `<img>` (no chrome) is byte-identical to the first cut. The
   inline-block atomic carries the same margin-box advance + border-box fragment.
-- **Missing (first-cut approximations)** —
+- **Missing (first-cut approximations)**
   - `vertical-align` for an inline ATOMIC honours every value: `baseline` / `top` / `bottom` / `middle` /
     `text-top` / `text-bottom` keywords, `sub` / `super` (a ±em baseline shift), and a numeric
     `<length>` / `<percentage>` (a raise off the baseline) — vertical-align completion cycle, CSS 2.2
-    §10.8.1. TEXT (non-atomic) `vertical-align` honours `sub` / `super` / a numeric value (a glyph-
+    §10.8.1. TEXT (non-atomic) `vertical-align` honours `sub` / `super` / a numeric value (a glyph
     baseline shift, the line box GROWS to contain it — a super run sits above same-line text — and a `%`
     uses the run's OWN line-height) AND the LINE-EDGE keywords `top` / `bottom` / `middle` / `text-top` /
     `text-bottom` (bounded first cut — position the run at the line-box top/bottom, the line middle, or the
     parent text content-area, via `InlineVerticalAlign.TextLineEdgeBaselineTopPx`). All GATED to
     inline-level runs (a block / table cell's own vertical-align doesn't shift its text — the
     reference-equality gate; non-inherited so `<sub>`/`<sup>`/`<span>` work). A line-edge run TALLER than the
-    baseline-sized line now GROWS the line so it is CONTAINED (PR 3 task 7 —
+    baseline-sized line now GROWS the line so it is CONTAINED (
     `InlineVerticalAlign.TextLineEdgeGrowth`: `text-top`/`text-bottom`/`middle` grow the max-ascent
     ascent/descent extents, `top`/`bottom` contribute a content-box floor; the painter positions the run
     within the grown line via the shared helper). Deferred for text: the parent metrics use the
     0.8/−0.2-em + 0.5-em-x-height approximation. (A declared `line-height` IS now read as the
-    vertical-align `%` base — `OwnLineHeightPx` reads it via `ReadLineHeightPx`, the line-height cycle —
+    vertical-align `%` base — `OwnLineHeightPx` reads it via `ReadLineHeightPx`
     so a number/length/% line-height no longer silently falls back to font-size × 1.2.)
   - An inline-block aligns by its LAST in-flow line box's baseline (CSS 2.2 §10.8.1 — it sits ON the
     surrounding text baseline; the line box is sized by the max-ascent model). The last line's descent is
@@ -260,20 +243,20 @@ grepping the ID).
     DescentBelowBaselinePx` — its TextMetricsStyle ?? box font + its real last-line height), so a
     nested-block inline-block with a different font-size / line-height is exact; with NO in-flow line box OR
     a computed `overflow` other than `visible` (the §10.8.1 exception) the baseline is the bottom margin
-    edge (the img-ish placement). An inline SPAN overriding the font ON the last line IS now honoured (PR-3
-    task 9 — `BufferingMeasureSink.DeepestLastLineRunStyle` scans the last line's slices for the deepest
+    edge (the img-ish placement). An inline SPAN overriding the font ON the last line IS now honoured (
+     `BufferingMeasureSink.DeepestLastLineRunStyle` scans the last line's slices for the deepest
     run, a strict deepen-only refinement). The baseline still uses an approximate font ascent/descent
     (0.8 / −0.2 em — the layout layer has no font-metric access; the painter uses the REAL metrics for
     glyphs, so an atomic aligns within typical-font tolerance).
   - A `text-align: justify` line carrying an inline ATOMIC now DISTRIBUTES inter-word gaps AND shifts the
     atomic right by the gaps before it (the shared `InlineJustify` helper — the painter + the inline-atomic
     placement can't disagree); `justify-all` justifies the LAST line too AND every internal forced-break
-    (`<br>`)-terminated line (PR-3 task 9 — `justify-all` lifts the §7.3 forced-break exception; plain
+    (`<br>`)-terminated line (`justify-all` lifts the §7.3 forced-break exception; plain
     `justify` still leaves a `<br>` line start-aligned). (center / right / end shift the atomic — body
-    text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL block —
-    direction pipeline, PR 2 task 5. An atomic's run-level visual order within a mixed-direction line now
+    text-align cycle; and the direction-relative `start`/`end` shift it to the RIGHT edge in an RTL block
+    direction pipeline,. An atomic's run-level visual order within a mixed-direction line now
     reverses together with the other per-run slices under an RTL paragraph base — the UAX #9 L2
-    run-granularity reversal in `LineBuilder.Wrap` (an atomic is itself a slice); deeper-than-single-
+    run-granularity reversal in `LineBuilder.Wrap` (an atomic is itself a slice); deeper-than-single
     embedding bidi nesting is the residual approximation.)
   - An inline-block's `auto` width shrink-to-fit uses the MAX-CONTENT measured at the available width (no
     separate min-content pass); deeply nested inline-blocks recurse through `NestedContentMeasurer` (bounded
@@ -281,14 +264,14 @@ grepping the ID).
   - `inline-flex` / `inline-grid` / `inline-table` atomics (which need a laid-out sub-box of a non-block
     formatting context) remain deferred.
 - **Trigger** — a mixed-direction line needing bidi VISUAL reordering of an inline `<img>` / inline-block
-  (the RTL text-align alignment is already honoured — PR 2 task 5), or an `inline-flex`/`-grid`/`-table`
-  span. (Line-edge text `vertical-align` line growth shipped in PR 3 task 7.)
-- **Owner files** —
+  (the RTL text-align alignment is already honoured —), or an `inline-flex`/`-grid`/`-table`
+  span. (Line-edge text `vertical-align` line growth shipped.)
+- **Owner files**
   - `src/NetPdf.Layout/Inline/InlineAtomic.cs` — the atomic primitive (box + used width/height).
   - `src/NetPdf.Layout/Inline/{TextRun,ShapedRun}.cs` — the optional `Atomic` payload.
   - `src/NetPdf.Layout/Inline/LineBuilder.cs` — `Shape` (synthetic glyph) + the white-space
     preprocessors (atomic pass-through). Wrap treats the 1-glyph run as a non-breakable unit.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert) +
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — `CollectInlineTextRuns` (convert)
     `TryBuildInlineBlockAtomic` (inline-block layout) + `IsInlineOnlyRootContainer` (the inline-block-root
     gate), `ComputeInlineAtomicLayout` (per-line heights + placements), `EmitInlineOnlyBlockFragment` (emit
     the atomic's fragment + flush inline-block content). The remaining vertical-align / alignment /
@@ -296,27 +279,25 @@ grepping the ID).
   - `src/NetPdf.Layout/Layouters/BufferingMeasureSink.cs` — `ContainsDecorationOwnerFragment` (the
     inline-only-root vs block-children two-shape flag, shared with the flex content-inset).
   - `src/NetPdf/Rendering/TextPainter.cs` — skip the atomic's synthetic glyph.
-- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4; inline `<img>` first cut shipped in the
-  inline-atomic-boxes cycle; inline-block first cut shipped in the inline-block cycle.
 - **Removal condition** — RTL bidi VISUAL ORDER honoured for inline atomics (the text-align alignment is
-  already honoured — PR 2 task 5; line-edge text line growth shipped — PR 3 task 7; last-line per-RUN
-  deepest-font metrics + justify-all on internal `<br>` shipped — PR 3 task 9), the inline-block's last-line
+  already honoured —; line-edge text line growth shipped —; last-line per-RUN
+  deepest-font metrics + justify-all on internal `<br>` shipped —), the inline-block's last-line
   baseline min-content shrink-to-fit, and inline-flex / -grid / -table atomics laid out (no longer
   `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`).
 
----
+
 
 ## table-auto-fixed-spans-borders
 
 - **ID** — `table-auto-fixed-spans-borders`
-- **Status** — `approximated`. Phase 3 Task 14 cycle 2 hardening
-  Finding #1 lifted the depth==1-only continuation propagation
+- **Status** — `approximated`.
+   lifted the depth==1-only continuation propagation
   limit for nested tables — tables at any in-flow recursion depth
   now split cleanly across pages (the `NoBreakBreakResolver`
-  depth≥2 atomic fallback was deleted in this hardening; the
+  depth≥2 atomic fallback was deleted in this; the
   TableLayouter's single-oversized-row forward-progress fallback
   remains the safety net).
-- **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycles 1 + 2)
+- **Behavior** — `TableLayouter` (sub-)
   walks the Table → TableGrid → row → cell hierarchy via a two-phase
   protocol — a pre-measure pass populates per-row cell content
   heights (via nested `BlockLayouter`s buffering into per-cell
@@ -335,14 +316,14 @@ grepping the ID).
   walks a column cursor left-to-right, skipping slots occupied by
   rowspan continuations from earlier rows, then anchors the cell at
   the cursor with its `rowspan × colspan` slot rectangle marked
-  occupied; spanning cells receive `colspan × columnWidth` inline +
+  occupied; spanning cells receive `colspan × columnWidth` inline
   sum of covered rowHeights block; row heights start as
   `max(content extent)` over `rowspan=1` cells and a second pass
   (ascending rowspan) lands any excess from `rowspan>1` cells on
   the LAST row of the span. The CSS Tables L3 §11 spec-strict
-  distribution-proportional algorithm is sub-cycle 5+ work. No
+  distribution-proportional algorithm is sub-+ work. No
   `border-collapse`, no RTL
-  flips. **Task 13 cycle 1 — multi-page row splitting at row
+  flips.** — multi-page row splitting at row
   boundaries.** When the row stack exceeds the fragmentainer
   block-size, the table now consults the break resolver before
   each row + returns `PageComplete(TableContinuation)` for the
@@ -354,14 +335,13 @@ grepping the ID).
   page 1; bottom on the last page). A single oversized row taller
   than the fragmentainer falls back to forced-overflow forward
   progress + emits the `PAGINATION-FORCED-OVERFLOW-001`
-  diagnostic. **Phase 3 Task 14 cycle 2 hardening Finding #1 lift**
-  — the depth==1-only nested-table continuation propagation limit
+  diagnostic. The depth==1-only nested-table continuation propagation limit
   has been removed. Tables at ANY in-flow recursion depth
   (including the canonical `<html><body><table>` shape from real
-  HTML) now split across pages cleanly via the chain-of-
-  `BlockContinuation` return contract from `EmitBlockSubtreeRecursive`;
+  HTML) now split across pages cleanly via the chain-of
+  `BlockContinuation` return contract from `EmitBlockSubtreeRecursive`
   the `NoBreakBreakResolver` depth≥2 atomic fallback was deleted
-  in the same hardening pass. **Task 13 cycle 2 —
+  in the same pass.**
   `<thead>` / `<tfoot>` per-page repeat.** Header rows
   (collected from `<thead>` / `display: table-header-group`)
   repeat at the TOP of each page the table spans; footer rows
@@ -370,89 +350,89 @@ grepping the ID).
   (CSS Tables L3 §3.6 / §11). `CollectRows` now classifies each
   collected row by group kind (`Header`, `Body`, `Footer`) and
   reorders so headers come first + footers last regardless of
-  HTML5 source order (HTML5 permits `<tfoot>` before `<tbody>`;
+  HTML5 source order (HTML5 permits `<tfoot>` before `<tbody>`
   the spec says it still renders at the end). The body-row
   pagination loop reserves the footer-stack height in
   `fragmentainer.UsedBlockSize` BEFORE walking body rows so the
   resolver's RemainingBlockSize budget already excludes the
-  footer reservation; the cycle-1 paint-safe row → cell →
+  footer reservation; the paint-safe row → cell →
   content emit order continues to hold within each section.
   `TableContinuation.RepeatHead` / `RepeatFoot` flags drive the
   resume page: when set, the resume layouter re-emits the
   header at the top + footer at the bottom of the body window.
   The new `LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001` diagnostic
   fires when header + footer combined exceed the fragmentainer
-  (no room for any body row alongside the repeat contract) —
+  (no room for any body row alongside the repeat contract)
   header + footer commit atomically + body is skipped to avoid
-  infinite continuation loops. The locked cycle-2 footer
+  infinite continuation loops. The locked footer
   position is IMMEDIATELY AFTER THE LAST BODY ROW on each page
-  (not bottom-anchored to the fragmentainer); sub-cycle 3+ may
-  revisit bottom-anchoring. **Sub-cycle 3 — captions (`<caption>`) lay
+  (not bottom-anchored to the fragmentainer); sub-+ may
+  revisit bottom-anchoring.**— captions (`<caption>`) lay
   out as block fragments above (`caption-side: top`, default) or
-  below (`caption-side: bottom`) the table grid; caption inline-
-  size = table wrapper's content-inline-size; the writing-mode-
+  below (`caption-side: bottom`) the table grid; caption inline
+  size = table wrapper's content-inline-size; the writing-mode
   relative `block-start` / `block-end` keywords map to `top` /
-  `bottom` for LTR horizontal writing modes only (RTL + vertical-
-  axis writing modes deferred to a future sub-cycle alongside the
-  rest of the writing-mode work). The sub-cycle 1 + 2
+  `bottom` for LTR horizontal writing modes only (RTL + vertical
+  axis writing modes deferred to a future revision alongside the
+  rest of the writing-mode work). The
   `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` diagnostic for captions
-  is gone.** **Sub-cycle 4 — when `table-layout: fixed` is set,
-  column widths derive from `<col>` / `<colgroup>` `width` (Pass A),
+  is gone.— when `table-layout: fixed` is set
+  column widths derive from `<col>` / `<colgroup>` `width` (Pass A)
   first-row cell widths (Pass B), then equal-distribute the
   remaining inline-size to columns with no declared width
-  (Pass C). Sub-cycle 4 hardening
-  Finding 1 added Pass D reconciliation: when the column sum is
+  (Pass C). Sub
+   added Pass D reconciliation: when the column sum is
   below the wrapper's content-inline-size, leftover space is
   distributed equally across ALL columns (CSS 2.1 §17.5.2.1); when
   the column sum exceeds the wrapper, declared widths are kept and
-  the table grid overflows the wrapper in the inline axis (row +
+  the table grid overflows the wrapper in the inline axis (row
   caption fragments grow to the column sum so author intent is
   preserved) + `LAYOUT-TABLE-INLINE-OVERFLOW-001` is emitted with
   the column sum + wrapper content-inline-size in the message.
-  Sub-cycle 4 hardening Finding 2 fixed first-row colspan
-  partial-declare semantics: when some spanned columns are pre-
+  fixed first-row colspan
+  partial-declare semantics: when some spanned columns are pre
   declared by Pass A, the cell's declared width minus the sum of
   already-declared columns is distributed across the remaining
   undeclared columns (spec-correct; pre-fix divided the full cell
-  width by the full colspan regardless). Sub-cycle 4 hardening
-  Finding 3 attempted to make CSS `width` cascade-aware (per CSS 2.1
+  width by the full colspan regardless). Sub
+   attempted to make CSS `width` cascade-aware (per CSS 2.1
   §17.5 the HTML `width` attribute is a low-specificity presentational
   hint that should lose to explicit author CSS), but the current
   cascade pipeline (`BoxBuilder.ApplyDefaults`) eagerly populates every
   ComputedStyle slot with the property's initial value, collapsing
   the distinction between "author wrote `width: auto`" and "no author
-  rule, defaulted to auto". Sub-cycle 4 hardening therefore keeps the
+  rule, defaulted to auto". therefore keeps the
   pre-fix behavior (HTML `width` attribute wins when CSS resolves to
   0) + documents the limitation inline in `ReadColumnWidthPx`. **NetPdf's
   fixed-layout approximation: CSS 2.1 strictly requires a definite
   table width for `table-layout: fixed`. NetPdf currently treats the
   wrapper's resolved content-inline-size (from CSS `width` or the
   containing-block width) as the effective table width, even when
-  `table.width` is `auto`. Sub-cycle 5+ may revise once `width: auto`
-  shrink-to-fit lands.** **Sub-cycle 5 — `table-layout: auto`
+  `table.width` is `auto`. may revise once `width: auto`
+  shrink-to-fit lands.— `table-layout: auto`
   (default) now runs the CSS Tables L3 §3 shrink-to-fit algorithm.
   Per-cell min-content + max-content widths are measured via
   speculative cell-content layouts at `cellInlineSize = 1.0`
   (min-content — force-wrap at every UAX #14 break opportunity)
-  and `cellInlineSize = 1e6` (max-content — no wrap pressure);
+  and `cellInlineSize = 1e6` (max-content — no wrap pressure)
   the buffered fragments + diagnostic sinks from the speculative
   passes are discarded. Per-column min/max aggregated across all
   cells anchored at that column (colspan=1 first; colspan>1 then
-  distributes any excess equally across the spanned columns —
+  distributes any excess equally across the spanned columns
   symmetric to fixed-layout Pass B's partial-declare semantics).
-  Table effective width = `clamp(contentInlineSize, sum(colMin),
+  Table effective width = `clamp(contentInlineSize, sum(colMin)
   sum(colMax))`. Distribution has three branches:
   (a) **overflow** when `sumMin > contentInlineSize` — every
   column gets its colMin; row + caption fragments grow to the
   column sum; `LAYOUT-TABLE-INLINE-OVERFLOW-001` is emitted
-  (mirrors the fixed-layout Pass D contract);
+  (mirrors the fixed-layout Pass D contract)
   (b) **saturated** when `contentInlineSize >= sumMax` — every
   column gets its colMax + the extra space is distributed equally
-  across all columns;
+  across all columns
   (c) **interpolation** otherwise — linear interpolation:
   `widths[c] = colMin[c] + (tableWidth - sumMin) *
   (colMax[c] - colMin[c]) / (sumMax - sumMin)`. The CSS Tables L3 §3
-  proportional-weight distribution is a deterministic linear-
+  proportional-weight distribution is a deterministic linear
   interpolation approximation. The min/max signal comes from
   `MeasuringFragmentSink.MaxInlineExtentFromCellOrigin`, which
   prefers `InlineLayout.Lines[i].TotalAdvance` (actual shaped-text
@@ -462,7 +442,7 @@ grepping the ID).
   border-box fallback but don't differentiate min vs max. Empty
   cells contribute `min = max = 0`; clamp enforces `colMax >= colMin`.
   Performance: per-cell 2× speculative measurement is unbounded by a
-  budget today — sub-cycle 6+ may cache or short-circuit when
+  budget today — sub-+ may cache or short-circuit when
   min == max trivially.**
   Tables that overflow the page emit
   `PAGINATION-FORCED-OVERFLOW-001`; a Table wrapper with no
@@ -471,19 +451,19 @@ grepping the ID).
   code — the anomaly is structural).
 - **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: percentage
   column widths; full grid/table used-inline-size reconciliation for
-  content-shrink scenarios; §6.3 border-collapse + border-spacing;
-  §6.4 column-group widths beyond Pass A fallback;
-  §11 spec-strict rowspan distribution-proportional algorithm;
+  content-shrink scenarios; §6.3 border-collapse + border-spacing
+  §6.4 column-group widths beyond Pass A fallback
+  §11 spec-strict rowspan distribution-proportional algorithm
   CSS Tables L3 §3 spec-strict proportional-weight column-width
-  distribution (sub-cycle 5 ships a deterministic linear-interpolation
-  approximation + a deterministic equal-split colspan distribution);
-  block-level fixed `width` honoring in cell content + replaced-
-  element intrinsic-width measurement (sub-cycle 5's measurement
+  distribution (ships a deterministic linear-interpolation
+  approximation + a deterministic equal-split colspan distribution)
+  block-level fixed `width` honoring in cell content + replaced
+  element intrinsic-width measurement (sub-'s measurement
   reads inline-only-block line widths only; block-level cell
   content falls back to the border-box = available width, so
-  fixed-width block content doesn't differentiate min vs max);
-  cell intrinsic-width caching to amortize the 2× speculative-
-  measurement cost across re-layout passes;
+  fixed-width block content doesn't differentiate min vs max)
+  cell intrinsic-width caching to amortize the 2× speculative
+  measurement cost across re-layout passes
   HTML5 colspan='0'/rowspan='0' remainder semantics; RTL writing
   modes / row reversal / caption inline-axis keyword routing; HTML
   width attribute cascade precedence (the HTML `width` attribute
@@ -495,33 +475,33 @@ grepping the ID).
   initial value, collapsing the distinction between "author wrote
   `width: auto`" and "no author rule, defaulted to auto" — both
   report `IsSet(PropertyId.Width) = true` with a `Keyword(auto)`
-  slot. Sub-cycle 4 hardening Finding 3 was a documentation-only
+  slot. was a documentation-only
   pass; the layout-time fallback path (read CSS `width`, fall back
   to the HTML `width` attribute when CSS resolved to 0) kept its
   pre-fix behavior because cascade-aware gating was infeasible
   given the `ApplyDefaults` constraint. An explicit-author-rule
   bitmap or side declaration table consulted PRE-defaults is the
-  spec-correct fix, deferred to sub-cycle 6+).
+  spec-correct fix, deferred to sub-+).
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — sub-cycle 5
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — sub
     shipped the CSS Tables L3 §3 auto-table-layout shrink-to-fit
-    algorithm via per-cell min/max content speculative measurement +
-    linear-interpolation distribution. Task 13 cycle 1 added multi-
-    page row splitting via resolver-driven row-level pagination +
-    `TableContinuation` resume contract (outer-loop integrated;
+    algorithm via per-cell min/max content speculative measurement
+    linear-interpolation distribution. added multi
+    page row splitting via resolver-driven row-level pagination
+    `TableContinuation` resume contract (outer-loop integrated
     nested-recursion path used the `NoBreakBreakResolver` to keep
-    nested tables atomic). Phase 3 Task 14 cycle 2 hardening
-    Finding #1 lifted that limit by refactoring
+    nested tables atomic).
+     lifted that limit by refactoring
     `EmitBlockSubtreeRecursive` to return a `LayoutContinuation?`
     chain that propagates nested table/multicol breaks through any
     in-flow recursion depth; `NoBreakBreakResolver`'s depth≥2
     fallback was deleted (the class remains, still used for
-    captions). The `TableLayouter` single-oversized-row forward-
+    captions). The `TableLayouter` single-oversized-row forward
     progress fallback is the safety net.
-    Phase 3 Task 17 cycle 5c.2d added **intra-cell row splitting at
+      added **intra-cell row splitting at
     BLOCK granularity**: a single body row whose cell content stacks
     block children taller than the page now breaks WITHIN itself
     across pages (`TableContinuation.RowSplitOffset` carries the
@@ -531,7 +511,7 @@ grepping the ID).
     cell fragmentainer — pagination is the table's job, not the
     cell's). The dry-run wrapper-sizing (`DryRunCommittedBlockSize`)
     is split-aware so the outer dispatch propagates the continuation.
-    Tight cycle-1 scope: a split row OWNS each of its pages (the next
+    Tight scope: a split row OWNS each of its pages (the next
     row starts fresh after the tail); enabled only when the table has
     no footers + no bottom captions + the row carries no rowspan
     origin. A single ATOMIC block taller than the page (explicit
@@ -539,7 +519,7 @@ grepping the ID).
     has no internal boundary to slice at (a text block splits its
     LINES, but an explicit-height atomic block has none).
     Remaining: spec-strict §11 rowspan distribution-proportional
-    algorithm; §6.3 border-collapse model + `border-spacing`;
+    algorithm; §6.3 border-collapse model + `border-spacing`
     intra-cell splitting for rows WITH footers / bottom captions /
     rowspan origins, and packing a following row below a split row's
     tail (currently the next row starts fresh); row-level
@@ -547,58 +527,12 @@ grepping the ID).
     inline-axis keyword routing; HTML5 colspan='0'/rowspan='0'
     remainder semantics; percentage column widths.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
-    — sub-cycle 5 hardening Finding 6 now consumes the table's
+    — now consumes the table's
     `MeasuredUsedInlineSize` to widen the wrapper's border-box
     inline extent when the grid overflows. Both outer-AttemptLayout
     + nested-recursion paths apply the widening.
-- **Added** — Phase 3 Task 12 sub-cycle 1; sub-cycle 2 added
-  `colspan` / `rowspan` cell merging; sub-cycle 3 added caption
-  layout (`caption-side: top` / `bottom`); sub-cycle 4 added the
-  `table-layout: fixed` algorithm (`<col>` / `<colgroup>` + first-
-  row cell widths drive per-column widths); sub-cycle 4 hardening
-  added Pass D reconciliation + first-row colspan partial-declare
-  semantics; sub-cycle 5 added the CSS Tables L3 §3 auto-table-
-  layout shrink-to-fit algorithm (per-cell min/max content via
-  speculative measurement + linear-interpolation distribution +
-  overflow / saturated / interpolation branches + shared
-  `LAYOUT-TABLE-INLINE-OVERFLOW-001` diagnostic with the fixed-
-  layout path); sub-cycle 5 hardening added: (Finding 1) BoxBuilder
-  wraps inline-only TableCell children in `AnonymousBlock` so the
-  cell's direct text contributes to intrinsic widths; (Finding 2)
-  auto-layout incorporates `<col>` / `<colgroup>` / first-row cell
-  widths as per-column min/max floors; (Finding 3) cell padding +
-  border contribute to intrinsic widths + inner content fragments
-  are offset by the cell's inner content-box origin; (Finding 4)
-  per-table intrinsic-measurement budget + `LAYOUT-TABLE-INTRINSIC-
-  MEASUREMENT-BUDGET-EXCEEDED-001` diagnostic; (Finding 5) new
-  `OverflowWrap.BreakWord` enum variant + intrinsicSizingMode flag
-  so the min-content speculative pass honors CSS Text L3 §5.1's
-  carve-out (break-word's soft opportunities don't count for min-
-  content); (Finding 6) caption inline-size matches the grid's
-  used inline-size + wrapper widens when the grid overflows.
-  Phase 3 Task 13 cycle 1 added multi-page row splitting at row
-  boundaries: the table consults the break resolver before each
-  row + returns `PageComplete(TableContinuation(NextRowIndex))`
-  when the next row would overflow; the dispatching
-  `BlockLayouter` stashes the `TableContinuation` in
-  `BlockContinuation.LayouterState` so the resume page can
-  re-construct a fresh `TableLayouter` with the carried
-  continuation. Top captions emit only on the first page; bottom
-  captions only on the last. Nested-recursion tables stay atomic
-  via the new `NoBreakBreakResolver` (cycle 2+ deferral).
-  Phase 3 Task 13 cycle 2 added `<thead>` / `<tfoot>` per-page
-  repeat: `CollectRows` now classifies rows by group kind +
-  reorders so headers come first + footers last regardless of
-  HTML5 source order; body-row pagination reserves footer-stack
-  height before walking body rows so resolver budgets exclude
-  the footer; `TableContinuation.RepeatHead` / `RepeatFoot` flags
-  drive the resume page's re-emit. New
-  `LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001` diagnostic for the
-  catastrophic header+footer-exceeds-fragmentainer case. Locked
-  footer position: immediately after the last committed body
-  row (not bottom-anchored).
 - **Removal condition** — All "Missing" items above are
-  implemented: percentage column widths; §6.3 border-collapse +
+  implemented: percentage column widths; §6.3 border-collapse
   border-spacing; multi-fragmentainer
   row splitting; §11 spec-strict rowspan distribution-proportional
   algorithm; CSS Tables L3 §3 spec-strict proportional-weight column
@@ -607,51 +541,51 @@ grepping the ID).
   remainder semantics; RTL writing modes; HTML width attribute as a
   low-specificity presentational cascade hint.
 
----
+
 
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (cycles 1-4 + post-PR-#59 + post-PR-#60
-  review hardening ship fixed-column-count + column-width-derived
+- **Status** — `approximated` (
+  review ship fixed-column-count + column-width-derived
   auto count + equal-split + multi-page splitting
   through any recursion depth + `column-fill: balance` /
-  `balance-all` with correct last-fragment semantics + a real fit-
-  search instead of the average-height heuristic. The Phase-3 residual
+  `balance-all` with correct last-fragment semantics + a real fit
+  search instead of the average-height heuristic. The residual
   long-tail then shipped **column rules** (`column-rule-*` paint) and
   **font-relative `column-width` / `column-gap`** (em / rem / ex / ch /
   vw / vh resolve via `DeferredLengthResolver`; `normal` column-gap is
   a true 1em — see Missing for the `lh` / `rlh` / `cap` / `ic` gap). What
   remains is `column-span: all` + the balance-result perf cache).
-  Phase 3
-  Task 14 cycle 2 hardening Finding #1 lifted the depth==1-only
+  
+      lifted the depth==1-only
   continuation propagation limit — nested multicols at any in-flow
-  recursion depth now split cleanly across pages. Cycle 3 +
-  post-PR-#59 review hardening ship the correct column-balancing
-  algorithm: a binary-search fit-probe finds the smallest column-
+  recursion depth now split cleanly across pages.
+    ship the correct column-balancing
+  algorithm: a binary-search fit-probe finds the smallest column
   block-size where all content fits in N columns, with correct
-  `balance` vs `balance-all` semantics, resume-aware pre-measure,
+  `balance` vs `balance-all` semantics, resume-aware pre-measure
   multi-window pre-measure for long content, and margin-aware
-  extent capture. Cycle 4 ships the CSS Multi-column L1 §3.3 used-
+  extent capture. ships the CSS Multi-column L1 §3.3 used
   column-count derivation for absolute resolved lengths:
   `column-width: <Npx>` alone or combined with `column-count`
-  derives N from the container's content inline-size + column-gap,
+  derives N from the container's content inline-size + column-gap
   with single-column degenerate fallthrough when derivedN == 1
-  (e.g., `column-width` larger than the container). Post-PR-#60
-  review hardening: (F#1) admits `column-width: 0` per spec §3.1's
-  used-value 1px floor; (F#3) `column-count: 1` now reaches the
+  (e.g., `column-width` larger than the container). Post
+  admits `column-width: 0` per spec §3.1's
+  used-value 1px floor; `column-count: 1` now reaches the
   MulticolLayouter per spec §1's BFC contract (degrades to
-  single-column fallthrough); (F#4) the int-cast in the derivation
+  single-column fallthrough); the int-cast in the derivation
   helper is now clamped to int.MaxValue BEFORE the cast so huge
-  finite ratios don't trigger undefined behavior; (F#5) the
-  single-column fallthrough now shares its resume decode +
-  PageComplete packaging + diagnostic emission with the multi-
+  finite ratios don't trigger undefined behavior; the
+  single-column fallthrough now shares its resume decode
+  PageComplete packaging + diagnostic emission with the multi
   column path.
-- **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
+- **Behavior** — `MulticolLayouter`
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
-  `ComputedStyle.ReadColumnCount()` from BoxBuilder-produced
-  `BlockContainer` boxes; there is no dedicated `BoxKind.Multicol*` —
+  `ComputedStyle.ReadColumnCount` from BoxBuilder-produced
+  `BlockContainer` boxes; there is no dedicated `BoxKind.Multicol*`
   multicol is a layout-time concept layered on top of regular block
   containers, mirroring how CSS encodes it as a property on the
   block-level box. `BlockLayouter` dispatches into
@@ -659,9 +593,9 @@ grepping the ID).
   per-column inline size as
   `(containerContentInlineSize - (N-1) × columnGap) / N` (columnGap
   defaults to 16 px when not declared — `normal` per CSS Multi-column
-  L1 §6.1 resolves to 1em, hard-coded for cycle 1), constructs a
+  L1 §6.1 resolves to 1em, hard-coded for), constructs a
   sub-fragmentainer per column with `contentInlineSize =
-  perColumnInlineSize` + `blockSize = containerContentBlockSize`,
+  perColumnInlineSize` + `blockSize = containerContentBlockSize`
   and runs a nested `BlockLayouter` per column. When the nested
   layouter returns `PageComplete(BlockContinuation)` (column
   overflow), the continuation is fed into the NEXT column's nested
@@ -669,35 +603,35 @@ grepping the ID).
   the deferred child. The outer multicol box emits ONE `BoxFragment`
   sized to the container's border-box; per-column content fragments
   land INSIDE it via a `ColumnFragmentSink` decorator that
-  translates each emitted `InlineOffset` by `columnIndex × (per-
+  translates each emitted `InlineOffset` by `columnIndex × (per
   ColumnInlineSize + columnGap)`.
-- **Cycle 2 multi-page multicol** — when content overflows N
+- **multi-page multicol** — when content overflows N
   columns on the current page, `MulticolLayouter` packages the
   LAST-column's overflowing `BlockContinuation` into a
-  `MulticolContinuation(NextChildIndex, ConsumedBlockSize,
+  `MulticolContinuation(NextChildIndex, ConsumedBlockSize
   PerChildLayouterState)` + returns `PageComplete`. The dispatching
   `BlockLayouter` wraps that in
-  `BlockContinuation(ResumeAtChild=multicolChildIdx,
+  `BlockContinuation(ResumeAtChild=multicolChildIdx
   LayouterState=MulticolContinuation)` so the next-page
   `BlockLayouter` invocation re-dispatches the multicol with the
   carried continuation. The resume page's `MulticolLayouter`
   unpacks `PerChildLayouterState` as the FIRST column's nested
   `incomingContinuation` — content resumes at the exact child the
-  prior page deferred at (mirrors Task 13 cycle 1's row-pagination
+  prior page deferred at (mirrors 's row-pagination
   pattern for tables). `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` is
-  SUPPRESSED for clean multi-page splits; per cycle 2 hardening
-  Finding #1, ANY in-flow recursion depth now propagates cleanly —
+  SUPPRESSED for clean multi-page splits; per
+  , ANY in-flow recursion depth now propagates cleanly
   the diagnostic now fires only on resume pages that can't make
   forward progress (single-oversized-child fallback). Floats
   containing multicol content are still atomic (their out-of-flow
   continuation propagation is deferred under
   `float-continuation-propagation`).
-- **Cycle 3 + post-PR-#59 review hardening column balancing** —
+-**
   when computed `column-fill` is `balance` (the spec default) or
   `balance-all` AND the multicol container has `height: auto` AND
-  `column-count` ≥ 2, `MulticolLayouter` runs a binary-search fit-
+  `column-count` ≥ 2, `MulticolLayouter` runs a binary-search fit
   probe pipeline:
-  - **Resume-aware pre-measure (F#3 + F#4 + F#5).** The
+  - **Resume-aware pre-measure.** The
     `_incomingContinuation` is decoded BEFORE pre-measure so resume
     pages start from the right child / nested state. The pre-measure
     LOOPS over `BlockContinuation` results — each iteration uses a
@@ -706,12 +640,12 @@ grepping the ID).
     including trailing margins + collapsed-margin effects) to the
     accumulator until `AllDone` or the iteration cap
     (`MaxPreMeasureIterations = 8`).
-  - **Last-fragment detection (F#2).** `balance` balances only the
+  - **Last-fragment detection.** `balance` balances only the
     LAST fragment; non-final fragments use serial fill.
     `balance-all` balances every fragment. Detection: if
     `totalSerialExtent ≤ perColumnBlockSize × columnCount`, content
     fits in N columns → this IS the last fragment.
-  - **Binary-search fit-probe (F#1).** When balancing fires, a
+  - **Binary-search fit-probe.** When balancing fires, a
     binary search over `[ceil(total/N), perColumnBlockSize]` at 1px
     resolution finds the smallest column-block-size where
     `FitsInNColumns(...)` returns true (= a serial column-fill
@@ -720,32 +654,32 @@ grepping the ID).
     3 × 80px in 2 columns produced ideal=120 → fits 1 per column →
     3rd child spilled to page 2 even though 160px columns fit all
     3 on one page.
-  - **`ConsumedBlockSize` accumulator (F#8).** Multi-page
+  - **`ConsumedBlockSize` accumulator.** Multi-page
     `MulticolContinuation` uses `effectiveColumnBlockSize` (= the
     balanced height, or `perColumnBlockSize` when balancing is
     inactive) instead of always using `perColumnBlockSize`. Pre-fix
-    the accumulator over-counted by `perColumnBlockSize -
+    the accumulator over-counted by `perColumnBlockSize
     effectiveColumnBlockSize` per page when balancing fired.
-  - **`IsHeightAuto` predicate (F#7).** Correctly classifies
+  - **`IsHeightAuto` predicate.** Correctly classifies
     `height: 50%` (Percentage) and `height: calc(...)` (Calc) as
     NON-auto. Pre-fix `slot.Tag != LengthPx` incorrectly treated
     percentage heights as auto, routing them into the balancing
     path + over-shrinking the columns.
   - Containers with `height: auto` AND `column-fill: auto` keep the
-    cycle 1+2 serial-fill behavior; containers with an explicit
+    +2 serial-fill behavior; containers with an explicit
     `height` (LengthPx or Percentage) also keep the serial path
     (conservative — matches Prince / WeasyPrint, avoids over-shrink
     drop-out).
   - **Cost.** When balancing is active: pre-measure ≈ 1×, fit-search
     ≈ O(log range) × `columnCount` `BlockLayouter` dry-runs, layout
     1×. Worst case ~12 dry-runs total for a 1000px range with N=2.
-    The post-PR-#59 deferred F#6 perf-cache would memoize the fit-
-    search result per Box; sub-cycle 2+ scope.
-- **Missing** —
+    The deferred perf-cache would memoize the fit
+    search result per Box; sub-+ scope.
+- **Missing**
   - **Font-relative `column-width` + `column-gap`** (CSS Multi-column L1 §3.1 / §6.1) — ✅
-    **SHIPPED** (Phase-3 residual long-tail). The cascade `LengthResolver` still DEFERS font-/
+    **SHIPPED**. The cascade `LengthResolver` still DEFERS font-/
     viewport-relative lengths (the raw rides along; the slot stays `ComputedSlotTag.Unset`), but
-    `DeferredLengthResolver` now resolves them in place against the box's cascaded font-size (em),
+    `DeferredLengthResolver` now resolves them in place against the box's cascaded font-size (em)
     the root (rem), and the page box (vw/vh) BEFORE layout (alongside `width` / `height`), so
     `ReadColumnWidth` / the `column-gap` gutter see a `LengthPx` slot. `column-width: 12em` (the
     §3.1 introductory example) columnizes, and `column-gap: 2em` / `1rem` (and the `normal` →
@@ -756,110 +690,100 @@ grepping the ID).
     — a general body-length gap, NOT multicol-specific: `width: 2lh` etc. are unresolved too), so
     `column-width: 12lh` / `column-gap: 1cap` fall through. So the property family is "resolves the
     common font-relative units," not "every unit."
-  - **Balance-result perf cache (F#6 — deferred from post-PR-#59
-    review)**: the fit-search runs `O(log range) × columnCount`
+  - **Balance-result perf cache (deferred from
+    ) **: the fit-search runs `O(log range) × columnCount`
     nested `BlockLayouter` dry-runs per multicol per page. When a
     multicol's content is unchanged across pages the result could
-    be memoized per Box (key: rootBox + perColumnInlineSize +
+    be memoized per Box (key: rootBox + perColumnInlineSize
     perColumnBlockSize + columnCount + carriedContinuation
-    identity). Sub-cycle 2+ scope; the current per-page cost is
-    acceptable for cycle 3 Hello World correctness over
+    identity). scope; the current per-page cost is
+    acceptable for Hello World correctness over
     optimization.
   - **Pass-count benchmark guard**: a perf-bench-gated upper bound
     on the number of nested `BlockLayouter.AttemptLayout` calls per
-    multicol per page. Sub-cycle 2+ scope alongside the F#6 cache —
+    multicol per page. scope alongside the cache
     once the cache lands, the guard pins the cache hit-rate.
   - **Column balancing with explicit `height`** (CSS Multi-column L1
-    §3.4): cycle 3 only balances `height: auto` multicols. When the
-    author specifies an explicit `height` AND `column-fill: balance`,
+    §3.4): only balances `height: auto` multicols. When the
+    author specifies an explicit `height` AND `column-fill: balance`
     the spec calls for balancing within the explicit height
-    constraint; cycle 3 conservatively falls back to serial fill to
-    avoid the over-shrink drop-out failure mode. Sub-cycle 2+ work.
+    constraint; conservatively falls back to serial fill to
+    avoid the over-shrink drop-out failure mode. work.
   - **`column-span: all`** (CSS Multi-column L1 §4): a child with
-    `column-span: all` spans across all columns; cycle 1 has no
+    `column-span: all` spans across all columns; has no
     column-span machinery.
-  - **Column rules** (`column-rule-*` — CSS Multi-column L1 §5) — ✅ **SHIPPED** (Phase-3
+  - **Column rules** (`column-rule-*` — CSS Multi-column L1 §5) — ✅ **SHIPPED** (
     residual long-tail). `MulticolLayouter` emits a synthetic `BoxFragment.IsColumnRule` per
     inter-column gap (between two columns that both carry content), centered in the gap, sized
-    `column-rule-width` × the content height laid out on this page (capped to the column box);
+    `column-rule-width` × the content height laid out on this page (capped to the column box)
     `FragmentPainter.PaintColumnRule` fills it with the resolved `column-rule-color`
     (`currentcolor` → the element `color`). A `none` / `hidden` style or a non-positive width
     emits nothing; a non-solid style is painted solid + shares the once-per-conversion
     `PAINT-BORDER-STYLE-APPROXIMATED-001`. Residual: a rule on a TRANSFORMED multicol isn't
     composed with the transform (painted in page space); per-column-emptiness is approximated as
     a left-to-right content prefix; dotted/dashed/double aren't drawn faithfully.
-  - **`column-gap` font-relative resolution** — ✅ **SHIPPED** (Phase-3 residual long-tail).
+  - **`column-gap` font-relative resolution** — ✅ **SHIPPED**.
     The `normal` initial value resolves to a TRUE 1em against the container's cascaded
     `font-size` (`ReadColumnGap` now takes the em base; was a hard-coded 16 px), and a
     font-relative `column-gap: 2em` / `1rem` / `5vw` resolves in `DeferredLengthResolver`
     against the proper em / rem / viewport bases before layout (the flex/grid `column-gap` /
     `row-gap` gutters get the same em/rem/vw resolution for free — they previously read 0).
   - **Fragmentation interaction** (`break-before` / `break-after` /
-    `break-inside: avoid-column`): the cycle-1 `BlockLayouter`-as-
+    `break-inside: avoid-column`): the `BlockLayouter`-as
     column doesn't honor avoid-column constraints; only the regular
     block-level break properties (which the inner BlockLayouter
     already supports) apply.
 - **Trigger** — corpus needs a multi-column layout, OR a user-reported
   case where multicol content vanishes (= the forced-overflow
   diagnostic fires).
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-4
-    implementation; cycle 2 adds the multi-page resume path via
-    `MulticolContinuation`; cycle 3 + post-PR-#59 review hardening
-    add `column-fill: balance` / `balance-all` via the binary-
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs`
+    implementation; adds the multi-page resume path via
+    `MulticolContinuation`
+    add `column-fill: balance` / `balance-all` via the binary
     search fit-probe pipeline (`PreMeasureTotalSerialExtent` looped
-    + margin-aware, `FindBalancedColumnBlockSize`, `FitsInNColumns`);
-    cycle 4 derives the effective column count from
+    + margin-aware, `FindBalancedColumnBlockSize`, `FitsInNColumns`)
+     derives the effective column count from
     `column-width` via `ComputeUsedColumnCount` + adds the
     `EmitSingleColumnFallthrough` path for derivedN == 1.
-    Sub-cycle 2+ will add the F#6 fit-result cache + column rules +
+    will add the fit-result cache + column rules
     `column-span: all`.
   - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
-    — cycle 3 adds `ReadColumnFill()` (returning `ColumnFillValue`)
-    + `IsHeightAuto()` (post-PR-#59 hardening F#7 — correctly
+    — adds `ReadColumnFill` (returning `ColumnFillValue`)
+    + `IsHeightAuto` (correctly
     classifies Percentage + Calc heights as NON-auto; only Unset
-    and Keyword slots are auto); cycle 4 adds `ReadColumnWidth()`
-    (decoding `column-width` as a CSS px length, null on auto) +
+    and Keyword slots are auto); adds `ReadColumnWidth`
+    (decoding `column-width` as a CSS px length, null on auto)
     the static helper `ComputeUsedColumnCount(...)` (encoding the
     4 spec cases from CSS Multi-column L1 §3.3).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the dispatch
     site that recognizes multicol containers + invokes
-    `MulticolLayouter`; cycle 2 adds the
+    `MulticolLayouter`; adds the
     `MulticolContinuation`-via-`BlockContinuation.LayouterState`
-    propagation pattern (main loop + recursion's depth==1 callback);
-    post-PR-#59 hardening F#7 fixes the private static
-    `IsHeightAuto` identically to the extension version; cycle 4
+    propagation pattern (main loop + recursion's depth==1 callback)
+      fixes the private static
+    `IsHeightAuto` identically to the extension version
     extends `IsMulticolContainer` to fire on `column-width: <length>`
     AND `column-count: <int>` (the dispatch gate captures multicol
     intent; derivedN is computed once container geometry is known
     inside `MulticolLayouter`).
   - `src/NetPdf.Paginate/LayoutContinuation.cs::MulticolContinuation`
-    — cycle 1 reserved the type; cycle 2 expands it to the
+    — reserved the type; expands it to the
     `(NextChildIndex, ConsumedBlockSize, PerChildLayouterState)`
     contract.
-- **Added** — Phase 3 Task 14 cycle 1; expanded in cycle 2; cycle 3
-  Hello World shipped a 2-pass average-height balancing approach;
-  post-PR-#59 review hardening replaced the heuristic with a binary-
-  search fit-probe (F#1) + last-fragment semantics (F#2) + resume-
-  aware pre-measure (F#3) + multi-window loop (F#4) + margin-aware
-  extent (F#5) + correct `IsHeightAuto` (F#7) + corrected
-  `ConsumedBlockSize` accumulator (F#8). F#6 perf-cache deferred to
-  sub-cycle 2+. Cycle 4 ships `column-width`-derived used column
-  count per CSS Multi-column L1 §3.3 + single-column degenerate
-  fallthrough for derivedN == 1.
 - **Removal condition** — `column-span: all` works. (Multi-level recursive multicol
-  propagation shipped in Phase 3 Task 14 cycle 2 hardening Finding #1; column balancing
-  shipped in cycle 3; `column-width` derived used count shipped in cycle 4; column rules
-  paint, and font-relative `column-width` / `column-gap` resolve — Phase-3 residual long-tail.)
+  propagation shipped; column balancing
+  shipped; `column-width` derived used count shipped; column rules
+  paint, and font-relative `column-width` / `column-gap` resolve — residual long-tail.)
 
----
+
 
 ## float-continuation-propagation
 
 - **ID** — `float-continuation-propagation`
 - **Status** — `approximated` (in-flow continuations propagate cleanly
-  through any recursion depth per Phase 3 Task 14 cycle 2 hardening
-  Finding #1; floats remain out-of-flow per CSS 2.2 §9.5 and can't
+  through any recursion depth per
+  ; floats remain out-of-flow per CSS 2.2 §9.5 and can't
   yet carry a continuation across pages).
 - **Behavior** — When a float subtree (`float: left` / `float: right`
   containing block-level descendants) hosts a nested container whose
@@ -867,11 +791,11 @@ grepping the ID).
   produce a non-null `LayoutContinuation` for that subtree. Floats are
   out-of-flow per CSS 2.2 §9.5; propagating their continuation through
   the in-flow pagination machinery would require float-tracking
-  continuation machinery (FloatManager-aware continuation state, float-
+  continuation machinery (FloatManager-aware continuation state, float
   fragment resume contract, BFC-snapshot restoration).
-- **Task 19 (what landed)** — floats DON'T fragment across pages yet,
+- **(what landed)** — floats DON'T fragment across pages yet
   so nested **grid** + **flex** containers inside a float now emit
-  ATOMICALLY (the cycle-1 contract: all rows / items on one page,
+  ATOMICALLY (the contract: all rows / items on one page
   overflowing the page edge if tall) — LOSSLESS, the correct
   out-of-flow model, mirroring how a float with tall explicit content
   already force-overflows. Gated by `_inAtomicFloatSubtree` (set
@@ -882,97 +806,91 @@ grepping the ID).
   test pins "float + 1000px grid on a 500px page → AllDone, no
   `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001`, rows past the page edge
   emitted".
-- **Still truncates (+ diagnoses)** — nested **table** + **multicol**
+- **Still truncates (diagnoses)** — nested **table** + **multicol**
   inside a float. Their wrapper sizing couples to the page budget
   (`PreMeasureTableIfNeeded` with `useDryRunCommittedHeight`; the
   MulticolLayouter paginates against the captured fragmentainer), so
   forcing them atomic needs a page-budget-decoupled measure pass
-  (a separate cycle); until then the recursion return is discarded +
+  (a separate cycle); until then the recursion return is discarded
   `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001` fires at most once per page.
 - **Missing** — atomic (or fragmenting) nested **table** + **multicol**
   inside floats; the full float-tracking continuation machinery
   (FloatManager state snapshot/restore across pages — the snapshot/
-  restore API already exists; float-fragment resume contract; cross-
+  restore API already exists; float-fragment resume contract; cross
   page float overflow per CSS Fragmentation L3 §5) for true float
   fragmentation rather than atomic overflow.
 - **Trigger** — corpus needs a float containing multicol/table that
   spans pages, OR a user-reported case where content inside a
   large float vanishes.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::EmitFloat`,
-    `EmitNestedFloat` — recursion sites that discard the return +
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::EmitFloat`
+    `EmitNestedFloat` — recursion sites that discard the return
     emit the diagnostic.
   - `src/NetPdf.Layout/FloatManager.cs` — would gain the cross-page
     snapshot/restore contract.
   - `src/NetPdf.Paginate/LayoutContinuation.cs` — would gain a
     `FloatContinuation` record alongside `BlockContinuation` /
     `TableContinuation` / `MulticolContinuation`.
-- **Added** — Phase 3 Task 14 cycle 2 hardening Finding #1 (this
-  branch). The discard behavior pre-existed (cycle 1 had no return
-  contract at all so the breaks were silently swallowed); the
-  hardening just made the truncation visible via the new
-  diagnostic.
-- **Removal condition** — `FloatContinuation` ships + the float-
+- **Removal condition** — `FloatContinuation` ships + the float
   emission path consumes / produces it; nested multicol/table
   pagination inside floats matches the in-flow behavior (clean
   multi-page splits with no `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001`).
 
----
+
 
 ## flex-layouter-features
 
 - **ID** — `flex-layouter-features`
 - **Status** — `approximated`. CSS Flexbox L1 is feature-complete for the common
-  cases (W3C Flexbox conformance **100%**, 19/19 as of the post-`0.7.0-beta`
-  sizing-residuals PR): all four `flex-direction` values, `flex-wrap` (incl.
+  cases (W3C Flexbox conformance **100%**, 19/19): all four `flex-direction` values, `flex-wrap` (incl.
   `wrap-reverse`), `justify-content` / `align-items` / `align-self` / `align-content`
   (positional + safe/unsafe overflow + **`align-items`/`align-self: baseline`** on the
   row cross axis + **`align-content` baseline → its spec fallback**, safe start / safe end
-  per §5.3 — flex lines are not a baseline-sharing group), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto +
+  per §5.3 — flex lines are not a baseline-sharing group), `flex-grow` / `flex-shrink` / `flex-basis` (length + auto
   **`content` / `max-content` / `min-content` intrinsic keywords on the nowrap row main
   axis**) with the §9.7 step-4 min/max clamping iteration, the **`flex` shorthand** (§7.4
   grammar, via `FlexShorthandExpander`), `order`, `gap` / `column-gap` / `row-gap`
   gutters (consuming free space before grow/shrink + justify-content), explicit container
   `width` + `margin: 0 auto` centering, RTL `row` main-axis flip, anonymous-item
   wrapping, and multi-page container splitting. The residual approximations are enumerated
-  under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`,
+  under **Missing** below (intrinsic `flex-basis` on WRAP rows + `fit-content`
   margin-box in the alignment / justify-content free-space
   math, VERTICAL writing modes — the RTL column cross axis (per-item anchor AND
   line-stacking) and the `start`/`end`/`self-start`/`self-end` vs `flex-start`/`flex-end`
   `wrap-reverse` distinction now ship). Percentage gaps + percentage
   item min/max main-size resolve
   against the container content box in BOTH emission and the BlockLayouter
-  pre-measure as of the `0.7.0-beta` sizing-residuals review (PR #206); a `%`
+  pre-measure; a `%`
   row-gap on an auto-height column resolves to 0 per the indefinite-reference rule.
 - **Behavior** — A block container with `display: flex` (=
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level
   children along the main axis selected by `flex-direction`. Per
-  Phase 3 Task 15 L4 + L5 the layouter honors all four
-  `flex-direction` values **for LTR horizontal-tb** (the L1 default
-  writing mode; per Phase 3 Task 15 L5 post-PR-#65 review F#1 the
+    + the layouter honors all four
+  `flex-direction` values **for LTR horizontal-tb** (the default
+  writing mode; per the
   spec-correct axis mapping for RTL or vertical writing modes per
-  CSS Flexbox §3.1 is L7+ scope — the L5 contract is LTR
-  horizontal-tb only; L6 shipped `flex-wrap: wrap` without expanding
-  the direction-pipeline scope): `row` (the L1-L3 default; main = inline
-  axis, items flow left-to-right), `column` (L4 new; main = block
-  axis, items stack top-to-bottom), `row-reverse` (L5 new; main =
+  CSS Flexbox §3.1 is later scope — the contract is LTR
+  horizontal-tb only; shipped `flex-wrap: wrap` without expanding
+  the direction-pipeline scope): `row` (the default; main = inline
+  axis, items flow left-to-right), `column` (main = block
+  axis, items stack top-to-bottom), `row-reverse` (main =
   inline axis, but main-start moves to the inline-end edge so items
   pack at the right edge in reverse DOM order), and `column-reverse`
-  (L5 new; main = block axis, but main-start moves to the block-end
+  (main = block axis, but main-start moves to the block-end
   edge so items pack at the bottom in reverse DOM order). For column
-  direction `justify-content` controls block-axis packing +
+  direction `justify-content` controls block-axis packing
   `align-items` controls inline-axis placement (the axis swap is
-  transparent to L2 + L3's alignment math — only the cursor axis +
+  transparent to + alignment math — only the cursor axis
   the property reads change). For the reversed variants per CSS
-  Flexbox L1 §5.1, the per-item placement math (cross-axis alignment,
+  Flexbox L1 §5.1, the per-item placement math (cross-axis alignment
   stretch, justify-content start-offset + between-spacing) is
   unchanged from the non-reversed counterpart; only the FINAL
   main-axis offset assigned to each fragment is flipped around the
   container's main-extent — the spec-precise formula applied in
-  `FlexLayouter`'s emission loop accounts for the wrapper's content-
+  `FlexLayouter`'s emission loop accounts for the wrapper's content
   box origin:
-  `actualMainOffset = (contentMainOffset + containerMainSize) -
+  `actualMainOffset = (contentMainOffset + containerMainSize)
   (mainCursor - contentMainOffset) - itemMainSize`, where
   `contentMainOffset` is the wrapper's content-box start on the main
   axis (padding/border-aware) and `mainCursor` is the natural
@@ -986,28 +904,28 @@ grepping the ID).
   item emits at its natural main-axis + cross-axis sizes from the
   direction-appropriate property (= width / height for row → main /
   cross; height / width for column). Items pack along the main-axis
-  cursor; the cursor is offset by L2's `justify-content` start-offset
-  + advances by `itemMainSize + betweenSpacing`. L2's
+  cursor; the cursor is offset by `justify-content` start-offset
+  + advances by `itemMainSize + betweenSpacing`. 's
   `justify-content` honors the full matrix per
-  CSS Box Alignment L3 §4.5 + §5.3: six base values (`flex-start`,
-  `flex-end`, `center`, `space-between`, `space-around`,
-  `space-evenly`) cross three overflow modes (default, `safe`,
+  CSS Box Alignment L3 §4.5 + §5.3: six base values (`flex-start`
+  `flex-end`, `center`, `space-between`, `space-around`
+  `space-evenly`) cross three overflow modes (default, `safe`
   `unsafe`). On overflow (free-space < 0): distribution values fall
   back to safe-start; positional values keep their natural
-  (possibly-negative) offset; `safe X` always falls back to safe-
+  (possibly-negative) offset; `safe X` always falls back to safe
   start; `unsafe X` honors the alignment even on overflow. Logical
   aliases (`start` / `end` / `left` / `right`) map to `flex-start` /
-  `flex-end` under the L1 default LTR + `flex-direction: row`. L3's
+  `flex-end` under the default LTR + `flex-direction: row`. 's
   `align-items` honors the four base values per CSS Flexbox L1 §8.3
-  + CSS Box Alignment L3 §6: `flex-start` (cross-start pack),
+  + CSS Box Alignment L3 §6: `flex-start` (cross-start pack)
   `flex-end` (cross-end pack), `center` (cross-axis centering), and
   `stretch` (auto-sized items resized to fill the container's cross
   extent; explicitly-sized items keep their declared block-size per
   §7.2). `normal` resolves to `stretch` (the computed default).
   Logical aliases (`start` / `end` / `self-start` / `self-end`) map
-  to `flex-start` / `flex-end` under the L1 default LTR +
+  to `flex-start` / `flex-end` under the default LTR
   `flex-direction: row`. Compound `safe` / `unsafe` modifiers honor
-  CSS Box Alignment L3 §5.3 (safe → safe-start fallback on overflow;
+  CSS Box Alignment L3 §5.3 (safe → safe-start fallback on overflow
   unsafe → honor alignment on overflow; default → positional values
   keep natural offset on overflow). The container's cross-axis
   extent (`containerCrossSize`) is direction-dependent: row direction
@@ -1017,9 +935,9 @@ grepping the ID).
   content-inline-size (= available inline range from BlockLayouter's
   ConfigureEmission) — `width: auto` on a block-level flex container
   means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
-  (inline-flex shrink-to-fit is L7+ scope; L6 shipped `flex-wrap:
+  (inline-flex shrink-to-fit is later scope; shipped `flex-wrap:
   wrap` without expanding the inline-flex sizing scope).
-  Production multi-page flex is **ACTIVE as of Task 16 cycle 4b**:
+  Production multi-page flex is **ACTIVE as of **:
   paginatable row+wrap containers whose grown natural extent
   exceeds the remaining fragmentainer space are clamped (wrapper
   border-box → page-remaining-block) + dispatched with
@@ -1028,25 +946,25 @@ grepping the ID).
   Flexbox L1 §10 fragmentation + CSS Fragmentation L3 §4.4
   progress rule). The `IsPaginatableFlex` predicate gates the
   clamp (row direction + wrap + non-wrap-reverse, mirroring
-  FlexLayouter's `isRowNormalWrapPaginationSupported` predicate);
+  FlexLayouter's `isRowNormalWrapPaginationSupported` predicate)
   column / wrap-reverse / nowrap fall through to the cycle-pre-4b
   atomic emit (with content overflowing the wrapper if too tall).
-  **Per Phase 3 Task 15 L6** — `flex-wrap: wrap` ships in full per
+  `flex-wrap: wrap` ships in full per
   CSS Flexbox L1 §6.3 + §9.3 + §9.4: greedy line packing along the
   main axis (the first item on each line always lands even if it
   itself overflows the container; subsequent items wrap when adding
-  would exceed `containerMainSize`); each line runs its OWN justify-
+  would exceed `containerMainSize`); each line runs its OWN justify
   content + align-items per CSS Flexbox L1 §6.3 ("each flex line is
   treated as the alignment container for its items along the cross
   axis"); auto cross-size = sum of line cross-extents
-  (`PreMeasureFlexMultiLineCrossExtent` at the BlockLayouter pre-
-  measure sites). Direction-agnostic — wrap works for both row +
+  (`PreMeasureFlexMultiLineCrossExtent` at the BlockLayouter pre
+  measure sites). Direction-agnostic — wrap works for both row
   column. For column + wrap, an EXPLICIT block-size is required
   (auto block-size in column direction can't wrap in a single-pass
-  measure; the L6 pre-measure skip rule prevents
+  measure; the pre-measure skip rule prevents
   `PreMeasureFlexMainExtent` from growing past the declared height
   + defeating the wrap).
-  **Per Phase 3 Task 15 L7 + post-PR-#67 hardening** — `align-content`
+  `align-content`
   ships the seven base values (`flex-start` / `flex-end` / `center` /
   `space-between` / `space-around` / `space-evenly` / `stretch`) per
   CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6, distributing wrapped
@@ -1054,25 +972,25 @@ grepping the ID).
   spec default `normal` resolves to `stretch` — definite-cross-sized
   multi-line containers grow each line by an EQUAL share of the free
   cross-space (= `freeCrossSpace / lineCount` per line) so the lines
-  collectively fill the container. (Post-PR-#67 F#5 — original
+  collectively fill the container. (Post- — original
   deferral wording said "proportionally"; that incorrectly implied
   weighted distribution. The spec defines equal-share growth.) Items
   on a stretched line use the LARGER (stretched) cross extent for
-  their align-items math. **Post-PR-#67 F#1 single-line gate
+  their align-items math. **single-line gate
   correction:** the single-line-vs-multi-line boundary is
   `flex-wrap: nowrap` per CSS Flexbox §9.4 — NOT `lineCount <= 1`.
   A wrapping container that happens to produce one line is still a
   multi-line container, and align-content (including the §8.4 stretch
   default) applies to it. The `ComputeAlignContentOffsets` helper
   short-circuits only when `lineCount == 0 || !isWrapping`.
-  **Post-PR-#67 F#2 per-mode overflow handling:** when sum of line
+  **per-mode overflow handling:** when sum of line
   cross extents > container cross extent, behavior now mirrors the
-  L2 `ComputeJustifyContentOffsets` pattern per CSS Box Alignment L3
-  §5.3: `safe X` falls back to safe-start regardless of value family;
+   `ComputeJustifyContentOffsets` pattern per CSS Box Alignment L3
+  §5.3: `safe X` falls back to safe-start regardless of value family
   `unsafe X` honors the natural (possibly-negative) offset; default
   mode gives distribution values + stretch the safe-start fallback
   while positional values keep their natural offset (allowing items
-  to overflow equally on both sides for `center`). **Post-PR-#67 F#6
+  to overflow equally on both sides for `center`).**
   baseline keyword family:** the three `<baseline-position>` keywords
   (`baseline` / `first baseline` / `last baseline`) admitted by CSS
   Box Alignment L3 §6.3 are in BuildAlignContentTable (29-entry table)
@@ -1080,51 +998,51 @@ grepping the ID).
   baseline` → safe start, `last baseline` → safe end (§5.3) — NOT
   `stretch` (which was the prior, wrong approximation). See the bullet
   below for why flex lines have no line-baseline alignment.
-  **Per Phase 3 Task 15 L8** — `flex-grow` / `flex-shrink` /
+  `flex-grow` / `flex-shrink` /
   `flex-basis` ship the §7 + §9.7 flexibility algorithm. Per line:
   compute each item's hypothetical main-size from its `flex-basis`
   (Auto delegates to the declared main-size; Content/MaxContent/MinContent
   are content-sized — measured on the nowrap ROW main axis, block-extent on
   the COLUMN axis; LengthPx uses the explicit pixel value; Percentage
-  resolves against the container's main-size); compute `freeMainSpace = containerMainSize -
-  sum(hypothetical)`; if positive AND any item has `flex-grow > 0`,
-  each item grows by `(item.flexGrow / sumFlexGrow) * freeMainSpace`;
+  resolves against the container's main-size); compute `freeMainSpace = containerMainSize
+  sum(hypothetical)`; if positive AND any item has `flex-grow > 0`
+  each item grows by `(item.flexGrow / sumFlexGrow) * freeMainSpace`
   if negative AND any item has `flex-shrink > 0`, each item shrinks
   by `(item.flexShrink * hypothetical / sumScaledShrinks) *
   |freeMainSpace|`. Resolved main-sizes feed the per-line emission
-  loop's main-axis placement (replacing the L1-L7
+  loop's main-axis placement (replacing the
   `ReadLengthPxOrZero(mainSizeProperty)` direct read). Each line's
   `LineMainSize` is recomputed post-flex so `justify-content`'s
   freeSpace calculation matches the flexed layout. The cascade-side
-  `flex-grow` (Number type, default 0) + `flex-shrink` (Number type,
-  default 1) properties were already in properties.json; L8 joined
+  `flex-grow` (Number type, default 0) + `flex-shrink` (Number type
+  default 1) properties were already in properties.json; joined
   the `flex-basis` (FlexBasis type, default `auto`) property to the
-  LengthResolver dispatch (admitting `auto` / `content` keywords +
+  LengthResolver dispatch (admitting `auto` / `content` keywords
   the `<length-percentage>` production per §7.2). Three new reader
   extensions (`ReadFlexGrow` / `ReadFlexShrink` / `ReadFlexBasis`)
-  + typed `ResolvedFlexBasis` (Kind + Value) mirror the L2/L3/L7
+  + typed `ResolvedFlexBasis` (Kind + Value) mirror the //
   resolved-* patterns.
-- **Missing** —
-  - ~~`flex-wrap: wrap-reverse`~~ — **shipped in Phase 3 Task 15 L11.**
-    Per CSS Flexbox L1 §6.3 wrap-reverse permutes cross-start +
+- **Missing**
+  - ~~`flex-wrap: wrap-reverse`~~ — **shipped.**
+    Per CSS Flexbox L1 §6.3 wrap-reverse permutes cross-start
     cross-end. The FlexLayouter reverses the `lines` list after
-    PackLines when `flex-wrap: wrap-reverse` AND there are 2+ lines;
+    PackLines when `flex-wrap: wrap-reverse` AND there are 2+ lines
     item DOM order within each line is preserved. align-content
-    distribution applies to the reversed list per §8.4. The L6
-    hardening F#4 `LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001`
+    distribution applies to the reversed list per §8.4. The
+      `LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001`
     diagnostic no longer fires (the approximation is gone). The
     diagnostic code remains registered in `PaginateDiagnosticCodes`
     for backward-compat / cross-reference.
-  - **`align-content` `<baseline-position>` — SHIPPED** (CSS Box Alignment L3 §5.3 + §9, PR #221
-    review Task 2): the earlier note here had the premise WRONG — there is NO "align the LINES by their
+  - **`align-content` `<baseline-position>` — SHIPPED** (CSS Box Alignment L3 §5.3 + §9
+    ) : the earlier note here had the premise WRONG — there is NO "align the LINES by their
     baselines" behavior to implement. Baseline CONTENT-alignment does not apply to a flex container's
-    lines (flex lines are not a baseline-sharing group — only flex ITEMS / table cells / grid items are),
+    lines (flex lines are not a baseline-sharing group — only flex ITEMS / table cells / grid items are)
     so per §5.3 it uses the FALLBACK alignment, which is what `ReadAlignContent` now returns: `baseline` /
     `first baseline` → **safe start**, `last baseline` → **safe end** (was wrongly approximated as
     `stretch`, which grows the lines). The companion **`align-items: baseline`** (Flex L1 completion — see
     below) is the genuinely different feature: it baseline-aligns the ITEMS within a line, where the items
     ARE the baseline-sharing group. Verified spec-side via the W3C css-align-3 fallback rule before
-    implementing (the deferral comment's "text-shaping integration" was the inaccurate premise). PR #221
+    implementing (the deferral comment's "text-shaping integration" was the inaccurate premise).
     SECOND review hardened it: the keywords are PRESERVED as `AlignContentValue.FirstBaseline` /
     `LastBaseline` (not collapsed to flex-start/end at decode), so the fallback is applied at LAYOUT time and
     is LOGICAL — `ComputeAlignContentOffsets` pre-inverts the start/end by `isWrapReverse` so it does NOT
@@ -1133,12 +1051,12 @@ grepping the ID).
     parent's baseline-sharing group instead of falling back — NetPdf doesn't track baseline-sharing-group
     participation yet, so it always falls back today; the preserved value lets a future cycle honor §5.4.
   - Writing-mode + column-cross-axis `direction` integration for
-    `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped** (task 6):
+    `flex-direction` axis mapping (CSS Flexbox §3.1). **Shipped**:
     `flex-direction: row` / `row-reverse` under `direction: rtl` flip the
-    physical MAIN axis right-to-left (row+rtl ≡ row-reverse+ltr) —
-    FlexLayouter XORs its reverse flag via `DirectionStyleExtensions.IsRtl`,
+    physical MAIN axis right-to-left (row+rtl ≡ row-reverse+ltr)
+    FlexLayouter XORs its reverse flag via `DirectionStyleExtensions.IsRtl`
     pinned by `Rtl_row_flips_main_axis_like_row_reverse_ltr`. **Also shipped**
-    (residual long-tail + PR #215 review): the COLUMN cross axis under RTL — a
+    (residual long-tail): the COLUMN cross axis under RTL — a
     `flex-direction: column; direction: rtl` container's cross axis is the
     inline axis, so RTL permutes cross-start/cross-end. ONE orientation flag
     (`isCrossAxisReversed = isWrapReverse ^ isColumnRtl`) drives BOTH the
@@ -1146,10 +1064,10 @@ grepping the ID).
     cross extent so a full-extent line reverses to a no-op) AND the per-ITEM
     `align-items`/`align-self` anchor (`ComputeAlignItemsPlacement`). So the
     lines of a multi-line column-rtl `wrap` stack from the physical right, a
-    single non-stretched `align-content: flex-start` line packs at the right,
+    single non-stretched `align-content: flex-start` line packs at the right
     a `wrap-reverse` column-rtl cancels back, and `align-items: flex-start`
     right-anchors / `flex-end` left-anchors. **Also shipped** (residual
-    long-tail + PR #217 review): the `self-start`/`self-end` logical keywords
+    long-tail): the `self-start`/`self-end` logical keywords
     resolve against the ITEM's own `direction` (an LTR child in an RTL column
     anchors at its own start) and `start`/`end` against the CONTAINER's
     writing-mode/direction; NEITHER follows the `wrap-reverse` flex permutation
@@ -1159,8 +1077,8 @@ grepping the ID).
     (`isColumnRtl`) for `start`/`end`, the full flex-flow `isCrossAxisReversed`
     for `flex-*` — so under `wrap-reverse` `align-items: start` / `self-start`
     stay at the writing-mode cross-start while `flex-start` permutes. The
-    `safe` overflow fallback resolves SEPARATELY to the flex-flow start (§5.3),
-    independent of that natural anchor. Pinned by the `Column_rtl_*` +
+    `safe` overflow fallback resolves SEPARATELY to the flex-flow start (§5.3)
+    independent of that natural anchor. Pinned by the `Column_rtl_*`
     `Row_wrap_reverse_*` tests. **Still
     deferred**: all VERTICAL writing modes (`writing-mode` is not yet a
     registered property; `row` in vertical-rl swaps the main + cross axes onto
@@ -1173,7 +1091,7 @@ grepping the ID).
     `justify-content` free space is over-counted. Per spec: free space uses each item's resolved
     MARGIN-box main size; a main-axis `auto` margin consumes positive free space BEFORE
     `justify-content` (and is 0 when free space ≤ 0); reversed flows (`row-reverse` / `column-reverse`)
-    swap the leading/trailing margin. **Assessed 2026-06-24 (PR #221 Task 3) as a DEDICATED effort, not
+    swap the leading/trailing margin. **Assessed 2026-06-24 as a DEDICATED effort, not
     a byte-identical narrowing:** fixing FIXED margins changes output for the COMMON case (any flex
     container with margined items), so it would RE-PIN the byte-identity baselines (LayoutSnapshots /
     PaginationGolden / RealDocuments / RenderingCorpus) — a reference-output change that needs maintainer
@@ -1182,13 +1100,13 @@ grepping the ID).
     deferred it; the code paths are `FlexLayouter` L1170-1172 `LineMainSize`, L1341 free space, L1351 /
     L1713 the main cursor, and L1531 the reversed-axis emission.)
   - Writing-mode-aware `left` / `right` mapping for
-    `justify-content` (L2 maps both to `flex-start` / `flex-end`
-    under the L1 default LTR + `flex-direction: row`; L3+ will
+    `justify-content` (maps both to `flex-start` / `flex-end`
+    under the default LTR + `flex-direction: row`; will
     resolve against the box's writing-mode + direction)
-  - ~~`align-items: baseline` / `first baseline` / `last baseline`~~ —
+  - ~~`align-items: baseline` / `first baseline` / `last baseline`~~
     **shipped (Flex L1 completion).** Per CSS Box Alignment L3 §6.2 + CSS
     Flexbox L1 §8.3 the three `<baseline-position>` keywords decode to
-    `AlignItemsValue.Baseline` (first-baseline alignment for all three —
+    `AlignItemsValue.Baseline` (first-baseline alignment for all three
     last-baseline grouping is a later refinement) and `align-self: baseline`
     folds + resolves against the container. For a ROW container each
     baseline-aligned item is shifted on the block (cross) axis so its first
@@ -1198,57 +1116,56 @@ grepping the ID).
     the COLUMN cross axis (inline) falls back to flex-start — a first baseline
     on the inline axis needs vertical-text metrics.
   - `align-items: anchor-center` (CSS Anchor Positioning) — out of
-    scope for Flexbox L1; the L3 decoder maps it to `stretch`. Sub-
-    cycle L4+ (or later — anchor positioning is a separate spec)
+    scope for Flexbox L1; the decoder maps it to `stretch`. Sub
+    cycle (or later — anchor positioning is a separate spec)
     will pick this up.
-  - ~~`align-self` per-item alignment override~~ — **shipped in
-    Phase 3 Task 15 L9.** Per CSS Box Alignment L3 §4.3 the
-    FlexLayouter reads <c>item.Style.ReadAlignSelf()</c> for each
+  - ~~`align-self` per-item alignment override~~ — **shipped.** Per CSS Box Alignment L3 §4.3 the
+    FlexLayouter reads <c>item.Style.ReadAlignSelf</c> for each
     item + folds it against the container's <c>align-items</c> via
     <c>ResolveAgainstContainerAlignItems</c>; the cascade default
-    <c>auto</c> preserves the container-only L1-L8 behavior.
-    Per Phase 3 Task 15 L10 post-PR-#70 review F#5 — this bullet
-    was accidentally re-introduced in the L10 hardening but L9 had
-    already removed it; restored to its post-L9 "shipped"
+    <c>auto</c> preserves the container-only behavior.
+    this bullet
+    was accidentally re-introduced in the but had
+    already removed it; restored to its the earlier "shipped"
     annotation.
   - Baseline-family overflow semantics + production parser
-    recovery refinement for compound `align-items` keywords — L3
+    recovery refinement for compound `align-items` keywords
     decodes the compound `<overflow-position> <self-position>`
     forms (indices 13-26) into the `OverflowAlignmentMode` channel
     + applies the spec-correct positional-value behavior per CSS
-    Box Alignment L3 §5.3 (same approach as L2's
-    `justify-content`); per Phase 3 Task 15 L3 post-PR-#63
-    hardening F#3 the `CssPreprocessor.KnownDroppedProperties`
+    Box Alignment L3 §5.3 (same approach as 's
+    `justify-content`); per
+      the `CssPreprocessor.KnownDroppedProperties`
     table now lists `align-items` so AngleSharp.Css's drop of
     compound keywords is recovered (same precedent as
-    `justify-content`). Sub-cycle L4+ will refine the overflow
+    `justify-content`). will refine the overflow
     semantics for the deferred-value families (e.g., when baseline
     alignment lands its overflow semantics differ from positional
     values'), and revisit the preprocessor entry if AngleSharp.Css
     upgrades its parser to recognize compound `align-items`
     natively.
   - **Cross-axis margins + auto-margins for align-items** (CSS
-    Flexbox L1 §8.4): L3's alignment math operates on the item's
+    Flexbox L1 §8.4): alignment math operates on the item's
     border-box; the spec uses the item's margin-box and lets
     cross-axis `margin: auto` override `align-items` /
-    `align-self`. Sub-cycle L4+ scope — requires plumbing margin
+    `align-self`. scope — requires plumbing margin
     reads through FlexLayouter. Until then, items with non-zero
     cross-axis margins produce slightly-off align-items
     placements. Pinned by the
     `L3_hardening_known_gap_cross_axis_margins_ignored_in_alignment`
-    test — when sub-cycle L4+ ships the margin-box math, that
+    test — when + ships the margin-box math, that
     test should fail + this bullet should be removed.
   - **Stretch with margin-box + min/max constraints** (CSS Flexbox
-    L1 §7.2): L3 stretch sets `BlockSize = containerCrossSize` for
+    L1 §7.2): stretch sets `BlockSize = containerCrossSize` for
     auto-cross-sized items, ignoring item margins and min-height /
     max-height constraints. The spec computes stretch as the cross
-    margin-box size with min/max clamps. Sub-cycle L4+ scope.
+    margin-box size with min/max clamps. scope.
     Pinned by the
     `L3_hardening_known_gap_stretch_ignores_min_max_constraints`
-    test — when sub-cycle L4+ ships the clamping, that test
+    test — when + ships the clamping, that test
     should fail + this bullet should be removed.
-  - ~~**Explicit-width honoring for flex/grid containers**~~ —
-    **shipped in the flex/grid gap PR (container-width cycle).**
+  - ~~**Explicit-width honoring for flex/grid containers**~~
+    **shipped.**
     Added `BoxKind.FlexContainer` + `BoxKind.GridContainer` to the
     `ResolveInFlowBorderBoxInlineSize` gate, so an explicit `width`
     on a flex/grid container becomes its border-box width (feeding
@@ -1263,8 +1180,8 @@ grepping the ID).
     + `flex-explicit-width-center` + `flex-explicit-width-shrinks-items`
     + `grid-explicit-container-width` pass. (No real-document output
     changed — confirmed by the RealDocuments guard.)
-  - ~~`order` property~~ — **shipped in Phase 3 Task 15 L10.** New
-    `order` Integer property (default 0, applies_to FlexItems) +
+  - ~~`order` property~~ — **shipped.** New
+    `order` Integer property (default 0, applies_to FlexItems)
     `ReadOrder` extension + `GetFlexChildrenInOrderSequence` shared
     helper. The FlexLayouter's `PackLines` /
     `ResolveFlexibleMainSizes` / emission loop AND the BlockLayouter's
@@ -1273,9 +1190,8 @@ grepping the ID).
     POSITION in the sorted sequence (not a DOM-children index).
     Negative orders + equal-order DOM-stable ordering both supported.
     Fast-path short-circuit returns DOM order when no item declares
-    a non-zero order, preserving L1-L9 behavior verbatim.
-  - ~~**`flex` shorthand parser** (CSS Flexbox L1 §7.4)~~ — **shipped in
-    Phase 3 Task 15 L13** (`FlexShorthandExpander`, wired into
+    a non-zero order, preserving behavior verbatim.
+  - ~~**`flex` shorthand parser** (CSS Flexbox L1 §7.4)~~ — **shipped** (`FlexShorthandExpander`, wired into
     `CssPreprocessor`). The full §7.4 grammar expands to the three longhands:
     `none` / `auto` / `<number>` / `<basis>` / the two- and three-value forms.
     `flex: 1` → `flex-grow: 1; flex-shrink: 1; flex-basis: 0` end-to-end.
@@ -1291,19 +1207,19 @@ grepping the ID).
     `content`/`max-content`/`min-content` via the existing block-extent measure.
     **Still deferred**: the WRAP row main axis (line-breaking depends on the base
     size in the shaper-less multi-line pre-measure), `fit-content` /
-    `fit-content(<length-percentage>)`, and a **perf follow-up** (PR #208 [P3]) —
+    `fit-content(<length-percentage>)`, and a **perf follow-up** ([])
     the intrinsic measure lays each item into a full `BufferingMeasureSink`
-    fragment list when only `ContentInlineExtent` is read, and the emission +
+    fragment list when only `ContentInlineExtent` is read, and the emission
     pre-measure measure the same items twice; an extent-only sink or a
     measure-share across the two passes would trim allocations for documents with
     many intrinsic-basis flex items (low impact — the path is opt-in + rare).
-  - Also baseline + `flex-wrap: wrap-reverse` (PR #208 Copilot review): a ROW
+  - Also baseline + `flex-wrap: wrap-reverse` (Copilot) : a ROW
     baseline item under wrap-reverse falls back to flex-start rather than mirroring
     the baseline shift relative to the swapped cross-start, and a baseline
     down-shift in a WRAP auto-height container can under-size the wrapper (the
     multi-line cross-extent pre-measure is shaper-less, so it can't mirror the
     baseline-adjusted extent the nowrap pre-measure does).
-  - **§9.7 step-4 min/max clamping** ✅ **shipped in L12** (CSS Flexbox L1
+  - **§9.7 step-4 min/max clamping** ✅ **shipped** (CSS Flexbox L1
     §9.7 + §9.5) — `ResolveFlexibleMainSizes` now delegates per line
     to `ResolveLineWithMinMaxClamping`, which implements the full
     iterative algorithm: each iteration recomputes remaining
@@ -1313,28 +1229,28 @@ grepping the ID).
     `totalViolation`, and freezes min-violators
     (`totalViolation > 0`) or max-violators (`totalViolation < 0`)
     per spec. Convergence is guaranteed in ≤ `itemCount + 1`
-    iterations. The L8 known-gap test
+    iterations. The known-gap test
     `L8_known_gap_min_width_does_not_clamp_resolved_size_yet` is
     flipped to `L12_min_width_clamps_resolved_shrink_per_spec_step_4`
-    + asserts the spec-correct clamped sizes. Known L13+ gap:
+    + asserts the spec-correct clamped sizes. Known gap:
     `min-width: auto` (the cascade default for flex items) per CSS
-    Sizing L3 §5.5 resolves to the item's intrinsic content size;
-    L12's `ResolveFlexItemMinMaxMainSize` returns 0 for non-LengthPx
+    Sizing L3 §5.5 resolves to the item's intrinsic content size
+    `ResolveFlexItemMinMaxMainSize` returns 0 for non-LengthPx
     min slots (= a conservative floor pending intrinsic-sizing
-    integration). Percentage min/max-width also defers to L13+
+    integration). Percentage min/max-width also defers to
     (needs per-item container main-size resolution at the resolver
     site).
-  - **Shared `FlexItemSizing` model unification** (post-PR-#68
-    architecture recommendation): the L8 post-PR-#68 hardening F#1
+  - **Shared `FlexItemSizing` model unification** (
+    architecture recommendation): the
     extracted `ResolveFlexItemHypotheticalMainSize` to a shared
     extension on `Boxes.Box` so PackLines + ResolveFlexibleMainSizes
     + BlockLayouter's pre-measure all consume identical hypothetical
-    sizes. A broader refactor would lift `FlexItemSizing { Box,
-    ChildIndex, FlexBaseSize, HypotheticalMainSize, FlexGrow,
+    sizes. A broader refactor would lift `FlexItemSizing { Box
+    ChildIndex, FlexBaseSize, HypotheticalMainSize, FlexGrow
     FlexShrink, CrossSize }` into a small read-once struct shared
     across all three call sites, eliminating the repeated style reads
     + making the §9.7 step-4 min/max-clamp iteration easier to add.
-    L9+ scope; the L8 extension is sufficient to close line-boundary
+    later scope; the extension is sufficient to close line-boundary
     drift but the struct unification is a follow-up optimization.
   - ~~**`flex-basis: content` proper implementation** (CSS Flexbox L1
     §7.2.1)~~ — **shipped (Flex L1 completion).** `Content` (≡ max-content per
@@ -1346,25 +1262,25 @@ grepping the ID).
     `Flex_basis_content_uses_intrinsic_content_size_ignoring_declared_width`.
     **Still deferred**: the WRAP row main axis + `fit-content`.
   - ~~Anonymous flex-item wrapping for inline-level / text children~~
-    ✅ shipped in Phase 3 Task 15 L15 (PR #75). The L1-L14 cycle-1
+    ✅ shipped. The
     skip was replaced by `BoxBuilder.FixupFlexAnonymousItems`
     which blockifies inline element children + wraps TextRun
     runs into anonymous block flex items per CSS Flexbox L1 §4.
-    See the L15 entry in the "Removal condition" trigger list
+    See the entry in the "Removal condition" trigger list
     below for the historical fix.
-  - **Multi-page flex container splitting** (Task 16, in progress;
-    cycles 1-3 shipped the FlexLayouter resume contract + scaffolded
-    BlockLayouter dispatch propagation; cycle 4a extracted the
-    `DispatchFlexInner` helper; **cycle 4b shipped the
+  - **Multi-page flex container splitting** (in progress
+     shipped the FlexLayouter resume contract + scaffolded
+    BlockLayouter dispatch propagation; extracted the
+    `DispatchFlexInner` helper;** shipped the
     pre-break-check paginatable-flex extent clamp + flipped
     `allowPagination: true` at both dispatch sites**. The remaining
-    cycle-4 follow-on items below are tightening, not blockers for
+     follow-on items below are tightening, not blockers for
     production multi-page flex:
-    - ✅ **P1 #1 (PR-#79) shipped in cycle 4b**: paginatable-flex
+    - ✅**shipped:** paginatable-flex
       extent clamp at BOTH dispatch sites. New
-      `IsPaginatableFlex(box)` predicate (row + wrap +
+      `IsPaginatableFlex(box)` predicate (row + wrap
       non-wrap-reverse, mirroring `FlexLayouter`'s
-      `isRowNormalWrapPaginationSupported`) gates the clamp;
+      `isRowNormalWrapPaginationSupported`) gates the clamp
       eligible containers whose grown natural extent overflows the
       remaining fragmentainer space have `borderBoxBlockSize` /
       `childBorderBoxBlockSize` clamped to the page-remaining-block
@@ -1372,11 +1288,11 @@ grepping the ID).
       `allowPagination: true` in `DispatchFlexInner`. FlexLayouter
       packs lines up to the clamped budget + emits a
       `FlexContinuation` for the rest; the chain-walk-propagation
-      already wired in cycles 2-3 carries the continuation up via
+      already wired in carries the continuation up via
       `PageComplete(BlockContinuation(LayouterState=FlexContinuation))`.
-    - **P1 #2 (PR-#80) — partial close in cycle 4b**: the recursive
-      site's outbound propagation IS now active (the cycle-3
-      scaffolding fires when the cycle-4b clamp turns
+    - **partial close in **: the recursive
+      site's outbound propagation IS now active (the
+      scaffolding fires when the clamp turns
       `allowPagination` ON). The INBOUND chain-walk (= read
       `incomingBlockChain.LayouterState` for a `FlexContinuation`
       leaf when the chain reaches a nested flex container) is still
@@ -1384,18 +1300,18 @@ grepping the ID).
       (line ~3360). For deeply-nested flex inside multi-page splits
       where the resume page needs to forward an INNER
       FlexContinuation into a deeper level, the chain-walk is
-      required; the cycle-4b production test is shallow enough that
-      the cycle-2 direct-dispatch chain-walk handles it. Cycle 4c
+      required; the production test is shallow enough that
+      the direct-dispatch chain-walk handles it.
       will add the recursive-site chain-walk for the multi-level
       case.
-    - ✅ **P1 #3 (PR-#79 + PR-#80) shipped in cycle 4b**:
+    - ✅**shipped:**
       `Task16_cycle2_production_html_flex_container_splits_across_two_pages`
       is now `[Fact]` (not `Skip`) and passing through the full
       HTML → cascade → BoxBuilder → BlockLayouter → FlexLayouter
       pipeline. The chain-walk pattern matches
       `MulticolLayouterProductionTests`' walker.
-    - ✅ **P2 #4 (PR-#79) verified closed-by-implementation in
-      cycle 4 closeout**: the cycle-4b derivation already uses
+    - ✅** verified closed-by-implementation in
+       closeout**: the derivation already uses
       `topShift` (= the post-margin-collapse delta) at the outer
       site + `childBlockOffset` (= post-collapse absolute) at the
       recursive site, NOT `effectiveTopGap` (= the
@@ -1404,8 +1320,8 @@ grepping the ID).
       pins the contract: a preceding sibling with margin-bottom + a
       flex container with margin-top still rounds-trips through the
       paginated path with all items emitting exactly once.
-    - 🚧 **P2 #5 (PR-#79) contract shipped in cycle 4e + hardened
-      post-PR-#86 review** —
+    - 🚧**contract shipped + hardened
+      **
       `FlexContinuation.EmittedBlockExtent` field added + populated
       by FlexLayouter on PageComplete with the **TRUE occupied
       block extent** (= the content-cross-box 0-based bottom of the
@@ -1417,16 +1333,16 @@ grepping the ID).
       `sum(LineCrossSize)`. The field's value is also defensively
       validated in the `FlexContinuation` constructor (rejects
       NaN / ±Infinity / negative). The BlockLayouter consumer side
-      is **cycle 4f scope** because of the z-order constraint: the
+      is** scope** because of the z-order constraint: the
       wrapper fragment must precede its children in the sink's
       fragment list (= painter draw order), so the wrapper emit
-      can't simply move to post-dispatch. Cycle 4f will add a
+      can't simply move to post-dispatch. will add a
       sink-mutation or pre-emit-with-backfill API to let the
       wrapper's BlockSize be retro-adjusted to the actual emitted
       extent. (The dual-input resize consumer using
-      `IBlockFragmentSink.UpdateFragmentBlockSize` DID ship in PR-#180
+      `IBlockFragmentSink.UpdateFragmentBlockSize` DID ship in
       at both dispatch sites — see the corpus-fidelity note below.)
-    - ✅ **Resume-cut on a fresh page (corpus-fidelity batch-2)** — a
+    - ✅ **Resume-cut on a fresh page** — a
       flex child RESUMING a dual-input split (column item split /
       row-nowrap content split) is now dispatched with pagination
       enabled even when the resume page has room, so FlexLayouter
@@ -1436,7 +1352,7 @@ grepping the ID).
       re-rendered wholly (duplicated content) + the sibling cursor
       under-advanced (a trailing block overlapped the flex content).
       Verified by `FlexPageSplitResumeTests` (fails without the change).
-      **`03-itinerary` footer overlap — OVERLAP FIXED (batch-3 T1); page-count
+      **`03-itinerary` footer overlap — OVERLAP FIXED; page-count
       optimization remains.** Root cause: an AUTO-HEIGHT row `.day` flex's used
       cross (block) size is its CONTENT cross extent, but `FlexLinePacker` sizes
       each line from the items' DECLARED cross ONLY (0 for a content-determined
@@ -1457,77 +1373,74 @@ grepping the ID).
       golden suite. **STILL OPEN — page-count / density:** with the timeline now
       correctly measured tall, the body paginates it CONSERVATIVELY (real `03` →
       4 pages where ~2 suffice), because a large block subtree is committed with
-      **atomic** granularity (the cycle-2c/2d "mid-split" limitation — a subtree
+      **atomic** granularity (the "mid-split" limitation — a subtree
       commits on one page or breaks between children, without filling the trailing
       page). Closing that is the deferred mid-split engine work, tracked here. The
-      overlap (the visible defect) is resolved. **SCOPE (review):** the fix is
+      overlap (the visible defect) is resolved. **SCOPE:** the fix is
       NOWRAP single-line row flex — `autoRowContentCross` is `max(item cross)`
       (the single line's cross), and both dispatch resize consumers gate on
-      `!IsFlexWrapping()`. A `flex-wrap: wrap` auto-height row flex still
+      `!IsFlexWrapping`. A `flex-wrap: wrap` auto-height row flex still
       under-reports its cross (the wrap pre-measure `FlexLinePacker.SumCrossExtent`
       reads DECLARED cross sizes, 0 for content-determined items; the correct value
       is Σ per-line max content cross + row gaps) — a following sibling can still
       overlap. Separate open case. Row-WRAP line-split resume (no dual-input resize
       consumer) is a separate residual, also unfixed on a fresh resume page.
-    - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
-      `DispatchFlexInner` helper now used by BOTH direct +
+    - ✅**shipped:**
+      `DispatchFlexInner` helper now used by BOTH direct
       recursive paths to eliminate drift between them. 135 + 107
-      LOC consolidated; the helper owns FlexLayouter +
+      LOC consolidated; the helper owns FlexLayouter
       BreakResolver lifetime via `using var`.
-    - ✅ **P3 #8 (PR-#79) shipped in cycle 4c**: shared
+    - ✅**shipped:** shared
       `FlexLinePacker` extracted to
       `src/NetPdf.Layout/Layouters/FlexLinePacker.cs`. Both
-      `FlexLayouter.PackLines` (8-line delegating forward) +
+      `FlexLayouter.PackLines` (8-line delegating forward)
       `BlockLayouter.PreMeasureFlexMultiLineCrossExtent` (calls Pack
       + sums `LineCrossSize`) now consume one shared
       implementation. `FlexLine` promoted from FlexLayouter's
       private nested record struct to internal at the namespace
       level. 6 direct unit tests in `FlexLinePackerTests` pin the
       algorithm contract.
-    - ✅ **P2 from PR-#82 review #2 shipped in cycle 4d**:
+    - ✅** from #2 shipped in **:
       extracted `FlexGeometryHelper` to
       `src/NetPdf.Layout/Layouters/FlexGeometryHelper.cs`. The 3
       dispatch sites (outer, recursive, forced-overflow re-route)
       each now call
-      `FlexGeometryHelper.ComputeContentGeometry(box, borderBox*,
+      `FlexGeometryHelper.ComputeContentGeometry(box, borderBox*
       offset*) → FlexContentGeometry`. Pattern mirrors
       `MulticolGeometryHelper`; simpler since flex's
       content-block-size always derives from the wrapper's
       border-box (no auto-height/fragmentainer-remaining branch).
       4 direct tests in `FlexGeometryHelperTests` pin the math.
-    - ✅ **P2 from PR-#82 review #3 closed via documentation**:
-      `DispatchFlexInner`'s hardcoded fresh `BreakResolver` +
+    - ✅** from #3 closed via documentation**:
+      `DispatchFlexInner`'s hardcoded fresh `BreakResolver`
       `LastResort` strategy are the established nested-layouter
-      isolation pattern (= mirrors `TableLayouter`'s per-cell +
+      isolation pattern (= mirrors `TableLayouter`'s per-cell
       `MulticolLayouter`'s per-column resolver isolation). The
       review's "Either parameterize OR document why" — the helper's
       xmldoc explains both rationale + the trigger condition for
       future parameterization (= "When… we discover the inner level
       legitimately wants its own strategy / resolver, parameterize
-      this helper at that point"). Cycle 4b's production pagination
+      this helper at that point"). 's production pagination
       ships without any caller demanding parameterization; the
       deferral closes as docs-only. If a future caller surfaces a
       legitimate need (= e.g., a profile-driven optimizer wants
       checkpoint sharing across nested layouters), reopen the
       deferral + add the parameters at that point.
 
-    **Cycle 4 execution order** — UPDATED post-cycle-4-closeout
-    (PR #87). All originally-planned items 1-8 are shipped or
+    **execution order** — UPDATED after closeout. All originally-planned items 1-8 are shipped or
     closed-by-implementation/documentation. The remaining open
-    follow-ons (= NOT included in cycle 4 closeout) are tracked in
+    follow-ons (= NOT included in the closeout) are tracked in
     deferrals.md as future work:
     * Multi-level inbound recursive FlexContinuation chain-walk for
       deeper-than-shallow nesting — speculative without a forcing
-      test (cycle 4b's shallow case + cycle-4-closeout's margin
+      test ('s shallow case + -closeout's margin
       regression cover current production shapes).
-    * Cycle 4f BlockLayouter consumes `EmittedBlockExtent` for
+    * BlockLayouter consumes `EmittedBlockExtent` for
       wrapper resize / ConsumedBlockSize precision — blocked on
       sink-mutation or pre-emit-with-backfill API (z-order
       constraint documented on FlexContinuation).
-    1. ✅ **Extract `DispatchFlexInner`** — shipped in cycle 4a
-       (PR #82).
-    2. ✅ **Add pre-break-check paginatable-flex dispatch** — shipped
-       in cycle 4b (PR #83). The clamp lives at the END of the flex
+    1. ✅ **Extract `DispatchFlexInner`** — shipped.
+    2. ✅ **Add pre-break-check paginatable-flex dispatch** — shipped. The clamp lives at the END of the flex
        pre-grow block (NOT before the resolver consult) — the
        end-of-pre-grow site has all the variables in scope + makes
        the chunk-for-break-check naturally pass through the
@@ -1535,8 +1448,7 @@ grepping the ID).
        equivalent to a pre-break-check intercept; structurally
        simpler.
     3. ✅ **Wire inbound recursive FlexContinuation chain-walk for
-       the shallow case** (PR-#83 review P1 #1) — shipped in cycle 4b
-       hardening. The recursive flex dispatch in
+       the shallow case** — shipped. The recursive flex dispatch in
        `EmitBlockSubtreeRecursive` peels `incomingBlockChain` to
        extract a `FlexContinuation` leaf at the resume-at child.
        The deeper multi-level case (= a FlexContinuation reached
@@ -1544,40 +1456,38 @@ grepping the ID).
        container) is still deferred — current production tests
        don't exercise that nesting depth.
     4. ✅ **Compute margin-collapse-aware `pageRemainingBlock`**
-       (P2 #4) — closed-by-implementation in cycle 4 closeout. The
-       cycle-4b derivation already uses post-collapse values
+        — closed-by-implementation in the closeout. The
+        derivation already uses post-collapse values
        (`topShift` + `childBlockOffset`); regression test
        `Task16_cycle4_closeout_margin_collapse_before_flex_still_round_trips`
        pins the contract.
     5. 🚧 **Return emitted-fragment block extent from FlexLayouter**
-       (P2 #5) — contract SHIPPED in cycle 4e (PR #86): new
+        — contract SHIPPED: new
        `FlexContinuation.EmittedBlockExtent` field populated on
        PageComplete. The BlockLayouter consumer-side wrapper-resize
-       is cycle 4f scope (= z-order constraint requires sink
+       is deferred (= z-order constraint requires sink
        mutation or pre-emit-with-backfill).
-    6. ✅ **Unskip the production-pipeline test** (P1 #3) — shipped
-       in cycle 4b.
+    6. ✅ **Unskip the production-pipeline test** — shipped.
     7. ✅ **Forced-overflow flex re-route via `DispatchFlexInner`**
-       (PR-#83 review P1 #2) — shipped in cycle 4b hardening.
-       Forced-overflow flex containers (ineligible for the clamp,
+        — shipped.
+       Forced-overflow flex containers (ineligible for the clamp
        e.g., column / wrap-reverse / nowrap) now dispatch atomically
        through the helper instead of dropping items via
        `EmitBlockSubtreeRecursive` (which doesn't own flex inner
        layout).
-    8. ✅ **Shared `FlexLinePacker`** (P3 #8) — shipped in cycle 4c
-       (PR #84). One static `Pack` / `SumCrossExtent` (streaming
-       per PR-#84 review P2 #1) shared between BlockLayouter
+    8. ✅ **Shared `FlexLinePacker`** — shipped. One static `Pack` / `SumCrossExtent` (streaming
+       per) shared between BlockLayouter
        pre-measure + FlexLayouter emission. `FlexLine` promoted to
        internal at the namespace level. Axis mapping consolidated
-       to `FlexDirectionValueExtensions.GetAxisProperties` (PR-#84
-       review P3 #5).
+       to `FlexDirectionValueExtensions.GetAxisProperties` (
+        #5).
 
     `FlexContinuation` exists in
     `src/NetPdf.Paginate/LayoutContinuation.cs`; the data flow is
-    fully active for the production-shallow case post-cycle-4b,
+    fully active for the production-shallow case post
     with deeper-nesting + pixel-perfect cursor advancement tracked
     as the active follow-ons #4, #5 above.)
-- **Owner files** —
+- **Owner files**
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the `IsFlexContainer`
@@ -1586,168 +1496,141 @@ grepping the ID).
   - `src/NetPdf.Layout/Boxes/DisplayMapper.cs` — `display: flex`
     `/ inline-flex` → `BoxKind.FlexContainer` /
     `BoxKind.InlineFlexContainer`.
-  - `src/NetPdf.Css/properties.json` — the `align-content`,
-    `align-items`, `align-self`, `flex-direction`, `flex-wrap`,
-    `flex-grow`, `flex-shrink`, `flex-basis`, `justify-content`,
+  - `src/NetPdf.Css/properties.json` — the `align-content`
+    `align-items`, `align-self`, `flex-direction`, `flex-wrap`
+    `flex-grow`, `flex-shrink`, `flex-basis`, `justify-content`
     `order`, `min-width`, `max-width`, `min-height`, `max-height`
     properties (all cascade-parsed + honored at the layouter
-    through L17; `wrap-reverse` cross-axis reversal shipped in L11
+    through; `wrap-reverse` cross-axis reversal shipped
     with the proper SWAP formula).
-- **Trigger** — L2 picked up `justify-content`; L3 picked up
-  `align-items` (base values + stretch); L4 picked up
-  `flex-direction: column` + the F#1 hardening for column auto-
-  height wrappers; L5 picked up `flex-direction: row-reverse` +
+- **Trigger** — added `justify-content`; added
+  `align-items` (base values + stretch); added
+  `flex-direction: column` + the for column auto
+  height wrappers; added `flex-direction: row-reverse`
   `column-reverse` (the offset-flip transform at the per-item
-  emission site); L6 picked up `flex-wrap: wrap` (multi-line
-  greedy packing + per-line align math + sum-of-lines auto cross-
-  size); L7 picked up `align-content` (multi-line cross-axis
+  emission site); added `flex-wrap: wrap` (multi-line
+  greedy packing + per-line align math + sum-of-lines auto cross
+  size); added `align-content` (multi-line cross-axis
   distribution per CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6
-  — the seven base values + §8.4 stretch default; post-PR-#67
-  hardening F#1/F#2 added the multi-line gate per §9.4 and per-mode
-  overflow handling per §5.3; F#6 admitted the
-  `<baseline-position>` triple as a stretch approximation). Sub-
-  cycle L8 picked up `flex-grow` / `flex-shrink` / `flex-basis` (the
-  §7 + §9.7 flexibility algorithm — see the L8 entry above). Sub-
-  cycle L9 picked up `align-self` (per-item alignment override per
-  CSS Box Alignment L3 §4.3); sub-cycle L10 picked up the `order`
+  — the seven base values + §8.4 stretch default
+   / added the multi-line gate per §9.4 and per-mode
+  overflow handling per §5.3; admitted the
+  `<baseline-position>` triple as a stretch approximation). Sub
+  cycle added `flex-grow` / `flex-shrink` / `flex-basis` (the
+  §7 + §9.7 flexibility algorithm — see the entry above). Sub
+  cycle added `align-self` (per-item alignment override per
+  CSS Box Alignment L3 §4.3); picked up the `order`
   property (per CSS Flexbox L1 §5.4 — items reorder via stable sort
-  by (order, DOM-index)); L11 picked up `flex-wrap: wrap-reverse`
+  by (order, DOM-index)); added `flex-wrap: wrap-reverse`
   (proper cross-axis SWAP at offset-computation time per CSS Flexbox
-  L1 §6.3 — see PR-#71 hardening); L12 picked up the §9.7 step-4
-  min/max-width clamping iteration (closing the L8 known-gap pin).
-  L13 picked up the `flex` shorthand parser (CSS Flexbox §7.4)
+  L1 §6.3 — see); added the §9.7 step-4
+  min/max-width clamping iteration (closing the known-gap pin).
+  added the `flex` shorthand parser (CSS Flexbox §7.4)
   via a new `FlexShorthandExpander` wired into the preprocessor's
   recovery pass — closes the gap where AngleSharp.Css 1.0.0-beta.144
   only partially handles the shorthand (handles `flex: <number>`
   but not `flex: none` / `auto` / `<basis>` / two- and three-value
-  forms). L14 picked up the `CrossAxisFlow` refactor — pure refactor
+  forms). added the `CrossAxisFlow` refactor — pure refactor
   extracting the wrap-reverse swap formula out of FlexLayouter's
   emission loop into a `record struct CrossAxisFlow` with one
-  method (`PhysicalLineOffset`). Closes the L11 post-PR-#71 F#9
+  method (`PhysicalLineOffset`). Closes the
   TODO seam; zero behavior change; 7 new direct unit tests pin
-  the swap contract. L15 picked up anonymous-flex-item wrapping
-  per CSS Flexbox §4 (`BoxBuilder.FixupFlexAnonymousItems`);
-  L16 picked up the `flex-flow` shorthand parser via the new
-  `FlexFlowShorthandExpander`; L17 picked up proper cascade
+  the swap contract. added anonymous-flex-item wrapping
+  per CSS Flexbox §4 (`BoxBuilder.FixupFlexAnonymousItems`)
+  added the `flex-flow` shorthand parser via the new
+  `FlexFlowShorthandExpander`; added proper cascade
   source-order tracking for shorthand-vs-explicit-longhand
-  conflicts (§5 importance + §7.4 ordering). Task 16 cycles
+  conflicts (§5 importance + §7.4 ordering). cycles
   1-4 shipped end-to-end multi-page flex pagination:
-  cycles 1-3 wired the FlexLayouter resume contract +
+   wired the FlexLayouter resume contract
   `FlexContinuation` data flow + BlockLayouter dispatch
-  scaffolding; cycle 4a extracted `DispatchFlexInner`;
-  cycle 4b shipped the paginatable-flex extent clamp +
+  scaffolding; extracted `DispatchFlexInner`
+   shipped the paginatable-flex extent clamp
   flipped `allowPagination: true` (= production multi-page
-  split is ACTIVE; the cycle-2 production test is unskipped
-  + passing); cycle 4c extracted the shared `FlexLinePacker`
-  (DRY refactor). The remaining L18+ work picks up proper
+  split is ACTIVE; the production test is unskipped
+  + passing); extracted the shared `FlexLinePacker`
+  (DRY refactor). The remaining work picks up proper
   `<baseline-position>` alignment for both `align-items` and
   `align-content`, `min-width: auto` intrinsic resolution per
   CSS Sizing L3 §5.5, and `flex-basis: content` proper
   intrinsic-sizing integration — all blocked on per-item
-  content-size measurement, which is the underlying L19+
+  content-size measurement, which is the underlying
   intrinsic-sizing deferral.
-- **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L11+ ships the remaining
+- **Removal condition** — + ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
   `flex` shorthand / §9.7 min-max clamp / multi-page split /
-  anonymous flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
-  `align-content` (base values + §8.4 stretch default + post-PR-#67
-  per-mode overflow handling); L8 shipped the §7 + §9.7 flexibility
-  algorithm; L9 shipped `align-self`; L10 shipped `order`; L11
-  shipped `flex-wrap: wrap-reverse` (with the post-PR-#71 cross-axis
-  swap hardening); L12 shipped the §9.7 step-4 min/max-width
-  clamping iteration; L13 shipped the `flex` shorthand parser
+  anonymous flex item). shipped `flex-wrap: wrap`; shipped
+  `align-content` (base values + §8.4 stretch default
+  per-mode overflow handling); shipped the §7 + §9.7 flexibility
+  algorithm; shipped `align-self`; shipped `order`
+  shipped `flex-wrap: wrap-reverse` (with the cross-axis
+  swap); shipped the §9.7 step-4 min/max-width
+  clamping iteration; shipped the `flex` shorthand parser
   (CSS Flexbox §7.4) via a new `FlexShorthandExpander` wired into
-  the preprocessor's recovery pass; L14 shipped the `CrossAxisFlow`
+  the preprocessor's recovery pass; shipped the `CrossAxisFlow`
   refactor — extracted the wrap-reverse swap math out of
   FlexLayouter's emission loop into a one-method record
-  (`PhysicalLineOffset`) so the swap state has a named owner +
-  future writing-mode work picks up cleanly; L15 shipped
+  (`PhysicalLineOffset`) so the swap state has a named owner
+  future writing-mode work picks up cleanly; shipped
   anonymous flex-item wrapping per §4 — BoxBuilder's new
   `FixupFlexAnonymousItems` pass blockifies inline element
   children + wraps TextRun runs into anonymous block-level flex
-  items + drops whitespace-only TextRuns per §4; L16 shipped
+  items + drops whitespace-only TextRuns per §4; shipped
   the `flex-flow` shorthand parser (CSS Flexbox §6.1) via a new
   `FlexFlowShorthandExpander` wired into the preprocessor's
-  recovery pass (mirrors L13's `flex` shorthand pattern). Proper
+  recovery pass (mirrors `flex` shorthand pattern). Proper
   `<baseline-position>` alignment + `min-width: auto` intrinsic
   resolution + multi-page flex split (`FlexContinuation`) are
-  the natural L17+ candidates.
+  the natural candidates.
 
----
+
 
 ## fuzzing-infrastructure
 
 - **ID** — `fuzzing-infrastructure`
 - **Status** — `not-started`.
-- **Behavior** — Phase A-D's regression corpus + threat-model coverage
+- **Behavior** — the security regression corpus + threat-model coverage
   (215+ security tests) is the primary defense surface. No
   coverage-guided fuzzing is wired.
-- **Missing** — SharpFuzz + AFL++ harnesses for `HtmlParsingHost`,
-  `CssPreprocessor` / `CssParserAdapter`, `SelectorCompiler`,
-  `CalcResolver`, `VarSubstitution`, `ImageSafetyValidator`,
+- **Missing** — SharpFuzz + AFL+ harnesses for `HtmlParsingHost`
+  `CssPreprocessor` / `CssParserAdapter`, `SelectorCompiler`
+  `CalcResolver`, `VarSubstitution`, `ImageSafetyValidator`
   `FontSafetyValidator`, and `PdfPreflightValidator`. CI gate, crash
-  triage runbook, 30-day no-new-crashes window before the v1.0 tag.
-- **Trigger** — Phase 3 layout work complete (so the fuzz surface is
+  triage runbook, 30-day no-new-crashes window before the 1.0 tag.
+- **Trigger** — layout work complete (so the fuzz surface is
   stable + the engine is feature-complete enough to be worth fuzzing
   at the planned depth).
 - **Owner files** — `tests/NetPdf.Fuzz/` (existing project; needs the
   8 harnesses); CI workflow under `.github/workflows/` for the gate.
-- **Added** — Phase D PR #18 documented the deferral; carried into
-  `PROGRESS.md` § Pending pre-v1.0 work.
 - **Removal condition** — All 8 harnesses ship, CI gate green, 30-day
   no-new-crashes window observed.
 
----
 
-## In-progress work — pointer
 
-The scheduled Phase 3 work breakdown (Tasks 11–30 — `TableLayouter`,
-`MulticolLayouter`, `FlexLayouter`, `GridLayouter`, `AbsoluteLayouter`,
-page-margin boxes, `string()` / `running()` / `counter()`, diagnostics,
-W3C runner, corpus end-to-end render, performance tuning, `0.7.0-beta`
-tag) lives in
-[`docs/phases/phase-3-layout-and-pagination.md`](phases/phase-3-layout-and-pagination.md).
-Active state for whichever sub-cycle is in flight lives in
-[`PROGRESS.md`](../PROGRESS.md). This file deliberately does **not**
-duplicate either — they own the live status; this file owns the
-approximation/throw contracts.
-
-## GridLayouter (Tasks 17 + 18) — design pointer
-
-**Active design**:
-[`docs/phases/task-17-grid-design.md`](phases/task-17-grid-design.md)
-(v2 post-PR-#88 review). 8-cycle plan: cycle 0 = CSS infrastructure
-groundwork; cycles 1-7 = layouter feature progression (Hello World
-→ fr → intrinsic → minmax/repeat → multi-page → spans → named
-areas/dense).
-
-**Known cycle-internal approximations + deferrals** (= will be
-documented here in detail as each cycle ships; this entry just
-flags the categories):
+## GridLayouter — known approximations
 
 - **Intrinsic sizing for `auto` / `min-content` / `max-content` tracks**
-  (cycle 3) — approximated as item's declared dimension; zero for
-  items without explicit width/height. Closes when L19 content
-  measurement ships (same blocker as flex `min-width: auto`).
-- **Row-spanning items at page breaks** (cycle 5) — atomic-to-row-span
-  (= entire item defers if any spanned row would land on a later
-  page). Intra-row item splitting is post-v1.
-- **Subgrid** (CSS Grid L2 only) — out-of-scope for v1.
-- **Masonry** (CSS Grid L3 draft) — out-of-scope for v1.
+  approximated as the item's declared dimension; zero for items without
+  explicit width/height. Closes when full content measurement ships (same
+  blocker as flex `min-width: auto`).
+- **Row-spanning items at page breaks** — atomic-to-row-span (= the entire
+  item defers if any spanned row would land on a later page). Intra-row item
+  splitting is post-1.0.
+- **Subgrid** (CSS Grid L2 only) — out-of-scope for 1.0.
+- **Masonry** (CSS Grid L3 draft) — out-of-scope for 1.0.
 - **Cell-internal alignment** (`justify-self` / `align-self` on
   grid items) — separate Task that shares the
   `<self-position>` decoder with FlexLayouter.
-- **Baseline alignment** in grid cells — blocked on L18.
-- **`grid` shorthand parser** — Task 19/20 housekeeping post-cycle-7.
+- **Baseline alignment** in grid cells — blocked on.
+- **`grid` shorthand parser** — /20 housekeeping post-.
 
----
+
 
 ## grid-track-sizing-cycle3-narrowed-scope
 
 - **ID** — `grid-track-sizing-cycle3-narrowed-scope`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 3 + post-PR-#94
-  review hardening F4.
+- **Status** — `approximated`.
+  review.
 - **Behavior** — CSS Grid track sizing (CSS Grid Layout L1 §11) ships
   three track kinds via the shared `GridSizing` service:
   - **Length tracks** — fully spec-correct (resolved in §11.4
@@ -1755,93 +1638,89 @@ flags the categories):
   - **Flexible (`fr`) tracks** — §11.7 "Find the Size of an fr"
     with the spec-correct `flexFactorSum = max(SUM(factors), 1.0)`
     floor (the floor applies once to the TOTAL, not per-track).
-    Under an indefinite block axis fr collapses to zero +
+    Under an indefinite block axis fr collapses to zero
     `LayoutGridFrUnderIndefiniteApproximated001` fires.
-  - **Intrinsic (`auto` / `min-content` / `max-content`) tracks** —
+  - **Intrinsic (`auto` / `min-content` / `max-content`) tracks**
     a content-determined cell now CONTENT-measures both axes: ROW
     tracks size to the cell's content block extent at its column
-    width (#182), and COLUMN tracks size to the cell's MAX-CONTENT
-    inline extent measured unconstrained (grid content-width cycle,
-    branch `phase-3-riders-perpage-geometry-inline-img-grid-cols` —
+    width, and COLUMN tracks size to the cell's MAX-CONTENT
+    inline extent measured unconstrained (
+    
     `GridSizing.ItemOuterContribution` + the `widthMeasurer` closure).
-    A cell with a DECLARED dimension still uses it (the L19
+    A cell with a DECLARED dimension still uses it (the
     declared-dimension contribution + border + padding + margin), and
     the contribution is FLOORED at the item's absolute `min-height` /
-    `min-width` (grid min-height cycle — CSS Box Sizing §6.1; a %/keyword
+    `min-width` (CSS Box Sizing §6.1; a %/keyword
     min-* still reads 0, the chicken-and-egg gap).
-- **NOT in cycle 3 / still approximated** — explicitly deferred so the
+- **NOT in / still approximated** — explicitly deferred so the
   narrowed scope doesn't drift:
   - **Spec-strict §11.5 min-content vs max-content distinction** — the
-    content measurement above reports MAX-content for both axes;
+    content measurement above reports MAX-content for both axes
     `min-content` / `fit-content` / the available-width fit are
-    approximated by max-content (same L19 simplification). A spanning
+    approximated by max-content (same simplification). A spanning
     item now SUBTRACTS the fixed spanned tracks before distributing
-    (grid spanning-item distribution cycle, see
+    (see
     `grid-spanning-item-intrinsic-distribution-deferral`), but splits the
     remainder EQUALLY across intrinsic tracks, not proportional to headroom.
   - **§11.6 Maximize step** — the post-fr-resolution pass that
     grows base sizes up to growth limits when the grid has free
-    space + no fr tracks consumed it. Cycle 4 picks this up.
+    space + no fr tracks consumed it. picks this up.
   - **Auto-track stretch** — distributing leftover container space
     across `auto` tracks per `align-content` / `justify-content`
     `stretch`. Separate sub-task (CSS Box Alignment L3 §6) that
     shares its `<content-distribution>` decoder with the existing
     FlexLayouter path.
   - **`box-sizing: border-box`** — `GridSizing.ItemOuterContribution`
-    currently always treats declared width/height as content-box +
+    currently always treats declared width/height as content-box
     adds chrome. Honoring `box-sizing: border-box` (subtract
     border + padding from the declared dimension before adding to
     track sum) is part of the broader box-sizing pass that touches
     BlockLayouter + FlexLayouter symmetrically.
   - **Percentage track / item dimensions resolved against the grid's
-    indefinite axis** — the cycle-3 path treats percentages as 0 in
-    the indefinite case (the standard CSS Sizing L3 rule). Definite-
-    axis percentages already resolve through the existing computed-
+    indefinite axis** — the path treats percentages as 0 in
+    the indefinite case (the standard CSS Sizing L3 rule). Definite
+    axis percentages already resolve through the existing computed
     value path.
-- **Missing** — the five bullets above; plus the cycle-4+ track
-  kinds (`minmax()` / `fit-content()` / `repeat(integer)`) that
-  cycle 4 will add.
-- **Added** — Phase 3 Task 17 cycle 3 initial ship (intrinsic via
-  L19 approximation); cycle 3 post-PR-#94 review hardening F4
-  (= explicit narrowed-scope enumeration so reviewers + future me
-  don't read the cycle-3 XML doc as "intrinsic tracks fully shipped").
-- **Owner files** —
+- **Missing** — the five bullets above; plus the + track
+  kinds (`minmax` / `fit-content` / `repeat(integer)`) that
+   will add.
+- **Owner files**
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` — shared sizing
-    service (Length + Fr + intrinsic via L19); single source of
+    service (Length + Fr + intrinsic via); single source of
     truth for both pre-measure (BlockLayouter) and emit
     (GridLayouter).
   - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — thin emission
     wrapper; XML doc explicitly enumerates the narrowed scope.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs`
     `PreMeasureGridRowExtent` calls `GridSizing.Resolve` with
     `emit: null` so auto-height wrappers reserve intrinsic-row
     space without double-firing diagnostics.
-- **Trigger** — cycle 4 (this Task) ships `minmax()` / `fit-content()`
+- **Trigger** — (this Task) ships `minmax` / `fit-content`
   / `repeat(integer)` + activates the iterative §11.7 fr-removal
-  step. Cycle 5+ ships multi-page row split. The L19 deferral
+  step. ships multi-page row split. The deferral
   (true intrinsic content measurement) is the engine-wide blocker
-  that closes the L19 approximation here + in FlexLayouter
+  that closes the approximation here + in FlexLayouter
   simultaneously.
-- **Removal condition** — each bullet under "NOT in cycle 3"
+- **Removal condition** — each bullet under "NOT in "
   closes individually as the corresponding cycle/task ships. The
-  whole entry retires when L19 + §11.6 Maximize + auto-track
+  whole entry retires when + §11.6 Maximize + auto-track
   stretch + `box-sizing: border-box` + indefinite-axis percentage
   resolution are all in place; at that point the GridSizing
   service is the spec-complete §11 implementation and this
   enumeration becomes legacy documentation.
 
----
+
 
 ## grid-maximize-extra-space-receiver-deferred
 
 - **ID** — `grid-maximize-extra-space-receiver-deferred`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 4 + post-PR-#95
-  review H4.
+- **Status** — `approximated`.
+  .
 - **Behavior** — CSS Grid §11.5.1 "Distribute Extra Space" step 3
   says: after finite-growth-limit tracks freeze with leftover space
   remaining, distribute the remainder to "extra-space-receiver"
   tracks (intrinsic max-content tracks first, then fr tracks).
-  Cycle 4's `MaximizeTracks` skips tracks with infinite GrowthLimit
+  's `MaximizeTracks` skips tracks with infinite GrowthLimit
   entirely + leaves any post-freeze leftover unallocated.
 - **Missing** — the §11.5.1 step 3 second-pass distribution. When
   finite-limit tracks freeze with free space remaining + at least
@@ -1852,8 +1731,8 @@ flags the categories):
   spec compliance (probably alongside the auto-track stretch
   feature, since both require the same "distribute leftover"
   infrastructure).
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs`
     `MaximizeTracks` second-pass distribution.
 - **Practical impact** — small because intrinsic tracks WITH
   placed items get their GrowthLimit set to the contribution
@@ -1861,12 +1740,11 @@ flags the categories):
   the normal Maximize pass. The gap only manifests for degenerate
   empty-track-with-no-items cases (= the leftover just stays
   unused).
-- **Added** — Phase 3 Task 17 cycle 4 + post-PR-#95 review H4.
-- **Removal condition** — second-pass distribution implemented +
+- **Removal condition** — second-pass distribution implemented
   validated against a multi-track test where infinite-growth
   tracks correctly absorb post-freeze leftover.
 
----
+
 
 ## grid-box-sizing-border-box-deferred
 
@@ -1878,18 +1756,18 @@ flags the categories):
   size to the used BORDER box honoring `box-sizing` (CSS Basic UI 4 §10): `border-box` → the declared size
   IS the border box (floored at the chrome); `content-box` (initial) → declared + chrome (byte-identical
   to the prior `declared + chrome`). Consumers: `GridSizing.ItemOuterContribution`'s `ItemBorderBoxExtent`
-  (grid box-sizing cycle); `BlockLayouter`'s `DeclaredWidthToBorderBox` (#165, now delegating) + the
-  block/float explicit-HEIGHT border-box-block-size (box-sizing cycle); `TableLayouter.ReadColumnWidthPx`
+  ; `BlockLayouter`'s `DeclaredWidthToBorderBox` (now delegating) + the
+  block/float explicit-HEIGHT border-box-block-size; `TableLayouter.ReadColumnWidthPx`
   via the new `ColumnBorderBoxWidth` (a cell's declared width feeds the column via its border box); and the
-  FLEX item main/cross readers — `ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize` +
+  FLEX item main/cross readers — `ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize`
   `ResolveFlexItemMinMaxMainSize` (main), the emission cross-size read + `FlexLinePacker.CrossBorderBoxSize`
   (cross). The flex emission ALSO now insets a BLOCK-child item's content to the item's content box (=
   border-box origin + the new `InlineStartBorderPaddingPx`/`BlockStartBorderPaddingPx`); an INLINE-ONLY-root
   item's content fragment is left at the border-box origin (the nested `BufferingMeasureSink` flags it via
   `ContainsDecorationOwnerFragment` — `TextPainter` insets its glyphs + its measured extent already folds in
   the item's chrome, so re-insetting / re-adding chrome would double-count).
-- **Missing (residual flex approximations only)** —
-  - **Percentage padding** reads 0 in the flex chrome (`InlineBorderPaddingPx` uses `ReadLengthPxOrZero`,
+- **Missing (residual flex approximations only)**
+  - **Percentage padding** reads 0 in the flex chrome (`InlineBorderPaddingPx` uses `ReadLengthPxOrZero`
     matching the row-flex pre-measure convention) — so a flex item with a `%` padding under-counts chrome.
   - The content inset uses the **LTR horizontal-tb** physical mapping (inline-start = left, block-start =
     top), consistent with the rest of the flex emission's writing-mode / RTL approximation.
@@ -1901,10 +1779,10 @@ flags the categories):
     box-sizing on a PERCENTAGE grid-item size is moot there.
 - **Trigger** — a flex item with `%` padding, RTL/vertical writing mode, or a chrome'd flexing item where
   the border-box-space distribution visibly diverges from the spec.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/BoxSizingHelper.cs` — the shared declared→border-box mapping (box-sizing cycle).
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/BoxSizingHelper.cs` — the shared declared→border-box mapping.
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ItemOuterContribution` (grid's richer extent).
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width (#165) + height border-box-block-size + the two
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — width + height border-box-block-size + the two
     flex pre-measures (`PreMeasureFlexCrossExtent` / `PreMeasureFlexMainExtent`).
   - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — `ColumnBorderBoxWidth`.
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — emission cross-size + content inset (block-child only).
@@ -1915,186 +1793,177 @@ flags the categories):
 - **Practical impact** — RESOLVED for the audit's core: items using `box-sizing: border-box` (the modern
   norm for reset stylesheets like Bootstrap) now size correctly across all four layouters. The residuals
   above are niche.
-- **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
-  in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
-  formalized as a deferral entry; GRID side resolved in the grid box-sizing cycle; FLEX (the last layouter)
-  + the content inset resolved in the flex box-sizing / content-inset cycle.
 - **Removal condition** — the residual flex approximations (percentage-padding chrome, writing-mode/RTL
   inset, border-box-space main flex) + the grid `%`-size chicken-and-egg gap are all closed.
 
----
+
 
 ## grid-sizing-perf-optimizations-deferred
 
 - **ID** — `grid-sizing-perf-optimizations-deferred`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 4 + post-PR-#95
-  review P2 + P4 + P5.
-- **Behavior** — `GridSizing` has known hot-path allocation +
+- **Status** — `approximated`.
+   .
+- **Behavior** — `GridSizing` has known hot-path allocation
   computation patterns that are functionally correct but leave
   perf on the table:
-  - **P2 — Per-Resolve allocations**: `new List<TrackListItem>` in
+  - **Per-Resolve allocations**: `new List<TrackListItem>` in
     ExpandTrackList; `new List<TrackSizingInfo>` ×2; `new
     SizingContext`; `new TrackListNamedLine` per repeat iteration.
-    Cycle 4 hardening landed `stackalloc`-based frozen arrays +
+      landed `stackalloc`-based frozen arrays
     dropped dead `kindsOut` lists; remaining allocations are
     candidates for `ArrayPool<T>` rental.
-  - **P4 — `ItemOuterContribution` repeats 7 ComputedStyle reads
+  - **`ItemOuterContribution` repeats 7 ComputedStyle reads
     per item per intrinsic-track-resolution**. For a 50×50 grid
-    with 100 items + every track intrinsic, that's 35,000+
+    with 100 items + every track intrinsic, that's 35,000
     dictionary lookups per axis. Per-item caching of
     `(width, height, chromeWidth, chromeHeight, marginH, marginV)`
     on `PlacedItem` would eliminate the redundant reads.
-  - **P5 — O(N×M) inner loop in `ResolveIntrinsicTracks`**: for
+  - **O(N×M) inner loop in `ResolveIntrinsicTracks`**: for
     each track, scan all items. Acceptable for typical grids
     (small N, small M); worst-case
     `repeat(10000, auto)` with 10000 items → 1e8 operations.
     An inverted index `(axisIndex → IList<PlacedItem>)` built
     once before the loop drops this to O(N+M).
-- **Missing** — ArrayPool wiring; per-PlacedItem style cache;
+- **Missing** — ArrayPool wiring; per-PlacedItem style cache
   per-axis inverted-index for placed items.
 - **Trigger** — the dedicated grid perf-tuning task that's part
-  of Phase 3's general performance gate (3-page invoice ≤ 200ms
+  of 's general performance gate (3-page invoice ≤ 200ms
   p50 / 20-page report ≤ 1.5s p50). If those gates start
   regressing on grid-heavy fixtures, prioritize then.
-- **Owner files** —
+- **Owner files**
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` — all three
     optimization sites.
-- **Added** — Phase 3 Task 17 cycle 4 + post-PR-#95 review P2 +
-  P4 + P5.
 - **Removal condition** — perf gates remain green when grid-heavy
   fixtures are added to the bench suite.
 
----
+
 
 ## grid-sizing-architecture-followups-deferred
 
 - **ID** — `grid-sizing-architecture-followups-deferred`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 4 + post-PR-#95
-  review Q2 + Q4 + Q5.
+- **Status** — `not-started`.
+   .
 - **Behavior** — `GridSizing.cs` is 1300+ lines mixing repeat
   expansion, track classification, fr distribution, intrinsic
   resolution, Maximize, item placement, and diagnostic emission
   in one static class. Functionally correct + AOT-clean but
   could be split for clarity:
-  - **Q2** — `ClassifyEntry` is a closed-switch on track kind.
+  - — `ClassifyEntry` is a closed-switch on track kind.
     A `ITrackSizingStrategy` polymorphic dispatch was considered
-    but rejected because the closed-set discriminated-union +
+    but rejected because the closed-set discriminated-union
     switch is faster (no v-table) + more AOT-friendly. Trade-off
     is documented in the file's xmldoc; entry exists so a future
     reviewer doesn't re-litigate the decision.
-  - **Q4** — Split GridSizing.cs into:
-    `GridTrackExpander.cs` (ExpandTrackList + truncation),
-    `GridTrackClassifier.cs` (ClassifyEntry + ClassifyMinMax),
-    `GridTrackSizingPipeline.cs` (fr + intrinsic + Maximize),
+  - — Split GridSizing.cs into:
+    `GridTrackExpander.cs` (ExpandTrackList + truncation)
+    `GridTrackClassifier.cs` (ClassifyEntry + ClassifyMinMax)
+    `GridTrackSizingPipeline.cs` (fr + intrinsic + Maximize)
     `GridItemPlacer.cs` (RunPlacement + helpers). `GridSizing`
     becomes the orchestration entry-point only.
-  - **Q5** — `ItemOuterContribution` has duplicated row/col
+  - — `ItemOuterContribution` has duplicated row/col
     branches that could fold into a shared
     `AxisProperties record struct(PropertyId Size, PropertyId
-    Border1, PropertyId Pad1, ...)`. Drops ~25 lines.
+    Border1, PropertyId Pad1,...)`. Drops ~25 lines.
 - **Missing** — each refactor listed above.
-- **Trigger** — when adding cycles 5-7 (multi-page split, spans,
+- **Trigger** — when adding (multi-page split, spans
   named areas) becomes painful due to the file's size + mixed
   responsibilities. OR when a new contributor's onboarding pain
   surfaces the issue.
-- **Owner files** —
+- **Owner files**
   - `src/NetPdf.Layout/Layouters/GridSizing.cs`.
-- **Added** — Phase 3 Task 17 cycle 4 + post-PR-#95 review Q2 +
-  Q4 + Q5.
 - **Removal condition** — when the refactors land, the file
   splits exist, and the tests still pass with no behavioral
   change.
 
----
+
 
 ## grid-break-resolver-integration-deferred
 
 - **ID** — `grid-break-resolver-integration-deferred`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 5 + post-PR-#96
-  review F2 (full IBreakResolver wiring deferred).
+- **Status** — `approximated`.
+   (full IBreakResolver wiring deferred).
 - **Behavior** — `GridLayouter.AttemptLayout` accepts
   `IBreakResolver` + `LayoutAttemptStrategy` parameters as
-  required by the layouter interface, but cycle 5 hardening only
-  consults `LayoutAttemptStrategy` (= `LastResort` vs everything-
-  else gate for force-overflow per PR-#96 F1+F2 partial). The
+  required by the layouter interface, but only
+  consults `LayoutAttemptStrategy` (= `LastResort` vs everything
+  else gate for force-overflow per + partial). The
   resolver itself is not consulted: grid row boundaries are NOT
   registered as `BreakOpportunity` values; author break policy
   (`break-before` / `break-after` / `break-inside` on grid rows
   + items) is not honored; the cost-model optimizer can't
   influence grid-row break decisions.
-- **Missing** —
+- **Missing**
   - Model grid row boundaries as `BreakOpportunity` values
     registered with `IBreakResolver`.
   - Define grid rewind behavior explicitly (= what does the
     resolver do when `break-inside: avoid` on a row fires inside
     a grid? Does it walk back to the prior page-eligible row?).
-  - Honor `break-before` / `break-after` on grid items + auto-
+  - Honor `break-before` / `break-after` on grid items + auto
     break opportunities between rows per CSS Fragmentation L3 §5.
   - Restrict the §4.4 progress-rule overflow to `LastResort`
     behavior in the resolver itself (not just the layouter's
     strategy parameter).
 - **Trigger** — alongside CSS `break-before` / `break-after` /
   `break-inside` support for grid rows (= the property values
-  must first parse + resolve through the cascade; cycle 5+
-  hardening can then wire them into the resolver).
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+  must first parse + resolve through the cascade
+   can then wire them into the resolver).
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs`
     `ComputePaginatedRowRange` would consult the resolver per row.
   - `src/NetPdf.Paginate/IBreakResolver.cs` — may need a new
     `RegisterGridRowBoundary` API or extension of existing
     `RegisterBreakOpportunity`.
   - `src/NetPdf.Css/properties.json` — `break-before` /
     `break-after` / `break-inside` if not already registered.
-- **Practical impact** — cycle 5 ships row-by-row pagination
+- **Practical impact** — ships row-by-row pagination
   driven solely by geometry. Authors who use CSS break properties
   on grid items today (= rare in invoice/report use cases that
-  drive v1) see no effect. The cycle-5 LastResort gating (F1+F2
-  partial) is sufficient for the cycle 5b dispatch flow to be
+  drive 1.0) see no effect. The LastResort gating (
+  partial) is sufficient for the dispatch flow to be
   safe; the FULL resolver integration is a separate cycle's work.
-- **Added** — Phase 3 Task 17 cycle 5 + post-PR-#96 review F2.
 - **Removal condition** — `BreakOpportunity` integration ships
   + the resolver controls grid row breaks + CSS break-*
   properties are honored on grid rows / items.
 
----
+
 
 ## grid-fragment-plan-shared-sizing-deferral
 
 - **ID** — `grid-fragment-plan-shared-sizing-deferral`
-- **Status** — `approximated`. Phase 3 Task 17 cycle 5c.2b post-
-  PR-#100 review P2; **partially addressed in Task 18** (the
+- **Status** — `approximated`. post
+   ; **partially addressed in** (the
   cross-page row-extent memo landed; the full per-attempt plan
   stays deferred — see below).
 - **Behavior** — auto-height paginatable grids run
   `GridSizing.Resolve` up to three times per attempted fragment:
   (1) in `PreMeasureGridRowExtent` to grow the wrapper to
-  natural extent; (2) in F1's `PreMeasureGridRowExtentAt`
+  natural extent; (2) in `PreMeasureGridRowExtentAt`
   probe (when no incoming cache present); (3) inside
   `GridLayouter.AttemptLayout` for the actual dispatch.
-- **Task 18 finding (corrects the original premise)** — the
+- **finding (corrects the original premise)** — the
   three Resolves are NOT redundant duplicates; they take
   GENUINELY DIFFERENT inputs, so a naive "compute once, share
   across all three" would be **incorrect**: (1) uses an
   INDEFINITE block budget (`contentBlockSize: 1`) to compute
   the auto-height grid's natural extent — under indefinite
   block, `fr` rows collapse (CSS Grid §11.5), whereas (3) uses
-  the DEFINITE wrapper extent where `fr` rows expand to fill;
+  the DEFINITE wrapper extent where `fr` rows expand to fill
   the two produce different row sizes for `fr` grids (the
   chicken-and-egg that forces site 1 to be separate). (2) the
   probe passes NO content/width measurers, so its content-row
   sizes differ from (3)'s. The Length-only fixtures that "don't
-  surface it" are exactly the case where indefinite≡definite +
-  measurers don't matter. Additionally, the EXPENSIVE work —
+  surface it" are exactly the case where indefinite≡definite
+  measurers don't matter. Additionally, the EXPENSIVE work
   per-cell content SHAPING — is ALREADY shared across all three
   sites via `GridMeasurementCache` (the `MeasurePassCount`
   regression test pins it); the residual redundancy is only the
   §11/§8.5 ARITHMETIC, which is comparatively cheap.
-- **Task 18 (what landed)** — `PreMeasureGridRowExtent`'s
-  natural row extent is page-INVARIANT (indefinite block budget;
+- **(what landed)** — `PreMeasureGridRowExtent`'s
+  natural row extent is page-INVARIANT (indefinite block budget
   fixed inline + page budget), and a multi-page grid re-grows
   its wrapper on every page. That site-1 §11 pass is now
   memoized on `GridMeasurementCache.RowExtentSum` keyed by
-  (grid box, inline size, measure budget), so resume pages +
+  (grid box, inline size, measure budget), so resume pages
   rewind retries skip it entirely (the `RowExtentComputeCount`
   regression test pins "== 1 across a multi-page grid").
   Byte-identical (deterministic Resolve).
@@ -2109,40 +1978,38 @@ flags the categories):
   reftest sweep); a full per-attempt `GridFragmentPlan` is only
   correct for the definite-block sites (2+3), NOT site 1.
 - **Trigger** — when a benchmark on a large multi-page grid
-  shows measurable CPU regression vs cycle 5b atomic dispatch.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridMeasurementCache.cs` —
-    `RowExtentSum` memo + `RowExtentComputeCount` (Task 18).
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
-    `PreMeasureGridRowExtent` consults the memo;
+  shows measurable CPU regression vs atomic dispatch.
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/GridMeasurementCache.cs`
+    `RowExtentSum` memo + `RowExtentComputeCount`.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs`
+    `PreMeasureGridRowExtent` consults the memo
     `PreMeasureGridRowExtentAt` + `DispatchGridInner` would
     thread a definite-block plan for the 2+3 collapse.
-  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs`
     `ConfigureEmission` accepts a precomputed plan in lieu of
     running its own `Resolve`.
-- **Added** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
-  P2; partially addressed Phase 3 Task 18.
 - **Removal condition** — the site-2+3 definite-block collapse
-  lands AND a benchmark shows ≤ 1× CPU vs cycle 5b atomic
+  lands AND a benchmark shows ≤ 1× CPU vs atomic
   dispatch for paginatable-grid fixtures.
 
----
+
 
 ## recursive-block-continuation-consumed-extent-accounting-deferral
 
 - **ID** — `recursive-block-continuation-consumed-extent-accounting-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5c.2d
-  post-PR-#102 review P1/P2#2.
+- **Status** — `not-started`.
+   /.
 - **Behavior** — when a recursive grid (or flex / multicol /
   table) inside <see cref="EmitBlockSubtreeRecursive"/> emits
   some rows + returns `PageComplete(NestedContinuation)`, the
   recursion wraps the result into
-  `BlockContinuation(ResumeAtChild=childIdx,
+  `BlockContinuation(ResumeAtChild=childIdx
   ConsumedBlockSize=0, LayouterState=NestedContinuation)`
   before returning up the chain. The outer
   <see cref="AttemptLayout"/> then wraps the chain into
   PageComplete using the OUTER's UsedBlockSize delta — but
-  the recursive grid's F2-resized emission only updated
+  the recursive grid's -resized emission only updated
   `childCursor` (a local), NOT
   `fragmentainer.UsedBlockSize`. Result: continuation
   accounting reports a lower ConsumedBlockSize than actually
@@ -2155,12 +2022,12 @@ flags the categories):
   cost/extent metrics, ancestor continuation semantics, or
   following-sibling placement on resumed pages could see
   geometry inconsistency. The visible fragment emission is
-  correct (= rows render at the right offsets + F2 resizes
+  correct (= rows render at the right offsets + resizes
   the wrapper); only the continuation-chain's reported
   consumed extent diverges from the actual committed extent.
 - **Pre-existing scope** — this pattern exists today for flex
   + multicol recursive PageComplete propagation too; not
-  unique to grid. The cycle-5c.2d wiring surfaced the issue
+  unique to grid. The wiring surfaced the issue
   via the grid path but the fix needs to be uniform across
   all nested-container layouters.
 - **Missing** — recursion's return type extended from
@@ -2169,8 +2036,8 @@ flags the categories):
   `AttemptLayout` reads CommittedBlockExtent to advance
   `fragmentainer.UsedBlockSize` exactly once before
   wrapping the PageComplete. Mirrors the
-  <c>GridLayouter.LastEmittedBlockExtent</c> producer +
-  consumer contract from cycle 5c.1 but at the recursion
+  <c>GridLayouter.LastEmittedBlockExtent</c> producer
+  consumer contract from but at the recursion
   boundary.
 - **Trigger** — when downstream consumers of
   `BlockContinuation.ConsumedBlockSize` (= cost model
@@ -2178,33 +2045,31 @@ flags the categories):
   feature reading cumulative consumed extent) need accurate
   recursive accounting. Production renders are visually
   correct today.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs`
     `EmitBlockSubtreeRecursive` return type + the 3 recursive
     grid / flex / multicol PageComplete propagation sites.
-  - `src/NetPdf.Paginate/LayoutContinuation.cs` —
+  - `src/NetPdf.Paginate/LayoutContinuation.cs`
     BlockContinuation.ConsumedBlockSize semantics doc update.
-- **Added** — Phase 3 Task 17 cycle 5c.2d post-PR-#102 review
-  P1/P2#2.
 - **Removal condition** — recursion return type carries
   committed-extent; outer AttemptLayout advances
   fragmentainer.UsedBlockSize from the recursion's committed
   extent (NOT from MeasureSubtreeVisualBlockExtent's natural
-  extent) when a recursive paginated emit happened;
+  extent) when a recursive paginated emit happened
   end-to-end tests assert ConsumedBlockSize matches emitted
   extent for `<body><sibling><grid>...</grid></body>` shapes.
 
----
+
 
 ## grid-spanning-item-intrinsic-distribution-deferral
 
 - **ID** — `grid-spanning-item-intrinsic-distribution-deferral`
-- **Status** — `approximated` (FURTHER improved — post-PR-#185 review F1). The §11.5.1 "subtract the
+- **Status** — `approximated` (FURTHER improved —). The §11.5.1 "subtract the
   affected size of EVERY spanned track" step + order-independent planned increases now ship; the
   remaining gap is the PROPORTIONAL (vs equal) split of the remainder + growth-limit freezing + the
   separate max-content (growth-limit) spanning pass.
 - **Behavior** — A spanning item (= `grid-row: span N` or `grid-row: A / B` with `B - A > 1`) is resolved
-  in `GridSizing.DistributeSpanningItems` (post-PR-#185 review F1): `ResolveIntrinsicTracks` runs a
+  in `GridSizing.DistributeSpanningItems` : `ResolveIntrinsicTracks` runs a
   NON-spanning sub-pass first (each single-track item sizes its track), then this helper distributes each
   spanning item's `extra = max(0, itemContribution − Σ current base size of ALL spanned tracks)` EQUALLY
   across the spanned BASE-GROWING tracks (auto / min-content / max-content / fit-content / minmax with an
@@ -2212,7 +2077,7 @@ flags the categories):
   EVERY spanned track — including an intrinsic one a non-spanning item already sized AND a
   `minmax(<len>, auto)` track's fixed min — so a track already covering its share isn't re-grown (the
   first cut subtracted only NON-intrinsic tracks → double-counted an already-sized intrinsic track). A
-  `minmax(<fixed>, intrinsic)` track keeps its fixed-min base (only its growth limit grows, §11.5 step 4),
+  `minmax(<fixed>, intrinsic)` track keeps its fixed-min base (only its growth limit grows, §11.5 step 4)
   so it is subtracted but never a distribution target. Items are grouped by span count ASCENDING and each
   track's planned increase is the MAX over the items in its group, committed AFTER the group, so the
   result is ORDER-INDEPENDENT (§11.5.1).
@@ -2228,33 +2093,31 @@ flags the categories):
   min-content) AND the equal-share approximation produces
   visible mis-sizing (e.g., the spanning item over-grows the
   intrinsic tracks because the per-track equal share exceeds
-  what the spec would distribute after subtracting definite-
+  what the spec would distribute after subtracting definite
   track contributions).
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs`
     `DistributeSpanningItems` / `SpannedTrackCurrentBase` /
-    `TrackBaseGrowsFromIntrinsicMin` (post-PR-#185 review F1)
-    extended to add per-track growth-limit freezing +
+    `TrackBaseGrowsFromIntrinsicMin`
+    extended to add per-track growth-limit freezing
     proportional-to-headroom distribution + the separate
     max-content spanning pass.
-- **Added** — Phase 3 Task 18 cycle 6a; subtract-all-tracks +
-  order-independence in the post-PR-#185 review (this branch).
 - **Removal condition** — `DistributeSpanningItems` implements
   the §11.5.1 proportional-to-headroom split with growth-limit
   freezing + a test pins a case where the spanned intrinsic
-  tracks have DIFFERENT headrooms (e.g.,
+  tracks have DIFFERENT headrooms (e.g.
   `grid-template-columns: minmax(0, auto) minmax(0, 200px)`
   with a span-2 item of intrinsic 300px → spec distributes
   proportional to each track's max-content headroom, the equal
   split gives each 150 instead).
 
----
+
 ## grid-implicit-named-area-and-occurrence-syntax-deferral
 
 - **ID** — `grid-implicit-named-area-and-occurrence-syntax-deferral`
-- **Status** — `approximated` (NARROWED). Phase 3 Task 18 cycle 7b + the
-  residual-long-tail batch (occurrence syntax + end-edge span-by-name +
-  named-line-pair placement) + the PR #215 review (§8.3 forward implicit-line
+- **Status** — `approximated` (NARROWED). the
+  residual-long-tail batch (occurrence syntax + end-edge span-by-name
+  named-line-pair placement) + the (§8.3 forward implicit-line
   assumption, negative-start normalization, `(name, line)` dedup); the
   residuals below remain.
 - **Behavior** — `GridSizing.ReadPlacement` resolves `<custom-ident>`
@@ -2268,7 +2131,7 @@ flags the categories):
   - **`span <custom-ident>` / `span <custom-ident> <integer>`** (e.g.
     `grid-row-end: span foo`) — on the END edge with a definite start, spans
     to the Nth `foo` line strictly after the start (`ResolveSpanToNamedLine`).
-  - **§8.3 implicit-line assumption** (PR #215 review [P1]) — when fewer than
+  - **§8.3 implicit-line assumption** ([]) — when fewer than
     N explicit `foo` lines exist, a POSITIVE occurrence / forward span resolves
     through the implicit lines past the explicit grid's end edge (each assumed
     named `foo`), capped at `MaxImplicitTracksPerAxis`. So `foo 2` with one
@@ -2281,7 +2144,7 @@ flags the categories):
     line-name lookups (`<ident>-start` / `<ident>-end`), even with no
     `grid-template-areas` entry (the §8.4 implicit named area's PLACEMENT
     effect, achieved through the line map).
-- **Missing** —
+- **Missing**
   - **`span <custom-ident>` on the START edge with an AUTO / indefinite end**
     (e.g. `grid-row-start: span foo`, or `grid-row: auto / span foo`) — the
     span count depends on where auto-placement lands the opposite edge, so it
@@ -2302,55 +2165,51 @@ flags the categories):
 - **Trigger** — `grid-row-start: span foo` / auto-start span-by-name in the
   corpus, OR a consumer that reads `NameToRect` for an implicit (line-pair)
   area.
-- **Owner files** —
+- **Owner files**
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ReadPlacement` (start-edge
     span-by-name needs the auto-placement span count); `BuildNamedLineMap` /
     `Resolve` (= would intersect the two axes' line maps to register a
     `GridAreaRect` for matching `*-start` / `*-end` pairs).
-- **Added** — Phase 3 Task 18 cycle 7b (post-PR-#106 review); narrowed in the
-  residual long-tail batch when occurrence + end-span + line-pair placement
-  shipped.
 - **Removal condition** — `span <custom-ident>` resolves on the start / auto
   edge too (via the auto-placement span algorithm) AND the negative-occurrence
   start-side implicit fill is synthesised AND the implicit-area `GridAreaRect`
   is registered in `NameToRect` for `*-start` / `*-end` line pairs.
----
+
 
 ## abspos-cycle-1-explicit-only
 
 - **ID** — `abspos-cycle-1-explicit-only`
-- **Status** — `approximated`. Phase 3 Task 19 cycle 1 ships the
+- **Status** — `approximated`. ships the
   explicit-offset MVP; the rest of CSS Positioned Layout L3 §6 is
-  cycle 2+.
+  .
 - **Behavior** — `position: absolute` boxes are removed from normal
-  flow (don't advance the cursor, don't break margin adjacency) +
+  flow (don't advance the cursor, don't break margin adjacency)
   placed by `AbsoluteLayouter.ResolvePlacement` against the
-  establishing block's CONTENT box. Cycle 1 resolves ONLY explicit
+  establishing block's CONTENT box. resolves ONLY explicit
   pixel `top` + `left` + `width` + `height`. Any box using a deferred
   feature is DROPPED (no fragment) with
   `LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001` rather than mis-placed.
-- **Containing block (cycle 1)** — the establishing `BlockLayouter`'s
+- **Containing block** — the establishing `BlockLayouter`'s
   content area = the fragmentainer content box
   `(0, 0, contentInlineSize, blockSize)`. For the top-level layouter
   this coincides with the initial containing block AND with a
   positioned root's content box. Abspos descendants at ANY depth are
   collected by the top-level post-flow pass + anchored to this ICB.
-- **Missing** —
-  - ~~**Nearest-positioned-ancestor CB + ancestor walk**~~ — SHIPPED
-    in cycle 2a (+ post-PR-#113 review). An abspos box inside a
+- **Missing**
+  - ~~**Nearest-positioned-ancestor CB + ancestor walk**~~ — SHIPPED. An abspos box inside a
     `position: relative` (or any non-`static`) ancestor now anchors to
     that ancestor's PADDING box (`Box.Parent` walk + per-box geometry
-    recorded during in-flow emit at the block-flow + recursive +
+    recorded during in-flow emit at the block-flow + recursive
     forced-overflow emit sites; padding box = recorded border box
     inset by border widths). ICB remains the fallback when there's NO
-    positioned ancestor. Per PR-#113 review P1#1: when a positioned
+    positioned ancestor. Per : when a positioned
     ancestor IS found but its geometry wasn't recorded, the box is
     DROPPED + diagnosed (`LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001`)
     rather than misplaced at the ICB.
-    Per post-PR-#114 review P2#4: a positioned GRID ITEM / TABLE CELL /
+    Per : a positioned GRID ITEM / TABLE CELL /
     abspos box that is itself the root of a nested-BlockLayouter
     formatting context now resolves its OWN abspos descendants against
-    that nested layouter's ICB (= the positioned root's content area),
+    that nested layouter's ICB (= the positioned root's content area)
     rather than dropping them — the nested layouter owns + emits them
     exactly once, and the top-level pass stops at that delegation
     boundary (grid items + table cells/captions) so it doesn't
@@ -2358,7 +2217,7 @@ flags the categories):
     per-item nested BlockLayouter, so an abspos box inside a flex item's
     content is emitted by the top-level pass; adding flex to the
     boundary would DROP it.)
-    Per RC2 (travel-doc corpus fidelity, #277): a positioned **FLEX ITEM**
+    Per RC2 (travel-doc corpus fidelity,): a positioned **FLEX ITEM**
     now records its border-box geometry as it's emitted (a
     `recordPositionedGeometry` callback from the dispatching
     `BlockLayouter` into `FlexLayouter`), so an abspos box whose containing
@@ -2369,9 +2228,9 @@ flags the categories):
     recorded via the block-flow emit path, and a positioned grid ITEM via
     its nested BlockLayouter — so those work too.
     Remaining gaps (confirmed still-dropping on a re-render of the travel
-    corpus, so #277 was PARTIAL): ~~**(1)** an abspos box anchored to a
-    `position: relative` **block descendant nested inside** a flex item~~ —
-    **FIXED (batch-3 T2).** The flex item's content buffer flush
+    corpus, so was PARTIAL): ~~**(1)** an abspos box anchored to a
+    `position: relative` **block descendant nested inside** a flex item~~
+    **FIXED.** The flex item's content buffer flush
     (`BufferingMeasureSink.FlushTo`) now records positioned-CB geometry for
     every CB-establishing block descendant it flushes (via the same
     `recordPositionedGeometry` callback the item-level record uses), so an
@@ -2389,27 +2248,27 @@ flags the categories):
     descendant of a PAGE-SLICED flex item (row-nowrap taller-than-page)
     stays deferred, consistent with abspos-pagination. ~~**(4)** `position:
     absolute` inline-`<svg>` boxes anchored to a positioned block still drop
-    in `11-course-completion-certificate` (the `.corner` flourishes)~~ —
-    **FIXED (batch-3 T5).** The abspos inline boxes were being swept into an
+    in `11-course-completion-certificate` (the `.corner` flourishes)~~
+    **FIXED.** The abspos inline boxes were being swept into an
     anonymous inline-only block (`BoxBuilder.FixupAnonymousBlocks`) whose
     inline-only emit path never records positioned geometry → CB unresolved
     → dropped ×4. Out-of-flow boxes are now EXCLUDED from the anonymous-block
     run-wrapping (CSS 2.1 §9.2.4 — they don't participate in the inline/block
     split), so they stay direct children of the real positioned parent
     (whose geometry IS recorded). All four certificate corners now render.
-  - ~~**Whole-value `var()` shorthand — `border: var(--rule)`**~~ — **FIXED
-    (batch-3 T4).** A shorthand whose ENTIRE value is a single `var()` can't
+  - ~~**Whole-value `var` shorthand — `border: var(rule)`**~~ — **FIXED
+    .** A shorthand whose ENTIRE value is a single `var` can't
     be split into width/style/color before substitution, and AngleSharp.Css
     drops it. `CssPreprocessor` now recovers the SHORTHAND itself (not
     longhands — the "emit every longhand with the same var" trick that works
-    for `background: var(--x)` fails for `border`, whose resolved value is
+    for `background: var(x)` fails for `border`, whose resolved value is
     multi-token) so it reaches the cascade, and `VarResolver` expands the
     `border[-side]` shorthand into its width/style/color longhands AFTER
-    substituting the `var()` (the cascade's first + only shorthand-expansion
+    substituting the `var` (the cascade's first + only shorthand-expansion
     site; fires only for a whole-value-var border, so byte-identical
     otherwise). It fills only the SIDES the shorthand actually won the cascade
-    for: an EXPLICIT author longhand that wins a side (`border: var(--base)` +
-    a later `border-top-color: blue`, incl. `!important`) is left untouched —
+    for: an EXPLICIT author longhand that wins a side (`border: var(base)`
+    a later `border-top-color: blue`, incl. `!important`) is left untouched
     the cascade already ranked them, and the shorthand-derived longhand is
     recognizable by its empty raw value. `Whole_value_var_border_shorthand_*`
     (render, side, `..._yields_a_side_to_a_later_explicit_longhand`). **Known
@@ -2418,12 +2277,12 @@ flags the categories):
     longhand + drops the shorthand, and the recovery is suppressed when a
     same-side longhand precedes it) → that side keeps the explicit value
     rather than the reset. Rare; the dominant base-plus-override pattern is
-    correct. A COMPONENT var (`border: 1px solid var(--c)`) still takes the
+    correct. A COMPONENT var (`border: 1px solid var(c)`) still takes the
     preprocessor's pre-substitution longhand path.
-  - ~~**`position: relative` offset application (to the CB)**~~ —
-    SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
+  - ~~**`position: relative` offset application (to the CB)**~~
+    SHIPPED. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos
-    descendant's CB origin. Per post-PR-#114 review P1#2: PERCENTAGE
+    descendant's CB origin. Per : PERCENTAGE
     relative offsets resolve PER-AXIS — `left`/`right` against the
     ancestor's inline extent, `top`/`bottom` against its BLOCK extent
     (pre-fix both used the inline extent, shifting the block axis along
@@ -2432,15 +2291,15 @@ flags the categories):
     offsets to the relative box's own rendering is a separate
     relative-positioning slice.)
   - ~~**`auto` offset resolution (static position)**~~ — SHIPPED in
-    cycle 2b as an APPROXIMATION: `auto` insets resolve to the CB
+     as an APPROXIMATION: `auto` insets resolve to the CB
     content origin (offset 0), exact when the box would have been the
     first in-flow child. True static-flow-position tracking is a later
     refinement.
-  - ~~**`right`/`bottom` anchoring + over-constrained resolution**~~ —
-    SHIPPED in cycle 2b: the full CSS 2.1 §10.3.7 / §10.6.4 constraint
+  - ~~**`right`/`bottom` anchoring + over-constrained resolution**~~
+    SHIPPED: the full CSS 2.1 §10.3.7 / §10.6.4 constraint
     solver (right/bottom anchoring, over-constrained "ignore the end
-    inset" LTR/ttb rule, auto-margin centering). Per post-PR-#114 review
-    P1#1: the auto-margin centering applies the §10.3.7 negative-slack
+    inset" LTR/ttb rule, auto-margin centering). Per
+    : the auto-margin centering applies the §10.3.7 negative-slack
     rule on the INLINE axis only — an over-constrained over-wide box
     with both inline margins `auto` pins `margin-left` to 0 (LTR) and
     lets `margin-right` absorb the negative slack (stays anchored at
@@ -2448,23 +2307,23 @@ flags the categories):
     would shift it left of `left`). The BLOCK axis (§10.6.4) has no such
     clause and still centers even when the margins go negative.
   - ~~**Percentage** `top`/`left`/`width`/`height`~~ — SHIPPED in
-    cycle 2b (resolve against the CB inline / block extent).
-  - **`auto` width/height (true shrink-to-fit / content height)** —
-    cycle 2b approximates an `auto` size NOT pinned by both insets as
+     (resolve against the CB inline / block extent).
+  - **`auto` width/height (true shrink-to-fit / content height)**
+     approximates an `auto` size NOT pinned by both insets as
     the AVAILABLE extent (CB minus resolved insets + margins + chrome).
     The pinned-both-insets case (fill) is EXACT. True shrink-to-fit
     (inline) + content height (block) need intrinsic-size measurement
     (the speculative-measure machinery TableLayouter uses) — a later
-    refinement. Per post-PR-#114 review P2#3: when the end inset
+    refinement. Per : when the end inset
     (`right`/`bottom`) exceeds the CB and the available size goes
-    negative, the size clamps to 0 but the END anchor is PRESERVED —
+    negative, the size clamps to 0 but the END anchor is PRESERVED
     the box's start offset is recomputed from the end inset (a negative
     offset) instead of being re-pinned to the static position 0.
   - **Padding-box CB** — uses the recorded border box inset by border
-    widths = the padding box (correct). [Resolved cycle 2a.]
+    widths = the padding box (correct). [Resolved.]
   - **z-index paint ordering** — paints in source order; no z-index.
   - ~~**Pagination interaction (which page an abspos box belongs on)**~~
-    — **FIXED (cycle-2d).** The abspos pass now runs on EVERY committed
+    — **FIXED.** The abspos pass now runs on EVERY committed
     page (the `_incomingContinuation is null` first-page-only gate is
     gone); each page's pass resolves the boxes whose positioned
     containing block was recorded on THAT page (the geometry map is
@@ -2474,29 +2333,28 @@ flags the categories):
     shared `_crossPageEmittedAbsolute` set (owned by the pipeline, passed
     to each page's `BlockLayouter`) guards double-emit when a positioned
     CB is itself split across pages. This closed the travel-corpus abspos
-    drops wholesale: `03-itinerary` `.day .badge` circles (×8→0), `02`
+    drops wholesale: `03-itinerary` `.day.badge` circles (×8→0), `02`
     bullets, and `11` corners all render (0 abspos drops across the whole
     corpus). A companion fix: a TextRun / anonymous box that REUSES an
     abspos element's ComputedStyle (e.g. the text inside a badge) is no
     longer mistaken for an independently-positioned box in the nested
     content pass. `AbsPosAcrossPaginationTests`. STILL deferred: an
     abspos box TALLER than a page (its own content pagination).
-  - ~~**`position: fixed`**~~ — Task 20 cycle 1 SHIPPED (out-of-flow,
+  - ~~**`position: fixed`**~~ — SHIPPED (out-of-flow
     page/ICB CB, repeated on every page). See the `fixed-cycle-1`
-    deferral below for the cycle-1 scope + its deferred refinements.
+    deferral below for the scope + its deferred refinements.
 - **Trigger** — real corpus documents using positioned overlays /
   badges / watermarks beyond the explicit-offset MVP, OR a
   user-reported case.
-- **Owner files** —
+- **Owner files**
   - `src/NetPdf.Layout/Layouters/AbsoluteLayouter.cs` — placement math
     (extend to auto/percentage/right/bottom/auto-size).
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs`
     `EmitAbsolutelyPositionedChildren` /
-    `EmitAbsolutelyPositionedDescendants` (CB = nearest-positioned-
+    `EmitAbsolutelyPositionedDescendants` (CB = nearest-positioned
     ancestor padding box via the `Box.Parent` walk; pagination).
-  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` —
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
     `ReadPosition` / `EstablishesAbsoluteContainingBlock`.
-- **Added** — Phase 3 Task 19 cycle 1.
 - **Removal condition** — the nearest-positioned-ancestor padding-box
   CB resolution lands AND auto/percentage/right/bottom/auto-size are
   resolved per §6 AND a production-pipeline test pins
@@ -2506,7 +2364,7 @@ flags the categories):
 ## fixed-cycle-1
 
 - **ID** — `fixed-cycle-1`
-- **Status** — approximated (cycle-1 MVP shipped; refinements deferred)
+- **Status** — approximated (MVP shipped; refinements deferred)
 - **Spec** — CSS Positioned Layout L3 §4 / §6; CSS 2.1 §10.
 - **Behavior** — `position: fixed` boxes are removed from normal flow
   (via `IsOutOfFlow`, like absolute) and emitted by a separate post-flow
@@ -2520,28 +2378,28 @@ flags the categories):
   sub-layouter has a non-Root root box, so none of them run a fixed
   pass), so the walk descends into EVERY subtree — in-flow boxes, grid /
   flex / table items, `position: absolute` subtrees, and a fixed box's
-  own subtree (post-PR-#115 review P2#1) — emitting only fixed boxes
+  own subtree — emitting only fixed boxes
   (each page-anchored, exactly once); normal content + abspos boxes are
   emitted by their own passes. Out-of-flow children of grid / flex
   containers are excluded from item collection via `IsOutOfFlow`
-  (post-PR-#115 review P1), so a fixed direct child of a grid/flex
+  , so a fixed direct child of a grid/flex
   container is neither sized nor emitted as an item.
-- **Missing** —
+- **Missing**
   - **Transform/filter/will-change ancestor as CB** — a `transform` (or
     `filter`, `will-change`, `contain: paint`) ancestor captures fixed
     positioning per CSS Transforms L1 §3 → the fixed box's CB becomes
     that ancestor, not the page. Deferred: those properties aren't wired
-    into layout yet, so cycle 1 always uses the page (correct until they
+    into layout yet, so always uses the page (correct until they
     land).
   - **Page-margin-box / `@page` interaction, z-index paint order** — out
-    of scope for cycle 1 (z-index is shared with the abspos deferral;
-    `@page` margin boxes are Task 21+).
-  - **`overflow: hidden` clipping** — cycle 2 emits overflow per
+    of scope for (z-index is shared with the abspos deferral
+    `@page` margin boxes are).
+  - **`overflow: hidden` clipping** — emits overflow per
     `overflow: visible` (the default). Honoring `overflow: hidden` /
     `clip` on a fixed box (actually clipping the overflow) is a separate
     `overflow`-property feature, not yet wired.
-  - ~~**Fixed-box content overflow (clipped, not paginated)**~~ —
-    RESOLVED in cycle 2 (final design per post-PR-#116 review P1): fixed
+  - ~~**Fixed-box content overflow (clipped, not paginated)**~~
+    RESOLVED in (final design per): fixed
     content is dispatched with `FragmentainerContext.SuppressBlockPagination`
     — the break resolver returns `Continue` at every opportunity + float
     deferral is skipped, so content lays out in ONE pass and OVERFLOWS the
@@ -2549,46 +2407,45 @@ flags the categories):
     fragmentainer's `BlockSize` stays the box content-area height (NOT an
     inflated budget), so it remains the containing-block extent the §6
     solver uses for descendant percentage / `bottom` resolution — an
-    abspos child with `bottom: 0` or `height: 100%` anchors to the box,
+    abspos child with `bottom: 0` or `height: 100%` anchors to the box
     not to an artificial budget. (The initially-proposed inflated-budget
     approach was rejected in review because the §6 solver DOES resolve
     abspos `%`/`bottom` against the CB block extent, unlike normal-flow
     `ReadLengthPxOrZero`.)
   - ~~**Fixed inside an abspos / fixed subtree**~~ — RESOLVED
-    post-PR-#115 review P2#1: the root-owned walk now descends into
+     : the root-owned walk now descends into
     `position: absolute` + fixed subtrees, so a fixed box nested inside
     either is page-anchored + emitted exactly once.
-  - ~~**Fixed as a direct child of a grid / flex CONTAINER**~~ —
-    RESOLVED post-PR-#115 review P1: `GridSizing.IsGridItem` +
+  - ~~**Fixed as a direct child of a grid / flex CONTAINER**~~
+    RESOLVED : `GridSizing.IsGridItem`
     `GetFlexChildrenInOrderSequence` now exclude `IsOutOfFlow` (not just
     abspos). (Tables collect cells by `BoxKind.TableCell`; a fixed child
     is never a cell, so no analogous fix is needed.)
 - **Trigger** — corpus documents using fixed headers/footers/watermarks
   with overflowing content, transforms landing, OR a user-reported case.
-- **Owner files** —
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs`
     `EmitFixedPositionedChildren` / `EmitFixedPositionedDescendants` /
-    `EmitOneFixedBox`; the `_rootBox.Kind == Root` gate in `AttemptLayout`;
-    `DispatchAbsoluteChildContents` (cycle 2 `noPaginate` → suppress +
+    `EmitOneFixedBox`; the `_rootBox.Kind == Root` gate in `AttemptLayout`
+    `DispatchAbsoluteChildContents` (`noPaginate` → suppress
     `disableGridPagination`); the float-defer gate (~line 1180).
   - `src/NetPdf.Paginate/FragmentainerContext.cs` (`SuppressBlockPagination`)
     + `src/NetPdf.Paginate/BreakResolver.cs` (`ConsiderBreakAt` honors it).
-  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` —
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
     `IsFixedPositioned` / `IsOutOfFlow`.
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` (`IsGridItem`) +
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` (`IsGridItem`)
     `GetFlexChildrenInOrderSequence` — out-of-flow item exclusion.
-- **Added** — Phase 3 Task 20 cycle 1.
 - **Removal condition** — transform-ancestor CB capture lands AND
   `overflow: hidden` clipping is honored AND z-index paint order is
   resolved (shared with abspos). (Fixed-content natural-position overflow
-  shipped in cycle 2.)
+  shipped.)
 
 ## layout-to-pdf-pipeline
 
 - **ID** — `layout-to-pdf-pipeline`
 - **Status** — approximated (the public `HtmlPdf.Convert` facade renders
   end-to-end — HTML → layout → paint → PDF bytes — painting
-  `background-color` fills + `border-*` edges on a single page as of cycle 3;
+  `background-color` fills + `border-*` edges on a single page as of
   TEXT is not yet painted, so it's a partial approximation, not yet the full
   contract)
 - **Spec** — N/A (internal integration of the layout + PDF subsystems
@@ -2601,19 +2458,19 @@ flags the categories):
   scoping: **CSS font-property resolution → production text shaper →
   `BoxFragment`→PDF paint bridge → facade**. (The layout engine REQUIRES
   an `IShaperResolver`; the shaper needs resolved font properties.)
-- **Done — cycle 1 (production text shaper)** —
+- **Done (production text shaper)**
   `NetPdf.Shaping.HarfBuzzShaperResolver` implements the layout's
   `IShaperResolver` over a real font: resolves a face via `IFontResolver`
   / `SystemFontResolver` for a `ComputedStyle` + returns a cached
   HarfBuzz `HbShaper`, replacing the synthetic test resolvers. It reads
   `font-size` + `font-style` live (forward-compatible), so it honors real
-  CSS automatically once the resolvers in TODO 1 land. Post-PR-#117
-  review hardening: resolved bytes are validated through
+  CSS automatically once the resolvers in TODO 1 land. Post
+  resolved bytes are validated through
   `FontSafetyValidator` (rejecting garbage / oversized / WOFF / WOFF2)
   BEFORE HarfBuzz, like `FontFace.Load`; the cache + disposal are
   lock-guarded (a shared resolver is safe across parallel layout); and a
   non-synchronous `IFontResolver` FAILS FAST instead of blocking.
-- **Done — cycle 2 (background paint bridge + facade end-to-end)** —
+- **Done (background paint bridge + facade end-to-end)**
   `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` now render real
   PDF bytes (no longer throw): `Phase2Pipeline` → single-page
   `BlockLayouter.AttemptLayout` → `FragmentPainter` (the new
@@ -2625,9 +2482,9 @@ flags the categories):
   `PaginateToPublicDiagnosticsAdapter`, facade direct). Output is
   deterministic — text-free content shapes no glyphs, so the system-font
   dependency (TODO 4) does not affect the bytes. **BORDERS were in the
-  cycle-2 scope but were DEFERRED on discovery**: `border-*-width`
+   scope but were DEFERRED on discovery**: `border-*-width`
   (`PropertyType.LineWidth`) isn't resolved by `PropertyResolverDispatch`
-  yet (its documented "cycle 2 backlog", the same gap as `font-size`), so
+  yet (its documented " backlog", the same gap as `font-size`), so
   border edges can't be sized — wiring `LineWidth` is cross-cutting
   (changes border-box sizing + re-pins snapshots), so borders fold into
   TODO 1. The painter's border-edge design (style keyword ids
@@ -2638,7 +2495,7 @@ flags the categories):
   `PdfPage.FillRectangle` unit + 8 `HtmlPdf.Convert` integration
   (well-formed PDF / background painted / determinism / MediaBox / async
   parity / page count / overflow diagnostic / blank-text doc).
-- **Done — cycle 2 review hardening (PR #118)** — `HtmlPdfOptions.Timeout`
+- **Done** — `HtmlPdfOptions.Timeout`
   is honored: the facade wraps the render in a linked
   `CancellationTokenSource` (non-positive → immediate; timeout →
   `TimeoutException`; caller cancel → `OperationCanceledException`).
@@ -2650,11 +2507,11 @@ flags the categories):
   forced-overflow AllDone / negative offsets), not just the `PageComplete`
   continuation path. The HarfBuzz resolver trust boundary
   (`FontSafetyValidator` before HarfBuzz + synchronous-completion
-  fail-fast) was already in place from cycle 1 — unchanged, now reachable
+  fail-fast) was already in place from — unchanged, now reachable
   through the facade.
-- **Done — cycle 3 (border painting)** — `border-*-width`
+- **Done (border painting)** — `border-*-width`
   (`PropertyType.LineWidth`: thin/medium/thick → 1/3/5px + `<length>`) now
-  resolves in the cascade via the new `LineWidthResolver` (+ the line-width
+  resolves in the cascade via the new `LineWidthResolver` (the line-width
   properties joined `NonNegativeProperties`). The CSS B&B 3 §4.3 used-value
   rule — width 0 when `border-style` is none/hidden — is applied as a style
   gate in `ComputedStyleLayoutExtensions.ReadLengthPxOrZero` (the single
@@ -2664,102 +2521,102 @@ flags the categories):
   four border edges (full-span overlapping rects); non-`solid` painted styles
   render as solid + emit `PAINT-BORDER-STYLE-APPROXIMATED-001`. Ripple was
   contained to 12 box-model unit tests that set synthetic `border-*-width`
-  without a style (now declare `solid`) + the cycle-2 parity test (LineWidth
+  without a style (now declare `solid`) + the parity test (LineWidth
   moved to the resolved set); LayoutSnapshots + RealDocuments unaffected.
   Tests: `LineWidthResolverTests`, `BorderWidthStyleGateTests`, + facade
   border integration. `column-rule-width` also resolves (same type) but is
   unconsumed by layout, so it's a harmless unused slot.
-- **Done — cycle 4 (font-property resolution)** — `font-size` (absolute-size
+- **Done (font-property resolution)** — `font-size` (absolute-size
   keywords + absolute lengths in the dispatch; `em`/`%`/`larger`/`smaller`
-  resolved against the parent in the box-builder walk via `FontSizeResolver` +
+  resolved against the parent in the box-builder walk via `FontSizeResolver`
   the new `ResolveDeferredFontProperties` step), `font-weight` (keyword/number
   → integer; `bolder`/`lighter` against the parent) and `font-family` (a
-  side-table `FontFamilyList`, mirroring grid `TrackList`) now resolve;
+  side-table `FontFamilyList`, mirroring grid `TrackList`) now resolve
   `HarfBuzzShaperResolver` reads the resolved family + weight. **Ripple was
   tiny:** `medium`→16px keeps default-font-size content unchanged, so only 4
   expectation tests (which asserted these types were `UnsupportedUnvalidated`)
   needed updating — LayoutSnapshots (30) + RealDocuments (97) + all
-  text-measurement geometry were UNAFFECTED. Tests: `FontSizeResolverTests`,
-  `FontWeightResolverTests`, `FontFamilyListResolverTests`,
+  text-measurement geometry were UNAFFECTED. Tests: `FontSizeResolverTests`
+  `FontWeightResolverTests`, `FontFamilyListResolverTests`
   `FontPropertyResolutionTests` (em/%/bolder against the parent through the
   real pipeline). DEFERRED follow-ups: `rem`/`rlh` + viewport `font-size`
   (need the root font-size threaded through the walk) and general font-relative
   lengths on non-font properties (`padding:1em`, `width:10em`) — both still
   return `Deferred` (= 0 / 16px default) as before.
-- **Post-PR-#120 review — deferred follow-ups** (Roland's review of cycle 4; the
-  inherited-font-family P1 + the pseudo/marker/first-line/`br` resolution P2 were
-  fixed IN the PR, `795f544`). **DONE** — all five fixed in the cycle-4 review
-  follow-ups (PR #121):
-  - **(P1) `font-size: 0`** — FIXED via zero-advance shaping. `HbShaper` now accepts
+- **deferred follow-ups** (Roland's review of; the
+  inherited-font-family + the pseudo/marker/first-line/`br` resolution were
+  fixed IN the PR, `795f544`). **DONE** — all five fixed in the review
+  follow-ups :
+  - **`font-size: 0`** — FIXED via zero-advance shaping. `HbShaper` now accepts
     `fontSizePx == 0` (CSS Fonts 4 allows `[0, ∞]`); every advance/offset converts to
     0, so a `font-size: 0` run shapes to invisible, zero-width glyphs.
     `HarfBuzzShaperResolver` no longer snaps 0 → 16px (only a negative / non-finite
     size falls back). Tests: `HbShaper` zero-advance accept + resolver `font-size:0`
     honored.
-  - **(P2) `FontSizeResolver` over-defers invalid relative input** — FIXED. The new
+  - **`FontSizeResolver` over-defers invalid relative input** — FIXED. The new
     `ClassifyParentRelative` splits the numeric prefix from the EXACT unit before
     deferring: `-50%` / `-1em` / `-0.5ex` / `-2ch` (and malformed prefixes) emit
-    `CSS-PROPERTY-VALUE-INVALID-001` + return `Invalid` (→ falls back to inherited),
+    `CSS-PROPERTY-VALUE-INVALID-001` + return `Invalid` (→ falls back to inherited)
     while `rem` is no longer mistaken for an `em` suffix (it stays deferred via
     `LengthResolver`).
-  - **(P2) `FontFamilyListResolver` syntax strictness** — FIXED. The list is now
+  - **`FontFamilyListResolver` syntax strictness** — FIXED. The list is now
     parsed AND validated against the CSS Fonts `<family-name>` grammar: leading /
     trailing / doubled commas, unclosed quotes, junk after a quoted string, and
     digit- / punctuation-leading unquoted idents are `Invalid` + diagnostic (no longer
     silently sanitized). Quoted names + valid unquoted multi-ident names (incl.
     `-`/`_`-leading, e.g. `-apple-system`) still parse.
-  - **(P2) Font-family fallback stack** — FIXED. `HarfBuzzShaperResolver.ResolveFontBytes`
+  - **Font-family fallback stack** — FIXED. `HarfBuzzShaperResolver.ResolveFontBytes`
     walks the whole resolved stack in author order (`MissingFont, Arial, sans-serif`
     falls through to Arial), then the configured generic default last; the cache key
     keys on the full lower-cased stack. Test: stack-walk past a missing family.
-  - **(P3) Stale docs** — DONE. Refreshed the `HarfBuzzShaperResolver` class XML +
+  - **Stale docs** — DONE. Refreshed the `HarfBuzzShaperResolver` class XML
     `ShaperKey`/field docs, the `ResolverResult` UnsupportedUnvalidated backlog
     comment, the `FontFamilyListResolver` remarks, and a stale
     `HarfBuzzShaperResolverTests` comment; removed the now-dead `DefaultWeightCss` const.
-- **Post-PR-#121 review — font-property hardening follow-ups** (Roland's review of the
-  cycle-4 follow-ups). FIXED in the same PR:
-  - **(P2) CSS-wide keywords** — `FontFamilyListResolver` now rejects an UNQUOTED
+- **font-property follow-ups** (Roland's review of the
+   follow-ups). FIXED in the same PR:
+  - **CSS-wide keywords** — `FontFamilyListResolver` now rejects an UNQUOTED
     `inherit` / `initial` / `unset` / `revert` / `revert-layer` (via the new shared
     `CssWideKeyword.Is`, which `GridLineResolver` also delegates to) so it can't be
     stored as a literal family; a QUOTED `"inherit"` stays a valid family. `font-size` /
     `font-weight` already reject CSS-wide keywords (verified by tests).
-  - **(P2) CSS escapes** — `FontFamilyListResolver` decodes CSS Syntax 3 §4.3.7 escapes
+  - **CSS escapes** — `FontFamilyListResolver` decodes CSS Syntax 3 §4.3.7 escapes
     inside QUOTED strings (`"a\"b"`, `"\41 rial"`); the cache-key join in
     `HarfBuzzShaperResolver.FamilyStackKey` is now length-prefixed so a decoded name
     containing the separator can't alias.
-  - **(P3) Spaced dimensions** — `FontSizeResolver.TryParseNumber` rejects any
+  - **Spaced dimensions** — `FontSizeResolver.TryParseNumber` rejects any
     whitespace, so `2 em` / `50 %` are `Invalid` instead of slipping past the unit split.
   - **STILL-OPEN known gaps** (defense-in-depth + documented, not yet fully correct):
     - **CSS-wide on INHERITED font props** — `font-size`/`-family`/`-weight` are
       inherited, so the cascade's invalid-fallback yields the INHERITED value. Correct for
       `inherit` / `unset`; a gap for `initial` / `revert` (should reset to the property
       initial, e.g. `medium` / `serif`). The proper fix is a CENTRAL CSS-wide interceptor
-      in the cascade (substituting initial / inherited / previous-layer before dispatch) —
+      in the cascade (substituting initial / inherited / previous-layer before dispatch)
       a separate cycle's scope, shared with the grid resolvers' identical limitation.
     - **Unquoted-identifier escapes** — `FontFamilyListResolver`'s unquoted path does NOT
       decode escapes (e.g. `\32 Chains`); such names are rejected (safe — falls back to
       inherited, never mis-stored), consistent with `CssTokenizer`, which also defers
       escape decoding. A unified CSS-escape pass (tokenizer + string + ident decoders) is
       the right home.
-    - **`font-size: 0` text-paint guard** — DONE (cycle 5a-2-ii): zero-advance shaping is
+    - **`font-size: 0` text-paint guard** — DONE (2-ii): zero-advance shaping is
       correct for LAYOUT, and the `TextPainter` now skips glyph emission for any run whose
       resolved `font-size` is `≤ 0`, so a zero-sized run emits nothing (no invalid PDF text
       state). (`PdfPage.ShowGlyphs` independently tolerates a `0` `Tf` as an invisible run.)
-- **TODOs (remaining chain, in order)** —
-  1. **CSS font-property resolution** — DONE (cycle 4): `font-size` /
-     `font-family` / `font-weight` resolve (see the cycle-4 done note). A focused
+- **TODOs (remaining chain, in order)**
+  1. **CSS font-property resolution** — DONE : `font-size` /
+     `font-family` / `font-weight` resolve (see the done note). A focused
      follow-up remains for the deferred font-relative cases: `rem` / viewport
      `font-size` (root-font-size threading) + general `em`/`rem` lengths on
      non-font properties.
-  2. **Paint bridge** — DONE for `background-color` fills (cycle 2) +
-     `border-*` edges (cycle 3). **Text runs are now UNBLOCKED** — font-size /
-     family / weight resolve (cycle 4) and the shaper reads them; the PDF
+  2. **Paint bridge** — DONE for `background-color` fills
+     `border-*` edges. **Text runs are now UNBLOCKED** — font-size /
+     family / weight resolve and the shaper reads them; the PDF
      font-registration API (`PdfDocument.RegisterFont` + `PdfPage.AddFont`, the
-     deferred Phase 1 Task 22) landed in **cycle 5a-1**, so the PDF side of
+     deferred) landed in **-1**, so the PDF side of
      embedding a subset + referencing it from a page now exists. The text PAINT
-     bridge itself is **DONE — cycle 5a-2** (`5a-2-i` = the `PdfPage.ShowGlyphs`
+     bridge itself is **DONE — -2** (`5a-2-i` = the `PdfPage.ShowGlyphs`
      primitive; `5a-2-ii` = the `TextPainter`): it collects used glyph ids per
-     resolved font from `BoxFragment.InlineLayout` → subsets via `TtfSubsetter` +
+     resolved font from `BoxFragment.InlineLayout` → subsets via `TtfSubsetter`
      `EmbeddedTtfFont.Build` → `RegisterFont` → `PdfPage.AddFont` → emits
      `BT`/`Tf`/`Td`/`Tj` at baselines. The shaper is kept ALIVE past paint
      (`PdfRenderPipeline` made it method-scoped) so the painter subsets the EXACT
@@ -2767,73 +2624,73 @@ flags the categories):
      match. A run whose font can't be resolved/subset is skipped with
      `PAINT-TEXT-FONT-UNRESOLVED-001` (never a throw). Tested via the facade with a
      fixed `SyntheticFont` resolver (deterministic real glyphs). The bundled
-     deterministic fallback font (TODO 4 / cycle 5b) is still needed for the DEFAULT
-     facade path's determinism-for-text. **Post-PR-#127 review (folded in):** the shaper
+     deterministic fallback font (TODO 4 /) is still needed for the DEFAULT
+     facade path's determinism-for-text. **(folded in):** the shaper
      caches the resolved program size-independently so paint subsets the EXACT bytes
      layout shaped (no drift on a stateful resolver); font-resolution failures throw a
-     dedicated `FontResolutionException` caught as a pipeline backstop (valid PDF +
+     dedicated `FontResolutionException` caught as a pipeline backstop (valid PDF
      `PAINT-TEXT-FONT-UNRESOLVED-001`, never a throw); partial-alpha text is composited
      via `/ca` (`ShowGlyphs` gained an `alpha` param); and the program identity is a
      content hash so fallback stacks hitting the same face share one subset.
      **Deferred text refinements (a later cycle, e.g. 5c):** GPOS-adjusted per-glyph
      positioning (the first cut uses the embedded font's `/W` advances for inter-glyph
      spacing — "simple Td + Tj", Roland's pick); RTL visual-order line reversal; and
-     per-run baseline alignment on mixed-size / mixed-font lines (baseline is per-line,
+     per-run baseline alignment on mixed-size / mixed-font lines (baseline is per-line
      from the block line-height + the run font's ascent, mirroring `BlockLayouter`'s
      inline-only block model — there is no explicit baseline-Y in the IR).
-     Constant-alpha compositing is DONE (the Phase 4 paint-alpha pass:
-     partial-alpha background + border colors composite via PDF ExtGState `/ca` —
-     `PdfPage.FillRectangle` gained an `alpha` param + a per-page `/ExtGState` resource;
-     the `PAINT-*-ALPHA-APPROXIMATED-001` diagnostics are retired). Background images +
-     border-radius shipped; **Phase 4 native gradients shipped** — `linear-gradient` (PDF
+     Constant-alpha compositing is DONE (the paint-alpha pass:
+     partial-alpha background + border colors composite via PDF ExtGState `/ca`
+     `PdfPage.FillRectangle` gained an `alpha` param + a per-page `/ExtGState` resource
+     the `PAINT-*-ALPHA-APPROXIMATED-001` diagnostics are retired). Background images
+     border-radius shipped;** native gradients shipped** — `linear-gradient` (PDF
      ShadingType 2) + `radial-gradient` (ShadingType 3) backgrounds via
      `PdfDocument.RegisterAxialShading` / `RegisterRadialShading` + `PdfPage.PaintShadingInRect`.
-     (PR #209 review hardened these: FunctionType 3 `/Bounds` are strictly increasing for
+     (hardened these: FunctionType 3 `/Bounds` are strictly increasing for
      terminal/leading hard stops; `to <corner>` is aspect-ratio correct; radial `at <position>`
      classifies axes + rejects duplicate/misordered pairs; identical gradients share one color
      function/shading; multi-layer lists are rejected.)
-     **Phase 4 shadows + 2D transforms shipped** (PR 2): `box-shadow` (sharp → native filled
-     rounded rect; blurred → the Skia `ShadowRasterizer` bridge → image XObject + `/SMask`),
+     **shadows + 2D transforms shipped**: `box-shadow` (sharp → native filled
+     rounded rect; blurred → the Skia `ShadowRasterizer` bridge → image XObject + `/SMask`)
      `text-shadow` (offset glyph run under the text), and 2D `transform`
      (`translate`/`scale`/`rotate`/`skew`/`matrix` → a `cm` about `transform-origin` wrapping the
-     decoration + text passes). **Phase 4 PR 1 (gradient/shadow refinements) CLOSED:** conic /
+     decoration + text passes).** (gradient/shadow refinements) CLOSED:** conic /
      `repeating-conic` gradients (Skia sweep raster, `CSS-CONIC-GRADIENT-RASTER-001`, per-stop alpha
      preserved); `repeating-linear` / `repeating-radial` (native stop tiling); length-positioned
      color stops (px + absolute units; resolve against the gradient-line length); elliptical radial
      shaping via a CTM scale; `box-shadow` INSET (native even-odd ring sharp + a `DstOut`-hole Skia
      raster for blur). **Gradient refinements SHIPPED (PR — gradient-refinements):** double-position
-     stops (§3.4), color-interpolation HINTS (§3.4.2 — the exponential easing curve `mix(c1, c2,
+     stops (§3.4), color-interpolation HINTS (§3.4.2 — the exponential easing curve `mix(c1, c2
      t^p)` with `p = ln(0.5)/ln(H)`, SAMPLED as a row of stops with an exact stop pinned at the hint
      position and linear PDF interpolation between samples), and PER-STOP ALPHA on linear/radial (a translucent stop falls back
-     to a Skia raster — `LinearGradientRasterizer`/`RadialGradientRasterizer` → image + `/SMask`;
+     to a Skia raster — `LinearGradientRasterizer`/`RadialGradientRasterizer` → image + `/SMask`
      opaque stays the native shading). Stop colors interpolate in PREMULTIPLIED RGBA (§3.4.2) so a
      midpoint/boundary next to a (semi-)transparent stop doesn't bleed its RGB; a translucent gradient
      too large to raster is SKIPPED with `CSS-GRADIENT-ALPHA-UNSUPPORTED-001` (never dropped to an
-     opaque shading — PR #237 review [P1]). AngleSharp.Css drops a gradient carrying a hint or
+     opaque shading — []). AngleSharp.Css drops a gradient carrying a hint or
      double-position (incl. a FUNCTION-color double-position like `rgb(…) 10px 20px`), so
      `CssPreprocessor.ContainsDroppedStopSyntax` recovers the raw value via top-level token parsing.
      **Gradient `background-origin` / `-clip` AND `background-size` / `-position` / `-repeat` now HONORED**
      (linear / radial / conic, SINGLE-layer + multi-layer LAYER): origin/clip span / clip the shading to
      the origin / clip box, and a non-initial size/position/repeat TILES the shading (`ResolveGradientTileGrid`
-     reuses the `url()` image tiler's `TryParseBackgroundSize`/`Position` + `AxisTilingPlan`; each tile
+     reuses the `url` image tiler's `TryParseBackgroundSize`/`Position` + `AxisTilingPlan`; each tile
      re-paints the shading sized + positioned, clipped to its rect, inside the rounded clip box — repeat /
-     repeat-x / repeat-y / no-repeat / space / round). A gradient has no intrinsic size (CSS Images §4.3),
+     repeat-x / repeat-y / no-repeat / space / round). A gradient has no intrinsic size (CSS Images §4.3)
      so `auto`/`contain`/`cover` = the area + an auto axis = the area dimension. An unsupported VALUE (e.g.
      `em`) or a grid beyond `MaxGradientTiles` is diagnosed (`CSS-BACKGROUND-IMAGE-UNSUPPORTED-001`) and
      falls back to a single untiled paint. A box with no border/padding + initial size/position/repeat is
-     byte-identical to the prior single-paint. **Remaining gradient residuals (Phase 4 follow-ups):**
+     byte-identical to the prior single-paint. **Remaining gradient residuals (follow-ups):**
      per-stop alpha on a NATIVE shading (a soft-mask alpha shading) so a translucent gradient need not
      raster. (The **repeating-radial `closest-*` extent residual SHIPPED**: a `repeating-radial-gradient`
      under a `closest-side`/`closest-corner` extent now keeps repeating PAST the ending shape out to the
      box's farthest corner — the stop period is tiled + renormalized over the farthest-corner cover extent
      and the shading radius grows by the same factor; a `farthest-*` extent already reaches the corner, so
-     `coverExtent = 1` and it's unchanged.) **Remaining shadow / transform residuals (Phase 4 follow-ups):**
+     `coverExtent = 1` and it's unchanged.) **Remaining shadow / transform residuals (follow-ups):**
      (the **per-corner blur radii residual SHIPPED**: the outset + inset blur raster draws each corner's own
      elliptical radius via `SKRoundRect.SetRectRadii`, not one representative radius; the **box-shadow inset
      under box-decoration-break:slice residual SHIPPED**: an inset band is now computed over the WHOLE
      composite padding box + clipped per slice — continuous across cuts, like the outset path — a blurred
      inset on a slice falls back to a sharp ring); **`text-shadow` GLYPH BLUR + INHERITANCE shipped**
-     (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`,
+     (a blurred layer rasterizes the run's glyph outlines via `TextShadowRasterizer` → image + `/SMask`
      `CSS-TEXTSHADOW-BLUR-RASTER-001`; `text-shadow` inherits to descendant text) — the residual is an
      over-cap blurred run (or a font Skia can't read) falling back to a SHARP offset. **PER-SEGMENT
      rasterization on a JUSTIFIED line SHIPPED**: a justified line's BLURRED layers now rasterize ONCE per
@@ -2842,7 +2699,7 @@ flags the categories):
      the gaps; sharp layers stay per-word (they don't bleed), and a mixed blurred+sharp multi-layer line's
      blurred-vs-sharp z-order is a minor sub-residual. `transform` faithful 3D PROJECTION (genuinely-3D
      functions flatten to identity, not an orthographic projection) + the transformed-element
-     STACKING CONTEXT (the PR #210 [P1] fix made transforms SUBTREE-local — a box's effective `cm`
+     STACKING CONTEXT (the [] fix made transforms SUBTREE-local — a box's effective `cm`
      composes its ancestors' transforms via `TransformResolver`, so a child of a transformed element
      transforms too — but each fragment still wraps that `cm` independently, NOT as one isolated
      z-order group; a transformed ancestor split onto another page is also skipped). **`em`/`rem`/`%`
@@ -2850,52 +2707,52 @@ flags the categories):
      the root element font-size, a translate % against the box border-box at paint time — carried as a
      width/height fraction through matrix composition). The `NetPdf.Paint` `DisplayCommand` IR still has no
      fragment→command or command→PDF consumer — the bridge emits straight to `IContentStream`.
-     **Phase 4 PR 2 (CSS filters) shipped — IMAGES only:** `filter` on an `<img>` applies via the Skia
-     `ImageFilterApplier` (a composed `SKImageFilter` chain → raster XObject + `/SMask`,
+     **(CSS filters) shipped — IMAGES only:** `filter` on an `<img>` applies via the Skia
+     `ImageFilterApplier` (a composed `SKImageFilter` chain → raster XObject + `/SMask`
      `CSS-FILTER-RASTER-FALLBACK-001`): the ten functions (grayscale/sepia/invert/brightness/contrast/
      saturate/hue-rotate/opacity color matrices, `blur`, alpha-following `drop-shadow` with raster
-     bounds-expansion), chained in order. **Filter residuals (Phase 4 follow-ups):** (1) GENERAL
+     bounds-expansion), chained in order. **Filter residuals (follow-ups):** (1) GENERAL
      element-subtree filters (a filter on a `<div>` / text box) are DEFERRED with
-     `CSS-FILTER-ELEMENT-UNSUPPORTED-001` — they need a Skia SUBTREE RENDERER. **UPDATE (Phase 4 PR 5):
+     `CSS-FILTER-ELEMENT-UNSUPPORTED-001` — they need a Skia SUBTREE RENDERER. **UPDATE :
      the FOUNDATION of the subtree renderer now EXISTS — `NetPdf.Pdf.Images.SubtreeRasterizer` (SKCanvas →
      RGBA `RasterImageInfo` → XObject + `/SMask`), first used by the SVG renderer. The remaining work to
      close the general-element filter/mask/blend deferrals is to drive `FragmentPainter`/`TextPainter`
      subtree painting onto an `SKCanvas` (the `IPaintTarget` seam) and feed it through `SubtreeRasterizer`
-     — the raster bridge itself is no longer the blocker.** Roland's call (PR #226 follow-up) was "image
+     — the raster bridge itself is no longer the blocker.** Roland's call (follow-up) was "image
      filters first". This is the enabling capability for general filters AND masks AND complex clip-path.
-     **Phase 4 PR 5 shipped static SVG part 1** (`NetPdf.Svg.SvgRasterizer` → `SubtreeRasterizer`):
+     **shipped static SVG part 1** (`NetPdf.Svg.SvgRasterizer` → `SubtreeRasterizer`):
      `rect`/`circle`/`ellipse`/`line`/`polyline`/`polygon`/`path`/`<g>` with fill/stroke/stroke-width/
      `transform` + inherited presentation attrs, viewBox xMidYMid-meet, wired through `<img>` SVG sources
-     (`image/svg+xml` re-enabled — the renderer is XXE-safe, no script/external fetch). **Phase 4 PR 7
+     (`image/svg+xml` re-enabled — the renderer is XXE-safe, no script/external fetch).**
      shipped SVG part 2:** (a) gradient paint servers — `<linearGradient>`/`<radialGradient>` referenced by
-     `fill`/`stroke="url(#id)"` → Skia shaders, honoring `gradientUnits` (objectBoundingBox + userSpaceOnUse),
+     `fill`/`stroke="url(#id)"` → Skia shaders, honoring `gradientUnits` (objectBoundingBox + userSpaceOnUse)
      `spreadMethod`, `gradientTransform`, the `<stop>` list (offset/stop-color/stop-opacity), a radial focal
      point (`fx`/`fy`), and stop/attribute inheritance through an `href` chain; (b) `<text>`/`<tspan>` via
      Skia text shaping — `x`/`y`, per-run `dx`/`dy` + absolute `x`/`y`, `text-anchor`, the inherited font
      properties (family/size/weight/style), and fill/stroke incl. a gradient fill; (c) `<use>`/`<symbol>`/
      `<defs>` — `<use href="#id" x= y=>` clones a referenced shape/group/symbol with inherited paint, bare
      `<defs>`/`<symbol>` render nothing; plus `fill-opacity`/`stroke-opacity` and `skewX`/`skewY` transforms.
-     **SVG part 3 shipped:** `stroke-dasharray`/`-dashoffset`/`-linecap`/`-linejoin`/`-miterlimit`;
-     `<image>` from a `data:` URI (gated through `ImageSafetyValidator` — image/* MIME + encoded-size +
-     magic + declared-dimension + decoded-pixel caps; external/network href unsupported — no fetch);
-     `%`/`em`/`rem` geometry lengths on SHAPE / `<image>` / `<use>` / nested-`<svg>` (% vs the viewport,
+     **SVG part 3 shipped:** `stroke-dasharray`/`-dashoffset`/`-linecap`/`-linejoin`/`-miterlimit`
+     `<image>` from a `data:` URI (gated through `ImageSafetyValidator` — image/* MIME + encoded-size
+     magic + declared-dimension + decoded-pixel caps; external/network href unsupported — no fetch)
+     `%`/`em`/`rem` geometry lengths on SHAPE / `<image>` / `<use>` / nested-`<svg>` (% vs the viewport
      em/rem vs font-size — `<text>`/`<tspan>` coords stay px/unitless); element/group `opacity` (a SaveLayer
-     transparency layer); nested `<svg>` viewport (x/y/width/height clip + viewBox scale, xMidYMid meet —
+     transparency layer); nested `<svg>` viewport (x/y/width/height clip + viewBox scale, xMidYMid meet
      an explicit zero/negative size renders nothing). **SVG part 4 shipped:** `<use>` → `<symbol>`/`<svg>`
-     VIEWPORT clip + viewBox scale (use width/height else target else 100%, explicit-zero renders nothing);
+     VIEWPORT clip + viewBox scale (use width/height else target else 100%, explicit-zero renders nothing)
      `<text>`/`<tspan>` `%`/`em`/`rem` coordinate lengths (x/dx vs viewport width, y/dy vs height, em/rem vs the
-     run font-size); `clip-path="url(#id)"` element references (union the `<clipPath>`'s child geometry,
+     run font-size); `clip-path="url(#id)"` element references (union the `<clipPath>`'s child geometry
      `clipPathUnits` userSpaceOnUse default + objectBoundingBox via a computed bbox; a non-`<clipPath>` target
-     is flagged + left unclipped); `mask="url(#id)"` LUMINANCE masking (`<mask>` content rendered to a layer,
-     luma→alpha DstIn composited, `maskContentUnits` honored; non-`<mask>` target flagged + left unmasked);
+     is flagged + left unclipped); `mask="url(#id)"` LUMINANCE masking (`<mask>` content rendered to a layer
+     luma→alpha DstIn composited, `maskContentUnits` honored; non-`<mask>` target flagged + left unmasked)
      `<pattern>` paint servers (recursive tile rendered once into a Repeat/Repeat shader; `patternUnits` /
      `patternContentUnits` / `viewBox` / `patternTransform` / `href` content+attr inheritance; self-reference
-     depth-bounded; tile-area cap). **SVG part 5 shipped:** full `preserveAspectRatio` (none / meet / slice +
+     depth-bounded; tile-area cap). **SVG part 5 shipped:** full `preserveAspectRatio` (none / meet / slice
      the nine x/y MIN/MID/MAX alignments on `<image>` + nested viewports); `filter="url(#id)"` (a linear chain
      of `feGaussianBlur` / `feOffset` / `feColorMatrix` [matrix/saturate/hueRotate/luminanceToAlpha] → a Skia
-     image filter over the subtree; graph-routing primitives flagged); `marker-start`/`-mid`/`-end` (+ the
+     image filter over the subtree; graph-routing primitives flagged); `marker-start`/`-mid`/`-end` (the
      `marker` shorthand — markerWidth/Height/refX/refY/markerUnits/orient[auto/auto-start-reverse/angle]/
-     viewBox); `<textPath>` (glyphs along a referenced `<path>`, startOffset + text-anchor, tangent rotation);
+     viewBox); `<textPath>` (glyphs along a referenced `<path>`, startOffset + text-anchor, tangent rotation)
      SVG text `letter-spacing` / `word-spacing`. **SVG part 6 shipped:** group-inherited marker refs (markers
      cascade via the resolved style); `<textPath>` along ANY basic shape (not just `<path>`); per-glyph
      `rotate` (text/tspan, run-local index); `feDropShadow` filter primitive (blur + offset + flood-color/
@@ -2906,7 +2763,7 @@ flags the categories):
      missing custom `result` refs are treated as unspecified; the result is clipped to the DEFAULT filter
      region (bbox + 10%); the hand-built drop-shadow pattern works. **SVG part 8 shipped 5 more filter
      primitives:** `feMorphology` (erode/dilate via `CreateDilate`/`CreateErode`), `feComponentTransfer`
-     (identity/table/discrete/linear/gamma → a per-channel 256-entry `SKColorFilter.CreateTable`),
+     (identity/table/discrete/linear/gamma → a per-channel 256-entry `SKColorFilter.CreateTable`)
      `feDisplacementMap` (`CreateDisplacementMapEffect`), `feConvolveMatrix` (`CreateMatrixConvolution`, the
      SVG kernel reversed 180° + target mirrored — orientation is a first cut), and `feTurbulence`
      (turbulence/fractalNoise via `SKShader.CreatePerlinNoise*`). **SVG part 9 shipped:** `feDiffuseLighting`
@@ -2918,7 +2775,7 @@ flags the categories):
      size at the origin) and its decoded `SKImage` is held + disposed after the filter layer composites (no
      native leak); the filter region distinguishes an EMPTY region (zero/negative width/height → the element
      renders nothing, §15.7.4) from "no region", resolves `userSpaceOnUse` per-attribute with §15 defaults
-     (a partial/omitted attr stays in user space, not bbox math), and FLAGS an unknown `filterUnits` value;
+     (a partial/omitted attr stays in user space, not bbox math), and FLAGS an unknown `filterUnits` value
      lighting `kernelUnitLength` is FLAGGED; `mask-type` also reads an inline `style=`. **SVG part 11 closed 5
      residuals:** `feTile` (`CreateTile` — tiles the input primitive's subregion across the region); `feImage`
      ELEMENT references (`href="#id"` → the referenced subtree rendered to a region-sized raster, placed like a
@@ -2926,11 +2783,11 @@ flags the categories):
      objectBoundingBox` maps the subregion fractions, non-subregion remap stays partial→flagged); EXACT curve
      tangents for path markers (from the segment control points, not the chord); `textLength`/`lengthAdjust`
      (`spacing` + `spacingAndGlyphs`, single chunk — multi-chunk flagged). **SVG part 12 closed 5 residuals:**
-     the `mask` region clip (`maskUnits` objectBoundingBox[-10%..120%]/userSpaceOnUse hard-clips the element);
-     `primitiveUnits=objectBoundingBox` non-subregion remap (feOffset dx/dy, blur/drop-shadow stdDeviation,
+     the `mask` region clip (`maskUnits` objectBoundingBox[-10%..120%]/userSpaceOnUse hard-clips the element)
+     `primitiveUnits=objectBoundingBox` non-subregion remap (feOffset dx/dy, blur/drop-shadow stdDeviation
      feMorphology radius, feDisplacementMap scale scaled by the bbox — lighting position + `kernelUnitLength`
-     stay partial→flagged); `FillPaint`/`StrokePaint` (a solid-paint plane; gradient ref flagged) +
-     `BackgroundImage`/`BackgroundAlpha` (transparent) inputs; per-glyph `rotate` GLOBAL (cross-tspan) index;
+     stay partial→flagged); `FillPaint`/`StrokePaint` (a solid-paint plane; gradient ref flagged)
+     `BackgroundImage`/`BackgroundAlpha` (transparent) inputs; per-glyph `rotate` GLOBAL (cross-tspan) index
      `feTurbulence` `stitchTiles` (Skia stitched Perlin over the subregion). **SVG part 13 closed 5 residuals:**
      gradient + pattern `FillPaint`/`StrokePaint` (the resolved paint server renders as the input plane over the
      bbox; shader + backing tile tracked in the filter's owned-disposables); lighting light-source positions
@@ -2939,47 +2796,47 @@ flags the categories):
      horizontal scale about the start x). **SVG residuals (later):** `feTurbulence` exact noise sums; an external
      `feImage` href + lighting `kernelUnitLength`; the exact color space (`color-interpolation-filters` linearRGB
      vs the sRGB approximation); bidi/complex-script shaping (Skia default shaping only — no HarfBuzz integration); pattern tile resolution under
-     heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (a first cut SHIPPED —
-     opt-in `HtmlPdfOptions.NativeSvgRendering` draws a supported document [basic shapes + `<path>` + `<g>` +
+     heavy scaling (tile rendered at user resolution); native vector SVG → PDF operators (a first cut SHIPPED
+     opt-in `HtmlPdfOptions.NativeSvgRendering` draws a supported document [basic shapes + `<path>` + `<g>`
      `transform`s + solid fill/stroke + `fill-rule` via `style=`/attribute] as native PDF path
      ops via `SvgNativeEmitter`, all-or-nothing falling back to raster for gradients/text/`<use>`/filters/masks AND
      for any element (root/group/shape) carrying `opacity`<1 / `clip-path` / `mask` / `filter` / a marker ref
-     [PR-255 review], sharing the rasterizer's `MaxElements` DoS budget;
+     [ review], sharing the rasterizer's `MaxElements` DoS budget
      RESIDUAL = extend the native subset to those + object-fit:fill stretching [it uses the SVG's own
      preserveAspectRatio meet]), inline `<svg>` element layout integration (only `<img>`-sourced SVG renders). (2) blur / drop-shadow
-     lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size,
+     lengths are applied in the image's INTRINSIC pixel space (exact when displayed at ~intrinsic size
      approximate when heavily scaled — the filtered XObject is shared across placements so it can't
      depend on the display size); (3) the blur HALO is clipped at the image box (only drop-shadow
-     expands the raster bounds); (4) filters on BACKGROUND images (the tiler path) aren't filtered;
-     (5) `filter: opacity()` → native PDF `/ca` ExtGState (native element `opacity` + `mix-blend-mode` SHIPPED;
-     `filter: opacity()` as a filter-function still routes through the raster path); (6) `url()` SVG-filter
+     expands the raster bounds); (4) filters on BACKGROUND images (the tiler path) aren't filtered
+     (5) `filter: opacity` → native PDF `/ca` ExtGState (native element `opacity` + `mix-blend-mode` SHIPPED
+     `filter: opacity` as a filter-function still routes through the raster path); (6) `url` SVG-filter
      references. **Native element `opacity` SHIPPED** (`PdfPage.BeginConstantAlpha` — a `/ca`+`/CA` ExtGState on
      the decoration/image + the alpha folded into glyph fill). Its rendering effect now applies to the whole
-     DESCENDANT SUBTREE [PR-255 review [P1]] — the product of ancestor opacities is threaded down the box tree so
+     DESCENDANT SUBTREE [ ] — the product of ancestor opacities is threaded down the box tree so
      a faded parent fades a child's decoration / image / text even when the child declares no opacity (nested
-     opacity multiplies). The CSS-wide keywords resolve locally [PR-256 review [P2]] — `inherit` → the parent's
+     opacity multiplies). The CSS-wide keywords resolve locally [ ] — `inherit` → the parent's
      computed opacity, `initial`/`unset`/`revert`/`revert-layer` → 1 (`ResolveOpacity`), until a central cascade
      interceptor lands. RESIDUAL: it's a PER-OBJECT constant alpha multiplied down the tree, not an isolated
      transparency GROUP, so a self-overlapping element composites slightly differently than group opacity
-     (`CSS-OPACITY-GROUP-APPROXIMATED-001`); the faithful group needs a transparency-group Form XObject —
+     (`CSS-OPACITY-GROUP-APPROXIMATED-001`); the faithful group needs a transparency-group Form XObject
      the IPaintTarget seam.
-     **Phase 4 PR 3 (borders + clip-path) shipped — 4 of 5 tasks:** faithful `dashed`/`dotted` borders
+     **(borders + clip-path) shipped — 4 of 5 tasks:** faithful `dashed`/`dotted` borders
      (a new `PdfPage.StrokeLine` dash-stroke primitive), `double` + the 3D `groove`/`ridge`/`inset`/
      `outset` styles (dark ×0.5 + light shades), and `clip-path` basic shapes (`inset`/`circle`/
      `ellipse`/`polygon`) clipping the box decoration + the `<img>` image via native PDF clips
-     (`BeginPolygonClip`/`BeginEllipseClip`). A PR-3 review then shipped stroke-alpha `/CA` for dashed/dotted
+     (`BeginPolygonClip`/`BeginEllipseClip`). A review then shipped stroke-alpha `/CA` for dashed/dotted
      borders + outlines, `polygon(evenodd)` → `W* n`, `CSS-CLIP-PATH-UNSUPPORTED-001`, dotted `[0 2w]` round
-     dots, and circle()/ellipse() `closest-side`/`farthest-side`. **Phase 4 PR 4 (compositing + navigation)
+     dots, and circle/ellipse `closest-side`/`farthest-side`.** (compositing + navigation)
      shipped — 5 tasks:** `border-image` 9-slice (stretch), `mask`/`mask-image` on `<img>` (Skia alpha →
      `/SMask`), `mix-blend-mode` (native `/BM` ExtGState), hyperlink `/Link` annotations (`<a href>` → `/URI`
-     behind the preflight's narrow opt-in), document outline (`<h1>`–`<h6>` → `/Outlines`). **PR-4 residuals:**
+     behind the preflight's narrow opt-in), document outline (`<h1>`–`<h6>` → `/Outlines`).** residuals:**
      (1a) **border-image completion shipped (border-image-completion PR):** edge TILING (`repeat`/`round`/
-     `space`) now tiles the edges (`repeat` = whole tiles centered + clipped; `round` = exact-fit scaling;
+     `space`) now tiles the edges (`repeat` = whole tiles centered + clipped; `round` = exact-fit scaling
      `space` = whole tiles with equal gaps, or paint-nothing when not one fits), and `border-image-width`
      (length / number / `%` / `auto`) + `border-image-outset` (length / number) are honored — the
      "approximated sub-feature" diagnostic is GONE. **Remaining border-image residuals:** the `fill` keyword
-     CENTER is still STRETCHED (not tiled); a non-`url()` (gradient) source stays unsupported
-     (`CSS-BORDER-IMAGE-UNSUPPORTED-001`, only `url()`); per-corner border-image-width clamping is a simple
+     CENTER is still STRETCHED (not tiled); a non-`url` (gradient) source stays unsupported
+     (`CSS-BORDER-IMAGE-UNSUPPORTED-001`, only `url`); per-corner border-image-width clamping is a simple
      per-axis proportional reduce. (1b) `mask` only on
      `<img>` (general elements → `CSS-MASK-ELEMENT-UNSUPPORTED-001`; luminance masks + filter+mask combined need
      the subtree renderer / SVG); (1c) `mix-blend-mode` blends DECORATION only + sets `/BM` directly (faithful
@@ -2992,16 +2849,16 @@ flags the categories):
      `outset`) on the rounded-ring + outline paths stay a solid-ring approximation — their per-SIDE bevel
      shading can't follow a concentric rounded ring (`PAINT-BORDER-STYLE-APPROXIMATED-001` now fires ONLY
      for 3D); a per-edge-mixed style on a rounded box falls to the per-edge clipped path. (3) **`clip-path:
-     path("…")` SHIPPED (clip-path-completion PR)** — the SVG path is parsed (Skia `SKPath.ParseSvgPathData`),
+     path("…")` SHIPPED (clip-path-completion PR)** — the SVG path is parsed (Skia `SKPath.ParseSvgPathData`)
      converted to PDF path operators in the box's coordinate space (curves preserved: quad → cubic, conic →
      cubics), and applied as a NATIVE `W n` / `W* n` clip on the decoration AND the `<img>` image; the
-     `path([<fill-rule>,]? …)` fill-rule selects the clip rule; `inset()` round now uses PER-CORNER radii (was
+     `path([<fill-rule>,]? …)` fill-rule selects the clip rule; `inset` round now uses PER-CORNER radii (was
      a single uniform radius). `CSS-CLIP-PATH-RASTER-FALLBACK-001` now fires ONLY when the path string can't be
      parsed. (4) a `clip-path` on an element with CHILDREN clips only its OWN decoration, not the
      descendant subtree (`CSS-CLIP-PATH-SUBTREE-UNSUPPORTED-001` — the same Skia SUBTREE RENDERER the
      general element filters / masks need); (5) clip-path dash/3D-border metrics are browser-tunable
-     approximations the visual-regression harness (PR 8) will refine.
-  3. **Facade** — DONE for the single-page path (cycle 2:
+     approximations the visual-regression harness will refine.
+  3. **Facade** — DONE for the single-page path (
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area
      from `HtmlPdfOptions`). REMAINING:
@@ -3017,13 +2874,13 @@ flags the categories):
        with all 7 fragments (1200px, overflowing), page 1 = `AllDone` with 0 fragments.
        Since every facade document nests content under `html → body`, real content can't
        paginate until **nested-container fragmentation** lands in `BlockLayouter` (a
-       substantial Phase 3 layout task — NOT a pipeline change). Until then, content past
+       substantial layout task — NOT a pipeline change). Until then, content past
        the first fragmentainer is clipped + surfaced via `PDF-CONTENT-OVERFLOW-TRUNCATED-001`.
-       **UPDATE (multi-page driver cycles 1–2 — DONE):** nested-container fragmentation landed —
+       **UPDATE (multi-page driver — DONE):** nested-container fragmentation landed
        `EmitBlockSubtreeRecursive` consults the resolver before each plain BLOCK-FLOW child + returns a
        `BlockContinuation` on block-axis overflow, so nested block content paginates at child boundaries at
-       arbitrary depth. **CORRECTION (non-block-pagination audit — the cycle-8 "non-block modes don't
-       paginate" finding was a FALSE NEGATIVE):** the cycle-8 probe used explicit cell/item heights, which
+       arbitrary depth. **CORRECTION (non-block-pagination audit — the "non-block modes don't
+       paginate" finding was a FALSE NEGATIVE):** the probe used explicit cell/item heights, which
        collapse to ~one text-line tall (a `<td><div style="height:200px">` renders short), so its test
        containers never exceeded one page — it concluded "no pagination" when the wiring was actually present.
        An empirical re-audit (facade tests in `HtmlPdfConvertTests`, genuinely page-exceeding content) found:
@@ -3033,17 +2890,17 @@ flags the categories):
        (`GridContinuation` propagates via `IsPaginatableGrid`). These are now pinned at the facade level.
        **The genuine gaps were FLEX-COLUMN and GRID-with-implicit-rows.**
        **FLEX-COLUMN — DONE (non-block-pagination arc):** a tall `flex-direction: column` + nowrap container
-       now splits at flex-ITEM boundaries (`FlexLayouter` main-axis item split → `FlexContinuation.ItemIndex`,
+       now splits at flex-ITEM boundaries (`FlexLayouter` main-axis item split → `FlexContinuation.ItemIndex`
        propagated by `BlockLayouter` with a natural-size / page-budget DUAL-INPUT mirroring the grid page-budget
        so flex resolution sizes items naturally instead of shrinking them to fit the page). `IsPaginatablePerStyle`
        now accepts column-nowrap; column-reverse + column-wrap stay atomic (documented below).
        **GRID with IMPLICIT rows — DONE (non-block-pagination completion):** a grid sized by IMPLICIT tracks
        (`grid-auto-rows` / auto-placed rows, NOT `grid-template-rows`) now paginates too. The wrapper
-       pre-measure `PreMeasureGridRowExtent` no longer early-returns 0 on an empty `grid-template-rows` —
+       pre-measure `PreMeasureGridRowExtent` no longer early-returns 0 on an empty `grid-template-rows`
        `GridSizing.Resolve` already generates implicit tracks (CSS Grid §7.4), so the natural row extent is now
        measured for explicit AND implicit rows, the wrapper overflows, and the (already-wired) grid pagination
        engages. Covered at the recursion path, with `1fr` columns, and as the root's direct child (outer
-       dispatch). **REMAINING — prioritized backlog (each is its own substantial / risky standalone task;
+       dispatch). **REMAINING — prioritized backlog (each is its own substantial / risky standalone task
        investigated + deferred to keep this PR's regression surface small):**
        1. **flex item CONTENT layout — DONE** (highest value; flex/grid item-content + spurious-overflow PR).
           `FlexLayouter` now lays out each flex item's inner content (text / block children) via a nested
@@ -3060,15 +2917,15 @@ flags the categories):
           wrapper overflow that engages pagination; explicit-height columns DO paginate + render); ROW main-axis
           content-WIDTH (max-content) sizing (row auto-width items keep their flex-resolved width, content
           overflows a narrow box — grid's zero-cell contract). **`flex-grid-item-content-border-box-placement`
-          (named deferral, PR-#182 review P3):** the nested content is placed at the item's BORDER-box origin —
+          (named deferral,):** the nested content is placed at the item's BORDER-box origin
           its own padding / border are NOT inset (content overflows into the padding strip), mirroring grid's
-          cycle-1 approximation; pinned by `Flex_item_own_margin_and_padding_do_not_offset_inline_content`.
-          **PR-#182 review HARDENING (landed in the same PR):** **(P1)** a new `BlockLayouter`
+           approximation; pinned by `Flex_item_own_margin_and_padding_do_not_offset_inline_content`.
+          **HARDENING (landed in the same PR):** a new `BlockLayouter`
           `disableFlexPagination` flag (mirrors `disableGridPagination`) — nested content callers
           (`NestedContentMeasurer`, `DispatchGridItemContents`, the table cell) DISCARD the layout result, so an
           un-suppressed nested column-flex split would `PageComplete(FlexContinuation)` + silently DROP the
           deferred items; now the nested flex is atomic (content overflows). The flex subtree-extent projection
-          is gated by it too. **(P2)** flex item content diagnostics are BUFFERED per item + flushed only when
+          is gated by it too. flex item content diagnostics are BUFFERED per item + flushed only when
           the item COMMITS (a deferred item's buffer is discarded + re-generated on its page) — no longer
           suppressed (`diagnostics: null`) nor duplicated across pages. **(Copilot)** the nested-content root's
           OWN margins are SUPPRESSED (`DispatchInlineOnlyBlock(suppressOwnMargins:true)`) so a margined item's
@@ -3083,15 +2940,15 @@ flags the categories):
           (a row-spanning intrinsic item would otherwise re-measure per track). Grid items also opt into
           `layoutRootInlineContent` so inline-text cells render. STILL DEFERRED: content-WIDTH (max-content)
           COLUMN sizing (columns stay declared-width-only); the `min-height` floor isn't honored in the
-          content-determined branch; fr-under-indefinite interplay unchanged. **Measurement caching (partial,
+          content-determined branch; fr-under-indefinite interplay unchanged. **Measurement caching (partial
           same-instance only):** the `GridLayouter`'s content-extent + max-content-width caches are now INSTANCE
-          fields that persist across that instance's `AttemptLayout` attempts (measurement-cache cycle). The key
-          is the FULL set of inputs `NestedContentMeasurer.Measure` consumes — `(item, available inline width,
+          fields that persist across that instance's `AttemptLayout` attempts. The key
+          is the FULL set of inputs `NestedContentMeasurer.Measure` consumes — `(item, available inline width
           block budget, writing mode, RTL)` — so a hit only reuses a value measured under identical inputs (PR
-          #187 review [P1] #2: a percent-height cell measures a different extent under a different budget, so the
+            #2: a percent-height cell measures a different extent under a different budget, so the
           budget is in the key — no stale cross-budget reuse). **Cross-COMPONENT per-conversion cache — DONE:** a
           shared `GridMeasurementCache` (NetPdf.Layout, same full key) is allocated ONCE at the root pipeline
-          (`PdfRenderPipeline`) + threaded through the `LayoutContext` (as `object?`, cast at the consumers —
+          (`PdfRenderPipeline`) + threaded through the `LayoutContext` (as `object?`, cast at the consumers
           captured into a `BlockLayouter._gridMeasureCache` instance field at AttemptLayout entry so the
           context-less `PreMeasureGridRowExtent` + the nested-dispatch contexts reach it). Both the pre-measure
           pre-grow AND the `GridLayouter` emission Resolve PREFER it (per-instance caches stay the null-cache
@@ -3104,7 +2961,7 @@ flags the categories):
           grid misses the cross-component hit — correct, just unshared).
        3. **explicit-height flex-column spurious `PAGINATION-FORCED-OVERFLOW-001` — DONE** (same PR). The
           subtree-extent measure (`MeasureSubtreeVisualBlockExtentRecursive`) now PROJECTS a paginatable flex
-          descendant to `min(authored, pageBlockSize)` — EXACTLY like the existing paginatable-grid projection —
+          descendant to `min(authored, pageBlockSize)` — EXACTLY like the existing paginatable-grid projection
           so an auto-height wrapper whose subtree read the flex's rigid explicit height (e.g. 2000px) no longer
           trips the ancestor's top-level forced-overflow path (the flex splits cleanly at item boundaries via
           the recursive dispatch). An auto-height flex returned 0 there, which is why only the explicit-height
@@ -3125,24 +2982,24 @@ flags the categories):
           because the single column-nowrap line covers every item and the flex / content-measure results are
           indexed by DOM index. **row-nowrap intra-item content fragmentation — DONE (first cut):** a
           `flex-direction: row` / `nowrap` flex whose item CONTENT is taller than the page splits the content
-          across pages at a SHARED cross cut (all items continue at the same cross position on the next page) —
+          across pages at a SHARED cross cut (all items continue at the same cross position on the next page)
           `IsPaginatablePerStyle` admits row-nowrap, a new `FlexContinuation.ConsumedCrossExtent` accumulates the
           cut, `BufferingMeasureSink.FlushRangeTo` slices each item's buffer to `[cut, cut + budget)`
           (partition-by-top, force-overflow straddlers — no loss / no double), and the dual-input pagination flag
           (renamed `outerFlexDualInputPaginating` / `nestedFlexDualInputPaginating`) extends from column to
           row-nowrap. **Auto-height row items — DONE** (a later PR): `PreMeasureFlexCrossExtent` is now
           CONTENT-AWARE (mirrors the column `PreMeasureFlexMainExtent`) — an auto-height row item contributes its
-          measured content block extent, so the auto-height wrapper overflows + the split engages. **PR #189
-          review (P1) — flex-RESOLVED width:** the pre-measure resolves each item's main (inline) width through the
+          measured content block extent, so the auto-height wrapper overflows + the split engages.**
+          review — flex-RESOLVED width:** the pre-measure resolves each item's main (inline) width through the
           SAME §9.7 path FlexLayouter emits at (the extracted `FlexLayouter.ResolveFlexLineMainSizes`), so a
           `flex: 0 0 150px` / `flex-basis: 50%` item is measured at its resolved width — not the raw declared /
-          container width (which under-counted wrapped height → skipped pagination → clipped). **PR #189 review
-          (P2) — measurement cap:** the pre-measure + emission measure into
+          container width (which under-counted wrapped height → skipped pagination → clipped).**
+           — measurement cap:** the pre-measure + emission measure into
           `NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx` (a NAMED practical cap, ~10,400 inches — was a
           magic `1_000_000`); a measured extent that REACHES it surfaces `LAYOUT-FLEX-ITEM-CONTENT-TRUNCATED-001`
           (Warning) so the truncation isn't silent. STILL DEFERRED: a TRULY-unbounded measure that consumes nested
           continuations / streams the slice page-by-page (the cap is unreachable for real documents, so this is a
-          robustness follow-up, not a correctness gap);
+          robustness follow-up, not a correctness gap)
           intra-fragment splitting (an over-tall single line force-overflows); `box-decoration-break: clone`
           approximation (the box repeats per page); `flex-wrap: wrap-reverse` (cross-swap origin from the
           unfragmented size); **column-wrap** flex pagination (lines stack on the inline axis — not a fragment
@@ -3153,7 +3010,7 @@ flags the categories):
           tier 4; both above the bare named tier 3). The existing single-selector tiers (0/1/2/3) are UNCHANGED
           (no churn). Reachable end-to-end via the wired per-page margin-box path (a page named `chapter` + first
           paints `@page chapter:first`'s margin boxes). **PURE-pseudo + multi-pseudo compounds — now DONE**
-          (pure/multi-pseudo cycle, branch `phase-3-riders-perpage-geometry-inline-img-grid-cols`): `MatchSelector`
+          : `MatchSelector`
           models the full §3.1 (A,B,C) specificity tuple (A = named page, B = `:first`/`:blank` count, C =
           `:left`/`:right` count) encoded as `A*100 + B*10 + C`, so `:first:left` (11) + `chapter:first:left` (111)
           match; `EnumeratePageRulesWithMediaInfo(ctx)` switched from a 0..5 tier array to a stable sort. The
@@ -3162,15 +3019,14 @@ flags the categories):
           properties.json entry + a value resolver (`PropertyType.Position` → `PositionResolver` validates a
           `<position>`; `PropertyType.PageName` → `PageNameResolver` validates `auto | <custom-ident>`), so
           `@supports (object-position: …)` / `@supports (page: …)` answer correctly + invalid values surface
-          `CSS-PROPERTY-VALUE-INVALID-001`. SAFE because the cascade `GetWinner().ResolvedValue` is the
+          `CSS-PROPERTY-VALUE-INVALID-001`. SAFE because the cascade `GetWinner.ResolvedValue` is the
           var-substituted RAW value (independent of typed resolution): the image painter still reads
           object-position raw (the `ImgSpec` seam) and the named-page machinery still reads `page` raw onto
           `Box.PageName` — the typed slot is a `Deferred` raw-text carrier, consumed downstream. **§3.6 component
-          ORDER / axis-conflict — now DONE** (axis-conflict cycle, branch
-          `phase-3-riders-perpage-geometry-inline-img-grid-cols`): `PositionResolver` classifies each component
+          ORDER / axis-conflict — now DONE** : `PositionResolver` classifies each component
           and enforces the §3.6 grammar — `top bottom` / `left right` (same axis twice), `20px left` / `top 20px`
           (a length-percentage fixing the X-then-Y order), `left 10px right 5px` (two same-axis edges), and
-          `center center center` (leftover) all report `@supports` FALSE; the painter already fell back +
+          `center center center` (leftover) all report `@supports` FALSE; the painter already fell back
           diagnosed these, so rendering is unchanged.
        7. **content-SIZED auto-height column-flex PAGINATION — DONE** (same PR). `PreMeasureFlexMainExtent` is
           now CONTENT-AWARE (mirrors grid's `PreMeasureGridRowExtent`): a content-determined (auto-height) item
@@ -3179,69 +3035,69 @@ flags the categories):
           Explicit-height items keep their declared height (byte-identical).
        (Intra-row table-cell / grid-item splitting stays row-atomic per the existing deferrals; row-NOWRAP
        intra-item content fragmentation shipped a first cut [explicit-height items]; column-wrap + row-flex
-       AUTO-height intra-item fragmentation remain the open non-block items — pure/multi-pseudo compound `@page` +
+       AUTO-height intra-item fragmentation remain the open non-block items — pure/multi-pseudo compound `@page`
        `<position>` axis-conflict + grid content-WIDTH columns + per-page `@page` geometry all shipped in the
-       riders PR `phase-3-riders-perpage-geometry-inline-img-grid-cols`.)
-     - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
+       riders PR.)
+     - **`@page` rule**.** — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`
        longhands AngleSharp expands → px; `PdfRenderPipeline` applies them, CSS winning by
-       default). Post-PR-#130 review hardened it: applicability mirrors the cascade (skips
+       default). Post- hardened it: applicability mirrors the cascade (skips
        disabled sheets, honors `sheet.MediaQuery` against the print `CssMediaContext`, recurses
        matching `@media`), percentage margins resolve per-axis (left/right→width, top/bottom→
        height, CSS Page 3), and `!important` wins per side (importance then source order).
-       **Cycle 2 — size — DONE:** a bare `@page { size }` overrides the page size when
+       **size — DONE:** a bare `@page { size }` overrides the page size when
        `PreferCssPageSize`. The pre-pass (`CssPreprocessor.ParsePageRule`) recovers the `size`
        descriptor AngleSharp drops (`CssPageRuleRecovery.SizeText`) + the adapter re-attaches it
        as a synthetic declaration; `AtPageSizeResolver` resolves named sizes + `portrait`/
        `landscape` + `<length>{1,2}` + `auto` (sharing `AtPageRules` applicability with the
        margin resolver); `PdfRenderPipeline` applies it to the `MediaBox` + content area.
-       Post-PR-#131 review hardened it: `size !important` is honored across `@page` rules (the
-       pre-pass strips + records importance; the adapter stamps the synthetic declaration);
+       Post- hardened it: `size !important` is honored across `@page` rules (the
+       pre-pass strips + records importance; the adapter stamps the synthetic declaration)
        percentage margins resolve against the RESOLVED page box (so `@page { size: A5; margin: 10% }`
        is relative to A5); invalid duplicate `size` grammar (`A4 letter`, `portrait landscape`)
        is rejected; and a `size` qualified by a paper-size `@media`/sheet media query
        (`width`/`height`/`aspect-ratio`/`orientation`/device-*) is ignored per CSS Page 3 §3.3.
-       **Cycle 3 — margin boxes — DONE (literal + `attr()`):** the 16 CSS Page 3 §6.4 margin boxes
-       (running headers/footers). The pre-pass already recovered them as `@page` child rules;
+       **margin boxes — DONE (literal + `attr`):** the 16 CSS Page 3 §6.4 margin boxes
+       (running headers/footers). The pre-pass already recovered them as `@page` child rules
        `AtPageMarginBoxResolver` (`src/NetPdf.Css/PagedMedia/`) resolves the content-bearing ones
        to (name, raw `content`); `PageMarginBoxGeometry` computes each box's page-px region from
        the resolved size + margins (clamped to >= 0 so margins exceeding the page can't make a band
-       negative); `PageMarginBoxPainter` resolves `content` (literal strings + `attr()` via
+       negative); `PageMarginBoxPainter` resolves `content` (literal strings + `attr` via
        `CssContentList`) + lays the text out as one line via `InlineLayouter`. Body + margin-box
        text paint through ONE shared `TextPainter` pass (margin fragments offset relative to the
        body's content origin), so a font shared by both is subset + embedded ONCE. Text is
-       name-aligned within the box (`-left`/`-top`→start, `-center`/`-middle`→center,
+       name-aligned within the box (`-left`/`-top`→start, `-center`/`-middle`→center
        `-right`/`-bottom`→end; corners centered). `content` honors `!important` (cascade by
        importance then source order — within a box body AND across `@page` rules); a winning
        `none`/`normal` suppresses the box SILENTLY (no diagnostic). Unsupported content
-       (`counter()`/`string()`/`element()`) emits a length-capped, control-char-sanitized
+       (`counter`/`string`/`element`) emits a length-capped, control-char-sanitized
        `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` + skips the box.
-       **Cycle 4 — per-box style — DONE:** a margin box's declared `font-family`/`font-size`/
+       **per-box style — DONE:** a margin box's declared `font-family`/`font-size`/
        `font-weight`/`font-style` + `color` flow through the shaper + `TextPainter`, and a declared
        `text-align` / `vertical-align` overrides the box's name-derived alignment. New
        `MarginBoxStyle.Build` resolves the box's longhands onto a rented `ComputedStyle`
        (`PropertyResolverDispatch` per longhand; unspecified → reader defaults, so `IsSet` means
        "declared"); `AtPageMarginBoxResolver` now carries each box's declarations on
-       `ResolvedMarginBox`. Post-PR-#133 review hardened it: per-property `!important` cascade
-       (importance then source order, within a box + across `@page` rules — incl. `vertical-align`);
+       `ResolvedMarginBox`. Post- hardened it: per-property `!important` cascade
+       (importance then source order, within a box + across `@page` rules — incl. `vertical-align`)
        a WHITELIST (`font-*`/`color`/`text-align` materialized + `vertical-align` raw) so
        `padding`/`border`/`background` can't shift/paint the text; invalid values surface
        `CSS-PROPERTY-VALUE-INVALID-001` via a threaded sink; `justify-all` → start.
-       **Cycle 5 — inheritance — DONE:** margin boxes inherit the supported (all inherited)
+       **inheritance — DONE:** margin boxes inherit the supported (all inherited)
        properties along the CSS Page 3 chain root element → page context (`@page` declarations) →
-       margin box. `MarginBoxStyle.Build` gained a `parentStyle` param (copies the inherited slot +
+       margin box. `MarginBoxStyle.Build` gained a `parentStyle` param (copies the inherited slot
        side-table payload, then own declarations override); `AtPageMarginBoxResolver.PageContextDeclarations`
        exposes the `@page` rules' own declarations; the pipeline sources the root element box's style
        via `FindRootElementBox`. So `@page { color: gray; @top-center {…} }` tints the box and
-       `html { font-family:… }` flows into headers/footers. Post-PR-#134 review hardened it:
+       `html { font-family:… }` flows into headers/footers. Post- hardened it:
        `text-align` is NOT inherited (alignment is read from the box's OWN declarations) so the
-       page/root's UA-default `text-align: start` can't override the name-derived centering;
+       page/root's UA-default `text-align: start` can't override the name-derived centering
        CSS-wide keywords are handled at the cascade level (`initial` resets, `inherit`/`unset` keep
        inherited, `revert` approximated as inherited) instead of being treated as invalid leaf
        values; invalid-value diagnostics carry the declaration's source location; the page-context
        style is returned to the pool (`ReleaseFromBox`) instead of leaking.
-       **Cycle 6 — `font` shorthand — DONE (+ post-PR-#135 review hardening):** the `font` shorthand
+       **`font` shorthand — DONE:** the `font` shorthand
        is expanded into longhands for margin-box bodies (new `FontShorthandExpander` →
        `CssParserAdapter.ParseRawDeclarations`), so `@bottom-center { font: italic 9pt Georgia }` sets
        font-style/weight/size/family. AngleSharp never sees margin-box bodies, so this closes the gap
@@ -3253,7 +3109,7 @@ flags the categories):
        zero is accepted. A system-font keyword (`caption`/…) or malformed value no longer silently
        vanishes — `ParseRawDeclarations` keeps the raw `font` declaration as a marker and
        `MarginBoxStyle.Build` surfaces a sanitized `CSS-PROPERTY-VALUE-INVALID-001`. **Deliberate
-       approximations (review P4, pinned by tests):** `font-variant` / `font-stretch` / `line-height`
+       approximations (pinned by tests):** `font-variant` / `font-stretch` / `line-height`
        are parsed but not surfaced (the margin-box style path doesn't read them); the CSS Fonts 4
        `oblique <angle>` form and an explicit `<font-stretch>` percentage are NOT modeled — such a
        shorthand is rejected atomically (its `<angle>`/percentage reaches the size slot and fails
@@ -3264,7 +3120,7 @@ flags the categories):
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute
          (the cascade honors those). Recursing needs the cascade's `@supports` evaluator lifted out
          of `CascadeResolver` into a shared helper.
-       - **Margin boxes — parent-relative font (cycle 7) — DONE:** a margin box's parent-relative
+       - **Margin boxes — parent-relative font — DONE:** a margin box's parent-relative
          `font-size` (`em`/`%`/`larger`/`smaller`) and `font-weight` (`bolder`/`lighter`) now resolve
          against the inherited parent via the shared `DeferredFontResolver` (extracted from the
          box-builder's `ResolveDeferredFontProperties` so both consumers share it), called by
@@ -3272,7 +3128,7 @@ flags the categories):
          font-size: 1.5em } }` → 30px. STILL DEFERRED: `rem`/viewport/container-relative font-size
          (`TryResolveRelativeToParent` returns false → stays deferred → reader default; `rem` needs
          the root font-size threaded through).
-       - **Margin boxes — `background-color` (cycle 8) — DONE:** a margin box's declared
+       - **Margin boxes — `background-color` — DONE:** a margin box's declared
          (non-inherited) `background-color` paints a band over the box's full region behind its
          content. `MarginBoxStyle.Build` materializes it from the box's own declarations (added to
          `CascadedStyleIds`, kept OUT of the inheritance copy); `PageMarginBoxPainter` resolves it
@@ -3280,128 +3136,127 @@ flags the categories):
          `MarginBoxBackgroundFill` at the full region rect, and the pipeline fills it (reusing
          `FragmentPainter.ToPdfRect`/`ColorChannels`/`Alpha` + `PdfPage.FillRectangle`) before the
          shared text pass. rgba composites via `/ca`. STILL DEFERRED: `border` / `padding` (need the
-         content-origin inset the cycle-4 whitelist still avoids — they would shift the text) and
+         content-origin inset the whitelist still avoids — they would shift the text) and
          background images.
-       - **Margin boxes — `counter(page)`/`counter(pages)` (cycle 9; counter styles — Task 21) — DONE:**
+       - **Margin boxes — `counter(page)`/`counter(pages)` (counter styles —) — DONE:**
          `content: counter(page)` / `counter(pages)` resolves to the page number / total via a new
          `CssContentList.PageCounters` context threaded through `PageMarginBoxPainter`; `PdfRenderPipeline`
-         passes `(1, 1)` (single page → "1"). An optional `<counter-style>` (Task 21) formats it via a new
-         shared `CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — `decimal`,
+         passes `(1, 1)` (single page → "1"). An optional `<counter-style>` formats it via a new
+         shared `CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — `decimal`
          `decimal-leading-zero`, `lower`/`upper-roman`, `lower`/`upper-alpha`+`-latin`, `lower-greek`; both
-         callers now format identically). A non-predefined / unimplemented style (`hebrew`,
+         callers now format identically). A non-predefined / unimplemented style (`hebrew`
          `cjk-ideographic`, an undefined name) FALLS BACK to `decimal` (CSS Counter Styles §7.1.4 — the page
-         number must never silently vanish; post-PR-#149 review P2) — `CounterStyleFormatter.TryFormat`
+         number must never silently vanish;) — `CounterStyleFormatter.TryFormat`
          stays null-returning so each caller chooses its own fallback (page counters → decimal, list
          markers → disc). STILL DEFERRED: the real multi-page numbers (gated on the multi-page driver
-         below), rendering `hebrew`/`cjk-ideographic`/… AS those styles (they approximate as decimal),
-         non-page `counter()` names + `counters()` (need the counter-reset/increment machinery), and
+         below), rendering `hebrew`/`cjk-ideographic`/… AS those styles (they approximate as decimal)
+         non-page `counter` names + `counters` (need the counter-reset/increment machinery), and
          `counter(page)` in body/pseudo content (no page context → unsupported).
-       - **Margin boxes — `border` (border cycle) — DONE:** a margin box's declared `border` /
+       - **Margin boxes — `border` — DONE:** a margin box's declared `border` /
          per-side `border-<side>` shorthand (new `BorderShorthandExpander` for margin-box bodies →
          the 12 `border-*-width`/`-style`/`-color` longhands, added to `MarginBoxStyle.CascadedStyleIds`)
          strokes the box's full region via the shared `FragmentPainter.PaintBorders` (extracted from
-         the body 4-edge loop), painted by the pipeline over the background band, before the text,
-         ungated by `PrintBackgrounds`. The post-PR-#140 review added: a zero-area/non-finite guard in
-         `FragmentPainter.PaintBorders` (a zero-height band from `@page { margin:0 }` paints no border);
+         the body 4-edge loop), painted by the pipeline over the background band, before the text
+         ungated by `PrintBackgrounds`. The added: a zero-area/non-finite guard in
+         `FragmentPainter.PaintBorders` (a zero-height band from `@page { margin:0 }` paints no border)
          a sanitized `CSS-PROPERTY-VALUE-INVALID-001` for an un-expandable margin-box `border` marker
-         (surfaced via `MarginBoxStyle`, mirroring the `font` shorthand, no longer silently dropped);
+         (surfaced via `MarginBoxStyle`, mirroring the `font` shorthand, no longer silently dropped)
          CSS-comment stripping + whole-value CSS-wide-keyword (`inherit`/`initial`/…) handling in the
          expander. STILL DEFERRED: `border-radius`.
-       - **Margin boxes — `padding` + the border content-inset (padding cycle) — DONE:** a margin box's
+       - **Margin boxes — `padding` + the border content-inset — DONE:** a margin box's
          declared `padding` (new `PaddingShorthandExpander` for the 1–4-value box shorthand → the 4
          `padding-*` longhands, added to `MarginBoxStyle.CascadedStyleIds`; per-side longhands pass
-         through) AND the cycle-11-deferred border-width inset now push the box's text in — `PageMarginBoxPainter`
+         through) AND the -deferred border-width inset now push the box's text in — `PageMarginBoxPainter`
          insets by `ReadLengthPxOrZero(border-*-width) + ReadLengthPxOrZero(padding-*)` per side (the
-         §4.3 border-width used-value gate makes the reserved space match what the painter strokes),
+         §4.3 border-width used-value gate makes the reserved space match what the painter strokes)
          shrinking the alignment extent to the content box while placing the line at the BORDER-box
          origin — `TextPainter.CollectFragment` already adds the box's border+padding (the body's
          border-box→content-box step), so applying the inset in both places would DOUBLE it (a bug
          caught + fixed mid-cycle). The border/background still cover the FULL region. A shared paren-aware
          `CssShorthandHelpers.SplitTopLevel` was extracted (border + padding share it). STILL DEFERRED:
-         `calc()`/`min()`/etc. padding values (unsupported by the resolver → atomic-reject + diagnosed);
-         and NON-ABSOLUTE padding (post-PR-#141 review P2 + Copilot) — a percentage (`10%`, resolves
+         `calc`/`min`/etc. padding values (unsupported by the resolver → atomic-reject + diagnosed)
+         and NON-ABSOLUTE padding (Copilot) — a percentage (`10%`, resolves
          against the containing block inline size → needs the §5.3 margin-box sizing) or a font-/
          viewport-relative length (`1em`/`5vw`, left deferred by the resolver) is a valid value but the
          painter's `ReadLengthPxOrZero` honors only a `LengthPx` slot, so `MarginBoxStyle.Build`
          DIAGNOSES + drops any declared padding that didn't materialize to `LengthPx` (and that the
          resolver didn't already reject) rather than silently zeroing it. Absolute lengths (incl. the
          unitless `0`) apply as before.
-       - **Margin boxes — `border-width`/`-style`/`-color` box shorthands (border-box cycle) — DONE:**
+       - **Margin boxes — `border-width`/`-style`/`-color` box shorthands — DONE:**
          the three 1–4-value border box shorthands (new `BorderBoxShorthandExpander` → the per-edge
          `border-{side}-{width,style,color}` longhands; the 1–4-value box→edge mapping extracted into the
          shared `CssShorthandHelpers.ExpandBoxEdges`, which `PaddingShorthandExpander` now also uses)
          distribute across the four edges. The 12 longhands are already in `MarginBoxStyle.CascadedStyleIds`
-         (cycle 11), so they paint (cycle 11) + inset the text (cycle 12) with no painter change; an
+         , so they paint + inset the text with no painter change; an
          un-expandable one surfaces a marker diagnostic. STILL DEFERRED: `border-radius`.
-       - **Margin boxes — `string-set` / `string()` (Task 22) + `position: running()` / `element()` (Task 23) — FIRST CUT DONE:**
+       - **Margin boxes — `string-set` / `string` + `position: running` / `element` — FIRST CUT DONE:**
          `MarginContentCollector` walks the document (document order) reading raw declared values:
          `string-set: name <content-list>` sets a named string (later assignment wins — the end-of-page
          value); `position: running(name)` registers the element's text. The result threads to
          `PageMarginBoxPainter` as a `CssContentList.MarginContentContext`, where `content: string(name)`
          pulls the named string and `content: element(name)` pulls the running element's text (an undefined
-         name → the empty string). `BoxBuilder` SKIPS a `position: running()` element from the body box
+         name → the empty string). `BoxBuilder` SKIPS a `position: running` element from the body box
          tree (detected from the raw `position` value before the keyword resolver, so no spurious
          invalid-value diagnostic). STATUS: (a) **cross-page "running" persistence** DONE (multi-page driver
-         cycles 5 [named strings] + 5b [`element()`]) — `MarginContentCollector.CollectPerPage` buckets each
-         `string-set` assignment AND each `position: running()` occurrence by the page its (setting / removed-
-         from-flow) element laid out on — nearest rendered ANCESTOR for an inline setter or a running element,
+          [named strings] + 5b [`element`]) — `MarginContentCollector.CollectPerPage` buckets each
+         `string-set` assignment AND each `position: running` occurrence by the page its (setting / removed
+         from-flow) element laid out on — nearest rendered ANCESTOR for an inline setter or a running element
          with a page-0 fallback for an all-running body that produced no in-flow fragment — then carries each
          value forward until re-set, so per page `string(name)` / `element(name)` (first / last) read the value
          CURRENT on that page. A running occurrence carries its WHOLE payload (text + own style + per-line
          segments + container bands) as one `RunningOccurrence`, so the per-page first/last selection stays in
-         PR-#151 lockstep (the text can't pair with another occurrence's style). A SINGLE-page document short-
+          lockstep (the text can't pair with another occurrence's style). A SINGLE-page document short
          circuits to the whole-document context (byte-identical to the pre-cross-page path). A running
-         occurrence's PAGE is derived from DOCUMENT ORDER (post-PR-#178 review P1): a removed-from-flow running
+         occurrence's PAGE is derived from DOCUMENT ORDER : a removed-from-flow running
          element buckets to the page of the next rendered element FOLLOWING it within its containing block (the
          content it heads), falling back to its nearest rendered ancestor's page (a trailing heading) then page
          0 — so direct sibling running headings under `<body>` AND multiple headings inside one multi-page
-         container each resolve to their own page (the cycle-5b nearest-ancestor walk collapsed them to the
+         container each resolve to their own page (the nearest-ancestor walk collapsed them to the
          container's first page). APPROXIMATION: the page comes from the first FOLLOWING in-block rendered
-         element, not the running element's own laid-out position (it has none) — exact for the header-precedes-
+         element, not the running element's own laid-out position (it has none) — exact for the header-precedes
          content GCPM shape, an approximation when a running element sits among intra-page splits. Still
-         deferred: `string(name, start)` / `first-except`; (b) **`string-set: … content()`
-         — DONE (Task 22 follow-up):** AngleSharp.Css DROPS the `content()` function from `string-set` (an
+         deferred: `string(name, start)` / `first-except`; (b) **`string-set: … content`
+         — DONE (follow-up):** AngleSharp.Css DROPS the `content` function from `string-set` (an
          unknown function in the unknown `string-set` property); `CssPreprocessor`'s recovery (gated to
-         `string-set` + a `content()` value) re-injects the dropped declaration into the cascade, where
-         `MarginContentCollector` reads it and `CssContentList.TryParseStringSet` resolves `content()` to the
-         element's own text (bare `content()` / `content(text)`; the typographic targets
+         `string-set` + a `content` value) re-injects the dropped declaration into the cascade, where
+         `MarginContentCollector` reads it and `CssContentList.TryParseStringSet` resolves `content` to the
+         element's own text (bare `content` / `content(text)`; the typographic targets
          `content(before|after|first-letter|marker)` stay deferred). The cascade's own selector matching
-         associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name [,
+         associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name [
          first | last])`** renders the running element's TEXT, read BOUNDED to 64 KiB
-         (`MarginContentCollector.ReadBoundedDescendantText` — a DoS guard, post-PR-#150 review P2) then
-         GCPM-normalized as `white-space: normal` (Task 23 follow-up — like `content()`), with the margin
+         (`MarginContentCollector.ReadBoundedDescendantText` — a DoS guard,) then
+         GCPM-normalized as `white-space: normal` (follow-up — like `content`), with the margin
          box's own style. The position keyword is DONE
-         (Task 23): `element(name, first)` AND the no-keyword DEFAULT → the first occurrence (GCPM §7.4),
+         : `element(name, first)` AND the no-keyword DEFAULT → the first occurrence (GCPM §7.4)
          `element(name, last)` → the exit value (`MarginContentContext.RunningElementsFirst`; the shared
-         `TryReadPositionedFunction` parses both `string()` + `element()`); `start` / `first-except` bail.
+         `TryReadPositionedFunction` parses both `string` + `element`); `start` / `first-except` bail.
          A STANDALONE `element(name)` now renders the running element's box AS the margin box's content box
-         (Task 23 FULL-block first cut): its text in the element's OWN font + color, plus its OWN (non-inherited)
+         (FULL-block first cut): its text in the element's OWN font + color, plus its OWN (non-inherited)
          `background-color` + `border-*` decoration. `MarginContentCollector.CaptureOwnStyle` captures the
-         element's winning font/color longhands (inherited — WALKED from ancestors, post-PR-#151 review P2) AND
+         element's winning font/color longhands (inherited — WALKED from ancestors,) AND
          its NON-inherited `background-color` + 12 `border-*` longhands (`DecorationOwnProperties` — the
          element's OWN winner only, no ancestor walk), first + last occurrence in LOCKSTEP with the text (review
-         P1). `PageMarginBoxPainter` detects standalone `element()` (`CssContentList.TryGetStandaloneElement`) +
+         ). `PageMarginBoxPainter` detects standalone `element` (`CssContentList.TryGetStandaloneElement`)
          builds a CONTENT `ComputedStyle` (font/color, for shaping + the `BoxFragment.TextMetricsStyle` line
-         metrics, review P1) AND a box `style` with the element's decoration cascaded UNDER the box's own
+         metrics,) AND a box `style` with the element's decoration cascaded UNDER the box's own
          declarations (`BuildFromOwnStyle(decorationOnly: true, appendDeclarations: box decls)` — a box-declared
          `background`/`border`/`padding` OVERRIDES the element's), reusing all the box bg/border/inset machinery.
-         currentcolor is ORIGIN-aware (CSS Color 4 §6.2, post-PR-#152 review P1): a box-declared decoration's
+         currentcolor is ORIGIN-aware (CSS Color 4 §6.2,): a box-declared decoration's
          currentcolor resolves against the box's colour, an element-declared one against the running element's.
          The element's OWN `padding-*` (self-only) insets its text + grows the shrink-to-fit box, and its OWN
          (inherited) `text-align` aligns its line (`ElementHorizontalAlignFactor`, the box's own text-align
-         winning — and post-PR-#153 Copilot review, a box that DECLARES `text-align` as a CSS-wide/unknown
-         keyword keeps its NAME-DERIVED default rather than deferring to the element). Post-PR-#153 review P2:
+         winning — and Copilot review, a box that DECLARES `text-align` as a CSS-wide/unknown
+         keyword keeps its NAME-DERIVED default rather than deferring to the element). Post- :
          the inherited-property walk (`NearestDeclaredWinner`) now RESOLVES CSS-wide keywords (CSS Cascade L5
          §7) — `inherit`/`unset`/`revert` continue to the ANCESTOR value, `initial` → the property initial
-         (`start` for `text-align`) — so `.section { text-align: right } .rh { text-align: inherit }` aligns the
-         running line right. `element()` nested BLOCK children FIRST CUT (branch
-         `phase-3-task-23-element-nested-blocks-vedge-overflow`): a running element with BLOCK-level children
+         (`start` for `text-align`) — so `.section { text-align: right }.rh { text-align: inherit }` aligns the
+         running line right. `element` nested BLOCK children FIRST CUT : a running element with BLOCK-level children
          (per computed `display`, UA tag default via `HtmlDefaultDisplay`) renders each block child's text on
          its OWN STACKED line (`MarginContentCollector.ReadRunningElementContent` joins the per-block
          GCPM-normalized lines with `U+000A`; `PageMarginBoxPainter` lays them out as `white-space: pre` so the
          existing multi-line stacking honors the mandatory breaks — a plain header has no `U+000A`, single-line
          path byte-identical), and a margin box whose content block-height is TALLER than its band surfaces
-         `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` AND is CLIPPED (overflow-clipping cycle): the overflow is
+         `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` AND is CLIPPED: the overflow is
          truncated at LINE granularity — `PageMarginBoxPainter.MaxLinesThatFit` caps the painted lines to the
          content-box height (reading-order: the first N whole lines paint; 0 fit → decoration-only box), the
          truncated block then vertical-aligned in the content box; the diagnostic names the kept/total lines.
@@ -3418,53 +3273,53 @@ flags the categories):
          partial line isn't painted), and clip-by-default INVERTS the spec initial (CSS Paged Media §6.2
          applies `overflow` to margin boxes with initial `visible` — page furniture spilling over the body
          is near-always unwanted, so `visible` must be DECLARED to opt out). The running element's nested
-         BLOCK LAYOUT is now rendered (PR-3 task 10 — the segment-style + container-bands cycles): each
+         BLOCK LAYOUT is now rendered (the segment-style + container-bands cycles): each
          direct block child lays out on its OWN stacked line(s) with the block's OWN inherited style, its
-         text WRAPS within the box (post-PR-#154), per-segment margins / padding / line-heights apply, and a
+         text WRAPS within the box, per-segment margins / padding / line-heights apply, and a
          decorated intermediate block paints its OWN background / border as a CONTAINER BAND over its
-         descendant lines. STILL deferred for `element()`: INLINE-LEVEL styling WITHIN a leaf block (a
+         descendant lines. STILL deferred for `element`: INLINE-LEVEL styling WITHIN a leaf block (a
          `<b>`/`<span>` inside a block child is flattened to that block's own style — the capture records
          per-block text + style, not per-inline-run); the box/element being SEPARATELY-decorated
          boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
-         `calc()`) in the element's style resolve against the page context (an approximation — exact for
-         absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); the element's own `%`/`em`/`calc()`
+         `calc`) in the element's style resolve against the page context (an approximation — exact for
+         absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); the element's own `%`/`em`/`calc`
          padding RESOLVES like the box's (relative-padding cycle; its `em` against the BOX font — an
-         approximation); a MIXED list (`"x" element(rh)`) keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
-         last)` position keyword is DONE (Task 21):
+         approximation); a MIXED list (`"x" element(rh)`) keeps the box style (GCPM: element is standalone); (d) the `string(name, first |
+         last)` position keyword is DONE :
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
          gained `NamedStringsFirst`); `string(name, first)` AND the no-keyword DEFAULT → the first
-         assignment (per CSS GCPM §7.3 — `first` is the default, NOT the exit value; post-PR-#149 review
-         P1); `string(name, last)` → the exit value. The cross-page `start` / `first-except` keywords stay deferred (need
+         assignment (per CSS GCPM §7.3 — `first` is the default, NOT the exit value
+         ); `string(name, last)` → the exit value. The cross-page `start` / `first-except` keywords stay deferred (need
          the multi-page driver). Other deferrals: `border-radius` + background images. The per-box /
-         page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) — a negligible miss.
+         page-context `ComputedStyle.Rent` is box-owned (not returned to the pool) — a negligible miss.
        - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size + overlap distribution) — DONE:** a
          content-bearing edge box is sized along the §5.3 variable axis
          (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners
          neither) either from an explicit `width` (top/bottom) / `height` (left/right) — explicit-size
          cycle — or, when that's `auto`, by SHRINKING a content-bearing box to its border-box content
-         size (cycle 14 first cut), so its background/border cover the box (not the whole band). The box
-         is positioned in the band by its §5.3.2.4 NAME-DERIVED role (`region.HAlign/VAlign` —
+         size (first cut), so its background/border cover the box (not the whole band). The box
+         is positioned in the band by its §5.3.2.4 NAME-DERIVED role (`region.HAlign/VAlign`
          start/center/end); the declared `text-align`/`vertical-align` aligns only the line within the
-         content box (observable now that an explicit size can make the content box wider than the line;
-         post-PR-#143 review). An explicit size is content- or border-box per the box's `box-sizing`
-         (overflow-clip/box-sizing cycle — see below); an absolute length or a percentage of the band resolves, `auto` shrink-to-fits, and a
-         DEFERRED font-/viewport-relative or `calc()` size is diagnosed (`CSS-PROPERTY-VALUE-INVALID-001`)
-         + dropped so the box explicitly shrink-to-fits (post-PR-#144 review). Clamped to the band.
+         content box (observable now that an explicit size can make the content box wider than the line
+         ). An explicit size is content- or border-box per the box's `box-sizing`
+         (see below); an absolute length or a percentage of the band resolves, `auto` shrink-to-fits, and a
+         DEFERRED font-/viewport-relative or `calc` size is diagnosed (`CSS-PROPERTY-VALUE-INVALID-001`)
+         + dropped so the box explicitly shrink-to-fits. Clamped to the band.
          Auto-sized empty (`content:""`) / failed-font
-         boxes keep the full band (preserving the cycle-8 decorative band; an explicit size sizes them).
+         boxes keep the full band (preserving the decorative band; an explicit size sizes them).
          **Overlap DISTRIBUTION + min/max-content FLEX + overflow WRAPPING:** boxes sharing an edge whose
          desired sizes would OVERLAP are resolved by `PageMarginBoxGeometry.ResolveEdgeOverlap` (wired via
-         `PageMarginBoxPainter.ResolveEdgeOverlaps`): when content can wrap (some box's min-content &lt;
+         `PageMarginBoxPainter.ResolveEdgeOverlaps`): when content can wrap (some box's min-content &lt
          its max-content AND the mins fit the band) it does a min/max-content FLEX — each box gets
          `min + (max − min) × factor`, `factor = clamp((band − Σmin)/(Σmax − Σmin), 0, 1)`, tiled
          edge-to-edge; otherwise (rigid content, or mins don't fit) the center-priority CLAMP (center
          centered, sides clamp to the gaps; no center → proportional shrink). Min-content is measured per
          box (`TryMeasureMinContentWidthPx` — re-lay-out at a tiny width, widest line = longest unbreakable
-         run). A NO-OP when they don't overlap, and RIGID content (min == max) always takes the clamp path,
-         so single boxes + the common short-content case stay byte-identical to the cycle-14/15 model. A
+         run). A NO-OP when they don't overlap, and RIGID content (min == max) always takes the clamp path
+         so single boxes + the common short-content case stay byte-identical to the model. A
          HORIZONTAL box the distribution shrank below its single-line width then RE-WRAPS its content
          (honouring the box's computed `white-space`) to the assigned width (multi-line) so it FITS, and each
-         wrapped line is ALIGNED PER LINE by the box's alignment (Task 21 — `BoxFragment.LineAlignFactor`,
+         wrapped line is ALIGNED PER LINE by the box's alignment (`BoxFragment.LineAlignFactor`
          applied by `TextPainter`; default 0 keeps body fragments byte-identical, single-line margin content
          too). **Vertical-edge (height) overflow CLIPPING + `box-sizing` — DONE (overflow-clip/box-sizing
          cycle):** content taller than the content-box height is truncated at line granularity (see the
@@ -3474,7 +3329,7 @@ flags the categories):
          the border box, floored at the insets, the content box at 0; cascaded via
          `MarginBoxStyle.CascadedStyleIds`, non-inherited, read by `IsBorderBoxSizing`; a no-op for
          shrink-to-fit `auto`). **Vertical-edge WRAPPING + clip path + relative-unit sizes — DONE
-         (vertical-wrap / clip-path / relative-units cycles):** a VERTICAL (left/right) or CORNER box's
+:** a VERTICAL (left/right) or CORNER box's
          inline axis is FIXED (the band/corner width), so its content now WRAPS AT THAT WIDTH (a block
          container wraps at its content width — was one NoWrap line spilling horizontally), stacking lines
          down the variable axis (height shrink-to-fit, clamp + line-granularity clip apply); HORIZONTAL
@@ -3483,43 +3338,43 @@ flags the categories):
          `overflow: visible` opt-out (see the Task-23 entry). A font-/viewport-relative explicit
          `width`/`height` (`10em`/`4ex`/`4ch`/`1.5rem`/`50vw`/`25vh`/`vmin`/`vmax`) now RESOLVES — kept as
          a deferred raw by `MarginBoxStyle`, resolved by `PageMarginBoxPainter.TryReadExplicitSizePx` via
-         the shared `RelativeLengthResolver` (`em` against the BOX's resolved font-size, `rem` the root's,
+         the shared `RelativeLengthResolver` (`em` against the BOX's resolved font-size, `rem` the root's
          viewport units the PAGE box per CSS Paged Media; `ex`/`ch` ≈ 0.5em per CSS Values 4 §6.1.2).
-         **calc() sizes + `white-space` + relative/percent PADDING — DONE (calc / white-space /
-         relative-padding cycles):** an explicit `width`/`height`/`padding-*` in `calc()` now EVALUATES —
-         a margin-box-scoped pre-resolver admit keeps the raw as a deferred value (`MarginBoxStyle` —
-         LengthResolver has no calc machinery and would reject it; BODY calc() keeps its invalid-value
+         **calc sizes + `white-space` + relative/percent PADDING — DONE (calc / white-space /
+         relative-padding cycles):** an explicit `width`/`height`/`padding-*` in `calc` now EVALUATES
+         a margin-box-scoped pre-resolver admit keeps the raw as a deferred value (`MarginBoxStyle`
+         LengthResolver has no calc machinery and would reject it; BODY calc keeps its invalid-value
          diagnostic, a separate pickup) and the painter evaluates it via the new shared
-         `CalcLengthEvaluator` (CSS Values 4 §10: sum/product grammar, whitespace-required `+`/`-`,
-         type-checked `*`/`/`, nested parens/calc(), % terms against the band, relative terms via
+         `CalcLengthEvaluator` (CSS Values 4 §10: sum/product grammar, whitespace-required `+`/`-`
+         type-checked `*`/`/`, nested parens/calc, % terms against the band, relative terms via
          `RelativeLengthResolver`, used-value range clamp per §10.5; a malformed/unsupported calc — e.g.
-         length×length, min()/max(), container units — is KEPT by the syntactic gate then SURFACED at
+         length×length, min/max, container units — is KEPT by the syntactic gate then SURFACED at
          paint time and falls back). Margin-box `white-space` IS cascaded now (an INHERITED
          `MarginBoxStyle` longhand — root → page context → box): a declared `nowrap`/`pre` keeps a rigid
          single line (no vertical-edge wrap, no min-content flex — the clamp + clip path), making the
-         PR-#147 computed-white-space paths reachable by declaration. PADDING percentages resolve against
+          computed-white-space paths reachable by declaration. PADDING percentages resolve against
          the box's containing-block width (the edge region width — CSS B&B §8.4: all four sides use the
-         INLINE-axis base) and font-/viewport-relative + calc() paddings resolve like sizes —
+         INLINE-axis base) and font-/viewport-relative + calc paddings resolve like sizes
          `PageMarginBoxPainter.ResolveUsedPaddingInPlace` rewrites the USED px into the slot so every
          downstream reader (insets, `TextPainter`'s content origin, `FragmentPainter`) sees the same
-         value; the element()'s own captured padding takes the same path (its `em` resolves against the
+         value; the element's own captured padding takes the same path (its `em` resolves against the
          BOX font — documented approximation). A HEIGHT flex for overlapping vertical siblings is
          RESOLVED BY DESIGN: their heights are rigid at the fixed band width (re-wrapping can't change a
          height without changing the width), so the center-priority clamp + line clip IS the §5.3
-         resolution. **min()/max()/clamp() + rem/viewport font-size + per-edge border currentcolor — DONE
-         (min/max-clamp / font-size / per-edge-currentcolor cycles):** the §10.2 comparison functions
-         evaluate (in calc() AND standalone — `width: min(50%, 150px)`; same-type args,
-         `clamp(MIN, VAL, MAX) = max(MIN, min(VAL, MAX))`, depth-capped like parens;
+         resolution. **min/max/clamp + rem/viewport font-size + per-edge border currentcolor — DONE
+:** the §10.2 comparison functions
+         evaluate (in calc AND standalone — `width: min(50%, 150px)`; same-type args
+         `clamp(MIN, VAL, MAX) = max(MIN, min(VAL, MAX))`, depth-capped like parens
          `CalcLengthEvaluator.IsMathFunction` is the keep gate). A root-/viewport-relative margin-box
          `font-size` (`2rem`/`5vw`) resolves at paint time against the root font-size / page box
          (`PageMarginBoxPainter.ResolveDeferredFontSizeInPlace`, run on the page context BEFORE boxes
-         inherit + before the em size/padding bases are read — closes the old 16px-fallback gap;
+         inherit + before the em size/padding bases are read — closes the old 16px-fallback gap
          container units still fall back). Border `currentcolor` is per-EDGE (CSS Color 4 §6.2): each
          edge falls back to its OWNER's colour — the box's when the box declares that edge's color or
          style longhand, else the running element's (`FragmentPainter.BorderEdgeCurrentColors`; the
          uniform body path delegates, byte-identical — replaces the whole-border ownership rule whose
-         mixed-origin case painted every edge with the box colour). **§10.6/10.7 math functions + BODY calc first cut + element() deep recursion — DONE
-         (math-fns / body-calc / deep-recursion cycles):** `round(<strategy>?, A, B?)` (nearest
+         mixed-origin case painted every edge with the box colour). **§10.6/10.7 math functions + BODY calc first cut + element deep recursion — DONE
+:** `round(<strategy>?, A, B?)` (nearest
          ties-up default / up / down / to-zero; B defaults to the number 1, so a length A without B is
          a type error per spec), `mod(A, B)` (sign of B), `rem(A, B)` (sign of A), `abs(A)`, and
          `sign(A)` (a NUMBER — composes in products, invalid as a whole length) evaluate in
@@ -3535,25 +3390,25 @@ flags the categories):
          (`MarginContentCollector.ReadRunningElementContent` — a block child with block children
          contributes one stacked line per NESTED block, `MaxRunningBlockDepth` = 16 deep, the single
          64 KiB budget threading through every level; deeper nests flatten — the pre-cycle behavior).
-         STILL DEFERRED: container-relative units (no container context — diagnosed + dropped). The post-PR-#159 review fixed `round()`'s negative-step inversion (the step
+         STILL DEFERRED: container-relative units (no container context — diagnosed + dropped). The fixed `round`'s negative-step inversion (the step
          normalizes to |B|), a `sign(NaN)` crash under the body NaN context (NaN now propagates to
          the surfaced path), the failure diagnostic mis-blaming context-dependent terms for
          malformed expressions (a finite-probe re-evaluation picks the right message), and
          `ContainsMathFunction` missing math functions nested inside unknown functions
-         (`var(--x, calc(…))` now recovers).
-       - **§10.8 trig + §10.9 exponential functions + body CONTEXT-DEPENDENT lengths (no-% slice) +
-         element() per-line OWN STYLE — DONE (trig/exp / body-relative / element-segments cycles):**
-         **(trig/exp)** `sin()`/`cos()`/`tan()` (number = radians, or a `deg`/`grad`/`rad`/`turn`
-         angle), `asin()`/`acos()`/`atan()`/`atan2()` (→ ANGLE, consumable only by trig args — the
-         top-level length gate rejects a bare one), `pow()`/`sqrt()`/`hypot()`/`log()`/`exp()` and
+         (`var(x, calc(…))` now recovers).
+       - **§10.8 trig + §10.9 exponential functions + body CONTEXT-DEPENDENT lengths (no-% slice)
+         element per-line OWN STYLE — DONE:**
+         **(trig/exp)** `sin`/`cos`/`tan` (number = radians, or a `deg`/`grad`/`rad`/`turn`
+         angle), `asin`/`acos`/`atan`/`atan2` (→ ANGLE, consumable only by trig args — the
+         top-level length gate rejects a bare one), `pow`/`sqrt`/`hypot`/`log`/`exp` and
          the `e`/`pi` constants evaluate in `CalcLengthEvaluator` (the Term type system gained an
-         ANGLE kind; `hypot()` keeps its arguments' type, so `width: hypot(30px, 40px)` is a valid
+         ANGLE kind; `hypot` keeps its arguments' type, so `width: hypot(30px, 40px)` is a valid
          whole value); `infinity`/`NaN` keywords + the spec's exact-asymptote values stay
          unsupported (the finite gate rejects). **(body relative lengths)** the cascade DEFERS a
          body math function whose only context dependence is font-/viewport-relative (a NaN-percent
          probe classifies it), and the new post-build `DeferredLengthResolver` pass
          (`PdfRenderPipeline`, after the `@page size` override fixes the page box) resolves ALL
-         deferred font-/viewport-relative body lengths IN PLACE — `2em` / `50vw` / `calc(2em +
+         deferred font-/viewport-relative body lengths IN PLACE — `2em` / `50vw` / `calc(2em
          10px)` on width/height/margins/paddings/offsets/line-height — em against the OWNING box's
          font-size, rem against the root element's, viewport against the PAGE box; margins/offsets
          admit negatives (`RelativeLengthResolver.TryResolve(allowNegative:)`), non-negative
@@ -3561,11 +3416,11 @@ flags the categories):
          there: PERCENTAGE terms + plain percentage lengths (the containing-block base is
          layout-time), border widths (`LineWidth` never defers), `lh`/`cap`/`ic`, and the
          inherited-line-height nuance (an inherited `1.5em` line-height re-resolves against each
-         inheritor's font-size — computed-value-time inheritance is approximated). **(element()
-         segments)** a standalone `element()`'s stacked lines render in each LEAF block's OWN
+         inheritor's font-size — computed-value-time inheritance is approximated). **(element
+         segments)** a standalone `element`'s stacked lines render in each LEAF block's OWN
          (ancestor-walked) font + colour — `MarginContentCollector` records one `RunningSegment`
          per line (lockstep with the text/own-style capture), and `PageMarginBoxPainter` shapes
-         each as its own `TextRun` (per-run shaping/painting already existed), the line pitch +
+         each as its own `TextRun` (per-run shaping/painting already existed), the line pitch
          `TextMetricsStyle` following the LARGEST segment font (uniform-pitch approximation).
          STILL DEFERRED there: per-line decoration/margins (a leaf block's own
          background/border/margin band), per-line `text-align` (captured, not consumed — one
@@ -3576,7 +3431,7 @@ flags the categories):
          ELLIPTICALLY (it previously dropped to square). AngleSharp drops the slash, so the body
          `CssPreprocessor.ScanDeclarations` recovers it (gated to a well-formed TOP-LEVEL slash via
          `BorderRadiusShorthandExpander.HasTopLevelSlash` — a circular form AngleSharp already expands; a `/`
-         inside `calc()` is a division) and the (now slash-aware) `BorderRadiusShorthandExpander.TryExpand`
+         inside `calc` is a division) and the (now slash-aware) `BorderRadiusShorthandExpander.TryExpand`
          expands BOTH sides by the 1–4-value box distribution: the horizontal radii onto the
          `border-{corner}-radius` longhands + the vertical radii onto FOUR new INTERNAL
          `-netpdf-border-{corner}-radius-y` properties (vendor-prefixed in `properties.json`, so real
@@ -3586,58 +3441,58 @@ flags the categories):
          shares it (the expander runs in `CssParserAdapter.ParseRawDeclarations`; the four `-y` ids JOINED
          `MarginBoxStyle.CascadedStyleIds`; a malformed slash that fails to expand is diagnosed
          `CSS-PROPERTY-VALUE-INVALID-001` as before). FONT-/VIEWPORT-relative margin-box radii (`em`/`ex`/`ch`/
-         `rem`/`vw`/`vh`/`vmin`/`vmax`) now RESOLVE (margin-box-relative-radius cycle —
+         `rem`/`vw`/`vh`/`vmin`/`vmax`) now RESOLVE (margin-box-relative-radius cycle
          `PageMarginBoxPainter.ResolveDeferredBorderRadiusInPlace` rewrites the deferred corner longhands to
          used px via `RelativeLengthResolver` after the box font-size resolves, before `ReadCornerRadii`); a
-         `calc()` / container-unit margin-box radius STILL defers → square (its `%` base is the box dim, not
+         `calc` / container-unit margin-box radius STILL defers → square (its `%` base is the box dim, not
          final at resolve time — a documented gap, like the body's calc radii). STILL DEFERRED: rounded
-         NON-uniform borders (the OUTER corners now round via a clip — rounded-nonuniform-borders cycle;
+         NON-uniform borders (the OUTER corners now round via a clip — rounded-nonuniform-borders cycle
          per-corner arc segments stay deferred).
        - **margin-box `border-radius` PARITY (per-corner + `%` band, rounded uniform border, rounded
-         image clip) — DONE (margin-box-border-radius cycle, 3 tasks):** the margin box's border-radius is
+         image clip) — DONE:** the margin box's border-radius is
          brought to parity with the body. Margin-box bodies BYPASS AngleSharp, so the `border-radius`
          shorthand is expanded by the NEW `BorderRadiusShorthandExpander` (1–4 values → the four corner
          longhands, reusing `CssShorthandHelpers.ExpandBoxEdges`; a TOP-LEVEL `Rx / Ry` slash now also
          expands the vertical radii onto the internal `-y` longhands — border-radius-elliptical cycle — and a
-         `/` inside `calc()` is a division that evaluates) inside
+         `/` inside `calc` is a division that evaluates) inside
          `CssParserAdapter.ParseRawDeclarations`, and the four corner longhands JOINED
-         `MarginBoxStyle.CascadedStyleIds` so they cascade onto the box's `ComputedStyle` (importance +
-         CSS-wide + validation for free). **(Task 1)** the band fill reads PER-CORNER radii
+         `MarginBoxStyle.CascadedStyleIds` so they cascade onto the box's `ComputedStyle` (importance
+         CSS-wide + validation for free). the band fill reads PER-CORNER radii
          (`FragmentPainter.ReadCornerRadii`, now internal) against the FINAL box dims at PASS 2 — absolute
          or `%`-ellipse — via the per-corner `PdfPage.FillRoundedRectangle(CornerRadii)` (the uniform-circular
          case keeps the byte-stable single-radius path); the old raw `ReadBorderRadiusPx` first cut is
-         removed. **(Task 2)** the rounded uniform border comes FREE — `MarginBoxBorder` carries the box's
+         removed. the rounded uniform border comes FREE — `MarginBoxBorder` carries the box's
          style through `FragmentPainter.PaintBorders`, which already reads the corner longhands + paints the
-         filled ring. **(Task 3)** the background-image clip rounds (`MarginBoxBackgroundImage.ClipRadiiPx`
+         filled ring. the background-image clip rounds (`MarginBoxBackgroundImage.ClipRadiiPx`
          = the box radii inset to the clip box via `FragmentPainter.InsetRadii`, threaded to the shared
-         tiler). Post-PR-#174 review: an INVALID/malformed margin-box `border-radius` (`8px bogus`, an
+         tiler). Post-: an INVALID/malformed margin-box `border-radius` (`8px bogus`, an
          unbalanced function, or a NEGATIVE radius — `border-*-radius` joined `NonNegativeProperties`) is
-         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped;
-         a `/` inside `calc()` is a division that evaluates (paren-aware, self-review P3). Font-/viewport-
-         relative margin-box radii (`em`/`vw`/`rem`/…) now RESOLVE (margin-box-relative-radius cycle); a
-         `calc()` / container-unit margin-box radius still renders square (documented). Rounded NON-uniform
+         DIAGNOSED (`CSS-PROPERTY-VALUE-INVALID-001`) via `MarginBoxStyle` instead of silently dropped
+         a `/` inside `calc` is a division that evaluates (paren-aware, self-). Font-/viewport
+         relative margin-box radii (`em`/`vw`/`rem`/…) now RESOLVE; a
+         `calc` / container-unit margin-box radius still renders square (documented). Rounded NON-uniform
          borders FIRST CUT (the outer corners round
          via a clip — rounded-nonuniform-borders cycle; per-corner arc segments / inner corners stay
          deferred). (The elliptical `Rx / Ry` slash SHIPPED later — border-radius-elliptical cycle, see that
          entry above.)
-       - **`outline` — DONE (outline cycle, CSS UI 4 §5, 3 tasks):** `outline-width` / `-style` /
+       - **`outline` — DONE (CSS UI 4 §5):** `outline-width` / `-style` /
          `-color` + the `outline` shorthand (AngleSharp expands it into the three longhands) + `outline-offset`
          are registered in `properties.json` (so `@supports` reports them); `outline-offset` is recovered from
-         an AngleSharp-beta drop via `CssPreprocessor.KnownDroppedProperties` (a verbatim longhand recovery,
-         like `white-space`). **(Task 1 — paint)** the outline paints as a filled RING just OUTSIDE the border
+         an AngleSharp-beta drop via `CssPreprocessor.KnownDroppedProperties` (a verbatim longhand recovery
+         like `white-space`). **(paint)** the outline paints as a filled RING just OUTSIDE the border
          box — it does NOT affect layout — via the shared `PdfPage.FillRoundedRectangleRing` (the annulus
          between the border box grown by `outline-offset` [inner] and again by `outline-width` [outer]), in
          `outline-color` (initial `auto` → currentcolor); `outline-style: none` or a non-positive width paints
-         nothing. **(Task 2 — `outline-offset`)** a positive offset pushes the outline outward, a negative one
-         inward. **(Task 3 — rounded outline)** a `border-radius` rounds the outline to follow the box (each box
+         nothing. **(`outline-offset`)** a positive offset pushes the outline outward, a negative one
+         inward. **(rounded outline)** a `border-radius` rounds the outline to follow the box (each box
          corner radius grown by the gap to that outline edge — offset + width for the outer, offset for the
-         inner; a SHARP box corner stays sharp, §5.3), reusing `CornerRadii`. **Post-PR-#173 review (4 numbered +
-         2 Copilot, replied + resolved):** **(P2)** `outline-style: hidden` is INVALID (CSS UI 4 §5.2 excludes
+         inner; a SHARP box corner stays sharp, §5.3), reusing `CornerRadii`. **(4 numbered
+         2 Copilot, replied + resolved):** `outline-style: hidden` is INVALID (CSS UI 4 §5.2 excludes
          hidden — `@supports (outline-style: hidden)` is now FALSE; outline-style uses its OWN keyword indices
-         since the table differs from border-style); **(P2)** `outline-color: auto` is admitted (CSS UI 4 retired
-         `invert` and makes `auto` the initial) → currentcolor, via a dispatch special-case; **(P2)** an extreme
+         since the table differs from border-style); `outline-color: auto` is admitted (CSS UI 4 retired
+         `invert` and makes `auto` the initial) → currentcolor, via a dispatch special-case; an extreme
          negative `outline-offset` clamps PER AXIS to ≥ −½ the box dimension BEFORE the origin + size, so the
-         collapsed outline stays CENTERED instead of drifting; **(P3 + Copilot)** `GrowRadii` clamps a component
+         collapsed outline stays CENTERED instead of drifting; **(Copilot)** `GrowRadii` clamps a component
          a large negative offset would drive below 0 (matching `ReduceRadii`); **(Copilot)** `outline-width` is a
          non-negative `<line-width>` (`NonNegativeProperties` — a negative value invalidates + falls back to
          `medium`); **(Copilot)** borders + outline SHARE one style-approximation flag so
@@ -3647,29 +3502,29 @@ flags the categories):
          3D `outline-style` (groove/ridge/inset/outset) is painted SOLID + diagnosed (per-side bevel can't follow
          the ring; `auto`/`solid` paint solid without a diagnostic); `outline-color: auto`'s true UA colour.
        - **body `border-radius` COMPLETION (per-corner + `%` band fill, rounded uniform border
-         strokes, rounded background-image clip) — DONE (border-radius-completion cycle, 3 tasks):**
-         the body border-radius first cut (uniform-circular band fill only) is finished. **(Task 1 —
+         strokes, rounded background-image clip) — DONE:**
+         the body border-radius first cut (uniform-circular band fill only) is finished. **(
          per-corner + `%` band)** the band rounds with PER-CORNER radii (the `border-radius` 1–4-value
          shorthand expands to the four corner longhands; `FragmentPainter.ReadCornerRadii` reads each as
          an absolute length [circular] or a PERCENTAGE, which resolves against the box WIDTH for the
-         horizontal radius and the box HEIGHT for the vertical — so a non-square `50%` box is an ELLIPSE,
-         CSS B&B 3 §4.1), filled by the new per-corner elliptical `PdfPage.FillRoundedRectangle(…,
+         horizontal radius and the box HEIGHT for the vertical — so a non-square `50%` box is an ELLIPSE
+         CSS B&B 3 §4.1), filled by the new per-corner elliptical `PdfPage.FillRoundedRectangle(…
          CornerRadii, …)` (§4.2 overlap-scaling via `CornerRadii.NormalizedFor`); the UNIFORM-circular
-         case keeps the byte-stable single-radius path. **(Task 2 — rounded uniform border)** a box with
-         a border-radius AND a uniform border (same paintable style/width/colour on all four edges,
+         case keeps the byte-stable single-radius path. **(rounded uniform border)** a box with
+         a border-radius AND a uniform border (same paintable style/width/colour on all four edges
          `FragmentPainter.TryUniformBorder` — widths compared with a tolerance so equivalent mixed-unit
          lengths don't fall back) paints ONE filled RING (`PdfPage.FillRoundedRectangleRing` — the
          even-odd annulus between the border box [outer, the border-box radii] and the padding box
          [inner, radii reduced by the full border width]) instead of the four square edge rects. A FILLED
-         ring, NOT a centerline stroke (post-PR-#172 review P1+P2): its outer corner is EXACT for any
+         ring, NOT a centerline stroke : its outer corner is EXACT for any
          border width — a small radius under a thick border keeps its rounding (the inner corner goes
          sharp, exactly CSS) — and it composites the border colour's alpha correctly (a fill → `/ca`, not
-         a stroke's `/CA`). **(Task 3 — rounded background-image clip)** a border-radius rounds the
+         a stroke's `/CA`). **(rounded background-image clip)** a border-radius rounds the
          background-image clip (`PdfPage.BeginRoundedRectangleClip`, the background-clip box's radii inset
          per side) on BOTH the per-tile loop and the tiling-pattern paths; zero radii fall back to the
          rectangular clip (byte-identical). The explicit two-radii `Rx / Ry` slash spelling SHIPPED later
-         (border-radius-elliptical cycle — recovered into 4 internal `-netpdf-…-radius-y` longhands; see that
-         entry above). **Rounded NON-uniform borders — FIRST CUT DONE (rounded-nonuniform-borders cycle):**
+         (recovered into 4 internal `-netpdf-…-radius-y` longhands; see that
+         entry above). **Rounded NON-uniform borders — FIRST CUT DONE:**
          a border-radius with per-side-differing border widths / styles / colours can't use the uniform
          ring, so `FragmentPainter.PaintBorders` now CLIPS the four square edge rects to the rounded
          border-box outline (`PdfPage.BeginRoundedRectangleClip` … `RestoreGraphicsState`) — the box's OUTER
@@ -3677,7 +3532,7 @@ flags the categories):
          poking out square. Applies to a body block AND a margin box. STILL DEFERRED (approximations): the
          per-corner ARC SEGMENTS that transition between two edges' widths/colours (the INNER corners stay
          square + a corner where two differently-coloured edges meet shows a hard split, not a diagonal
-         miter). (The MARGIN-box border-radius reached parity in the margin-box-border-radius cycle — see
+         miter). (The MARGIN-box border-radius reached parity — see
          the entry above.)
        - **body `border-radius` (background band) + `background-attachment` + margin-box
          `background-origin`/`-clip` — DONE (body-radius / bg-attachment / margin-box-origin-clip
@@ -3689,24 +3544,24 @@ flags the categories):
          `scroll`[initial]/`fixed`/`local`) so `@supports` reports it + an invalid value is
          diagnosed — but rendering does NOT consume the value yet (PARSE-ONLY metadata): for PAGED
          media there is no scroll, so every value paints element-relative, `fixed` page-relative
-         positioning being silently approximated (NOT diagnosed — the value is valid; post-PR-#171
-         review P2 made the code comment + docs honest). A page-MARGIN box's `background-image` now
+         positioning being silently approximated (NOT diagnosed — the value is valid
+          made the code comment + docs honest). A page-MARGIN box's `background-image` now
          honors `background-origin` (positioning area) + `background-clip` (paint rect) like a body
          block — the body `FragmentPainter.BackgroundAreaInset` (made internal) is reused on the
          margin box's `ComputedStyle`, the origin area + clip rect riding `MarginBoxBackgroundImage`
          into the shared tiler (the origin/clip keywords flow through the box's cascade — importance
-         + CSS-wide + invalid-value diagnostics — post-PR-#171 review P2, not RawDeclarationWinner;
+         + CSS-wide + invalid-value diagnostics, not RawDeclarationWinner
          the inset sums are clamped to ≥ 0 so a thin box with large border/padding can't produce a
-         negative paint rect — review P1). STILL DEFERRED (much of this body-radius list SHIPPED in the
+         negative paint rect —). STILL DEFERRED (much of this body-radius list SHIPPED in the
          border-radius-completion cycle — see the entry above; the `Rx / Ry` elliptical slash SHIPPED in the
          border-radius-elliptical cycle): rounded NON-uniform border strokes — FIRST CUT in the
          rounded-nonuniform-borders cycle (the outer corners round via a clip; per-corner arc segments
-         transitioning between edges stay deferred). The margin-box per-corner radius + rounded border +
-         image clip reached parity in the margin-box-border-radius cycle.
-         `background-attachment: fixed` PAGE-relative positioning; gradients (Phase 4).
+         transitioning between edges stay deferred). The margin-box per-corner radius + rounded border
+         image clip reached parity.
+         `background-attachment: fixed` PAGE-relative positioning; gradients.
        - **4-value `<position>` edge-offsets + `background-origin` + `background-clip` — DONE
-         (edge-offset / bg-origin / bg-clip cycles):** the shared
-         `FragmentPainter.TryParseBackgroundPosition` (used by `object-position` +
+:** the shared
+         `FragmentPainter.TryParseBackgroundPosition` (used by `object-position`
          `background-position`) parses the §3.6 THREE-/FOUR-value edge-offset form — an edge
          keyword each optionally followed by a `<length-percentage>` offset FROM that edge
          (`left 10px top 5px`, `right 25% bottom 50%`); components assigned to axes by keyword
@@ -3716,98 +3571,98 @@ flags the categories):
          AngleSharp-dropped at parse (a documented beta gremlin; only the parser + the margin-box
          raw path see it). A body block's `background-image` honors `background-origin` (the
          POSITIONING area — `border-box` / `padding-box` [initial] / `content-box`, the border box
-         inset by the USED border / border+padding via new `BackgroundAreaInset` +
+         inset by the USED border / border+padding via new `BackgroundAreaInset`
          `UsedBorderEdgeWidthPx`, matching the border painter — replaces the border-box
          approximation; borderless boxes byte-identical) and `background-clip` (the PAINT/clip rect
          — `border-box` [initial] / `padding-box` / `content-box`, the tiler's new optional
          clip-rect params bounding the loop clip + the pattern fill). STILL DEFERRED: MARGIN-BOX
          `background-origin`/`-clip` (the band stays the area); the BODY + `object-position`
-         4-value position forms (AngleSharp drop); `background-attachment`; gradients (Phase 4).
-       - **Container vertical padding + §4.3-gated borders + `object-position` +
+         4-value position forms (AngleSharp drop); `background-attachment`; gradients.
+       - **Container vertical padding + §4.3-gated borders + `object-position`
          `background-repeat: space`/`round` — DONE (container-vpad / object-position /
          space-round cycles):** a running-element CONTAINER's VERTICAL border+padding now
          BLOCK the §8.3.1 margin collapse (ADD instead of max-collapse) and extend its
-         decoration band over its padding strip (container-vpad cycle): `FoldContainerBoxModel`
-         returns the boundary-gap parts INSIDE the band (`Leading/TrailingInsidePx` = border +
+         decoration band over its padding strip: `FoldContainerBoxModel`
+         returns the boundary-gap parts INSIDE the band (`Leading/TrailingInsidePx` = border
          padding + the pre-fold inner gap), threaded through `RunningContainer` →
-         `PageMarginBoxPainter`'s `ContainerBand` so the band's Y range extends (top − Leading,
+         `PageMarginBoxPainter`'s `ContainerBand` so the band's Y range extends (top − Leading
          bottom + Trailing); its HORIZONTAL border+padding join the inset propagation into
          descendants. Border widths are §4.3-GATED (new `CaptureSegmentBorderWidths` /
-         `GatedBorderWidthPx`: a `border-<side>-style` of `none`/`hidden`/unset → 0;
+         `GatedBorderWidthPx`: a `border-<side>-style` of `none`/`hidden`/unset → 0
          `thin`/`medium`/`thick` → 1/3/5; an unset width on a painting edge → the `medium`
          default). `object-position` positions the object-fit-fitted `<img>` content in its
-         content box (object-position cycle, CSS Images 3 §5.6): the RAW winner rides `ImgSpec`
+         content box (CSS Images 3 §5.6): the RAW winner rides `ImgSpec`
          (the property stays UNREGISTERED — a 2-component position needs a new metadata type, a
          documented seam), `ImagePainter` reuses `FragmentPainter.TryParseBackgroundPosition`
-         (the §3.6 grammar), unset → centre (byte-identical to the pre-cycle 50% 50%).
-         `background-repeat: space`/`round` are the two remaining modes (space-round cycle, CSS
+         (the §3.6 grammar), unset → centre (byte-identical to the pre-% 50%).
+         `background-repeat: space`/`round` are the two remaining modes (CSS
          B&B §3.2): new `BackgroundRepeatMode` (per-axis) + `AxisTilingPlan` (`space` =
          floor(area/tile) tiles flush to the edges with the leftover as equal gaps folded into
          the ORIGIN STEP; `round` rescales the tile so a whole number fits) drive both the loop
          and the pattern path; `RegisterTilingPattern` gained optional `xStepPt`/`yStepPt` (a
          `space` gap makes the step EXCEED the BBox — legal §8.7.3.1 — quantized + in the dedup
-         key + on `/XStep`//`/YStep`). STILL DEFERRED: container WIDTH (sub-box wrap) +
+         key + on `/XStep`//`/YStep`). STILL DEFERRED: container WIDTH (sub-box wrap)
          inline-level spans; `object-position` REGISTRATION (a `<position>` metadata type — it
          renders from the raw winner, so `@supports (object-position: …)` does NOT report it; PR
-         #169 review P2) + edge-offset (4-value) forms; `background-origin`/`-clip`/`-attachment`;
-         gradients (Phase 4).
+          ) + edge-offset (4-value) forms; `background-origin`/`-clip`/`-attachment`
+         gradients.
        - **Container inset propagation + PDF tiling patterns + object-fit — DONE
-         (container-insets / tiling-patterns / object-fit cycles):** a running-element
+:** a running-element
          CONTAINER's horizontal margin+padding now propagate into its DESCENDANTS
-         (container-insets cycle): every descendant segment's line band + glyphs/extent inset
+         : every descendant segment's line band + glyphs/extent inset
          by the container's content-box offset (folded into the segment margin slots — the
          leaf's own band moves too), and every NESTED container band insets under the outer's
          content box (the outer's own band keeps its margin-only inset — its padding is inside
          its band); runs for every recursed container, decorated or not. Background-image
          tilings ABOVE the 16-tile per-fragment loop threshold emit ONE PDF tiling-pattern
-         fill (tiling-patterns cycle, ISO 32000-2 §8.7.3): `PdfDocument.RegisterTilingPattern`
-         (PatternType 1, the cell paints the image, the grid phase baked into `/Matrix` —
-         pattern space anchors to DEFAULT user space §8.7.3.1, deduped by image/size/anchor) +
+         fill (ISO 32000-2 §8.7.3): `PdfDocument.RegisterTilingPattern`
+         (PatternType 1, the cell paints the image, the grid phase baked into `/Matrix`
+         pattern space anchors to DEFAULT user space §8.7.3.1, deduped by image/size/anchor)
          `PdfPage.FillRectangleWithPattern` (`/Pattern cs … scn … re f`, per-object resource
-         dedup); the fill rect clamps per NON-repeating axis; the old 4096-tile cap +
+         dedup); the fill rect clamps per NON-repeating axis; the old 4096-tile cap
          `PAINT-BG-IMAGE-TILE-CAP-001` are REMOVED (unreachable — O(1) for any count); at or
          below the threshold the per-tile loop stays byte-identical. `object-fit` fits an
-         `<img>`'s content in its content box (object-fit cycle, CSS Images 3 §5.5): `fill`
-         (initial — byte-identical), `contain`/`cover` (aspect-preserving), `none` (intrinsic),
+         `<img>`'s content in its content box (CSS Images 3 §5.5): `fill`
+         (initial — byte-identical), `contain`/`cover` (aspect-preserving), `none` (intrinsic)
          `scale-down` (min of none/contain), all CENTRED (the `object-position` 50% 50%
-         initial), an overflowing concrete size (`cover`/`none`) clipped at the content box;
+         initial), an overflowing concrete size (`cover`/`none`) clipped at the content box
          an unknown raw falls back to `fill` (AngleSharp drops invalid keywords upstream — the
          painter fallback is defense-in-depth). STILL DEFERRED: container BORDER widths (need
-         the §4.3 style gate) + VERTICAL padding (band extension) + width (sub-box wrap) +
-         inline-level spans; `object-position` (non-center); `space`/`round` repeats;
-         edge-offset positions; `background-origin`/`-clip`/`-attachment`; gradients (Phase 4).
-       - **element() nested CONTAINER bands + margin-box background-image + background
+         the §4.3 style gate) + VERTICAL padding (band extension) + width (sub-box wrap)
+         inline-level spans; `object-position` (non-center); `space`/`round` repeats
+         edge-offset positions; `background-origin`/`-clip`/`-attachment`; gradients.
+       - **element nested CONTAINER bands + margin-box background-image + background
          position/size/repeat — DONE (container-bands / margin-box-bg-image / bg-variants
          cycles):** a DECORATED intermediate block between the running root and the leaf lines
          paints ONE band spanning its descendants' lines (PRE-order capture — an outer
          container paints under an inner one; the Y range rides the per-line geometry, a
          vertical truncation clamps it); its VERTICAL margins fold into the boundary segments'
-         gap margins at capture (max-collapse, §8.3.1's parent/first-last-child case —
+         gap margins at capture (max-collapse, §8.3.1's parent/first-last-child case
          decorated or not), and its own horizontal margins inset ITS band only. A page margin
          box's `background-image: url(...)` tiles over its band (the raw-read pattern; margin
          boxes resolve EARLY so the prefetch sees their urls — the PrintBackgrounds prefetch
-         gate applies; initial repeat/auto/0%0% only; rectangular tiles over a rounded band —
+         gate applies; initial repeat/auto/0%0% only; rectangular tiles over a rounded band
          documented). Body `background-repeat` (4 keywords + the two-value axis form; a
          repeating axis covers the area at the position's PHASE, a non-repeating axis paints
          ONE clipped tile), `background-size` (auto / contain / cover / `<length|%>{1,2}` with
-         aspect completion) and `background-position` (keywords incl. the swapped pair,
+         aspect completion) and `background-position` (keywords incl. the swapped pair
          absolute lengths, the §3.6 percentage rule; one value → other axis centers) drive the
          shared tiler — AngleSharp-beta EXPANDS repeat/position into `-x`/`-y` longhands, so
-         the capture recomposes the two-value form. An unsupported form (`space`/`round`,
+         the capture recomposes the two-value form. An unsupported form (`space`/`round`
          3-/4-value positions, non-absolute units) surfaces once + that longhand falls back to
          its initial WHOLE (no half-applied axes). Margin-box VARIANTS are wired too
-         (post-PR-#167 review P1 — the raw winners ride `MarginBoxBackgroundImage` into the
+         (the raw winners ride `MarginBoxBackgroundImage` into the
          shared tiler; margin-box bodies never pass through AngleSharp, so no `-x`/`-y`
          recompose). STILL DEFERRED: container width/padding affecting CHILD line geometry
          (sub-box wrap) + inline-level spans; `background-origin`/`-clip`/`-attachment` (the
          positioning area stays the BORDER box — documented); `space`/`round`; edge-offset
-         positions; PDF tiling patterns (the O(1) tile-cap replacement); gradients (Phase 4).
+         positions; PDF tiling patterns (the O(1) tile-cap replacement); gradients.
        - **Body image pipeline + background images + per-line horizontal margins — DONE
-         (img-pipeline / bg-image / segment-hmargins cycles):** the BODY IMAGE PIPELINE is
+:** the BODY IMAGE PIPELINE is
          live — a BLOCK-level `<img>` renders end-to-end: every image reference is prefetched
          BEFORE layout through `SafeResourceLoader` (`data:` URIs decode INLINE with no user
-         loader — the self-contained default; the parser's Phase-A `img[src]` data:-strip now
-         EXEMPTS allowlisted IMAGE mediatypes, validated downstream by the MIME allowlist +
+         loader — the self-contained default; the parser's `img[src]` data:-strip now
+         EXEMPTS allowlisted IMAGE mediatypes, validated downstream by the MIME allowlist
          magic-byte decode; `file:`/`http(s):` via `HtmlPdfOptions.ResourceLoader` under
          `SecurityPolicy`), decoded once per URI (PNG/JPEG passthrough; GIF/WebP/BMP via the
          SkiaSharp raster fallback) into a registered XObject (per-URI memo + content-hash
@@ -3819,20 +3674,20 @@ flags the categories):
          border box (initial `repeat`; clipped partial edge tiles; over the color, under
          borders; `PrintBackgrounds`-gated; 4096-tile cap → `PAINT-BG-IMAGE-TILE-CAP-001`).
          A leaf block's own horizontal MARGINS inset its line's per-line BAND + glyphs/extent
-         (margins sit OUTSIDE the border box — padding stays inside the band; absolute only,
+         (margins sit OUTSIDE the border box — padding stays inside the band; absolute only
          clamped ≥ 0). Failures surface `RES-LOAD-FAILED-001` / `IMG-DECODE-FAILED-001` /
          `CSS-BACKGROUND-IMAGE-UNSUPPORTED-001` — nothing drops silently. STILL DEFERRED:
-         INLINE `<img>` (the atomic-inline deferral — no line-box atomics yet), `object-fit`,
+         INLINE `<img>` (the atomic-inline deferral — no line-box atomics yet), `object-fit`
          `%` dimension attributes, `srcset`, ICC profiles, SVG sources (needs the sanitize/
-         rasterize pipeline — the MIME allowlist rejects `image/svg+xml`), gradients +
-         multi-layer backgrounds (Phase 4 shading patterns), `background-position`/`-size`/
+         rasterize pipeline — the MIME allowlist rejects `image/svg+xml`), gradients
+         multi-layer backgrounds (shading patterns), `background-position`/`-size`/
          `-repeat` variants (the tile phase starts at the BORDER box — spec phases at the
-         padding box), PDF tiling-pattern objects (the O(1) replacement for the tile cap),
-         MARGIN-BOX background images, % `height` relative-resolution for replaced boxes,
-         negative / `auto` per-line horizontal margins (no per-line centering distribution),
+         padding box), PDF tiling-pattern objects (the O(1) replacement for the tile cap)
+         MARGIN-BOX background images, % `height` relative-resolution for replaced boxes
+         negative / `auto` per-line horizontal margins (no per-line centering distribution)
          real nested block LAYOUT.
        - **Horizontal per-line padding + float % lengths + body box-sizing — DONE
-         (hpadding / float-percent / box-sizing cycles):** a leaf block's own absolute
+:** a leaf block's own absolute
          `padding-left/right` insets its line's glyphs + alignment extent (the band keeps the
          full width; the wrap width isn't narrowed per segment — a padded long line clips via
          the clip-path safety net). Float `width`/`margin-*`/`padding-*` percentages resolve
@@ -3840,121 +3695,117 @@ flags the categories):
          An explicit body width under `box-sizing: border-box` IS the border box (floored at
          the insets), at both the block and inline-only paths. STILL DEFERRED THEN: per-line
          horizontal margins + background images (body image pipeline) — BOTH shipped in the
-         NEXT entry (img-pipeline / bg-image / segment-hmargins cycles, see above) — and real
+         NEXT entry (see above) — and real
          nested block LAYOUT.
        - **Per-line segment padding + body % height + margin:auto centering — DONE
-         (segment-padding / percent-height / auto-margins cycles):** a leaf block's own absolute
-         VERTICAL padding grows its line's band/pitch (background covers the padding box;
+:** a leaf block's own absolute
+         VERTICAL padding grows its line's band/pitch (background covers the padding box
          horizontal per-line padding deferred — needs per-line X insets). `height: N%` resolves
          against a DEFINITE containing height (fragmentainer at the outer level; the parent's
          resolved content height threaded through the recursion — an auto parent computes to
          auto per §10.5, browser-equivalent). `margin-left/right: auto` with an explicit width
          distributes per §10.3.3 (centred / one-sided / over-constrained-clamped), incl. the
-         inline-only path. STILL DEFERRED: horizontal per-line padding, floats/abspos %,
+         inline-only path. STILL DEFERRED: horizontal per-line padding, floats/abspos %
          `% height` on floats, real nested block LAYOUT.
        - **Body % lengths + per-line segment margins + per-segment line-height — DONE
-         (body-percent / segment-margins / segment-line-height cycles):** body `width`/`margin-*`/
+:** body `width`/`margin-*`/
          `padding-*` PERCENTAGES resolve at layout time against the containing block's INLINE size
-         (CSS 2.2 §10.2/§8.3/§8.4; % padding is rewritten to used px in place so paint agrees;
-         still deferred THEN: floats/abspos %, % in body calc() — `% height` and `margin: auto`
+         (CSS 2.2 §10.2/§8.3/§8.4; % padding is rewritten to used px in place so paint agrees
+         still deferred THEN: floats/abspos %, % in body calc — `% height` and `margin: auto`
          shipped in the NEXT cycle, see the entry above). A leaf block's own ABSOLUTE vertical margins insert collapsed
          inter-line gaps (max of adjoining, floored at 0; %/relative/`auto` read 0); its own
          `line-height` (absolute, unitless, or em) drives its line's pitch (`normal`/%/other →
          font × 1.2). STILL DEFERRED: per-line padding, real nested block LAYOUT.
-       - **element() segments part 2: per-line decoration + text-align + pitch — DONE
-         (segment-decor / segment-align / segment-pitch cycles):** a leaf block's own
+       - **element segments part 2: per-line decoration + text-align + pitch — DONE
+:** a leaf block's own
          background/border paints a per-LINE band behind its line; a segment's own `text-align`
          aligns its line (the box's declared text-align wins); each line advances by ITS segment's
-         pitch (font × 1.2 — replaces the max-font uniform approximation; cumulative tops,
-         per-line half-leading, per-line truncation). STILL DEFERRED: per-line padding,
-         real nested block LAYOUT (separately laid-out sub-boxes). (Per-line vertical MARGINS +
+         pitch (font × 1.2 — replaces the max-font uniform approximation; cumulative tops
+         per-line half-leading, per-line truncation). STILL DEFERRED: per-line padding
+         real nested block LAYOUT (separately laid-out sub-boxes). (Per-line vertical MARGINS
          per-segment LINE-HEIGHT shipped in the NEXT cycle — see the entry above.)
        - **Box/element separately-decorated + margin-box border-radius + content(before|after) — DONE
-         (nested-decor / border-radius / content-pseudo cycles):** a co-declared standalone element()'s
+:** a co-declared standalone element's
          decoration paints as a NESTED band at its content block (box band at the box rect; element-only
          decoration keeps the coinciding band; per-side inset re-attribution deferred). A single uniform
-         absolute `border-radius` rounds the margin-box BACKGROUND band (`PdfPage.FillRoundedRectangle`,
-         kappa Béziers, half-min clamp; %, per-corner, elliptical, relative/calc(), body path, and
+         absolute `border-radius` rounds the margin-box BACKGROUND band (`PdfPage.FillRoundedRectangle`
+         kappa Béziers, half-min clamp; %, per-corner, elliptical, relative/calc, body path, and
          rounded border STROKES surfaced/deferred). `content(before|after)` resolves the host's pseudo
          `content` raw as a plain content-list (missing/none/normal → empty; first-letter/marker stay
          the unsupported bail). The cycle also fixed a REAL adapter bug: a rule AngleSharp drops
          ENTIRELY now synthesizes from its preprocessor recovery instead of demoting to opaque (which
          lost the recovery and desynced recovery ordinals).
-       - **Body explicit `width` (post-PR-#159 handoff-spotted gap) — first cut DONE:** an in-flow
+       - **Body explicit `width` (handoff-spotted gap) — first cut DONE:** an in-flow
          `BlockContainer`/`ListItem` with an explicit `width` sizes its border box to
-         width + inline borders + padding at BOTH `BlockLayouter` fill sites (outer dispatch +
+         width + inline borders + padding at BOTH `BlockLayouter` fill sites (outer dispatch
          subtree recursion, shared `ResolveInFlowBorderBoxInlineSize`), mirroring the inline-only
          block path — so an empty `width: 64px` div's background band no longer spans the full
          content width. STILL DEFERRED (the CSS 2.2 §10.3.3 remainder): margin DISTRIBUTION
          (`margin: auto` centering, the over-constrained rule — the box keeps its inline-start
          edge), body `box-sizing`, percent width (reads as 0 → auto fill, the
-         `ReadLengthPxOrZero` cycle-1 contract), and the explicit width of `Table`/`InlineTable`
-         wrappers (the measured-grid growth logic owns their inline extent),
+         `ReadLengthPxOrZero` contract), and the explicit width of `Table`/`InlineTable`
+         wrappers (the measured-grid growth logic owns their inline extent)
          `FlexContainer`/`GridContainer`, and replaced boxes (all keep the documented
          available-range fill).
-       - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
+       - **`@page :first` selector — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare
          `!important` still beats a `:first` normal).
-       - **`@page :left`/`:right`/`:blank` selectors (multi-page driver cycle 6) — MARGIN BOXES DONE,
+       - **`@page :left`/`:right`/`:blank` selectors (multi-page driver) — MARGIN BOXES DONE
          GEOMETRY DEFERRED:** for MARGIN BOXES (running headers/footers) these now apply per page — the
          driver builds an `AtPageRules.PageSelectorContext(pageIndex, IsBlank)` (the LTR parity: page 0 =
          recto/right, alternating; a body-fragment-less page is `:blank`), and `AtPageRules.MatchTier` (the
          page-context generalization of `ClassifyPageSelector`) picks the applicable `@page` rules in CSS
          Page 3 §3.1 specificity order (bare < `:left`/`:right` < `:first`/`:blank` < `@page <name>`), which
-         the per-page `AtPageMarginBoxResolver.Resolve(ctx)` paints. NAMED pages (cycle 7 + PR #179 review)
-         also select MARGIN BOXES per page AND FORCE a page break: the `page` property (`auto | <custom-ident>`,
+         the per-page `AtPageMarginBoxResolver.Resolve(ctx)` paints. NAMED pages
+         also select MARGIN BOXES per page AND FORCE a page break: the `page` property (`auto | <custom-ident>`
          dropped by AngleSharp → recovered by `CssPreprocessor`, read raw) is resolved by
          `AtPageRules.ResolveUsedPageName` (§3.4 used value — nearest VALID-`<custom-ident>` ancestor; CSS-wide
-         keywords + invalid raws like `-1` resolve to the parent, NOT literal names — PR #179 P1) and stored on
+         keywords + invalid raws like `-1` resolve to the parent, NOT literal names —) and stored on
          `Box.PageName` at build time. `BlockLayouter` FORCES a page break before a block-flow child whose
          `Box.PageName` differs from the preceding one (CSS Page 3 §3.4 — so a named section that FITS the
          current page still starts a new one); the driver reads each page's name from its first content box's
          `Box.PageName` (skipping the `<html>`/`<body>` wrappers) and `MatchTier` matches a bare
          `<custom-ident>` `@page` selector at tier 3. STILL DEFERRED: (a) per-page GEOMETRY — a
          `@page :left`/`:right`/`<name>` that changes `margin`/`size` would reflow LAYOUT per page (the content
-         box differs), which needs an iterative layout pass (the margin/size resolvers stay single-page, bare +
+         box differs), which needs an iterative layout pass (the margin/size resolvers stay single-page, bare
          `:first`); (b) COMPOUND selectors (`:first:left`, `chapter:first`) → `MatchTier` returns no-match
          (`DeclaredPageNames` still collects a compound's leading name for the union); (c) `:blank` is
          implemented but latent — the driver doesn't yet emit mid-document blank pages (no forced parity
-         breaks); (d) `page` is not a registered first-class property (no `@supports` — recovery + raw read,
+         breaks); (d) `page` is not a registered first-class property (no `@supports` — recovery + raw read
          but CSS-wide/`<custom-ident>` validation IS applied at use). The forced break compares ADJACENT
-         block-flow SIBLINGS (a first cut of §3.4's "preceding box"). RTL parity flip out of scope. `calc()` /
+         block-flow SIBLINGS (a first cut of §3.4's "preceding box"). RTL parity flip out of scope. `calc` /
          font-relative margin units also deferred (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
-     the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.
-  5. **Async font pre-resolution** (post-PR-#117 review P1) — shaping is
+     the determinism contract once PDFs are emitted.
+  5. **Async font pre-resolution** — shaping is
      synchronous, so `HarfBuzzShaperResolver` fails fast on a
      non-synchronous `IFontResolver` (e.g. a CDN fetch). A layout pre-pass
      that resolves all needed faces async + warms the cache off-thread
      would let async resolvers work without blocking layout.
-  6. **Per-size pinned-font memory** (post-PR-#117 review P3, perf
-     follow-up) — the shaper cache keys on size + each `HbShaper` copies +
+  6. **Per-size pinned-font memory** (perf
+     follow-up) — the shaper cache keys on size + each `HbShaper` copies
      pins the full font bytes, so a document with many computed sizes
      duplicates the payload. Optimization: a blob cache keyed by validated
      font identity (pin once) + size-specific HarfBuzz `Font` objects over
      the shared blob.
 - **Trigger** — end-to-end HTML→PDF output; the invoice corpus render
-  (Phase 3 Task 28).
-- **Owner files** —
-  - `src/NetPdf/HtmlPdf.cs` (facade — wired cycle 2) +
-    `src/NetPdf/Rendering/` (`PdfRenderPipeline`, `FragmentPainter`,
-    `ListFragmentSink`, `PdfUnits` — cycle 2) +
-    `src/NetPdf/Shaping/HarfBuzzShaperResolver.cs` (cycle 1).
-  - `src/NetPdf/Diagnostics/` (`CollectingDiagnosticsSink`,
-    `PaginateToPublicDiagnosticsAdapter` — cycle 2).
+  .
+- **Owner files**
+  - `src/NetPdf/HtmlPdf.cs` (facade — wired)
+    `src/NetPdf/Rendering/` (`PdfRenderPipeline`, `FragmentPainter`
+    `ListFragmentSink`, `PdfUnits` —)
+    `src/NetPdf/Shaping/HarfBuzzShaperResolver.cs`.
+  - `src/NetPdf/Diagnostics/` (`CollectingDiagnosticsSink`
+    `PaginateToPublicDiagnosticsAdapter` —).
   - `src/NetPdf.Css/ComputedValues/PropertyResolvers/PropertyResolverDispatch.cs`
     (font-size + line-width resolvers — TODO 1).
-  - `src/NetPdf.Pdf/PdfPage.cs` (`FillRectangle` — cycle 2) +
+  - `src/NetPdf.Pdf/PdfPage.cs` (`FillRectangle` —)
     `src/NetPdf.Pdf/` (the byte writer — complete).
   - `src/NetPdf.Paint/` (`DisplayCommand` IR → PDF consumer — future TODO 2).
-- **Added** — Phase 5 layout→PDF wiring cycle 1; cycle 2 wired the facade
-  + background paint bridge. Cycle 5a-2-ii added the `TextPainter` (real glyphs
-  end-to-end) + `HarfBuzzShaperResolver.ResolveFontProgram` + owner file
-  `src/NetPdf/Rendering/TextPainter.cs`.
 - **Removal condition** — `HtmlPdf.Convert` renders a real text document
-  to a valid PDF `byte[]` end-to-end. **Substantially met** (cycle 5a-2-ii:
+  to a valid PDF `byte[]` end-to-end. **Substantially met** (2-ii:
   real glyphs paint + embed deterministically with a fixed font); the DEFAULT
-  facade path still depends on platform fonts until the bundled fallback (5b),
+  facade path still depends on platform fonts until the bundled fallback (5b)
   so the determinism contract for the default path remains open.

@@ -7363,6 +7363,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             ResolveAutoInlineMargins(
                 block, borderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
         }
+        else if (HasExplicitMaxWidth(block))
+        {
+            // Corpus-fidelity (11 certificate `.citation`) — an AUTO-width block that `max-width`
+            // clamps below the available range still has a definite used width, so `margin: 0 auto`
+            // centers it (CSS 2.2 §10.3.3 + §10.4). ComputeInlineOnlyBlockLayout applies the same
+            // auto-fill + max-width clamp to the emitted width, so distribute against the same used
+            // border box. No-op when max-width doesn't clamp (used width == range → leftover 0).
+            var autoFill = Math.Max(0, containingInlinePx - marginInlineStart - marginInlineEnd);
+            var usedBorderBox = block.ClampBorderBoxToMinMax(
+                autoFill, PropertyId.MinWidth, PropertyId.MaxWidth, containingInlinePx);
+            ResolveAutoInlineMargins(
+                block, usedBorderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
+        }
         return new(
             // Body % lengths (body-percent cycle): margins/paddings/width take percentages against
             // the containing block's INLINE size (CSS 2.2 §8.3/§8.4/§10.2), like the block paths.
@@ -7393,6 +7406,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// explicit. The §10.3.3 gates key on this tag test (post-PR-#164 review P3).</summary>
     private static bool HasExplicitWidth(Box child) =>
         child.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+
+    /// <summary>An explicit <c>max-width</c> (LengthPx / Percentage). A <c>width: auto</c> block that
+    /// <c>max-width</c> clamps below the available range still has a definite used width, so
+    /// <c>margin: 0 auto</c> centers it (CSS 2.2 §10.3.3 + §10.4) — see
+    /// <see cref="ResolveAutoInlineMargins"/>.</summary>
+    private static bool HasExplicitMaxWidth(Box child) =>
+        child.Style.Get(PropertyId.MaxWidth).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
 
     /// <summary>Body `box-sizing: border-box` (box-sizing cycle) — the KeywordResolver box-sizing
     /// table: 0 = content-box (the initial), 1 = border-box. Mirrors the margin-box reader
@@ -7507,9 +7527,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // gate in ResolveInFlowBorderBoxInlineSize (both sets must stay in lockstep).
         if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
             or BoxKind.FlexContainer or BoxKind.GridContainer)) return;
-        // EXPLICIT width only (a tag test, so the legal `width: 0` / `0%` distributes too —
-        // post-PR-#164 review P3); auto-width boxes keep the fill (auto margins read 0).
-        if (!HasExplicitWidth(child)) return;
+        // EXPLICIT width (a tag test, so the legal `width: 0` / `0%` distributes too — post-PR-#164
+        // review P3) OR an explicit `max-width` (a `width: auto` block that max-width clamps below the
+        // range still has a definite used width, so `margin: 0 auto` centers it — CSS 2.2 §10.3.3 +
+        // §10.4; the `borderBoxInlineSize` passed in is already the max-width-clamped used width, so the
+        // leftover below is 0 when max-width doesn't actually clamp → byte-identical for the fill case).
+        // A plain auto-width box with no max-width keeps the fill behavior (auto margins read 0).
+        if (!HasExplicitWidth(child) && !HasExplicitMaxWidth(child)) return;
         var leftAuto = child.Style.Get(PropertyId.MarginLeft).Tag == ComputedSlotTag.Keyword;
         var rightAuto = child.Style.Get(PropertyId.MarginRight).Tag == ComputedSlotTag.Keyword;
         if (!leftAuto && !rightAuto) return;

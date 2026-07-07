@@ -12,7 +12,8 @@ Security fixes land on the latest `1.x` release line and `main`.
 
 | Version | Supported |
 |---|---|
-| Latest `1.x` release / `main` | ✅ fixes land here |
+| Latest `1.x` release | ✅ security fixes land here |
+| `main` (development) | ✅ fixes land here first |
 | Older releases | ❌ superseded — upgrade to the latest |
 
 ## Reporting a vulnerability

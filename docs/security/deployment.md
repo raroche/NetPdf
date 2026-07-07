@@ -9,8 +9,8 @@ NetPdf is structurally immune to several whole bug classes (no JavaScript engine
 process spawning, no reflection-driven deserialization) and ships a mature in-process defense set
 (SSRF choke point + IP blocklist + DNS-pin, XXE-hardened SVG, pre-decode font/image validation,
 layered DoS caps, a PDF-output preflight denylist). **But the library cannot substitute for OS-level
-isolation** against a memory-safety 0-day in a native decoder (Skia / HarfBuzz — threat-model class
-V5). Defense in depth is required.
+isolation** against a memory-safety 0-day in a native decoder (Skia / HarfBuzz). Defense in depth is
+required.
 
 ## 1. In-process configuration (necessary, not sufficient)
 
@@ -43,8 +43,10 @@ Run each conversion in a **locked-down container** (or an equivalent sandbox). R
 - **Ephemeral, one-shot.** Prefer a fresh container per request (or a pool with strict resets); never
   reuse process state across tenants.
 
-Keep the native dependencies patched: subscribe to upstream security advisories for HarfBuzz, libwebp,
-libjpeg-turbo, and libpng, and bump the affected NuGet package promptly when a fix ships.
+Keep the native dependencies patched by keeping the **SkiaSharp** and **HarfBuzzSharp** NuGet packages
+current — those are the packages NetPdf ships and the surface you actually bump. Subscribe to upstream
+advisories for their native libraries (Skia / HarfBuzz and the image codecs libwebp / libjpeg-turbo /
+libpng) and update the NuGet packages promptly when a fix ships.
 
 ## 3. Accepted residuals (documented, not fixed)
 

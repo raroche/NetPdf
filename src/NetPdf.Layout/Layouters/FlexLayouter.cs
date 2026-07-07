@@ -3359,8 +3359,28 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 var itemDiag = effectiveDiagnostics is null ? null : new BufferingDiagnosticsSink();
                 diagBuffers[itemIdx] = itemDiag;
 
+                // Corpus-fidelity (08 sales-report bar bleed) — the nested measure uses its block
+                // budget as the percentage-HEIGHT base for the item's block children (BlockLayouter
+                // resolves a top-level child's `height: N%` against `fragmentainer.BlockSize`). For a
+                // ROW flex item with a DEFINITE cross size (an explicit `height`, e.g. a fixed-height
+                // `.bar-track`), that base must be the ITEM's content height — NOT the page — so a
+                // `height: 100%` child (a gradient `.bar-fill`) fills the track, not the whole page.
+                // Auto-cross items + column items keep the page budget (they content-size / their main
+                // axis is the block budget). Byte-identical unless a definite-height row item has a
+                // percentage-height child, which today resolves against the page (the bug).
+                var itemBlockBudget = contentMeasureBlockBudget;
+                if (!isColumn && !IsCrossSizeAuto(item, flexDirection))
+                {
+                    var itemContentCross = item.Style.CrossBorderBoxSizePx(crossSizeProperty)
+                        - item.Style.BlockBorderPaddingPx();
+                    if (itemContentCross > 0)
+                    {
+                        itemBlockBudget = itemContentCross;
+                    }
+                }
+
                 var buffer = LayoutItemContentIntoBuffer(
-                    item, usedInline, contentMeasureBlockBudget, writingMode, isRtl,
+                    item, usedInline, itemBlockBudget, writingMode, isRtl,
                     itemDiag, cancellationToken);
                 buffers[itemIdx] = buffer;
 

@@ -194,6 +194,10 @@ internal static class PdfRenderPipeline
         // paragraph that splits across pages is shaped (text + inline-block atomic content) ONCE rather
         // than re-shaped on every resume page. Page-invariant + deterministic, so output is byte-identical.
         var inlineOnlyMeasureCache = new InlineOnlyMeasurementCache();
+        // Phase 3 cycle-2d — shared across every page's fresh BlockLayouter so the now-per-page abspos
+        // pass emits each positioned box exactly once (on the page where its containing block lands),
+        // even when a positioned CB is itself split across pages.
+        var crossPageEmittedAbsolute = new System.Collections.Generic.HashSet<Box>();
         // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; resolved ONCE here as
         // the document-level defaults for the resolver (per-paragraph overrides await line
         // splitting — `inline-only-block-line-splitting`). BoxBuilder roots the tree at a
@@ -233,7 +237,8 @@ internal static class PdfRenderPipeline
                     sink: sink,
                     incomingContinuation: continuation,
                     diagnostics: paginate,
-                    shaperResolver: shaper))
+                    shaperResolver: shaper,
+                    crossPageEmittedAbsolute: crossPageEmittedAbsolute))
                 {
                     var fragmentainer = new FragmentainerContext(contentInlinePx, contentBlockPx)
                     {

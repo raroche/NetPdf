@@ -2463,13 +2463,24 @@ flags the categories):
   - **Padding-box CB** — uses the recorded border box inset by border
     widths = the padding box (correct). [Resolved cycle 2a.]
   - **z-index paint ordering** — paints in source order; no z-index.
-  - **Pagination interaction** — cycle 1 emits all abspos boxes on the
-    establishing block's FIRST page (the `AttemptLayout` wrapper runs
-    the pass once, for `_incomingContinuation is null`, on AllDone OR
-    PageComplete — per post-PR-#112 review C2 so multi-page in-flow
-    content doesn't drop abspos fragments). Deciding which page an
-    abspos box belongs on (e.g., anchored to content that paginates),
-    + abspos boxes taller than a page, remain deferred.
+  - ~~**Pagination interaction (which page an abspos box belongs on)**~~
+    — **FIXED (cycle-2d).** The abspos pass now runs on EVERY committed
+    page (the `_incomingContinuation is null` first-page-only gate is
+    gone); each page's pass resolves the boxes whose positioned
+    containing block was recorded on THAT page (the geometry map is
+    rebuilt per page) and silently skips the rest, so a box anchored to
+    content that paginates emits on the page where its CB lands rather
+    than being dropped with `LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001`. A
+    shared `_crossPageEmittedAbsolute` set (owned by the pipeline, passed
+    to each page's `BlockLayouter`) guards double-emit when a positioned
+    CB is itself split across pages. This closed the travel-corpus abspos
+    drops wholesale: `03-itinerary` `.day .badge` circles (×8→0), `02`
+    bullets, and `11` corners all render (0 abspos drops across the whole
+    corpus). A companion fix: a TextRun / anonymous box that REUSES an
+    abspos element's ComputedStyle (e.g. the text inside a badge) is no
+    longer mistaken for an independently-positioned box in the nested
+    content pass. `AbsPosAcrossPaginationTests`. STILL deferred: an
+    abspos box TALLER than a page (its own content pagination).
   - ~~**`position: fixed`**~~ — Task 20 cycle 1 SHIPPED (out-of-flow,
     page/ICB CB, repeated on every page). See the `fixed-cycle-1`
     deferral below for the cycle-1 scope + its deferred refinements.

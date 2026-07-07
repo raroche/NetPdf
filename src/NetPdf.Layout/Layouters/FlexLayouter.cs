@@ -1129,7 +1129,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             : fragmentainer.BlockSize;
         var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,
-            mainSizeProperty, crossSizeProperty, containerCrossSize, isWrapping,
+            mainSizeProperty, crossSizeProperty, containerCrossSize,
+            containerDefiniteCrossSize, isWrapping,
             fragmentainer, layout.WritingMode, layout.IsRtl,
             effectiveDiagnostics, contentMeasureBudget, cancellationToken);
 
@@ -3305,6 +3306,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId mainSizeProperty,
         PropertyId crossSizeProperty,
         double containerCrossSize,
+        double containerDefiniteCrossSize,
         bool isWrapping,
         FragmentainerContext fragmentainer,
         WritingMode writingMode,
@@ -3362,21 +3364,30 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // Corpus-fidelity (08 sales-report bar bleed) — the nested measure uses its block
                 // budget as the percentage-HEIGHT base for the item's block children (BlockLayouter
                 // resolves a top-level child's `height: N%` against `fragmentainer.BlockSize`). For a
-                // ROW flex item with a DEFINITE cross size (an explicit `height`, e.g. a fixed-height
-                // `.bar-track`), that base must be the ITEM's content height — NOT the page — so a
-                // `height: 100%` child (a gradient `.bar-fill`) fills the track, not the whole page.
-                // Auto-cross items + column items keep the page budget (they content-size / their main
-                // axis is the block budget). Byte-identical unless a definite-height row item has a
-                // percentage-height child, which today resolves against the page (the bug).
+                // ROW flex item with a DEFINITE cross size, that base must be the ITEM's content
+                // height — NOT the page — so a `height: 100%` child (a gradient `.bar-fill`) fills the
+                // track, not the whole page. A definite cross is either an explicit length OR a
+                // percentage against a definite container cross (`.bar { height: 100% }` in a fixed-
+                // height row container — 10's barcodes), resolved via the same container-base overload
+                // the emission path uses. The content-cross clamps at 0 (border/padding may consume
+                // the whole height, box-sizing:border-box), and a DEFINITE ZERO is preserved as the
+                // %-height base (do NOT fall back to the page). Auto-cross / column items keep the page
+                // budget (they content-size / their main axis is the block budget). Byte-identical
+                // unless a definite-cross row item has a percentage-height child (the bug).
                 var itemBlockBudget = contentMeasureBlockBudget;
-                if (!isColumn && !IsCrossSizeAuto(item, flexDirection))
+                var crossSlot = item.Style.Get(crossSizeProperty);
+                // A DEFINITE cross size: an explicit length, OR a percentage against a DEFINITE
+                // container cross (finite base). A percentage against an INDEFINITE container is AUTO
+                // per CSS Sizing 3 §5.1.1 — the item content-sizes, so it keeps the page budget (NOT a
+                // spurious 0). Auto keywords are likewise not definite.
+                var definiteCross = crossSlot.Tag == ComputedSlotTag.LengthPx
+                    || (crossSlot.Tag == ComputedSlotTag.Percentage
+                        && double.IsFinite(containerDefiniteCrossSize));
+                if (!isColumn && definiteCross)
                 {
-                    var itemContentCross = item.Style.CrossBorderBoxSizePx(crossSizeProperty)
-                        - item.Style.BlockBorderPaddingPx();
-                    if (itemContentCross > 0)
-                    {
-                        itemBlockBudget = itemContentCross;
-                    }
+                    var crossBorderBox = item.Style.CrossBorderBoxSizePx(
+                        crossSizeProperty, containerDefiniteCrossSize);
+                    itemBlockBudget = Math.Max(0, crossBorderBox - item.Style.BlockBorderPaddingPx());
                 }
 
                 var buffer = LayoutItemContentIntoBuffer(

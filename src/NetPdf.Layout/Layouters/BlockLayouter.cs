@@ -5109,7 +5109,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             double topShift;
             if (!hasPrior)
             {
-                topShift = marginStart;
+                // Phase 3 cycle-2d "mid-split" — when this container was RESUMED at a mid-child
+                // boundary (startIdx > 0), the first child processed here starts at the fragmentainer
+                // top. Per CSS Fragmentation L3 §5.1 the margin adjacent to the (unforced) break is
+                // truncated to zero, so the resumed child hugs the page top instead of re-applying its
+                // full top margin — which would open a phantom gap on the resume page AND inflate the
+                // resumed-extent this level publishes to its parent's cursor advance. Only the first
+                // resumed child truncates; its siblings collapse normally.
+                topShift = (MidSplitEnabled && startIdx > 0 && childIdx == startIdx)
+                    ? 0
+                    : marginStart;
             }
             else
             {
@@ -5259,12 +5268,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 && propagatingResolver is not null
                 && propagatingFragmentainer is { SuppressBlockPagination: false } flexBreakPf
                 && IsFlexContainer(child)
-                && _sink.Cursor > sinkCursorAtRecursionEntry)
+                && _sink.Cursor > sinkCursorAtRecursionEntry
+                // Only a flex child that fits a FRESH page is a move-wholly candidate; one taller than
+                // a page paginates internally via the dispatch below (don't pre-empt it).
+                && childEffectiveBlockSize <= flexBreakPf.BlockSize)
             {
+                // Route through the resolver — usedBlockSize / chunkBlockSize / avoidBreak — exactly
+                // like the block-flow boundary above, so the break honors the resolver's policy + the
+                // CSS Fragmentation avoid metadata (`childAvoidBreak`) instead of a hard-coded fit
+                // test. The greedy resolver breaks here iff the child overflows the remaining space;
+                // the optimizing resolver can weigh the avoid penalty.
                 var flexChildStart = Math.Max(0, childBlockOffset);
-                var flexPageRemaining = flexBreakPf.BlockSize - flexChildStart;
-                if (childEffectiveBlockSize > flexPageRemaining
-                    && childEffectiveBlockSize <= flexBreakPf.BlockSize)
+                var savedFlexUsed = flexBreakPf.UsedBlockSize;
+                flexBreakPf.UsedBlockSize = flexChildStart;
+                var flexDecision = propagatingResolver.ConsiderBreakAt(
+                    BreakOpportunity.Block(
+                        usedBlockSize: flexChildStart,
+                        chunkBlockSize: childEffectiveBlockSize,
+                        avoidBreak: childAvoidBreak),
+                    flexBreakPf);
+                flexBreakPf.UsedBlockSize = savedFlexUsed;
+                if (flexDecision.Action == BreakAction.BreakHere)
                 {
                     return new BlockContinuation(
                         ResumeAtChild: childIdx,
@@ -9702,12 +9726,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <summary>Phase 3 cycle-2d ("mid-split") — an estimate of the FIRST in-flow block-level child's
-    /// block extent (the minimum unbreakable unit for the enter decision), given the container's
-    /// reliably-measured folded subtree extent in <paramref name="containerSubtreeExtent"/>. Measures
-    /// the first child directly, but a standalone measure of a non-block-flow child (flex / grid) is
-    /// treated as opaque by the measure (chrome-only ≈ 0), so when that happens it falls back to the
-    /// container's per-in-flow-child average — which is derived from the correctly folded container
-    /// extent. Returns 0 when the container has no in-flow block-level child.</summary>
+    /// block extent (the minimum unbreakable unit for the enter decision). Measures the first child
+    /// directly; when that comes back opaque (~0 — a non-block-flow box whose content the measure
+    /// doesn't fold), it measures a flex child's real content extent with the same premeasure helpers
+    /// the container's fold uses, and only as a last resort (grid / table / replaced) falls back to
+    /// the container's per-in-flow-child average (<paramref name="containerSubtreeExtent"/> ÷ count).
+    /// The direct + flex-content paths are ACCURATE for a skewed first child (much taller than its
+    /// siblings), so the caller declines to enter-and-split when that child can't fit the remaining
+    /// page. Returns 0 when the container has no in-flow block-level child.</summary>
     private double EstimateFirstInFlowChildExtent(
         Box container, double containerSubtreeExtent,
         CancellationToken cancellationToken, double parentContentBlockSize)
@@ -9728,9 +9754,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return 0;
         }
         var direct = MeasureSubtreeVisualBlockExtent(first, cancellationToken, parentContentBlockSize);
-        // A near-zero direct measure means the first child is a non-block-flow box measured as opaque
-        // (its content wasn't folded); use the container's reliable per-child average instead.
-        return direct > 1.0 ? direct : containerSubtreeExtent / count;
+        if (direct > 1.0)
+        {
+            return direct;
+        }
+        // The standalone measure came back opaque (~0) — the first child is a non-block-flow box whose
+        // content the measure doesn't fold (e.g. an auto-height flex that isn't paginatable). Measure
+        // its real content extent DIRECTLY (the same premeasure the container's own fold uses), so a
+        // SKEWED first child that is much taller than its siblings is not under-reported by the naive
+        // per-child average — which would wrongly enter-and-split (then force-overflow the first child
+        // off the page) when it should move wholly.
+        if (IsFlexContainer(first) && IsHeightAuto(first))
+        {
+            var flexChrome =
+                first.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
+                + first.Style.ReadLengthPxOrZero(PropertyId.PaddingTop)
+                + first.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom)
+                + first.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+            var flexInline = Math.Max(0.0, _bfcContentInlineSize
+                - first.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
+                - first.Style.ReadLengthPxOrZero(PropertyId.MarginRight));
+            var flexContent = first.Style.ReadFlexDirection().IsFlexColumnDirection()
+                ? PreMeasureFlexMainExtent(first, flexInline, cancellationToken)
+                : PreMeasureFlexCrossExtent(first, flexInline, cancellationToken);
+            if (flexContent + flexChrome > 1.0)
+            {
+                return flexContent + flexChrome;
+            }
+        }
+        // Grid / table / replaced opaque box: fall back to the container's folded per-child average
+        // (those have their own row/track pagination; a skewed first child of these is far rarer).
+        return containerSubtreeExtent / count;
     }
 
     /// <summary>Per cycle 2c post-PR-29 review #1 (P0) + #3 (P1) —

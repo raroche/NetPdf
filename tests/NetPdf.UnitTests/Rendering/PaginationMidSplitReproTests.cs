@@ -8,7 +8,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using NetPdf;
 using Xunit;
-using Xunit.Abstractions;
 
 namespace NetPdf.UnitTests.Rendering;
 
@@ -24,16 +23,12 @@ namespace NetPdf.UnitTests.Rendering;
 /// heading) consuming ~⅓ page, then <c>.timeline</c> of N auto-height flex <c>.day</c> rows, then a
 /// trailing <c>.note</c>.</para>
 ///
-/// <para>The characterization <see cref="Dump_current_distribution"/> is NOT an assertion — it prints
-/// the per-page text-run distribution so the fix can be measured against the real behavior. The
-/// density assertions live in the *_target facts, currently Skip-gated until the
-/// enter-and-split fix lands (Step 3 of the design doc).</para>
+/// <para>Density is pinned by <see cref="Pages_are_densely_filled_target"/>; content preservation by
+/// <see cref="Content_is_preserved_and_note_is_last"/>; the correctness invariants (margin-collapse
+/// across the break, a skewed first child, break-inside:avoid) by the facts below.</para>
 /// </summary>
 public sealed class PaginationMidSplitReproTests
 {
-    private readonly ITestOutputHelper _out;
-
-    public PaginationMidSplitReproTests(ITestOutputHelper output) => _out = output;
 
     // A4, 16mm margins, @page margin boxes — same frame as real 03.
     private static string Doc(int days)
@@ -149,11 +144,12 @@ public sealed class PaginationMidSplitReproTests
 
     private static bool IsBody(double y) => y > BodyBandLo && y < BodyBandHi;
 
-    private static int BodyRuns(List<List<(double y, int g)>> pages)
+    // Topmost body-content baseline on a page (max y in the content band), or NaN if none.
+    private static double TopBodyY(List<(double y, int g)> page)
     {
-        var n = 0;
-        foreach (var p in pages) foreach (var (y, _) in p) if (IsBody(y)) n++;
-        return n;
+        var top = double.NaN;
+        foreach (var (y, _) in page) if (IsBody(y) && (double.IsNaN(top) || y > top)) top = y;
+        return top;
     }
 
     // Fraction of the content area occupied on a page, measured from the top of the content area
@@ -165,25 +161,6 @@ public sealed class PaginationMidSplitReproTests
         foreach (var (y, _) in page) if (IsBody(y)) { any = true; if (y < yBot) yBot = y; }
         if (!any) return 0;
         return (ContentAreaTop - yBot) / ContentAreaHeight;
-    }
-
-    [Theory]
-    [InlineData(8)]
-    [InlineData(10)]
-    [InlineData(14)]
-    public void Dump_current_distribution(int days)
-    {
-        var pages = Pages(Doc(days));
-        _out.WriteLine($"days={days}  pageCount={pages.Count}  bodyRuns={BodyRuns(pages)}");
-        for (var pi = 0; pi < pages.Count; pi++)
-        {
-            var bodyCount = 0;
-            double yTop = double.MinValue, yBot = double.MaxValue;
-            foreach (var (y, _) in pages[pi]) if (IsBody(y)) { bodyCount++; if (y > yTop) yTop = y; if (y < yBot) yBot = y; }
-            _out.WriteLine($"  page {pi}: bodyRuns={bodyCount,3}  yTop={yTop,7:0.#}  yBot={yBot,7:0.#}  fill={BodyFill(pages[pi]),5:0.00}");
-        }
-        var tall = Pages(TallDoc(days));
-        _out.WriteLine($"  tall-page(stripped): pageCount={tall.Count}  totalRuns={TotalRuns(tall)}   A4-stripped bodyRuns={TotalRuns(Pages(StrippedDoc(days)))}");
     }
 
     /// <summary>
@@ -310,5 +287,121 @@ public sealed class PaginationMidSplitReproTests
         for (var pi = 0; pi < pages.Count - 1; pi++)
             Assert.True(BodyFill(pages[pi]) >= 0.75,
                 $"days={days}: page {pi} is only {BodyFill(pages[pi]):0.00} filled but content follows on later pages.");
+    }
+
+    // A header block of text paragraphs (~half page) then a `.stack` of text paragraphs each with a
+    // `margin-top:M`, tuned to enter page 0, fill it, and break BETWEEN paragraphs onto page 1.
+    // Paragraphs (line-splittable text) paginate reliably (a leaf height-div can't break). `m`
+    // toggles the stack paragraphs' top margin.
+    private static string StackDoc(int rows, int m)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><style>@page{size:A4;margin:16mm}*{margin:0;box-sizing:border-box}");
+        sb.Append("body{font-family:Arial,sans-serif;font-size:11pt;line-height:1.5}");
+        sb.Append(".head p{padding:5px 0}.item{margin-top:").Append(m).Append("px}.item p{padding:5px 0}");
+        sb.Append("</style></head><body><div class=\"head\">");
+        for (var i = 0; i < 16; i++) sb.Append("<p>Header paragraph ").Append(i).Append(" filling the top band with a line of text.</p>");
+        // Each `.item` is a block-flow CONTAINER (div > p) so it goes through EmitBlockSubtreeRecursive's
+        // per-child topShift path — the exact resume boundary the margin-truncation fix targets.
+        sb.Append("</div><div class=\"stack\">");
+        for (var i = 0; i < rows; i++) sb.Append("<div class=\"item\"><p>Stack item ").Append(i).Append(" body text on a single line.</p></div>");
+        sb.Append("</div></body></html>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// MARGIN-COLLAPSE ACROSS THE MID-SPLIT BREAK (design-doc correctness invariant). When a container
+    /// is resumed at a mid-child boundary, the first resumed child's top margin is truncated at the
+    /// fragmentainer boundary (CSS Fragmentation L3 §5.1) — it must NOT re-apply a full top margin that
+    /// opens a phantom gap on the resume page. Verified by rendering the same split with a big row
+    /// top-margin vs no margin: the FIRST row on the resume page lands at the same y either way (its
+    /// margin is truncated), and content is preserved.
+    /// </summary>
+    [Fact]
+    public void First_resumed_child_top_margin_is_truncated_at_the_break()
+    {
+        var withMargin = Pages(StackDoc(rows: 24, m: 40));
+        var noMargin = Pages(StackDoc(rows: 24, m: 0));
+        Assert.True(withMargin.Count >= 2 && noMargin.Count >= 2, "expected the stack to split across pages");
+
+        // The resume page (page 1) — its topmost row must sit at the same y with and without the row
+        // top-margin, because the first resumed row's margin is truncated at the page break. A phantom
+        // (untruncated) margin would push the margined variant's first row LOWER (smaller y).
+        var yMargin = TopBodyY(withMargin[1]);
+        var yNoMargin = TopBodyY(noMargin[1]);
+        Assert.False(double.IsNaN(yMargin) || double.IsNaN(yNoMargin), "resume page had no body content");
+        Assert.True(Math.Abs(yMargin - yNoMargin) < 2.0,
+            $"resume-page first row y differs (margin={yMargin:0.#}, no-margin={yNoMargin:0.#}) — the "
+            + "first resumed child's top margin was not truncated at the fragmentation break.");
+
+        // Content preserved (no dropped/duplicated rows) vs a single tall page.
+        var tall = Pages(StackDoc(24, 40).Replace("size:A4", "size:210mm 4000mm"));
+        Assert.Single(tall);
+        Assert.Equal(TotalRuns(tall), TotalRuns(withMargin));
+    }
+
+    // A header of text paragraphs (~half page) + a `.doc` container whose FIRST in-flow child is a
+    // `break-inside:avoid` block of `bigParas` paragraphs — much TALLER than the small paragraphs that
+    // follow — so it cannot be line-split and must move as one unit. `bigParas` sizes the first child.
+    private static string SkewDoc(int bigParas)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<!DOCTYPE html><html><head><style>@page{size:A4;margin:16mm}*{margin:0;box-sizing:border-box}");
+        sb.Append("body{font-family:Arial,sans-serif;font-size:11pt;line-height:1.5}");
+        sb.Append(".head p,.big p,.doc>p{padding:5px 0}.big{break-inside:avoid;border:1px solid #333}");
+        sb.Append("</style></head><body><div class=\"head\">");
+        for (var i = 0; i < 18; i++) sb.Append("<p>Header paragraph ").Append(i).Append(" filling the top band with one line of text.</p>");
+        sb.Append("</div><div class=\"doc\"><div class=\"big\">");
+        // Each big paragraph is the UNIQUELY longest single line in the document, so its glyph run is
+        // the max-glyph run — a robust page locator independent of layout tuning.
+        for (var i = 0; i < bigParas; i++) sb.Append("<p>BIGFIRST unbreakable first-child paragraph ").Append(i).Append(" is deliberately the single longest line anywhere in this whole document for detection.</p>");
+        sb.Append("</div>");
+        for (var i = 0; i < 4; i++) sb.Append("<p>trailing small ").Append(i).Append("</p>");
+        sb.Append("</div></body></html>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// SKEWED FIRST CHILD — the enter-and-split decision must not enter a container when its FIRST
+    /// in-flow child cannot fit the remaining page (a naive per-child average could under-report a
+    /// first child much taller than its siblings and wrongly enter, force-overflowing it off the page
+    /// bottom). Here the unbreakable first child does not fit the space left after the header, so the
+    /// whole `.doc` must move wholly to the next page: page 0 holds only the header, and the first
+    /// child renders intact on page 1 without being force-overflowed off page 0.
+    /// </summary>
+    [Fact]
+    public void A_first_child_taller_than_the_remaining_page_moves_wholly_not_split()
+    {
+        var pages = Pages(SkewDoc(bigParas: 10));
+        Assert.True(pages.Count >= 2, "expected a paginated render");
+
+        // The `.big` block's paragraphs carry the unique "BIGFIRST" token (glyph count > any header/
+        // small run). If `.doc` had wrongly entered, `.big` would force-overflow onto page 0. Assert
+        // NO "BIGFIRST" run appears on page 0 — the container moved wholly, so `.big` is on page 1+.
+        var bigG = 0;
+        foreach (var p in pages) foreach (var (_, g) in p) if (g > bigG) bigG = g;
+        Assert.DoesNotContain(pages[0], r => r.g == bigG);
+        // Content preserved vs a single tall page (nothing clipped by an errant force-overflow).
+        var tall = Pages(SkewDoc(10).Replace("size:A4", "size:210mm 4000mm"));
+        Assert.Single(tall);
+        Assert.Equal(TotalRuns(tall), TotalRuns(pages));
+    }
+
+    /// <summary>
+    /// <c>break-before/after: avoid</c> around a flex child at the mid-split boundary is routed through
+    /// the resolver (not a hard-coded fit test); content is preserved either way. (The production
+    /// greedy resolver is cost-insensitive, so the avoid is advisory — this pins that adding the
+    /// metadata does not drop or duplicate content, and keeps the resolver contract intact.)
+    /// </summary>
+    [Theory]
+    [InlineData("break-before:avoid")]
+    [InlineData("break-after:avoid")]
+    public void Flex_child_boundary_break_with_avoid_metadata_preserves_content(string avoidRule)
+    {
+        var doc = Doc(9).Replace(".day{display:flex", ".day{" + avoidRule + ";display:flex");
+        var pages = Pages(Strip(doc));
+        var tall = Pages(TallDoc(9));
+        Assert.Single(tall);
+        Assert.Equal(TotalRuns(tall), TotalRuns(pages));
     }
 }

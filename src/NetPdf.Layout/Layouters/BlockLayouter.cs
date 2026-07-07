@@ -575,7 +575,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         bool layoutRootInlineContent = false,
         bool disableFlexPagination = false,
         bool suppressOutOfFlowEmission = false,
-        System.Collections.Generic.HashSet<Box>? crossPageEmittedAbsolute = null)
+        System.Collections.Generic.HashSet<Box>? crossPageEmittedAbsolute = null,
+        System.Collections.Generic.HashSet<Box>? crossPageConsideredAbsolute = null)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -613,6 +614,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _disableFlexPagination = disableFlexPagination;
         _suppressOutOfFlowEmission = suppressOutOfFlowEmission;
         _crossPageEmittedAbsolute = crossPageEmittedAbsolute;
+        _crossPageConsideredAbsolute = crossPageConsideredAbsolute;
     }
 
     /// <summary>Phase 3 cycle-2d — shared across every page's fresh BlockLayouter (the pipeline owns
@@ -621,6 +623,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// twice when its positioned containing block is itself split across pages. Null for non-paginated
     /// / nested callers (single-pass, no cross-page duplication risk).</summary>
     private readonly System.Collections.Generic.HashSet<Box>? _crossPageEmittedAbsolute;
+
+    /// <summary>Phase 3 cycle-2d — companion to <see cref="_crossPageEmittedAbsolute"/>: every abspos
+    /// box the page-root pass CONSIDERED (walked to + attempted to resolve) on ANY page. A box that
+    /// was considered but is never in the emitted set after the last page is genuinely unresolvable —
+    /// its containing block was never recorded on ANY page (an unsupported / never-recordable
+    /// geometry path), NOT merely "on another page" — so the pipeline diagnoses it once (preserving
+    /// the no-silent-drop contract) instead of the per-page pass suppressing it as a cross-page
+    /// miss. Owned by the pipeline (so it spans pages); null for nested / single-pass callers.</summary>
+    private readonly System.Collections.Generic.HashSet<Box>? _crossPageConsideredAbsolute;
 
     /// <inheritdoc />
     /// <remarks>Per Phase 3 Task 19 cycle 1 + post-PR-#112 review C2 —
@@ -4274,17 +4285,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ref LayoutContext layout,
         CancellationToken cancellationToken)
     {
-        // Phase 3 cycle-2d — the abspos pass runs on every page, so an already-emitted box (its
-        // positioned CB spans pages + was recorded on an earlier page too) must not paint again.
+        // Phase 3 cycle-2d — this box was CONSIDERED by the page-root pass (record it, on every page,
+        // before any early-out), so the pipeline can tell a genuinely-unresolvable box (considered but
+        // never emitted on ANY page) from a normal cross-page miss + still diagnose the former.
+        _crossPageConsideredAbsolute?.Add(child);
+        // The abspos pass runs on every page, so an already-emitted box (its positioned CB spans pages
+        // + was recorded on an earlier page too) must not paint again.
         if (_crossPageEmittedAbsolute is not null && _crossPageEmittedAbsolute.Contains(child))
         {
             return;
         }
         // Per Phase 3 Task 19 cycle 2a — anchor to the nearest positioned ancestor's padding box.
-        // Phase 3 cycle-2d — a null CB now means the ancestor's geometry isn't recorded on THIS page
-        // (it is laid out on a different page). Since the pass runs on every page, skip SILENTLY: the
-        // box emits on the page where its CB is recorded. (Pre-cycle-2d this dropped + diagnosed,
-        // because the pass ran only on page 1 so a later-page CB was a genuine drop.)
+        // Phase 3 cycle-2d — a null CB means the ancestor's geometry isn't recorded on THIS page. That
+        // is AMBIGUOUS within one page: the CB may be laid out on a LATER page (a normal cross-page
+        // miss → the box emits there) OR it may be genuinely never-recordable (an unsupported geometry
+        // path). Skip SILENTLY here — the pipeline's post-pagination pass converts "considered but
+        // never emitted on any page" into the LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001 diagnostic, so
+        // the real drop is still reported while the cross-page miss stays quiet.
         var containingBlock = ResolveContainingBlock(child, icb);
         if (containingBlock is null)
         {

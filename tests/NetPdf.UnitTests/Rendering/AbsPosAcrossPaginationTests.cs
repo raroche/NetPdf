@@ -75,4 +75,23 @@ public sealed class AbsPosAcrossPaginationTests
         Assert.Single(streamsWithBadge);
         Assert.Contains(" Tf", streamsWithBadge[0]);
     }
+
+    /// <summary>
+    /// No-silent-drop contract preserved: the per-page abspos pass suppresses the diagnostic for a
+    /// box whose containing block is merely on ANOTHER page (it emits there), but a box whose
+    /// positioned ancestor is NEVER recorded on any page — here a `position:relative; float:left`
+    /// ancestor, whose float emit path doesn't record positioned geometry — is genuinely unresolvable
+    /// and MUST still surface `LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001` (via the pipeline's
+    /// considered-but-never-emitted post-pass), rather than being silently dropped.
+    /// </summary>
+    [Fact]
+    public void Abspos_with_a_never_recordable_positioned_ancestor_still_diagnoses()
+    {
+        const string html = "<!DOCTYPE html><html><head><style>*{box-sizing:border-box}"
+            + ".f{float:left;position:relative;width:200px;height:100px;border:1px solid #999}"
+            + ".a{position:absolute;top:5px;left:5px;width:20px;height:20px;background:#c00}</style></head><body>"
+            + "<div class=\"f\"><div class=\"a\">x</div>float content</div><p>after the float</p></body></html>";
+        var res = HtmlPdf.ConvertDetailed(html, new HtmlPdfOptions { PrintBackgrounds = true });
+        Assert.Contains(res.Warnings, w => w.Code == "LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001");
+    }
 }

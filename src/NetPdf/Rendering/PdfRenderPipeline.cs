@@ -12,6 +12,7 @@ using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Paginate;
+using NetPdf.Paginate.Diagnostics;
 using NetPdf.Pdf;
 using NetPdf.Phase2;
 using NetPdf.Shaping;
@@ -198,6 +199,11 @@ internal static class PdfRenderPipeline
         // pass emits each positioned box exactly once (on the page where its containing block lands),
         // even when a positioned CB is itself split across pages.
         var crossPageEmittedAbsolute = new System.Collections.Generic.HashSet<Box>();
+        // Companion set: every abspos box the per-page pass CONSIDERED. After all pages, a box that was
+        // considered but never emitted is genuinely unresolvable (its containing block was recorded on
+        // NO page) — diagnosed once below, so the no-silent-drop contract holds despite the per-page
+        // pass suppressing ordinary cross-page misses.
+        var crossPageConsideredAbsolute = new System.Collections.Generic.HashSet<Box>();
         // CSS Fragmentation L3 §4.2 — orphans/widows are inherited; resolved ONCE here as
         // the document-level defaults for the resolver (per-paragraph overrides await line
         // splitting — `inline-only-block-line-splitting`). BoxBuilder roots the tree at a
@@ -238,7 +244,8 @@ internal static class PdfRenderPipeline
                     incomingContinuation: continuation,
                     diagnostics: paginate,
                     shaperResolver: shaper,
-                    crossPageEmittedAbsolute: crossPageEmittedAbsolute))
+                    crossPageEmittedAbsolute: crossPageEmittedAbsolute,
+                    crossPageConsideredAbsolute: crossPageConsideredAbsolute))
                 {
                     var fragmentainer = new FragmentainerContext(contentInlinePx, contentBlockPx)
                     {
@@ -352,6 +359,19 @@ internal static class PdfRenderPipeline
             // The specific diagnostic below is the story; we do NOT also set clippedOrTruncated (which
             // would double-emit the generic overflow-truncated diagnostic at the post-loop check).
             EmitLayoutDepthExceeded(diagnostics, ex.Message);
+        }
+
+        // Phase 3 cycle-2d — no-silent-drop for abspos. The per-page abspos pass silently skips a box
+        // whose containing block wasn't recorded on THAT page (it may resolve on a later page). Any box
+        // that was CONSIDERED but never EMITTED on ANY page is genuinely unresolvable — its positioned
+        // ancestor's geometry was recorded on no page (an unsupported / never-recordable path). Diagnose
+        // each once, in DOM order (determinism), preserving the diagnostic the per-page suppression
+        // would otherwise hide.
+        if (crossPageConsideredAbsolute.Count > 0)
+        {
+            var absSink = new PaginateToPublicDiagnosticsAdapter(diagnostics);
+            EmitUnresolvableAbsposDiagnostics(
+                phase2.BoxRoot, crossPageConsideredAbsolute, crossPageEmittedAbsolute, absSink);
         }
 
         // Always emit at least one page (an empty document, or a font failure before page 1,
@@ -745,6 +765,37 @@ internal static class PdfRenderPipeline
             "pathologically deep untrusted HTML: " + detail + " A valid PDF is still produced from the " +
             "content laid out before the cap was hit, rather than failing the whole conversion.",
             DiagnosticSeverity.Warning));
+
+    /// <summary>Phase 3 cycle-2d — diagnose every abspos box that the per-page pass CONSIDERED but never
+    /// emitted on any page (its positioned containing block was recorded on no page = genuinely
+    /// unresolvable, not a cross-page miss). Walks the box tree in DOM order (explicit stack, children
+    /// pushed reversed so pop order is document order) for deterministic diagnostics.</summary>
+    private static void EmitUnresolvableAbsposDiagnostics(
+        Box root,
+        System.Collections.Generic.HashSet<Box> considered,
+        System.Collections.Generic.HashSet<Box> emitted,
+        IPaginateDiagnosticsSink sink)
+    {
+        var stack = new System.Collections.Generic.Stack<Box>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var box = stack.Pop();
+            if (considered.Contains(box) && !emitted.Contains(box))
+            {
+                sink.Emit(new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001,
+                    "position:absolute box dropped: its containing block (the nearest positioned "
+                    + "ancestor) was not recorded on any page — the ancestor is laid out via a path that "
+                    + "does not record positioned geometry, so the box could not be anchored.",
+                    PaginateDiagnosticSeverity.Warning));
+            }
+            for (var i = box.Children.Count - 1; i >= 0; i--)
+            {
+                stack.Push(box.Children[i]);
+            }
+        }
+    }
 
     /// <summary>Backstop page count for the multi-page driver loop (layout→PDF cycle 3).
     /// Forward progress is guaranteed by the forced-overflow penalty, so this never trips for

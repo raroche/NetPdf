@@ -22,8 +22,8 @@ This is the legal contract every contributor agrees to by submitting a pull requ
    - If you need a snippet, re-derive it from the underlying spec or reference docs.
 
 4. **Every dependency must pass written license review before being added.**
-   - File a PR that updates `docs/legal/dependency-dossier.md` with: SPDX identifier, version, copyright, link to license text, why it's compatible with Apache-2.0 redistribution.
-   - Only after that PR merges may a `<PackageReference>` be added in `Directory.Packages.props`.
+   - The review records: SPDX identifier, version, copyright, link to license text, and why it's compatible with Apache-2.0 redistribution.
+   - Only after that review passes may a `<PackageVersion>` be added in `Directory.Packages.props` (this repo uses Central Package Management; `PackageReference` items live in the consuming projects).
    - Banned licenses in core path: AGPL-*, GPL-*, LGPL-*, SSPL, Commons Clause, BUSL, ELv2, any "free under threshold" or revenue-capped license.
    - Allowed in test-only projects (and never shipped in `NetPdf` package): Apache-2.0, MIT, BSD-2/3, MPL-2.0, ISC, Unicode-DFS-2016, GPL/LGPL when only invoked as external CLI tools (e.g., veraPDF).
 

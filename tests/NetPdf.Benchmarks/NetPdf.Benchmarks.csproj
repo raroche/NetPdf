@@ -18,11 +18,10 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <IncludeSymbols>false</IncludeSymbols>
     <!--
-      Pin Workstation GC + concurrent collection. The Phase 1 baseline numbers in
-      docs/design/performance.md were captured under Workstation GC; Server GC
-      (the .NET default for headless / containerized hosts) produces measurably
-      different allocation and timing profiles, which would invalidate the
-      committed baselines. Documented in performance.md.
+      Pin Workstation GC + concurrent collection. The committed baseline numbers
+      were captured under Workstation GC; Server GC (the .NET default for headless
+      / containerized hosts) produces measurably different allocation and timing
+      profiles, which would invalidate the committed baselines.
     -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>

@@ -41,5 +41,4 @@ Anything unsupported emits a stable [diagnostic code](diagnostics.md) rather tha
 
 ## Accessibility (PDF/UA)
 
-The semantic IR is built alongside layout in v1; tagged-PDF / PDF/UA-1 emission ships in v1.1. See
-[`docs/accessibility.md`](https://github.com/raroche/NetPdf/blob/main/docs/accessibility.md).
+Tagged-PDF / PDF/UA-1 emission is not yet produced; it is on the post-1.0 roadmap.

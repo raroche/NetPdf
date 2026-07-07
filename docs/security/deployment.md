@@ -1,16 +1,16 @@
 # Deploying NetPdf securely (untrusted-HTML API)
 
 This is the operational hardening guide for the **hostile deployment** — an API that accepts
-arbitrary customer HTML and returns a PDF (threat-model §2 use case #2). It is the companion to the
-[threat model](security-hardening-plan.md) and the [secure-usage README section](../../README.md#running-netpdf-on-untrusted-html).
-Task **SEC-11**.
+arbitrary customer HTML and returns a PDF. It is the companion to the
+[secure-usage README section](../../README.md#running-netpdf-on-untrusted-html) and
+[SECURITY.md](../../SECURITY.md).
 
 NetPdf is structurally immune to several whole bug classes (no JavaScript engine, no browser, no
 process spawning, no reflection-driven deserialization) and ships a mature in-process defense set
 (SSRF choke point + IP blocklist + DNS-pin, XXE-hardened SVG, pre-decode font/image validation,
 layered DoS caps, a PDF-output preflight denylist). **But the library cannot substitute for OS-level
-isolation** against a memory-safety 0-day in a native decoder (Skia / HarfBuzz — threat-model class
-V5). Defense in depth is required.
+isolation** against a memory-safety 0-day in a native decoder (Skia / HarfBuzz). Defense in depth is
+required.
 
 ## 1. In-process configuration (necessary, not sufficient)
 
@@ -24,7 +24,7 @@ var pdf = HtmlPdf.Convert(untrustedHtml, new HtmlPdfOptions
 });
 ```
 
-`SecurityPolicy.UntrustedHtml` also caps pages (500) and output size (50 MiB) — see SEC-5. Tune these
+`SecurityPolicy.UntrustedHtml` also caps pages (500) and output size (50 MiB). Tune these
 for your workload; keep them as low as your legitimate documents allow.
 
 ## 2. OS-level isolation (required for untrusted HTML)
@@ -43,8 +43,10 @@ Run each conversion in a **locked-down container** (or an equivalent sandbox). R
 - **Ephemeral, one-shot.** Prefer a fresh container per request (or a pool with strict resets); never
   reuse process state across tenants.
 
-Keep the native dependencies patched — see the
-[CVE policy in the dependency dossier](../legal/dependency-dossier.md#native-dependency-cve-policy--patch-cadence-sec-10).
+Keep the native dependencies patched by keeping the **SkiaSharp** and **HarfBuzzSharp** NuGet packages
+current — those are the packages NetPdf ships and the surface you actually bump. Subscribe to upstream
+advisories for their native libraries (Skia / HarfBuzz and the image codecs libwebp / libjpeg-turbo /
+libpng) and update the NuGet packages promptly when a fix ships.
 
 ## 3. Accepted residuals (documented, not fixed)
 

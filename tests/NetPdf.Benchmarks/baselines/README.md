@@ -40,8 +40,7 @@ baseline directory:
 ```
 
 Only re-baseline deliberately (after an intended perf change), on a quiet machine, and note the reason in
-the commit — a baseline captured on a noisy or differently-specced host will mis-calibrate the gate. See the
-re-baseline protocol in [`docs/design/performance.md`](../../../docs/design/performance.md#re-baseline-protocol).
+the commit — a baseline captured on a noisy or differently-specced host will mis-calibrate the gate.
 
 > Coarse, always-on regression guards (p50 latency + allocation-per-page linearity) run on **every**
 > `dotnet test` in `tests/NetPdf.UnitTests/Performance/PerformanceGateTests.cs`; those don't need a

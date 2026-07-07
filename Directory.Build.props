@@ -67,8 +67,6 @@
       is a parallel informational copy (kept in sync manually) for tooling that
       doesn't parse XML; if they ever disagree, this file wins for what NuGet
       actually packs. Bump protocol: update BOTH files, commit, then `git tag`.
-      Phase 5 will introduce a small MSBuild task that reads version.json so
-      both surfaces have a single source.
     -->
     <VersionPrefix>1.0.0</VersionPrefix>
     <VersionSuffix></VersionSuffix>
@@ -90,8 +88,7 @@
       until 1.0.0 itself ships. Starting at 1.0.1 the maintainer sets
       `PackageValidationBaselineVersion` to `1.0.0` (the package must exist on
       nuget.org to be downloaded as the baseline), which then fails the build on
-      any accidental public-API break vs. the last release. See
-      docs/phases/phase-5-packaging-and-release.md.
+      any accidental public-API break vs. the last release.
     -->
     <EnablePackageValidation>true</EnablePackageValidation>
     <!-- <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion> set at v1.0.1 -->

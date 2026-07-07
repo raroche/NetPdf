@@ -8,8 +8,8 @@
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
 
-  <!-- Runtime dependencies (shipped). Each entry MUST have a corresponding
-       review in docs/legal/dependency-dossier.md before being added here. -->
+  <!-- Runtime dependencies (shipped). Each entry MUST pass a written license
+       review before being added here (see docs/clean-room-policy.md). -->
   <ItemGroup>
     <PackageVersion Include="AngleSharp" Version="1.1.2" />
     <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
@@ -35,7 +35,7 @@
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
          macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. Its SkiaSharp floor is
          3.119.2 — the repo-wide SkiaSharp pin above matches it, so the harness measures the same renderer
-         dependency set as production. See docs/legal/dependency-dossier.md. -->
+         dependency set as production. -->
     <PackageVersion Include="PDFtoImage" Version="5.2.1" />
   </ItemGroup>
 

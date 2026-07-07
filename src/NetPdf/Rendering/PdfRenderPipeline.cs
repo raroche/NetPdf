@@ -28,19 +28,19 @@ namespace NetPdf.Rendering;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Scope.</b> Single-page output painting <c>background-color</c> fills +
-/// <c>border-*</c> edges (<see cref="FragmentPainter"/>) and shaped text glyphs
-/// (<see cref="TextPainter"/>, cycle 5a-2-ii). Text subsets + embeds the exact font
-/// program layout shaped — the shaper is kept alive past paint so glyph ids match.
-/// Text-free content stays byte-deterministic; the default <see cref="SystemFontResolver"/>
-/// text path is not deterministic-for-text until a bundled fallback font ships (TODO in
-/// <c>deferrals.md#layout-to-pdf-pipeline</c>), but a fixed <c>IFontResolver</c> is fully
-/// reproducible.
+/// Paints <c>background</c> / <c>border-*</c> / gradient / shadow / transform /
+/// <c>clip-path</c> / SVG decorations (<see cref="FragmentPainter"/>) and shaped,
+/// subset-embedded text glyphs (<see cref="TextPainter"/>). Text subsets + embeds the
+/// exact font program layout shaped — the shaper is kept alive past paint so glyph ids
+/// match. Output is deterministic for a fixed <c>IFontResolver</c>; the default
+/// <see cref="SystemFontResolver"/> text path depends on platform fonts until a bundled
+/// fallback font ships.
 /// </para>
 /// <para>
-/// <b>Single page.</b> The multi-page driver (looping <see cref="BlockLayouter.AttemptLayout"/>
-/// over continuations, a page per fragmentainer) is TODO 3. Until then, content
-/// that overflows the first page is reported via
+/// <b>Multi-page.</b> The driver loops <see cref="BlockLayouter.AttemptLayout"/> over
+/// layout continuations, emitting one page per fragmentainer (bounded by a hard
+/// page-count backstop). Block-axis overflow flows onto further pages; content that
+/// overflows the INLINE axis or falls outside the page is clipped and surfaced via
 /// <c>PDF-CONTENT-OVERFLOW-TRUNCATED-001</c> rather than dropped silently.
 /// </para>
 /// </remarks>

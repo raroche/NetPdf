@@ -10,11 +10,10 @@
   </PropertyGroup>
 
   <!--
-    Single-package strategy (per the architectural plan in CLAUDE.md): the
-    shipped `NetPdf` NuGet bundles every internal `NetPdf.*` project's compiled
-    DLL into its own `lib/<tfm>/` folder. Consumers see ONE package and ONE
-    public surface; the internal layering exists for our development
-    discipline only.
+    Single-package strategy: the shipped `NetPdf` NuGet bundles every internal
+    `NetPdf.*` project's compiled DLL into its own `lib/<tfm>/` folder. Consumers
+    see ONE package and ONE public surface; the internal layering exists for our
+    development discipline only.
     Two MSBuild knobs make this work:
       * <PrivateAssets>all</PrivateAssets> on every internal ProjectReference
         suppresses the otherwise-emitted <dependency> entries in the .nuspec —

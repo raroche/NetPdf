@@ -8,9 +8,7 @@
 #      SSRF / LFI / XXE / DoS / PDF-output invariants as executable assertions.
 #
 # This is NOT the full coverage-guided libFuzzer campaign (that needs `sharpfuzz`
-# instrumentation — see docs/security/fuzzing.md); it is the cheap gate that catches
-# regressions on every PR. Reference-image regeneration / the broader cross-platform matrix
-# are separate Phase-5 CI deliverables.
+# instrumentation); it is the cheap gate that catches regressions on every PR.
 name: fuzz-smoke
 
 on:

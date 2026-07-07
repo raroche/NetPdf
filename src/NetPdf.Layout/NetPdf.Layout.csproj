@@ -10,12 +10,9 @@
   <ItemGroup>
     <ProjectReference Include="..\NetPdf.Css\NetPdf.Css.csproj" />
     <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
-    <!-- Per Phase 3 Task 7 — Layout depends on Paginate so layouters
-         can implement ILayouter + consume IBreakResolver / Fragmentainer
-         / LayoutCheckpoint. The reverse direction (Paginate -> Layout)
-         was dead in cycles 1-5; flipping it lets BlockLayouter
-         (Phase 3 Task 7+) live in NetPdf.Layout where the file layout
-         in CLAUDE.md says it should. -->
+    <!-- Layout depends on Paginate so layouters can implement ILayouter +
+         consume IBreakResolver / Fragmentainer / LayoutCheckpoint, letting
+         BlockLayouter live in NetPdf.Layout. -->
     <ProjectReference Include="..\NetPdf.Paginate\NetPdf.Paginate.csproj" />
   </ItemGroup>
 

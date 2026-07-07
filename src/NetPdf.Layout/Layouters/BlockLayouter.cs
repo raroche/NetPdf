@@ -5223,7 +5223,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     && IsEnterAndSplitEligible(child))
                 {
                     var firstChildExtent = EstimateFirstInFlowChildExtent(
-                        child, childEffectiveBlockSize, cancellationToken, contentBlock);
+                        child, cancellationToken, contentBlock);
                     if (firstChildExtent > 0 && firstChildExtent <= pageRemaining)
                     {
                         breakChunk = firstChildExtent;
@@ -9729,25 +9729,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// block extent (the minimum unbreakable unit for the enter decision). Measures the first child
     /// directly; when that comes back opaque (~0 — a non-block-flow box whose content the measure
     /// doesn't fold), it measures a flex child's real content extent with the same premeasure helpers
-    /// the container's fold uses, and only as a last resort (grid / table / replaced) falls back to
-    /// the container's per-in-flow-child average (<paramref name="containerSubtreeExtent"/> ÷ count).
-    /// The direct + flex-content paths are ACCURATE for a skewed first child (much taller than its
-    /// siblings), so the caller declines to enter-and-split when that child can't fit the remaining
-    /// page. Returns 0 when the container has no in-flow block-level child.</summary>
+    /// the container's fold uses. For an opaque grid / table / replaced first child (which we can't
+    /// measure cheaply here) it FAILS CLOSED, returning 0 so the caller declines to enter-and-split
+    /// (the container moves wholly) rather than entering on an under-estimate. Accurate for a skewed
+    /// first child (much taller than its siblings). Returns 0 when there is no in-flow block child.</summary>
     private double EstimateFirstInFlowChildExtent(
-        Box container, double containerSubtreeExtent,
-        CancellationToken cancellationToken, double parentContentBlockSize)
+        Box container, CancellationToken cancellationToken, double parentContentBlockSize)
     {
         Box? first = null;
-        var count = 0;
         foreach (var c in container.Children)
         {
             if (c.Style.IsOutOfFlow() || c.Style.ReadFloatSide().HasValue || !c.IsBlockLevel)
             {
                 continue;
             }
-            first ??= c;
-            count++;
+            first = c;
+            break;
         }
         if (first is null)
         {
@@ -9782,9 +9779,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 return flexContent + flexChrome;
             }
         }
-        // Grid / table / replaced opaque box: fall back to the container's folded per-child average
-        // (those have their own row/track pagination; a skewed first child of these is far rarer).
-        return containerSubtreeExtent / count;
+        // Grid / table / replaced opaque box whose real extent we can't measure cheaply here — FAIL
+        // CLOSED: return 0 so the caller (which enters only when `firstChildExtent > 0 && <= remaining`)
+        // does NOT enter-and-split; the container moves wholly to the next page. A per-child average
+        // could under-report a skewed tall grid/table first child and wrongly enter (force-overflowing
+        // it). Grid / table have their own row/track pagination on the fresh page, so declining the
+        // mid-split here is safe (at worst slightly less dense for a grid/table-first container).
+        return 0;
     }
 
     /// <summary>Per cycle 2c post-PR-29 review #1 (P0) + #3 (P1) —

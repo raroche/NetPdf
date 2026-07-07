@@ -11,31 +11,29 @@ NetPdf is a true paged-media renderer written from scratch in managed code. It d
 
 Both are loaded as in-process libraries via the official `*.NativeAssets.{Linux,macOS,Win32}` packages — no `Process.Start`, no executable spawning, no IPC. AOT publish + execution is verified on every commit via `scripts/aot-parity.sh`, which asserts the published native binary produces byte-identical PDF output to the JIT path.
 
-> **Status:** Phases 1–4 ✅ — **`0.9.0-rc1`** (release candidate; Phase 5 packaging in progress toward `1.0.0`). Phase 1 (`0.1.0-alpha`) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wired the facade end-to-end**: `HtmlPdf.Convert(html)` returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. **Phase 4 (`0.9.0-rc1`) is visual parity**: gradients, box/text shadows, 2D transforms, CSS filters, borders + clip-path, masks/blend modes, Link annotations + outlines, and static SVG. All six W3C conformance exit criteria are met (CSS 2.2 / Flexbox / Grid / Fragmentation / Backgrounds & Borders / Transforms — see the [pass-rate table](#w3c-conformance-pass-rates) below); perf + memory are signed off measured-with-documented-residuals. **Phase 5 (packaging) is now closing out toward `1.0.0`**: cross-platform CI, language packs, docs site, package validation, corpus acceptance, and the NuGet publish pipeline. Git tags are created by the maintainer; the repository is private until the v1.0 launch.
+> **Status:** Phases 1–5 ✅ — **`1.0.0`** (launch release). Phase 1 (`0.1.0-alpha`) shipped the PDF writer + text foundation: deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity. Phase 2 (`0.3.0-alpha`) shipped the internal HTML parsing + CSS cascade + computed-value + box-tree pipeline. **Phase 3 (`0.7.0-beta`) wired the facade end-to-end**: `HtmlPdf.Convert(html)` returns real PDF bytes — fragmentainer-aware layout (block / inline / flex / grid / table / multicol / absolute), the pagination optimizer, paged media (`@page` + the 16 margin boxes + generated content), and text shaping + painting + image embedding. **Phase 4 (`0.9.0-rc1`) is visual parity**: gradients, box/text shadows, 2D transforms, CSS filters, borders + clip-path, masks/blend modes, Link annotations + outlines, and static SVG. All six W3C conformance exit criteria are met (CSS 2.2 / Flexbox / Grid / Fragmentation / Backgrounds & Borders / Transforms — see the [pass-rate table](#w3c-conformance-pass-rates) below); perf + memory are signed off measured-with-documented-residuals. **Phase 5 (packaging) delivered the `1.0.0` launch**: cross-platform CI, language packs, docs site, package validation, corpus acceptance, and the NuGet publish pipeline. The git tag + NuGet publish + public-repo flip are the maintainer's launch steps.
 
 ## Installation
 
 NetPdf targets **.NET 10** and ships as a **single NuGet package** — that one package bundles the whole engine, so there is nothing else to wire up.
 
-The current build is the **`0.9.0-rc1`** release candidate. Because it carries a pre-release (`-rc`) suffix, install it with `--prerelease` (or pin the exact version):
+The current release is the stable **`1.0.0`** line:
 
 ```bash
-dotnet add package NetPdf --prerelease
+dotnet add package NetPdf
 ```
 
 or in your `.csproj`:
 
 ```xml
-<PackageReference Include="NetPdf" Version="0.9.0-rc1" />
+<PackageReference Include="NetPdf" Version="1.0.0" />
 ```
-
-Once **`1.0.0`** ships you can drop `--prerelease` and take the stable line (`dotnet add package NetPdf`).
 
 **Requirements:** the .NET 10 SDK/runtime. NetPdf runs on **Linux, macOS, and Windows** (x64 and arm64); the permissive-licensed HarfBuzz + Skia native assets are restored automatically as part of the package — no extra install, no browser, no system dependency. It is **Native-AOT compatible** and trimmable.
 
 Optional add-on packages provide non-English hyphenation dictionaries — see [Language packs](#language-packs).
 
-> Until the `1.0.0` launch the package is published from a private repo; on the public launch it appears on nuget.org.
+> `1.0.0` is the launch version; the package publishes to nuget.org as part of the public launch (the maintainer runs the release workflow with the signing key).
 
 ## Quick start
 
@@ -118,7 +116,7 @@ foreach (Diagnostic d in result.Warnings)
 try { pdf = HtmlPdf.Convert(html); }
 catch (HtmlPdfException ex) { Console.Error.WriteLine($"render failed [{ex.Code}]: {ex.Message}"); }
 
-// Version string, e.g. "0.9.0-rc1+<commit-sha>"
+// Version string, e.g. "1.0.0+<commit-sha>"
 Console.WriteLine(HtmlPdf.Version);
 ```
 
@@ -296,7 +294,7 @@ Both options default to omitted (the reader's own default), so a document that d
 The core `NetPdf` package bundles **English** hyphenation, registered under the primary subtag `en` (American-English Liang patterns) — so `en`, `en-GB`, `en-US`, etc. all resolve to it. Other languages ship as small, optional add-on packages so the core stays lean — install only what you need, then call the pack's one-line `Register()` at startup. The pack then wires each language into the `lang`-aware pipeline: hyphenation (or explicit *no*-hyphenation) activates automatically for any element whose effective HTML `lang` matches, when the CSS asks for it (`hyphens: auto`).
 
 ```bash
-dotnet add package NetPdf.Languages.European --prerelease   # de, fr Liang hyphenation
+dotnet add package NetPdf.Languages.European   # de, fr Liang hyphenation
 ```
 
 ```csharp
@@ -322,7 +320,7 @@ The table below is the **honest current coverage** — what each pack registers 
 
 Text **shaping** for these scripts (RTL, CJK, ligatures, kerning) and **line breaking** (UAX #14, including CJK) are always in the core package via HarfBuzz — the language packs only add per-language **hyphenation** dictionaries (or, for CJK/Arabic, the explicit *no-hyphenation* registration).
 
-## What's actually shipped (current: `0.9.0-rc1`)
+## What's actually shipped (current: `1.0.0`)
 
 These columns are the honest answer to "what does NetPdf do today?" `HtmlPdf.Convert(html)` runs the full HTML → CSS → layout → paginate → paint → PDF pipeline. The Phase 1–3 feature set is live (public since `0.7.0-beta`), and **Phase 4 visual parity — gradients, shadows, filters, full SVG — is feature-complete and shipped at `0.9.0-rc1`** (tagged; the only remaining Phase-4 item is committing the CI visual-regression reference images). The remaining ❌ below is post-v1 tagged-PDF emission.
 

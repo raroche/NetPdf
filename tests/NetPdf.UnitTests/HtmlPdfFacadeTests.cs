@@ -39,9 +39,10 @@ public sealed class HtmlPdfFacadeTests
         // When this assertion fails on a legitimate version bump, update the expectation.
         // ReleaseVersionParityTests guards that this matches Directory.Build.props +
         // build/version.json + the CHANGELOG's latest version heading.
-        // Pin the EXACT prerelease (start + a `+build` metadata boundary or end) — a loose Contains would also
-        // pass `0.9.0-rc10` or an unrelated string carrying both fragments (PR-258 Copilot).
-        Assert.Matches(@"^0\.9\.0-rc1(\+.*)?$", version);
+        // Pin the EXACT version (start + an optional `+build` metadata boundary or end) — a loose Contains
+        // would also pass `1.0.00` or an unrelated string carrying the fragment (PR-258 Copilot). The 1.0.0
+        // launch release drops the prerelease suffix.
+        Assert.Matches(@"^1\.0\.0(\+.*)?$", version);
     }
 
     [Fact]

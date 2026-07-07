@@ -25,7 +25,19 @@
 
     <!-- Documentation. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <NoWarn>$(NoWarn);CS1591;NU5104</NoWarn> <!-- CS1591: missing XML doc on internals; NU5104: prerelease deps in stable package (we'll fix at v1.0). -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn> <!-- CS1591: missing XML doc on internals. -->
+
+    <!--
+      NU5104 (a stable package has a prerelease dependency) is DELIBERATELY demoted from an error to
+      a VISIBLE warning rather than suppressed. NetPdf 1.0.0 depends on AngleSharp.Css, which has NO
+      stable 1.x release — only 1.0.0-beta.* (the last stable, 0.17.0, targets the AngleSharp 0.x API
+      and is incompatible with the AngleSharp 1.1.2 we require). So NetPdf's stable line carries a
+      prerelease AngleSharp.Css as a documented, maintainer-approved v1.0 exception (the parser is
+      mature; the -beta suffix reflects AngleSharp.Css's own release cadence). We do NOT hide it: pack
+      emits NU5104 so the exception is auditable at release time. Revisit if/when AngleSharp.Css ships
+      a stable 1.x. See the CHANGELOG 1.0.0 note.
+    -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU5104</WarningsNotAsErrors>
   </PropertyGroup>
 
   <!-- NuGet package authoring best practices. -->
@@ -58,8 +70,8 @@
       Phase 5 will introduce a small MSBuild task that reads version.json so
       both surfaces have a single source.
     -->
-    <VersionPrefix>0.9.0</VersionPrefix>
-    <VersionSuffix>rc1</VersionSuffix>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionSuffix></VersionSuffix>
 
     <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->
     <IncludeSymbols>true</IncludeSymbols>

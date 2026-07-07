@@ -242,6 +242,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private readonly LayoutContinuation? _incomingContinuation;
     private readonly IPaginateDiagnosticsSink? _diagnostics;
 
+    // Phase 3 cycle-2d "mid-split" (enter-and-split) gate. When ON, an eligible multi-child
+    // block-flow container that doesn't fit the remaining page — but whose first in-flow child does
+    // — STARTS on the current page and breaks between its children (filling the trailing space)
+    // instead of moving wholly to the next page. See docs/design/pagination-mid-split.md. Default ON
+    // (the CSS-correct behavior); the env var NETPDF_MIDSPLIT=0 is an escape hatch to A/B the pre-2d
+    // atomic-subtree behavior (all repo goldens are byte-identical either way — the shape only occurs
+    // in deeply-nested multi-child overflow, e.g. a `.timeline` of flex `.day` rows).
+    private const bool MidSplitDefault = true;
+    internal static readonly bool MidSplitEnabled =
+        Environment.GetEnvironmentVariable("NETPDF_MIDSPLIT") switch
+        {
+            "0" => false,
+            "1" => true,
+            _ => MidSplitDefault,
+        };
+
+    // Phase 3 cycle-2d "mid-split" — out-of-band channel for the actual block-axis extent a RESUMED
+    // block-flow container emitted on the current page. A resumed container's measured full-subtree
+    // extent (childEffectiveBlockSize) counts children already committed on PRIOR pages, so using it
+    // for the parent's cursor advance would push a trailing sibling (e.g. a `.note` after a paginated
+    // `.timeline`) off the bottom of the page. The recursion writes this on its terminal completion
+    // return when it was a resumed entry; the parent consumes it for the cursor advance. -1 = unset.
+    private double _resumedContainerEmittedExtent = -1;
+
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — optional
     /// inline shaper resolver. When non-null, <see cref="AttemptLayout"/>
     /// dispatches block containers whose children are entirely
@@ -5085,7 +5109,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             double topShift;
             if (!hasPrior)
             {
-                topShift = marginStart;
+                // Phase 3 cycle-2d "mid-split" — when this container was RESUMED at a mid-child
+                // boundary (startIdx > 0), the first child processed here starts at the fragmentainer
+                // top. Per CSS Fragmentation L3 §5.1 the margin adjacent to the (unforced) break is
+                // truncated to zero, so the resumed child hugs the page top instead of re-applying its
+                // full top margin — which would open a phantom gap on the resume page AND inflate the
+                // resumed-extent this level publishes to its parent's cursor advance. Only the first
+                // resumed child truncates; its siblings collapse normally.
+                topShift = (MidSplitEnabled && startIdx > 0 && childIdx == startIdx)
+                    ? 0
+                    : marginStart;
             }
             else
             {
@@ -5174,12 +5207,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // handled at the loop top (covering all child types), so the opportunity does not
                 // re-force here.
                 var childStart = Math.Max(0, childBlockOffset);
+                var pageRemaining = pf.BlockSize - childStart;
+                // Phase 3 cycle-2d "mid-split" (enter-and-split): the whole subtree
+                // (childEffectiveBlockSize) doesn't fit the remaining page, so the pre-cycle-2d
+                // behavior moves it WHOLLY to the next page — wasting the trailing space. Instead,
+                // for an eligible multi-child container whose FIRST in-flow child DOES fit, feed the
+                // resolver that first child's extent (the minimum unbreakable unit) so it returns
+                // Continue: the container is entered here + the recursion below breaks BETWEEN its
+                // children on overflow (returning a BlockContinuation(ResumeAtChild) that the caller
+                // propagates). Forced breaks + avoid metadata are unaffected (still on the
+                // opportunity). See docs/design/pagination-mid-split.md.
+                var breakChunk = childEffectiveBlockSize;
+                if (MidSplitEnabled
+                    && childEffectiveBlockSize > pageRemaining
+                    && IsEnterAndSplitEligible(child))
+                {
+                    var firstChildExtent = EstimateFirstInFlowChildExtent(
+                        child, cancellationToken, contentBlock);
+                    if (firstChildExtent > 0 && firstChildExtent <= pageRemaining)
+                    {
+                        breakChunk = firstChildExtent;
+                    }
+                }
                 var savedUsedBlockSize = pf.UsedBlockSize;
                 pf.UsedBlockSize = childStart;
                 var nestedDecision = propagatingResolver.ConsiderBreakAt(
                     BreakOpportunity.Block(
                         usedBlockSize: childStart,
-                        chunkBlockSize: childEffectiveBlockSize,
+                        chunkBlockSize: breakChunk,
                         avoidBreak: childAvoidBreak),
                     pf);
                 pf.UsedBlockSize = savedUsedBlockSize;
@@ -5197,6 +5252,48 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             if (IsBlockFlowContainerOwnedByBlockLayouter(child))
             {
                 prevPageName = child.PageName;
+            }
+
+            // Phase 3 cycle-2d "mid-split" — child-boundary break for a FLEX child that fits a FRESH
+            // page but not the space remaining on THIS page. Per CSS Fragmentation L3 §3, a box that
+            // fits within a single fragmentainer should move wholly to the next one rather than be
+            // fragmented; the flex dispatch below only splits a flex INTERNALLY when it's taller than
+            // the page (or force-overflows it when it starts too near the page end for its chrome to
+            // fit). Without this, an eligible container entered mid-page (enter-and-split above) would
+            // pile its later flex children off the bottom of the page instead of continuing them on
+            // the next page. Gated on forward progress (something already emitted at this level on
+            // this page) so a first, oversized flex child still force-overflows and pagination
+            // progresses. Scoped to flex — grid + table have their own row/track deferral machinery.
+            if (MidSplitEnabled
+                && propagatingResolver is not null
+                && propagatingFragmentainer is { SuppressBlockPagination: false } flexBreakPf
+                && IsFlexContainer(child)
+                && _sink.Cursor > sinkCursorAtRecursionEntry
+                // Only a flex child that fits a FRESH page is a move-wholly candidate; one taller than
+                // a page paginates internally via the dispatch below (don't pre-empt it).
+                && childEffectiveBlockSize <= flexBreakPf.BlockSize)
+            {
+                // Route through the resolver — usedBlockSize / chunkBlockSize / avoidBreak — exactly
+                // like the block-flow boundary above, so the break honors the resolver's policy + the
+                // CSS Fragmentation avoid metadata (`childAvoidBreak`) instead of a hard-coded fit
+                // test. The greedy resolver breaks here iff the child overflows the remaining space;
+                // the optimizing resolver can weigh the avoid penalty.
+                var flexChildStart = Math.Max(0, childBlockOffset);
+                var savedFlexUsed = flexBreakPf.UsedBlockSize;
+                flexBreakPf.UsedBlockSize = flexChildStart;
+                var flexDecision = propagatingResolver.ConsiderBreakAt(
+                    BreakOpportunity.Block(
+                        usedBlockSize: flexChildStart,
+                        chunkBlockSize: childEffectiveBlockSize,
+                        avoidBreak: childAvoidBreak),
+                    flexBreakPf);
+                flexBreakPf.UsedBlockSize = savedFlexUsed;
+                if (flexDecision.Action == BreakAction.BreakHere)
+                {
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0);
+                }
             }
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
@@ -6335,6 +6432,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 incomingForChild = deeperBlock;
                 incomingBlockChain = null;
             }
+            // Phase 3 cycle-2d "mid-split" — reset the resumed-extent channel before recursing so a
+            // stale value from an earlier sibling isn't read; the child sets it iff it was a resumed
+            // entry that completed cleanly this page.
+            _resumedContainerEmittedExtent = -1;
             var nestedRet = EmitBlockSubtreeRecursive(
                 child,
                 parentBlockOffset: childBlockOffset,
@@ -6352,6 +6453,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     ResumeAtChild: childIdx,
                     ConsumedBlockSize: 0,
                     LayouterState: nestedRet);
+            }
+            // Phase 3 cycle-2d "mid-split" — a resumed container that completed on THIS page reports
+            // the extent it actually emitted (its measured childEffectiveBlockSize counts prior-page
+            // children). Advance the cursor by that so a trailing in-flow sibling lands directly below
+            // the emitted content instead of a full-subtree gap. Only when the child was resumed at a
+            // child index > 0 (matching the set condition below, so a deeper grandchild's value can't
+            // leak) + it published a value; otherwise the measured extent stands.
+            if (MidSplitEnabled
+                && incomingForChild is BlockContinuation { ResumeAtChild: > 0 }
+                && _resumedContainerEmittedExtent >= 0)
+            {
+                childEffectiveBlockSize = _resumedContainerEmittedExtent;
             }
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
@@ -6429,6 +6542,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             childCursor = childCursor + topShift + childEffectiveBlockSize + marginEnd;
             prevMarginEnd = marginEnd;
             hasPrior = true;
+        }
+
+        // Phase 3 cycle-2d "mid-split" — this container completed cleanly. If it was a RESUMED entry
+        // (its earlier children were committed on prior pages via mid-split), publish the block-box
+        // extent ACTUALLY emitted on this page so the parent advances its cursor by that (not the
+        // measured full-subtree extent, which would over-reserve + push a trailing sibling off-page).
+        if (MidSplitEnabled && startIdx > 0)
+        {
+            var pPaddingBottom = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+            var pBorderBottom = parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+            _resumedContainerEmittedExtent =
+                pBorderStart + pPaddingStart + Math.Max(0, childCursor) + pPaddingBottom + pBorderBottom;
         }
 
         // Clean emission — no nested break propagated up.
@@ -9572,6 +9697,96 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double blockOffsetOnPage = 0)
         => MeasureSubtreeVisualBlockExtentRecursive(
             parent, cancellationToken, depth: 0, parentContentBlockSize, blockOffsetOnPage);
+
+    /// <summary>Phase 3 cycle-2d ("mid-split") — whether <paramref name="container"/> is eligible to
+    /// be ENTERED and split between its children instead of moved wholly to the next page. Requires
+    /// a block-flow container (the caller already gates on
+    /// <see cref="IsBlockFlowContainerOwnedByBlockLayouter"/>) that is NOT <c>break-inside: avoid</c>
+    /// and has &gt;= 2 in-flow block-level children — a single-child or leaf block can't be split at a
+    /// child boundary (intra-block line splitting is a separate mechanism).</summary>
+    private static bool IsEnterAndSplitEligible(Box container)
+    {
+        if (container.Style.AvoidsBreakInside())
+        {
+            return false;
+        }
+        var inFlowBlockChildren = 0;
+        foreach (var c in container.Children)
+        {
+            if (c.Style.IsOutOfFlow() || c.Style.ReadFloatSide().HasValue || !c.IsBlockLevel)
+            {
+                continue;
+            }
+            if (++inFlowBlockChildren >= 2)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Phase 3 cycle-2d ("mid-split") — an estimate of the FIRST in-flow block-level child's
+    /// block extent (the minimum unbreakable unit for the enter decision). Measures the first child
+    /// directly; when that comes back opaque (~0 — a non-block-flow box whose content the measure
+    /// doesn't fold), it measures a flex child's real content extent with the same premeasure helpers
+    /// the container's fold uses. For an opaque grid / table / replaced first child (which we can't
+    /// measure cheaply here) it FAILS CLOSED, returning 0 so the caller declines to enter-and-split
+    /// (the container moves wholly) rather than entering on an under-estimate. Accurate for a skewed
+    /// first child (much taller than its siblings). Returns 0 when there is no in-flow block child.</summary>
+    private double EstimateFirstInFlowChildExtent(
+        Box container, CancellationToken cancellationToken, double parentContentBlockSize)
+    {
+        Box? first = null;
+        foreach (var c in container.Children)
+        {
+            if (c.Style.IsOutOfFlow() || c.Style.ReadFloatSide().HasValue || !c.IsBlockLevel)
+            {
+                continue;
+            }
+            first = c;
+            break;
+        }
+        if (first is null)
+        {
+            return 0;
+        }
+        var direct = MeasureSubtreeVisualBlockExtent(first, cancellationToken, parentContentBlockSize);
+        if (direct > 1.0)
+        {
+            return direct;
+        }
+        // The standalone measure came back opaque (~0) — the first child is a non-block-flow box whose
+        // content the measure doesn't fold (e.g. an auto-height flex that isn't paginatable). Measure
+        // its real content extent DIRECTLY (the same premeasure the container's own fold uses), so a
+        // SKEWED first child that is much taller than its siblings is not under-reported by the naive
+        // per-child average — which would wrongly enter-and-split (then force-overflow the first child
+        // off the page) when it should move wholly.
+        if (IsFlexContainer(first) && IsHeightAuto(first))
+        {
+            var flexChrome =
+                first.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
+                + first.Style.ReadLengthPxOrZero(PropertyId.PaddingTop)
+                + first.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom)
+                + first.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+            var flexInline = Math.Max(0.0, _bfcContentInlineSize
+                - first.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
+                - first.Style.ReadLengthPxOrZero(PropertyId.MarginRight));
+            var flexContent = first.Style.ReadFlexDirection().IsFlexColumnDirection()
+                ? PreMeasureFlexMainExtent(first, flexInline, cancellationToken)
+                : PreMeasureFlexCrossExtent(first, flexInline, cancellationToken);
+            if (flexContent + flexChrome > 1.0)
+            {
+                return flexContent + flexChrome;
+            }
+        }
+        // Grid / table / replaced opaque box whose real extent we can't measure cheaply here — FAIL
+        // CLOSED: return 0 so the caller (which enters only when `firstChildExtent > 0 && <= remaining`)
+        // does NOT enter-and-split; the container moves wholly to the next page. A per-child average
+        // could under-report a skewed tall grid/table first child and wrongly enter (force-overflowing
+        // it). Grid / table have their own row/track pagination on the fresh page, so declining the
+        // mid-split here is safe (at worst slightly less dense for a grid/table-first container).
+        return 0;
+    }
 
     /// <summary>Per cycle 2c post-PR-29 review #1 (P0) + #3 (P1) —
     /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>.

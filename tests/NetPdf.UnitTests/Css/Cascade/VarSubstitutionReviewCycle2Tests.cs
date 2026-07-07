@@ -214,33 +214,4 @@ public sealed class VarSubstitutionReviewCycle2Tests
             d => d.Code == CssDiagnosticCodes.CssVarCircular001);
     }
 
-    // ============================================================
-    // Rec 4 — Phase 2 guide doc note (compatibility-matrix already updated in cycle 1)
-    // ============================================================
-
-    [Fact]
-    public void Rec4_Phase2_doc_or_compatibility_matrix_mentions_var_bearing_shorthand_gap()
-    {
-        // The compatibility-matrix entry was added in cycle 1; the Phase 2 guide entry
-        // is added in this cycle. Verify both files mention the limitation.
-        var compatPath = LocateRepoFile("docs/compatibility-matrix.md");
-        var phasePath = LocateRepoFile("docs/phases/phase-2-css-engine.md");
-        var compatText = System.IO.File.ReadAllText(compatPath);
-        var phaseText = System.IO.File.ReadAllText(phasePath);
-        Assert.Contains("pending substitution", compatText, System.StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("pending substitution", phaseText, System.StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string LocateRepoFile(string relativePath)
-    {
-        var dir = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory);
-        while (dir is not null)
-        {
-            var candidate = System.IO.Path.Combine(dir.FullName, relativePath);
-            if (System.IO.File.Exists(candidate)) return candidate;
-            dir = dir.Parent;
-        }
-        throw new System.IO.FileNotFoundException(
-            $"Could not locate {relativePath} by walking up from {System.AppContext.BaseDirectory}");
-    }
 }

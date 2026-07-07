@@ -6,7 +6,19 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 ## [Unreleased]
 
-Post-`0.9.0-rc1` improvements accumulate here until the next release is cut. As with prior milestones, each staged release below is **prepared for tagging** — version bumped across `Directory.Build.props` + `build/version.json` + this heading (guarded by `ReleaseVersionParityTests`) — but the git tag itself is created by the maintainer after the PR merges.
+Post-`1.0.0` improvements accumulate here until the next release is cut.
+
+## [1.0.0] — staged for 2026-07-06 (tag pending PR merge)
+
+The **1.0 launch** release. It folds in everything staged since `0.9.0-rc1` — the travel-corpus fidelity batches, document navigation + metadata, the full Phase-5 packaging track (cross-platform CI, language packs, docs site, samples, release gates), and the SEC-2…SEC-11 hardening sub-track — plus the two final layout fixes below. Prepared for tagging (version bumped across `Directory.Build.props` + `build/version.json` + this heading, guarded by `ReleaseVersionParityTests`); the git tag + NuGet publish + public-repo flip are the maintainer launch steps.
+
+### Fixed — pagination "mid-split": a block-flow subtree fills the current page instead of moving wholly
+
+A block-flow subtree that didn't fit the space **remaining** on the page was committed atomically — moved wholly to the next page (wasting the trailing space) or force-overflowed — instead of the CSS-correct behavior of starting on the current page and breaking between its children. That made documents like a day-by-day itinerary render ~4 pages where ~2 suffice. The paginator now **enters** an eligible multi-child container (not `break-inside: avoid`) whose first in-flow child fits, breaks between its children (including a page-fitting flex row that would otherwise force-overflow off the page bottom), and advances a resumed container's trailing sibling by what it actually emitted this page. All repo golden suites are byte-identical (the shape only occurs in deeply-nested multi-child overflow). Gated on `NETPDF_MIDSPLIT` (default on; `=0` restores the pre-1.0 atomic behavior).
+
+### Fixed — `position: absolute` boxes anchored to paginating content no longer drop
+
+The absolute-positioning pass ran only on the establishing block's first page, so a positioned box whose containing block was laid out on a resume page was dropped (`LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001`) — e.g. day-number badge circles, list bullets, and corner flourishes on multi-page documents. The pass now runs on every page and emits each box on the page where its containing block lands (with a cross-page guard against double-emit when a positioned container is itself split). A companion fix stops a text/anonymous box that reuses a positioned element's style from being mistaken for its own positioned box. Byte-identical for all goldens.
 
 ### Fixed — real-document fidelity batch 3: abspos decorations render, flex-timeline footer overlap, whole-value `var()` border, spurious grid `fr` warning
 
@@ -566,7 +578,8 @@ Finishes the #209/#210 residuals — five tasks, each gated so non-gradient / no
 - **`flex-basis: content` / `max-content` / `min-content`** (CSS Flexbox L1 §7.2 + §9.2.3) — intrinsic flex base sizing on the nowrap ROW main axis: the item is measured to its max-content (no wrap pressure) or min-content (maximal wrap pressure) inline extent, fed through the §9.7 flexibility resolution. The keyword (which AngleSharp.Css drops) is recovered through `CssPreprocessor`; the FlexLayouter emission and the BlockLayouter row-flex pre-measure build the base sizes via one shared helper so they stay in lockstep. WRAP rows + `fit-content` remain deferred.
 - The `flex` shorthand (§7.4) was already shipped (`FlexShorthandExpander`); a flex-item-level integration test now pins `flex: 1` → grow 1 / shrink 1 / basis 0 end-to-end.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/1.0.0...HEAD
+[1.0.0]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...1.0.0
 [0.9.0-rc1]: https://github.com/raroche/NetPdf/compare/0.7.0-beta...0.9.0-rc1
 
 ## [0.7.0-beta] — staged for 2026-06-21 (tag pending PR merge)

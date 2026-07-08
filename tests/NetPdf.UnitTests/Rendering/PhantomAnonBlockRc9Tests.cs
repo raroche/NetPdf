@@ -27,11 +27,16 @@ public sealed class PhantomAnonBlockRc9Tests
     {
         var s = Encoding.Latin1.GetString(pdf);
         double min = double.MaxValue;
+        var matches = 0;
         foreach (Match m in Regex.Matches(s, @"(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+Td"))
         {
+            matches++;
             var y = double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
             if (y < min) min = y;
         }
+        // Guard against a false-positive equality where two PDFs both simply lack any
+        // text-position operator (both would return double.MaxValue and compare equal).
+        Assert.True(matches > 0, "expected at least one 'Td' text-position operator in the content stream");
         return min;
     }
 

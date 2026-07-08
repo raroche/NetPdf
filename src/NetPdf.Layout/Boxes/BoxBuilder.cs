@@ -936,7 +936,7 @@ internal static class BoxBuilder
     /// run is preserved (returns <see langword="false"/>) if it contains any inline-level element box
     /// (its <see cref="Box.Text"/> is empty, so it is never "whitespace"), any text run with a
     /// non-whitespace character, or any text run whose <c>white-space</c> preserves whitespace
-    /// (pre / pre-wrap / pre-line / break-spaces — keyword ids 1/3/4/5; only normal=0 and nowrap=2
+    /// (pre / pre-wrap / break-spaces / pre-line — keyword ids 1/3/4/5; only normal=0 and nowrap=2
     /// collapse).</summary>
     private static bool IsCollapsibleWhitespaceOnlyRun(List<Box> run)
     {

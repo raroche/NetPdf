@@ -203,7 +203,10 @@ internal static class Phase2Pipeline
         // supplies heading sizes/weights/margins, b/strong/th bold, em/i italic, list indentation,
         // th centering, etc. that were otherwise missing on un-styled HTML.
         output.Add(UserAgentStylesheet.Instance);
-        var order = 0;
+        // The UA sheet occupies source-order index 0 (see UserAgentStylesheet.Build), so author
+        // sheets start at 1 — Order is a GLOBAL, unique source-order index across all stylesheets
+        // and anything that keys by it (diagnostics, sheet pinning) must not see a duplicate 0.
+        var order = 1;
         foreach (var rawSheet in document.StyleSheets.OfType<ICssStyleSheet>())
         {
             // Per Rec 6: pair via OwnerNode rather than ordinal index. When

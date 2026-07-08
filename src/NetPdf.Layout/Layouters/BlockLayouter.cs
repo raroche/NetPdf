@@ -7638,9 +7638,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   <item><see cref="BoxKind.AnonymousBlock"/> SHARES its parent's style object, so the
     ///   parent's explicit width would double-apply (plus re-add the parent's borders/padding);
     ///   per Display L3 §3.1 anonymous boxes take the initial <c>width: auto</c>.</item>
-    ///   <item><see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/> wrappers track
-    ///   the MEASURED grid via the table-driven growth logic (Task 12 Finding 6) — the grid
-    ///   already consumes the css width itself.</item>
+    ///   <item><see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/> wrappers now honor
+    ///   an explicit <c>width</c> (F3 used-table-width Step B, CSS 2.2 §17.5.2): the declared
+    ///   border-box width is the wrapper size and becomes the grid's available width (floored at
+    ///   GRIDMIN by the column algorithm). A <c>width: auto</c> table still FILLS the available range
+    ///   here — auto shrink-to-fit is the deferred remainder of F3 (see
+    ///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>); the MEASURED grid only WIDENS the
+    ///   wrapper when it overflows (Task 12 Finding 6).</item>
     ///   <item><see cref="BoxKind.BlockReplacedElement"/> sizes like a plain block
     ///   (img-pipeline cycle): the sizing pre-pass writes the §10.3.2 used width/height into
     ///   the slots, so an explicit width here is the image's used size — filling would
@@ -7658,7 +7662,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double marginInlineStart, double marginInlineEnd)
     {
         if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
-            or BoxKind.FlexContainer or BoxKind.GridContainer)
+            or BoxKind.FlexContainer or BoxKind.GridContainer
+            or BoxKind.Table or BoxKind.InlineTable)
         {
             // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
             // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available

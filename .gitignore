@@ -109,15 +109,22 @@ docs/security/fuzzing.md
 # never legitimate — it's a Time Machine / iCloud dup — and an orphan-branch
 # bulk `git add` would otherwise sweep it (incl. duplicate live workflow files)
 # into the first public commit. No legitimately-numbered file of these types is
-# tracked; force-add one with `git add -f` if that ever changes. Unlike the
-# source-shaped patterns above this intentionally also covers `.md` because the
-# launch-hygiene risk (dups of consumer docs like deployment.md) outweighs the
-# `.html`/`.png` fixture concern that kept `.md` out of the source list.
+# tracked; force-add one with `git add -f` if that ever changes.
 * [0-9].yml
 * [1-9][0-9].yml
 * [0-9].yaml
 * [1-9][0-9].yaml
 * [0-9].manifest
 * [1-9][0-9].manifest
-* [0-9].md
-* [1-9][0-9].md
+
+# `.md` numbered-dup hygiene (consumer docs like deployment.md) is *path-scoped*
+# to the prose/generated doc trees and the repo root rather than global, so we
+# don't silently hide a legitimately-numbered `.md` elsewhere in the public repo
+# (e.g. a versioned test fixture). Force-add with `git add -f` if a numbered doc
+# is ever intentional in these locations.
+/* [0-9].md
+/* [1-9][0-9].md
+docs/**/* [0-9].md
+docs/**/* [1-9][0-9].md
+docs-site/**/* [0-9].md
+docs-site/**/* [1-9][0-9].md

@@ -64,7 +64,8 @@
     <!--
       PackageReleaseNotes is plain text on nuget.org (not a rendered link), so we
       point readers at the machine-readable CHANGELOG rather than duplicating it.
-      Keep the version in sync with VersionPrefix below at each release.
+      The notes intentionally carry no version string, so there is nothing here to
+      keep in sync with VersionPrefix — the CHANGELOG link is the source of truth.
     -->
     <PackageReleaseNotes>First stable release. Full changelog: https://github.com/raroche/NetPdf/blob/main/CHANGELOG.md</PackageReleaseNotes>
 

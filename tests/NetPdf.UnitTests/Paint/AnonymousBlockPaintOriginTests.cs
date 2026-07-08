@@ -46,8 +46,14 @@ public sealed class AnonymousBlockPaintOriginTests
     // A distinct text line, keyed by its glyph-show origin. Grouping by (rounded) baseline y
     // folds a line that shaped into several runs (e.g. per word) into ONE line whose start is the
     // minimum x — so the assertions hold regardless of run segmentation.
+    // Match the repo's content-stream numeric convention (PhantomAnonBlockRc9Tests) — a strict
+    // `-?\d+(?:\.\d+)?` number with `\s+` separators — so a formatting tweak (or an accidental
+    // "1.2.3") can't slip through or throw on parse.
+    private static readonly Regex TdOp = new(
+        @"(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+Td\s+<[0-9A-Fa-f]*>\s+Tj", RegexOptions.Compiled);
+
     private static List<(double Y, double MinX)> Lines(byte[] pdf) =>
-        Regex.Matches(Encoding.Latin1.GetString(pdf), @"(-?[\d.]+) (-?[\d.]+) Td <[0-9A-Fa-f]*> Tj")
+        TdOp.Matches(Encoding.Latin1.GetString(pdf))
             .Select(m => (
                 X: double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture),
                 Y: double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture)))

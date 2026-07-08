@@ -5881,7 +5881,7 @@ public sealed class FlexLayouterTests
             Box.ForElement(BoxKind.BlockContainer, growing, MakeElement()),
         };
         var resolvedAB = FlexLayouter.ResolveFlexLineMainSizes(
-            itemsAB, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            itemsAB, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
             mainGap: 0, cancellationToken: default);
         Assert.Equal(100.0, resolvedAB[0], precision: 3);
         Assert.Equal(200.0, resolvedAB[1], precision: 3);
@@ -5896,7 +5896,7 @@ public sealed class FlexLayouterTests
             thirds[i] = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
         }
         var resolvedThirds = FlexLayouter.ResolveFlexLineMainSizes(
-            thirds, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            thirds, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
             mainGap: 0, cancellationToken: default);
         Assert.All(resolvedThirds, w => Assert.Equal(100.0, w, precision: 3));
     }
@@ -5924,7 +5924,7 @@ public sealed class FlexLayouterTests
             Box.ForElement(BoxKind.BlockContainer, growB, MakeElement()),
         };
         var grown = FlexLayouter.ResolveFlexLineMainSizes(
-            growItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            growItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
             mainGap: 20, cancellationToken: default);
         Assert.Equal(140.0, grown[0], precision: 3);
         Assert.Equal(140.0, grown[1], precision: 3);
@@ -5945,7 +5945,7 @@ public sealed class FlexLayouterTests
             Box.ForElement(BoxKind.BlockContainer, shrinkB, MakeElement()),
         };
         var shrunk = FlexLayouter.ResolveFlexLineMainSizes(
-            shrinkItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            shrinkItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
             mainGap: 20, cancellationToken: default);
         Assert.Equal(140.0, shrunk[0], precision: 3);
         Assert.Equal(140.0, shrunk[1], precision: 3);
@@ -5967,7 +5967,7 @@ public sealed class FlexLayouterTests
         maxStyle.Set(PropertyId.MaxWidth, ComputedSlot.FromPercentage(50));
         var maxItems = new[] { Box.ForElement(BoxKind.BlockContainer, maxStyle, MakeElement()) };
         var maxResolved = FlexLayouter.ResolveFlexLineMainSizes(
-            maxItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            maxItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
             mainGap: 0, cancellationToken: default);
         Assert.Equal(150.0, maxResolved[0], precision: 3);
 
@@ -5979,7 +5979,7 @@ public sealed class FlexLayouterTests
         minStyle.Set(PropertyId.MinWidth, ComputedSlot.FromPercentage(50));
         var minItems = new[] { Box.ForElement(BoxKind.BlockContainer, minStyle, MakeElement()) };
         var minResolved = FlexLayouter.ResolveFlexLineMainSizes(
-            minItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300,
+            minItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
             mainGap: 0, cancellationToken: default);
         Assert.Equal(150.0, minResolved[0], precision: 3);
     }

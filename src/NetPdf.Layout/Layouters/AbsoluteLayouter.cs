@@ -347,6 +347,21 @@ internal static class AbsoluteLayouter
             + ReadPxOrPct(st, PropertyId.PaddingRight, cbInlineSize);
         return System.Math.Max(0, borderBoxInlineSize - chrome);
     }
+
+    /// <summary>The box's BLOCK-axis border + padding sum (top + bottom). Percentage padding resolves
+    /// against <paramref name="cbInlineSize"/> — the SAME base <see cref="ResolvePlacement"/>'s block
+    /// <c>SolveAxis</c> uses (CSS 2.1 §8.4). Callers that measured a box's BORDER-box block extent (an
+    /// inline-only ROOT's own-box fragment) subtract this to obtain the CONTENT-box height that
+    /// <c>ResolvePlacement(measuredBlockContentSize:)</c> expects — it re-adds the chrome internally, so
+    /// passing the border-box extent would double-count border + padding (#293 review).</summary>
+    public static double BlockAxisChrome(Box box, double cbInlineSize)
+    {
+        var st = box.Style;
+        return st.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
+            + st.ReadLengthPxOrZero(PropertyId.BorderBottomWidth)
+            + ReadPxOrPct(st, PropertyId.PaddingTop, cbInlineSize)
+            + ReadPxOrPct(st, PropertyId.PaddingBottom, cbInlineSize);
+    }
 }
 
 /// <summary>Per Phase 3 Task 19 — the containing block for an

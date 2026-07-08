@@ -59,6 +59,28 @@ public sealed class AbsPosAutoHeightRc4Tests
     }
 
     [Fact]
+    public void Auto_height_positioned_box_does_not_double_count_border_and_padding()
+    {
+        // #293 review — an inline-only-ROOT positioned box's measured content extent IS its BORDER box
+        // (it includes the box's own block border + padding); ResolvePlacement then adds that chrome
+        // again. With a large border + padding the auto-height ABSOLUTE box must resolve to the SAME
+        // border-box height as the equivalent STATIC box, not taller by 2x the chrome.
+        static byte[] Render(string position) => HtmlPdf.Convert(
+            "<!doctype html><html><head><style>@page{size:A4;margin:0}body{margin:0;font-size:12px}"
+            + ".b{" + position + "width:200px;background:#eef;border:20px solid #000;padding:20px}"
+            + "</style></head><body><div class=\"b\">Hi</div></body></html>",
+            new HtmlPdfOptions { PrintBackgrounds = true });
+
+        var abs = FooterRectHeights(Render("position:absolute;top:0;left:0;"));
+        var stat = FooterRectHeights(Render(string.Empty));
+        Assert.NotEmpty(abs);
+        Assert.NotEmpty(stat);
+        // Border-box height = the tallest rect. Equal to the static control; before the fix the absolute
+        // box was ~60pt taller (2x the 20px border + 20px padding, minus the once-counted chrome).
+        Assert.Equal(stat.Max(), abs.Max(), precision: 0);
+    }
+
+    [Fact]
     public void Fixed_footer_background_is_painted_exactly_once()
     {
         // The box's own TextRun spuriously inherits `position:fixed` by style reference; the fixed pass

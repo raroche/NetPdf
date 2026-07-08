@@ -4549,12 +4549,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
         var contentInline = AbsoluteLayouter.ContentInlineSize(box, placement.InlineSize, cb.InlineSize);
         if (contentInline <= 0) return placement;
-        var measured = NestedContentMeasurer.Measure(
+        var measureSink = NestedContentMeasurer.Measure(
             box, contentInline, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
             _shaperResolver, layout.WritingMode, layout.IsRtl, cancellationToken,
             diagnostics: _diagnostics,
-            purpose: MeasurePurpose.DefiniteWidthExtent).ContentBlockExtent;
+            purpose: MeasurePurpose.DefiniteWidthExtent);
+        var measured = measureSink.ContentBlockExtent;
         if (double.IsNaN(measured) || measured < 0) return placement;
+        // #293 review — when the box laid out as an INLINE-ONLY ROOT, its own-box fragment IS the box's
+        // BORDER box, so ContentBlockExtent already includes the box's block border + padding. But
+        // ResolvePlacement treats measuredBlockContentSize as a CONTENT-box size and adds that chrome
+        // itself, so pass the content-box extent — otherwise border + padding is double-counted and the
+        // auto-height box (and its background) is too tall. Block-CHILD buffers are already content-box.
+        if (measureSink.ContainsDecorationOwnerFragment)
+        {
+            measured = System.Math.Max(0, measured - AbsoluteLayouter.BlockAxisChrome(box, cb.InlineSize));
+        }
         return AbsoluteLayouter.ResolvePlacement(box, cb, measuredBlockContentSize: measured);
     }
 

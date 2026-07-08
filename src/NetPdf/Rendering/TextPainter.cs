@@ -338,16 +338,30 @@ internal static class TextPainter
         // per glyph draw — the same list replays across every DrawCommand.
         var shadows = ResolveTextShadows(textShadows);
 
+        // CSS 2.2 §9.2.1.1 — an anonymous box's non-inherited properties (margin/border/padding)
+        // take their INITIAL value (0). It shares its parent's ComputedStyle BY REFERENCE
+        // (BoxBuilder.FixupAnonymousBlocks — the ref-share is load-bearing for InlineVerticalAlign's
+        // ReferenceEquals block-direct-text detection, so we must NOT clone a zero-chrome style; we
+        // gate the reads instead). The layouter already zeroed this box's chrome
+        // (ReadInlineOnlyBlockMetrics' AnonymousBlock guard), so its fragment border-box IS its
+        // content box. Reading blockStyle's border/padding here re-applies the PARENT's chrome —
+        // already consumed positioning the parent — a SECOND time, painting cell / block-in-inline
+        // text padding+border too far right and down (F1, F5). Mirror the guard FragmentPainter.cs
+        // uses for the anonymous-decoration skip so layout and paint agree by construction.
+        var isAnonymous = fragment.Box.Kind is BoxKind.AnonymousBlock or BoxKind.AnonymousInline;
+
         // Content-box origin (CSS px, page-top-relative): the border box minus the
-        // border + padding the layouter inset the inline content by.
+        // border + padding the layouter inset the inline content by (zero for an anonymous box).
         var contentLeftPx = contentOriginLeftPx + fragment.InlineOffset
-            + blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
-            + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+            + (isAnonymous
+                ? 0.0
+                : blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                  + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft));
         // inline-only-block-line-splitting (box-decoration-break: slice) — a NON-first slice's
         // block-start border + padding is CUT (consumed by an earlier slice), so its content starts at
         // the border-box top; the first slice / a whole block keeps the chrome inset (byte-identical).
         var contentTopPx = contentOriginTopPx + fragment.BlockOffset
-            + (fragment.SuppressBlockStartChrome
+            + (fragment.SuppressBlockStartChrome || isAnonymous
                 ? 0.0
                 : blockStyle.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
                   + blockStyle.ReadLengthPxOrZero(PropertyId.PaddingTop));
@@ -358,12 +372,16 @@ internal static class TextPainter
         // Otherwise center / right / justify treat the box's border+padding as extra free space AND
         // desync from the inline-atomic placement, which aligns against the CONTENT inline size
         // (post-PR-#192 Copilot review). With no border/padding (the common body block) it equals
-        // InlineSize, byte-identical.
-        var contentInlineSizePx = fragment.InlineSize
-            - blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
-            - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft)
-            - blockStyle.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
-            - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingRight);
+        // InlineSize, byte-identical. For an anonymous box InlineSize IS the content-box size already
+        // (subtracting the parent's chrome would shrink the alignment range and land right/justify
+        // text padding-right short of the true content edge).
+        var contentInlineSizePx = isAnonymous
+            ? fragment.InlineSize
+            : fragment.InlineSize
+              - blockStyle.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+              - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+              - blockStyle.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+              - blockStyle.ReadLengthPxOrZero(PropertyId.PaddingRight);
 
         // line-height: mirror BlockLayouter's inline-only block rule EXACTLY (declared
         // line-height when > 0, else 1.2 × the block's font-size) so painted lines stack at

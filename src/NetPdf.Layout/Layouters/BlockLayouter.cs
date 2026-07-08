@@ -5071,8 +5071,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // against the parent content box), so the POSITION must use the same base — a
                 // ReadLengthPxOrZero here read `margin-top: 10%` as 0 and the margin got reserved
                 // AFTER the child instead of pushing it down.
-                var inlineOnlyMarginStart =
-                    child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
+                //
+                // CSS 2.2 §9.2.1.1 — an AnonymousBlock's margin is 0 (its style ref is the PARENT's;
+                // BoxBuilder.FixupAnonymousBlocks). Reading child.Style raw here charged the parent's
+                // margin-top to the anonymous wrapper's position (this feeds both the emit position
+                // at recInlineBorderBoxTop and the break-opportunity start below), while the
+                // cursor ADVANCE uses the zeroed metrics — so the wrapper's text sank by the
+                // parent's margin while its siblings stayed put (F1/F5 nested-recursion half).
+                // Mirror ReadInlineOnlyBlockMetrics' AnonymousBlock zeroing so position and
+                // advance agree; real nested inline-only blocks keep the percent-aware read.
+                var inlineOnlyMarginStart = child.Kind == BoxKind.AnonymousBlock
+                    ? 0.0
+                    : child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
 
                 // `inline-only-block-line-splitting` — resume a prior line split of THIS block
                 // (one-shot consume of the chained continuation, mirroring grid/multicol). On

@@ -470,21 +470,26 @@ internal static class LineBuilder
 
         if (run.Utf16Start == srcStart && src.LeadingChromeAdvancePx != 0)
         {
-            var leading = (float)src.LeadingChromeAdvancePx;
             var g0 = glyphs[0];
             // Insert `leading` px of blank space before the first glyph: draw it `leading` to the right
             // (XOffset) AND move the pen past it (XAdvance) so every following glyph shifts right in step.
+            // A large NEGATIVE margin must not drive the glyph's XAdvance below 0 (Wrap asserts it), so
+            // clamp the applied amount to -XAdvance and apply that SAME amount to XOffset too — otherwise
+            // the glyph would shift left by the full (unclamped) negative while the pen stayed put,
+            // desynchronising its ink from the following glyphs' positions (Copilot review, #295).
+            var applied = Math.Max((float)src.LeadingChromeAdvancePx, -g0.XAdvance);
             glyphs[0] = g0 with
             {
-                XOffset = g0.XOffset + leading,
-                XAdvance = Math.Max(0f, g0.XAdvance + leading),   // clamp: a large negative margin can't make the run assert-tripping negative
+                XOffset = g0.XOffset + applied,
+                XAdvance = g0.XAdvance + applied,
             };
         }
         if (run.Utf16Start + run.Utf16Length == srcEnd && src.TrailingChromeAdvancePx != 0)
         {
-            var trailing = (float)src.TrailingChromeAdvancePx;
             var gl = glyphs[^1];
-            glyphs[^1] = gl with { XAdvance = Math.Max(0f, gl.XAdvance + trailing) };
+            // Same non-negative clamp (no XOffset on the trailing edge — it's pure pen advance).
+            var applied = Math.Max((float)src.TrailingChromeAdvancePx, -gl.XAdvance);
+            glyphs[^1] = gl with { XAdvance = gl.XAdvance + applied };
         }
     }
 

@@ -1177,6 +1177,20 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             foreach (var cs in itemBaselineCrossSizes)
                 if (!double.IsNaN(cs) && cs > autoRowContentCross) autoRowContentCross = cs;
         }
+        // RC-2b / RC-11 — for an AUTO-height NOWRAP row the resolved container cross (and thus the
+        // single line's cross extent, `lineCrossExtent = containerCrossSize` below) came out 0 because
+        // FlexLinePacker sizes each line from the items' DECLARED cross only (an auto item declares 0).
+        // Fold in the content-measured max (`autoRowContentCross`) so a `stretch` item grows to the
+        // real content cross and every item's emission line extent is non-zero — otherwise each item's
+        // geometry fragment has BlockSize 0 and FragmentPainter culls its background/border/radius. Safe
+        // to update here: the wrap-only align-content free-space (L1037) and the item-content measure
+        // (L1130, which INTENTIONALLY measures at auto cross to PRODUCE these sizes) both already ran,
+        // and the emission loop reads `containerCrossSize` further below. Byte-identical when the content
+        // is no taller than the already-resolved cross (fold is a max).
+        if (isAutoHeightRow && autoRowContentCross > containerCrossSize)
+        {
+            containerCrossSize = autoRowContentCross;
+        }
 
         // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
         // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
@@ -1537,10 +1551,27 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     // the flex-flow start (flex-start), which IS the line's permuted cross-start under
                     // `wrap-reverse`. So the helper takes the flex-flow `isCrossAxisReversed` for that
                     // fallback separately from the (possibly container-/item-logical) natural orientation.
+                    // RC-2 / RC-11 — an AUTO cross-size item was placed (and its geometry fragment
+                    // emitted) with a cross size of 0: `center`/`flex-end` centered it as if it were
+                    // zero-height (off by half / a full line cross), and the emitted item box had
+                    // BlockSize 0 so FragmentPainter culled its ENTIRE background/border/radius (the
+                    // dropped card/chip/pill decorations across the corpus). Feed the CONTENT-measured
+                    // cross border box (`itemBaselineCrossSizes`, computed for every ROW flex above) as
+                    // the align cross size for an auto item. The Stretch branch ignores it (it grows to
+                    // the line cross extent regardless), so stretch stays byte-identical; the positional
+                    // branches now use the real content size for both the space math AND the returned
+                    // effective cross size the geometry fragment paints. Row-only (column baseline data
+                    // isn't computed — a documented residual, deferrals.md).
+                    var alignCrossSize = itemCrossSize;
+                    if (itemIsCrossSizeAuto && itemBaselineCrossSizes is not null
+                        && !double.IsNaN(itemBaselineCrossSizes[itemIdx]))
+                    {
+                        alignCrossSize = itemBaselineCrossSizes[itemIdx];
+                    }
                     (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                         ComputeAlignItemsPlacement(
                             effectiveAlign.Value, effectiveAlign.Mode,
-                            lineCrossExtent, itemCrossSize,
+                            lineCrossExtent, alignCrossSize,
                             itemIsCrossSizeAuto,
                             lineCrossCursor,
                             naturalCrossReversed: naturalReversed,

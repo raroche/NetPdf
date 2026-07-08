@@ -4321,6 +4321,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return;
         }
 
+        placement = RemeasureAutoHeightPlacement(child, containingBlock.Value, placement, ref layout, cancellationToken);
+
         // Emit the border-box fragment at the resolved position.
         _sink.Emit(new BoxFragment(
             Box: child,
@@ -4424,7 +4426,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         foreach (var child in box.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (child.Style.IsFixedPositioned())
+            // Only a GENUINE positioned box (an element whose OWN style is position:fixed) is emitted.
+            // `position` does not inherit, so a real child ELEMENT of a fixed box is static — but a
+            // TextRun / anonymous box REUSES its parent's whole ComputedStyle by reference (CSS 2.1
+            // §9.2.1.1), so the text node inside a fixed box spuriously reports IsFixedPositioned and,
+            // emitted, re-paints the box's background as a SECOND full-page rect (RC-4's "bg emitted
+            // 2-4x" occlusion). Mirror the abspos pass's guard (EmitAbsolutelyPositionedDescendants):
+            // a real fixed box is never a TextRun or an anonymous block.
+            if (child.Style.IsFixedPositioned()
+                && child.Kind is not (BoxKind.TextRun or BoxKind.AnonymousBlock))
             {
                 // Emit + dispatch this fixed box's own content...
                 EmitOneFixedBox(child, pageCb, ref layout, cancellationToken);
@@ -4467,6 +4477,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken)
     {
         var placement = AbsoluteLayouter.ResolvePlacement(child, pageCb);
+        placement = RemeasureAutoHeightPlacement(child, pageCb, placement, ref layout, cancellationToken);
         _sink.Emit(new BoxFragment(
             Box: child,
             InlineOffset: placement.InlineOffset,
@@ -4523,6 +4534,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// paginated) rather than being clipped. The abspos caller passes
     /// <c>noPaginate: false</c> (it paginates + discards the result —
     /// a separate pre-existing item).</para></summary>
+    /// <summary>RC-4 — for an AUTO-block-size single-anchored abspos / fixed box, re-solve its placement
+    /// using the box's MEASURED content height instead of the available-extent approximation, so the box
+    /// (and its background) is content-sized rather than page-sized. A no-op for a definite height, a
+    /// top+bottom-pinned (fill) box, or a box with no content / no inline extent.</summary>
+    private AbsolutePlacement RemeasureAutoHeightPlacement(
+        Box box, AbsoluteContainingBlock cb, AbsolutePlacement placement,
+        ref LayoutContext layout, CancellationToken cancellationToken)
+    {
+        if (!AbsoluteLayouter.NeedsAutoBlockContentMeasure(box)
+            || box.Children.Count == 0 || placement.InlineSize <= 0)
+        {
+            return placement;
+        }
+        var contentInline = AbsoluteLayouter.ContentInlineSize(box, placement.InlineSize, cb.InlineSize);
+        if (contentInline <= 0) return placement;
+        var measured = NestedContentMeasurer.Measure(
+            box, contentInline, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+            _shaperResolver, layout.WritingMode, layout.IsRtl, cancellationToken,
+            diagnostics: _diagnostics,
+            purpose: MeasurePurpose.DefiniteWidthExtent).ContentBlockExtent;
+        if (double.IsNaN(measured) || measured < 0) return placement;
+        return AbsoluteLayouter.ResolvePlacement(box, cb, measuredBlockContentSize: measured);
+    }
+
     private void DispatchAbsoluteChildContents(
         Box box,
         double inlineOrigin,
@@ -9540,21 +9575,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             var child = parent.Children[i];
             // PR-#182 Copilot review — an out-of-flow (position: absolute /
-            // fixed) inline-level descendant does NOT participate in inline
+            // fixed) inline-level descendant ELEMENT does NOT participate in inline
             // flow (CSS 2.2 §9.3 — it's removed from the normal flow). Skip it
             // (and don't recurse into its subtree) so its text never contributes
             // to the line layout / measurement here; the abspos / fixed passes
             // emit + anchor it. Without this an inline-only block (incl. the
             // nested-content root) would render the positioned text inline AND
             // at its positioned offset (duplicate + wrong sizing).
-            // RC-5 — a child whose ComputedStyle is the SAME reference as its parent's is anonymous /
-            // shared-style content (a raw TextRun, or an anonymous inline wrapper): it is the parent's
-            // OWN text, not an independently positioned box, and `position` does not apply to it. Only
-            // skip a child that is genuinely out of flow — i.e. it carries its OWN (distinct) style. A
-            // positioned inline element (`<span style="position:absolute">`) has a distinct style and is
-            // still skipped (and anchored by the abspos/fixed pass); but the direct text of an out-of-flow
-            // inline-only ROOT (a `position:absolute/fixed` footer) shares the root's out-of-flow style —
-            // without this guard it was skipped here, silently dropping the positioned box's own text.
+            // RC-5 / RC-4 — a child whose ComputedStyle is the SAME reference as its parent's is
+            // anonymous / shared-style content (a raw TextRun, or an anonymous inline wrapper): it is the
+            // parent's OWN text, not an independently positioned box, and `position` does not apply to it
+            // (position doesn't inherit). Only skip a child that is genuinely out of flow — i.e. it carries
+            // its OWN (distinct) style. A positioned inline element (`<span style="position:absolute">`)
+            // has a distinct style and is still skipped (and anchored by the abspos/fixed pass); but the
+            // direct text of an out-of-flow inline-only ROOT (a `position:absolute/fixed` footer) shares
+            // the root's out-of-flow style — without this guard it was skipped here, silently dropping the
+            // positioned box's own text (which also made an auto-height box measure 0 content → chrome-only).
             if (child.Style.IsOutOfFlow() && !ReferenceEquals(child.Style, parent.Style)) continue;
             switch (child.Kind)
             {

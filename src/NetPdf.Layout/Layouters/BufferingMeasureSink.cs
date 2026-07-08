@@ -143,7 +143,15 @@ internal sealed class BufferingMeasureSink : IBlockFragmentSink
         // abspos / fixed passes run AFTER the in-flow child loop that captures
         // cursors + issues UpdateFragmentBlockSize, so no in-flow cursor target
         // is shifted by a skipped out-of-flow emission.
-        if (fragment.Box.Style.IsOutOfFlow()) return;
+        // RC-4 — but when the MEASUREMENT SUBJECT itself is out-of-flow (measuring an abspos/fixed box's
+        // OWN content so its root fragment carries the content extent = decorationOwner), COUNT it, else
+        // the content-height pre-measure returns 0 and the box sizes to chrome-only. Out-of-flow
+        // DESCENDANTS (box != the subject) are still dropped.
+        if (fragment.Box.Style.IsOutOfFlow()
+            && !(_decorationOwner is not null && ReferenceEquals(fragment.Box, _decorationOwner)))
+        {
+            return;
+        }
 
         // The inline-only-root content fragment (box == the item) paints text
         // only — its decoration is the item's flex / grid geometry fragment's

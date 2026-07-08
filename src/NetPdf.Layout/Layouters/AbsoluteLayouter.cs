@@ -52,7 +52,10 @@ internal static class AbsoluteLayouter
     /// longer produced here — the <c>BlockLayouter</c>'s null-containing-
     /// block path is the drop site.</summary>
     public static AbsolutePlacement ResolvePlacement(
-        Box box, AbsoluteContainingBlock cb)
+        Box box, AbsoluteContainingBlock cb,
+        // RC-4 — the CONTENT block extent for an auto-height box, pre-measured by the caller at the
+        // resolved content-inline size. NaN = not supplied → the legacy available-extent approximation.
+        double measuredBlockContentSize = double.NaN)
     {
         var style = box.Style;
 
@@ -89,7 +92,8 @@ internal static class AbsoluteLayouter
             paddingEnd: ReadPxOrPct(style, PropertyId.PaddingBottom, cb.InlineSize),
             borderEnd: style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth),
             cbExtent: cb.BlockSize,
-            isInlineAxis: false);
+            isInlineAxis: false,
+            measuredContentSize: measuredBlockContentSize);
 
         // SolveAxis already clamps a negative resolved content size to
         // 0 (CSS clamps used width/height to >= 0), so inlineSize /
@@ -114,7 +118,7 @@ internal static class AbsoluteLayouter
         double? insetStart, double? insetEnd, double? size,
         double? marginStart, double? marginEnd,
         double borderStart, double paddingStart, double paddingEnd, double borderEnd,
-        double cbExtent, bool isInlineAxis)
+        double cbExtent, bool isInlineAxis, double measuredContentSize = double.NaN)
     {
         var chrome = borderStart + paddingStart + paddingEnd + borderEnd;
         var startAuto = insetStart is null;
@@ -190,9 +194,13 @@ internal static class AbsoluteLayouter
 
         if (sizeAuto)
         {
-            // Size auto → shrink-to-fit (inline) / content height
-            // (block), approximated as the AVAILABLE extent. EXACT when
-            // both insets pin it (fill).
+            // Size auto → shrink-to-fit (inline) / content height (block). RC-4 — for the BLOCK axis a
+            // caller-supplied `measuredContentSize` (the box's pre-measured content height) is the CSS
+            // 2.1 §10.6.4 used height for a SINGLE-anchored box; without it the legacy approximation used
+            // the AVAILABLE extent, so a `position:fixed; bottom:0; height:auto` footer's height (and its
+            // background) exploded to the FULL page and painted over everything. The `fill` case (both
+            // insets) genuinely fills, so it never uses the measured size.
+            var useMeasured = !isInlineAxis && !double.IsNaN(measuredContentSize);
             if (!startAuto && !endAuto)
             {
                 // Fill: both insets given → size = remaining space.
@@ -202,26 +210,30 @@ internal static class AbsoluteLayouter
             }
             else if (!startAuto)
             {
-                // start given, end auto → available from start to CB end.
+                // start given, end auto → content height (block); available extent otherwise.
                 usedStart = insetStart!.Value;
-                usedSize = cbExtent - insetStart.Value - marS - marE - chrome;
+                usedSize = useMeasured
+                    ? measuredContentSize
+                    : cbExtent - insetStart.Value - marS - marE - chrome;
             }
             else if (!endAuto)
             {
-                // end given, start auto → END-anchored. Size fills from
-                // the CB start to the end inset; the box's end edge stays
-                // pinned at the end inset. usedStart is recomputed from
-                // that anchor AFTER the clamp (below) so a clamped-to-
-                // zero size still honors the end inset.
-                usedSize = cbExtent - insetEnd!.Value - marS - marE - chrome;
+                // end given, start auto → END-anchored. Size = content height (block); the box's end edge
+                // stays pinned at the end inset. usedStart is recomputed post-clamp so a clamped-to-zero
+                // size still honors the end inset.
+                usedSize = useMeasured
+                    ? measuredContentSize
+                    : cbExtent - insetEnd!.Value - marS - marE - chrome;
                 usedStart = StaticPosition;  // provisional; recomputed post-clamp
                 endAnchored = true;
             }
             else
             {
-                // all auto → start = static position; size = available.
+                // all auto → start = static position; size = content height (block) or available.
                 usedStart = StaticPosition;
-                usedSize = cbExtent - StaticPosition - marS - marE - chrome;
+                usedSize = useMeasured
+                    ? measuredContentSize
+                    : cbExtent - StaticPosition - marS - marE - chrome;
             }
         }
         else
@@ -311,6 +323,29 @@ internal static class AbsoluteLayouter
             ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * pctBase,
             _ => 0.0,
         };
+    }
+
+    private static bool IsDefinite(ComputedStyle style, PropertyId id) =>
+        style.Get(id).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+
+    /// <summary>RC-4 — true when the box has an AUTO block size NOT pinned by BOTH top and bottom
+    /// (single-anchored or all-auto). Only these need a content-height pre-measure.</summary>
+    public static bool NeedsAutoBlockContentMeasure(Box box)
+    {
+        if (IsDefinite(box.Style, PropertyId.Height)) return false;
+        return !(IsDefinite(box.Style, PropertyId.Top) && IsDefinite(box.Style, PropertyId.Bottom));
+    }
+
+    /// <summary>The box's CONTENT-box inline size given its resolved border-box inline size (subtract the
+    /// inline padding + border; percentages resolve against <paramref name="cbInlineSize"/>).</summary>
+    public static double ContentInlineSize(Box box, double borderBoxInlineSize, double cbInlineSize)
+    {
+        var st = box.Style;
+        var chrome = st.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            + st.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+            + ReadPxOrPct(st, PropertyId.PaddingLeft, cbInlineSize)
+            + ReadPxOrPct(st, PropertyId.PaddingRight, cbInlineSize);
+        return System.Math.Max(0, borderBoxInlineSize - chrome);
     }
 }
 

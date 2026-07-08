@@ -244,6 +244,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
+    // RC-7 — set by the most recent DryRunCommittedBlockSize when the table is POSITIONALLY oversized at
+    // its current offset: its repeated header + footer stack alone exceeds the remaining space on THIS
+    // page (so zero body rows can commit + the catastrophic branch would drop the body) but WOULD fit a
+    // fresh page, and the table sits below a fresh page's origin (there is reclaimable space above). The
+    // dispatching BlockLayouter reads it right after PreMeasureTableIfNeeded to break BEFORE the table —
+    // moving the whole table to a fresh page — instead of force-overflowing / dropping the body.
+    private bool _dryRunWontFitAtOffset;
+
+    /// <summary>RC-7 — see <see cref="_dryRunWontFitAtOffset"/>. Reflects the LAST
+    /// <see cref="DryRunCommittedBlockSize"/> call on this instance.</summary>
+    internal bool DryRunWontFitAtOffset => _dryRunWontFitAtOffset;
+
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// inner table content. <paramref name="rootBox"/> MUST be a
     /// <see cref="BoxKind.Table"/> or <see cref="BoxKind.InlineTable"/>
@@ -722,6 +734,16 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// sizing simulation (<see cref="DryRunCommittedBlockSize"/>).</summary>
     private const double IntraCellRowSplitMinBudgetPx = 1.0;
 
+    /// <summary>RC-7 — the minimum reclaimable space (px, = how far the table sits below a fresh page's
+    /// origin) that makes a break-before-table worthwhile. Below it, breaking wouldn't meaningfully grow
+    /// the budget, so an oversized header+footer degrades in place instead (avoids a churny break).</summary>
+    private const double TableBreakBeforeMinReclaimPx = 1.0;
+
+    /// <summary>RC-7 — safety margin (px) subtracted from the fresh-page budget when deciding a table's
+    /// header+footer "fits a fresh page". Keeps a stack that only JUST fits from breaking before then
+    /// re-degrading on the fresh page.</summary>
+    private const double TableBreakBeforeSafetyPx = 0.5;
+
     /// <summary>Per Phase 3 Task 17 cycle 5c.2d (PR-#201 review P1) — derive the
     /// intra-cell row split cut from the cell content's actual BLOCK BOUNDARIES,
     /// not the raw page-budget edge. The <paramref name="cut"/> is the DEEPEST
@@ -818,6 +840,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     {
         needsSplitting = false;
         willForceOverflowOnSingleRow = false;
+        _dryRunWontFitAtOffset = false;   // RC-7 — reset; set below only for the positionally-oversized case
         if (!_measureDone || _measuredRows is null || _measuredRows.Count == 0)
         {
             // Degenerate paths (missing grid / zero rows / zero
@@ -864,6 +887,23 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             : fragmentainer.UsedBlockSize;
         var rowStackOriginInFragmentainer =
             pageStartOffset + topCaptionsBlock;
+
+        // RC-7 — flag the POSITIONALLY-oversized case for the dispatching BlockLayouter. The repeated
+        // header + footer stack alone exceeds the remainder at THIS offset (so the emit pass's
+        // catastrophic branch would commit zero body rows + drop the body), BUT the stack fits a fresh
+        // page and the table is pushed down (reclaimable space above) — so breaking BEFORE the table
+        // recovers all rows. When the table is at (or near) a fresh page's origin, or the stack won't fit
+        // even a fresh page, this stays false so the caller degrades in place (no churn / no loop).
+        var offsetRemainder = fragmentainer.BlockSize - rowStackOriginInFragmentainer;
+        var freshPageTopChrome = _measuredTopCaptionsTotal;
+        var headerFooterStack = headerStackHeight + footerStackHeight;
+        _dryRunWontFitAtOffset =
+            (headerCount > 0 || footerCount > 0)
+            && headerFooterStack > offsetRemainder
+            && headerFooterStack
+                <= fragmentainer.BlockSize - freshPageTopChrome - TableBreakBeforeSafetyPx
+            && rowStackOriginInFragmentainer > freshPageTopChrome + TableBreakBeforeMinReclaimPx;
+
         // Per cycle 2 — the body row window emits AFTER the header
         // stack + reserves footerStackHeight at the bottom of the
         // page. So the effective per-page body budget is

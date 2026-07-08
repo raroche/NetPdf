@@ -2512,6 +2512,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 Math.Max(0, marginBoxBlockSizeForCursor),
                 visualBlockExtent);
 
+            // RC-7 — break BEFORE a positionally-oversized table. Its repeated header+footer stack alone
+            // exceeds the remainder at this offset (so the emit pass would drop the body via the
+            // catastrophic branch) but WOULD fit a fresh page. Present the resolver a chunk that cannot
+            // fit here, so it returns BreakHere → the table moves whole to a fresh page. The BreakHere
+            // handler's own top-of-page forward-progress guard force-overflows instead when there is
+            // nothing above to reclaim, so this can never spin. (The dry-run only flags this when the
+            // table is pushed down + fits fresh, so a fresh page won't re-trigger it — forward progress.)
+            if (pendingTableLayouter?.DryRunWontFitAtOffset == true)
+            {
+                var remainingBelowTable = fragmentainer.BlockSize - (fragmentainer.UsedBlockSize + topShift);
+                chunkForBreakCheck = Math.Max(chunkForBreakCheck, remainingBelowTable + 1.0);
+            }
+
             // Per PR #22 review fix #2 — capture a checkpoint at the
             // candidate-break boundary BEFORE consulting the resolver.
             // The resolver may return Rewind, naming this checkpoint
@@ -5581,6 +5594,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         childBorderBoxInlineSize = nestedTableDrivenInline;
                     }
+                }
+
+                // RC-7 — break BEFORE a positionally-oversized nested table. Its repeated header+footer
+                // stack can't fit the remainder at this offset (so the emit pass's catastrophic branch
+                // would commit zero body rows + drop the body) but WOULD fit a fresh page, and the table
+                // sits below a fresh page's origin. Defer the WHOLE table to a fresh page via the
+                // recursion's break-before mechanism (same as the child-boundary gate above). No loop:
+                // the wontFit flag is only set when the table is pushed down, so on the resume page (table
+                // at the page top) it clears — forward progress is guaranteed.
+                if (nestedPendingTable is { DryRunWontFitAtOffset: true })
+                {
+                    nestedPendingTable.Dispose();
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0);
                 }
             }
 

@@ -10993,9 +10993,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var intrinsicBaseSizes = FlexLayouter.BuildRowIntrinsicMainBaseSizes(
             lineItems, _shaperResolver, cancellationToken);
         var resolvedMain = lineItems.Count > 0
+            // This is the ROW-flex pre-measure (main axis = inline), which is always DEFINITE for a
+            // block-level flex container — so the definite main size equals flexContentInlineSize.
             ? FlexLayouter.ResolveFlexLineMainSizes(
                 lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
-                flexContentInlineSize, mainGap, cancellationToken, intrinsicBaseSizes)
+                flexContentInlineSize, flexContentInlineSize, mainGap, cancellationToken, intrinsicBaseSizes)
             : System.Array.Empty<double>();
 
         // Flex baseline-alignment cycle [P1] — when the container uses align-items /

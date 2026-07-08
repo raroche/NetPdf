@@ -699,6 +699,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // a `%` cross size stays 0 (auto against an indefinite parent, so auto-height flex stays
         // byte-identical).
         var containerDefiniteCrossSize = isColumn ? _contentInlineSize : blockGapBase;
+        // Corpus-fidelity (10-event-ticket runaway) — the DEFINITE main-axis size for resolving a flex
+        // item's PERCENTAGE main size (e.g. `height: 100%` in a COLUMN flex). Column main = block: definite
+        // only when the container height isn't auto (same indefinite-reference rule as blockGapBase); a
+        // column flex with AUTO height has an INDEFINITE main size, so a `%` main size must compute to auto
+        // (0 / content) per CSS 2.2 §10.5 — NOT resolve against `containerMainSize`, which during a nested
+        // MEASURE is the ~1,000,000px unbounded budget (→ a 1M-tall item → thousands of blank pages). Row
+        // main = inline: always definite for a block-level flex container.
+        var containerDefiniteMainSize = isColumn ? blockGapBase : _contentInlineSize;
         var mainGap = _rootBox.Style.ReadFlexGridGapOrZero(
             isColumn ? PropertyId.RowGap : PropertyId.ColumnGap,
             isColumn ? blockGapBase : inlineGapBase);
@@ -1096,7 +1104,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var (minSizeProperty, maxSizeProperty) = GetMinMaxMainAxisProperties(flexDirection);
         var resolvedItemMainSizes = ResolveFlexibleMainSizes(
             lines, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, mainGap, cancellationToken, intrinsicBaseSizes);
+            containerMainSize, containerDefiniteMainSize, mainGap, cancellationToken, intrinsicBaseSizes);
 
         // Non-block-pagination arc (flex item CONTENT layout) — lay out each
         // flex item's INNER content (text / nested blocks) via a nested
@@ -2185,6 +2193,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty,
         double containerMainSize,
+        // RC — the DEFINITE main size (NaN when the container's main axis is indefinite, e.g. an auto-height
+        // COLUMN flex). Used ONLY to resolve a PERCENTAGE main / min / max-size (which computes to auto
+        // against an indefinite reference); the flex free-space algorithm keeps the numeric containerMainSize.
+        double containerDefiniteMainSize,
         double mainGap,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
@@ -2197,7 +2209,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ResolveLineWithMinMaxClamping(
                 line, resolved, mainSizeProperty,
                 minSizeProperty, maxSizeProperty,
-                containerMainSize, mainGap, cancellationToken,
+                containerMainSize, containerDefiniteMainSize, mainGap, cancellationToken,
                 precomputedIntrinsicBaseSizes);
         }
 
@@ -2250,6 +2262,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty,
         double containerMainSize,
+        double containerDefiniteMainSize,
         double mainGap,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
@@ -2262,7 +2275,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             lineItems[i] = _rootBox.Children[_sortedFlexChildIndices[line.FirstItemIndex + i]];
         var lineResolved = ResolveFlexLineMainSizes(
             lineItems, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, mainGap, cancellationToken, precomputedIntrinsicBaseSizes);
+            containerMainSize, containerDefiniteMainSize, mainGap, cancellationToken, precomputedIntrinsicBaseSizes);
         for (var i = 0; i < count; i++)
             resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
     }
@@ -2284,6 +2297,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId minSizeProperty,
         PropertyId maxSizeProperty,
         double containerMainSize,
+        // RC — the DEFINITE main size (NaN when the container's main axis is indefinite, e.g. an auto-height
+        // COLUMN flex) for resolving a PERCENTAGE main / min / max-size to auto against an indefinite
+        // reference. Defaults to containerMainSize so existing callers that pass a definite size are
+        // unchanged; the auto-height column case passes NaN.
+        double containerDefiniteMainSize,
         double mainGap,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
@@ -2320,15 +2338,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             var item = lineItems[i];
 
             var hypothetical = ResolveHypotheticalMainSize(
-                item, mainSizeProperty, containerMainSize, precomputedIntrinsicBaseSizes);
+                item, mainSizeProperty, containerDefiniteMainSize, precomputedIntrinsicBaseSizes);
             hypotheticals[i] = hypothetical;
             resolved[i] = hypothetical;
 
-            // Pass the container main size so a PERCENTAGE main min/max-* resolves
-            // against it (mirrors the hypothetical main-size resolution above, which
-            // already threads containerMainSize for percentage flex-basis / main size).
+            // Pass the DEFINITE container main size so a PERCENTAGE main min/max-* resolves against it —
+            // and computes to auto (0) against an INDEFINITE reference (auto-height column flex), mirroring
+            // the hypothetical main-size resolution above. The numeric containerMainSize is still used for
+            // the free-space distribution below.
             var (min, max) = item.ResolveFlexItemMinMaxMainSize(
-                minSizeProperty, maxSizeProperty, containerMainSize);
+                minSizeProperty, maxSizeProperty, containerDefiniteMainSize);
             mins[i] = min;
             maxs[i] = max;
         }
@@ -2368,7 +2387,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
             }
 
-            var remainingFreeSpace = containerMainSize - mainGutterTotal - sumFrozenResolved - sumUnfrozenHypothetical;
+            // CSS Flexbox L1 §9.7 — flex-grow/shrink distribute the container's FREE SPACE, which only
+            // exists when the container's main size is DEFINITE. For an INDEFINITE main size (an
+            // auto-height COLUMN flex — content-sized), there is no free space to distribute: the used main
+            // size IS the sum of the items, so free space = 0 and the items stay at their hypothetical
+            // (base) sizes. Without this gate, a `flex-grow` item in an auto-height column flex that is
+            // being MEASURED (as a row-flex item, at the ~1,000,000px unbounded budget) grows to fill the
+            // budget → a ~1M-tall item → thousands of blank pages (10-event-ticket / 02-travel-quote).
+            var remainingFreeSpace = double.IsFinite(containerDefiniteMainSize)
+                ? containerMainSize - mainGutterTotal - sumFrozenResolved - sumUnfrozenHypothetical
+                : 0.0;
 
             // Distribute remainingFreeSpace among unfrozen items.
             if (remainingFreeSpace > 0 && sumFlexGrow > 0)

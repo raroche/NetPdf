@@ -4554,6 +4554,67 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             GridMeasureCache = outerLayout.GridMeasureCache,   // measurement-cache cycle
             TableMeasureCache = outerLayout.TableMeasureCache, // multi-page-allocation-churn
         };
+        using var innerResolver = new BreakResolver();
+
+        // RC-5 root-dispatch — a positioned box may ITSELF be a flex / grid / table container (a
+        // `position:absolute; display:flex` footer / brand lockup). Route it to the matching layouter
+        // so its items lay out correctly instead of stacking as block flow; the plain-block branch below
+        // stays the default. Mirrors GridLayouter.DispatchGridItemContents / NestedContentMeasurer.
+        // (Same container-root abspos-boundary caveat those sites document — the flex/grid/table
+        // branches aren't delegation boundaries — but an abspos descendant of a positioned root is
+        // still resolved by the top-level out-of-flow pass, which walks the whole box tree.)
+        var dispatchInline = Math.Max(inlineSize, 1);
+        var dispatchBlock = Math.Max(blockSize, 1);
+        if (box.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer)
+        {
+            using var flex = new FlexLayouter(
+                rootBox: box, sink: translatingSink, incomingContinuation: null,
+                diagnostics: _diagnostics, shaperResolver: _shaperResolver,
+                recordPositionedGeometry: null);
+            flex.ConfigureEmission(0, 0, dispatchInline, dispatchBlock, allowPagination: false);
+            _ = flex.AttemptLayout(
+                innerFragmentainer, ref innerLayout, innerResolver,
+                LayoutAttemptStrategy.LastResort, cancellationToken);
+            return;
+        }
+        if (box.Kind is BoxKind.GridContainer or BoxKind.InlineGridContainer)
+        {
+            using var grid = new GridLayouter(
+                rootBox: box, sink: translatingSink, incomingContinuation: null,
+                diagnostics: _diagnostics, shaperResolver: _shaperResolver);
+            grid.ConfigureEmission(0, 0, dispatchInline, dispatchBlock, allowPagination: false);
+            _ = grid.AttemptLayout(
+                innerFragmentainer, ref innerLayout, innerResolver,
+                LayoutAttemptStrategy.LastResort, cancellationToken);
+            return;
+        }
+        if (box.Kind is BoxKind.Table or BoxKind.InlineTable)
+        {
+            // Atomic, effectively-unbounded budget so a multi-row positioned table emits every row
+            // (mirrors GridLayouter's table branch); against a small box-sized budget a table taller
+            // than the box would PageComplete(TableContinuation) and silently truncate its rows.
+            var tableFragmentainer = new FragmentainerContext(
+                contentInlineSize: dispatchInline,
+                blockSize: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx);
+            var tableLayout = new LayoutContext(tableFragmentainer)
+            {
+                Diagnostics = outerLayout.Diagnostics,
+                WritingMode = outerLayout.WritingMode,
+                IsRtl = outerLayout.IsRtl,
+                GridMeasureCache = outerLayout.GridMeasureCache,
+                TableMeasureCache = outerLayout.TableMeasureCache,
+            };
+            using var table = new TableLayouter(
+                rootBox: box, sink: translatingSink, incomingContinuation: null,
+                diagnostics: _diagnostics, shaperResolver: _shaperResolver);
+            table.ConfigureEmission(0, 0, dispatchInline);
+            _ = table.MeasureContentHeight(tableFragmentainer, ref tableLayout, cancellationToken);
+            _ = table.AttemptLayout(
+                tableFragmentainer, ref tableLayout, innerResolver,
+                LayoutAttemptStrategy.LastResort, cancellationToken);
+            return;
+        }
+
         using var innerLayouter = new BlockLayouter(
             rootBox: box,
             sink: translatingSink,
@@ -4569,7 +4630,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // loop skipped the box's direct text runs. Opt in here so fixed/abspos boxes render their
             // text (index.pdf's footer text was missing on every page).
             layoutRootInlineContent: true);
-        using var innerResolver = new BreakResolver();
         // The result is intentionally not consumed: with pagination
         // suppressed (fixed) the content fully overflows in one pass; the
         // abspos path (noPaginate:false) discards it as before.
@@ -9487,7 +9547,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // emit + anchor it. Without this an inline-only block (incl. the
             // nested-content root) would render the positioned text inline AND
             // at its positioned offset (duplicate + wrong sizing).
-            if (child.Style.IsOutOfFlow()) continue;
+            // RC-5 — a child whose ComputedStyle is the SAME reference as its parent's is anonymous /
+            // shared-style content (a raw TextRun, or an anonymous inline wrapper): it is the parent's
+            // OWN text, not an independently positioned box, and `position` does not apply to it. Only
+            // skip a child that is genuinely out of flow — i.e. it carries its OWN (distinct) style. A
+            // positioned inline element (`<span style="position:absolute">`) has a distinct style and is
+            // still skipped (and anchored by the abspos/fixed pass); but the direct text of an out-of-flow
+            // inline-only ROOT (a `position:absolute/fixed` footer) shares the root's out-of-flow style —
+            // without this guard it was skipped here, silently dropping the positioned box's own text.
+            if (child.Style.IsOutOfFlow() && !ReferenceEquals(child.Style, parent.Style)) continue;
             switch (child.Kind)
             {
                 case BoxKind.TextRun:

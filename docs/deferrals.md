@@ -3809,3 +3809,35 @@ grepping the ID).
   real glyphs paint + embed deterministically with a fixed font); the DEFAULT
   facade path still depends on platform fonts until the bundled fallback (5b)
   so the determinism contract for the default path remains open.
+
+
+## inline-box-decoration-painting
+
+- **ID** — `inline-box-decoration-painting`
+- **Status** — `approximated`. The horizontal SPACING of a non-replaced inline
+  box now ships (RC-1); its background / border PAINTING is the residual.
+- **Behavior** — A non-replaced inline element (`<span>` etc.) contributes its
+  horizontal box-model chrome (`margin` / `border` / `padding` left+right) as
+  advance around its content — `BlockLayouter.CollectInlineTextRuns` attaches the
+  open/close-edge advance to the wrapper's first/last leaf run and `LineBuilder`
+  folds it into the boundary glyphs (no new break opportunity). So a badge / pill
+  / label↔value span is spaced correctly. A visible inline BORDER additionally
+  emits `LAYOUT-INLINE-UNSUPPORTED-001` (Warning) once per layout so the missing
+  paint is not silent (rule 7).
+- **Missing** — The inline box's own background-color / border / background-image
+  is not PAINTED (it would need per-line inline decoration fragments with
+  box-decoration-break handling across wraps). Vertical padding/border on an
+  inline (which does not affect line box height per CSS 2.2 §10.6.1) is also not
+  painted. Background-only inlines (no border) are not diagnosed.
+- **Trigger** — inline decoration painting is implemented (inline fragments carry
+  a painted background/border rectangle per line box).
+- **Owner files**
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` (`CollectInlineTextRuns`
+    `BoxKind.InlineBox` case — chrome + the diagnostic).
+  - `src/NetPdf.Layout/Inline/TextRun.cs`
+    (`LeadingChromeAdvancePx` / `TrailingChromeAdvancePx`).
+  - `src/NetPdf.Layout/Inline/LineBuilder.cs` (`ApplyInlineChromeAdvance`).
+  - `src/NetPdf/Rendering/FragmentPainter.cs` (future inline decoration paint).
+- **Removal condition** — a bordered / backgrounded inline paints its decoration
+  per line box; the `LAYOUT-INLINE-UNSUPPORTED-001` inline-decoration warning is
+  removed.

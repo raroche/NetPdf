@@ -45,6 +45,7 @@ public sealed class DeferralsParityTests
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
         "inline-atomic-boxes",
+        "inline-box-decoration-painting",
         "table-auto-fixed-spans-borders",
         "multicol-balancing-pagination",
         "float-continuation-propagation",

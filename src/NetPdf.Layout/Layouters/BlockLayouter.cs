@@ -369,6 +369,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// The opt-in keeps the blast radius to exactly the flex item case.</summary>
     private readonly bool _layoutRootInlineContent;
 
+    /// <summary>RC-1 — set once this layouter has emitted the "inline box border/background is not
+    /// painted" diagnostic, so a document with many bordered/backgrounded inlines surfaces the rule-7
+    /// signal exactly once per real layout rather than once per span (and never during a speculative
+    /// measure). Inline decoration PAINTING (as opposed to the now-honored horizontal spacing) is a
+    /// documented residual — see docs/deferrals.md.</summary>
+    private bool _inlineDecorationDropDiagnosed;
+
     /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
     /// when <see langword="true"/>, the inline-pass through
     /// <c>InlineLayouter.LayoutPerRun</c> downgrades
@@ -9612,12 +9619,75 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                     break;
                 case BoxKind.InlineBox:
-                case BoxKind.AnonymousInline:
+                {
                     // Recurse — nested inline wrappers carry styled
                     // text leaves underneath. The TextRun's style is
                     // the LEAF's style (cascade-resolved), so the
                     // wrapper's own style doesn't need separate
                     // propagation at the LayoutPerRun seam.
+                    //
+                    // RC-1 — a non-replaced inline element ALSO contributes its horizontal box-model
+                    // chrome (margin/border/padding-left+right, CSS 2.2 §8.3/§8.4) as advance around its
+                    // content — previously dropped, so `<span style="margin-right:28px">` collapsed to
+                    // zero spacing. Attach the OPEN-edge advance to the FIRST leaf run the recursion adds
+                    // and the CLOSE-edge advance to the LAST; nested wrappers accumulate. LineBuilder folds
+                    // these into the boundary glyphs (no new break opportunity). Percentages resolve
+                    // against the containing inline size (availInlineContentSize). An empty wrapper (no
+                    // leaf run) contributes nothing — a documented residual.
+                    var firstRunIdx = textRuns.Count;
+                    skipCount += CollectInlineTextRuns(
+                        child, textRuns, parentBlockStyle, availInlineContentSize,
+                        atomicContents, cancellationToken);
+                    if (textRuns.Count > firstRunIdx)
+                    {
+                        var st = child.Style;
+                        var leading =
+                            st.ReadLengthOrPercentPx(PropertyId.MarginLeft, availInlineContentSize)
+                            + st.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                            + st.ReadLengthOrPercentPx(PropertyId.PaddingLeft, availInlineContentSize);
+                        var trailing =
+                            st.ReadLengthOrPercentPx(PropertyId.MarginRight, availInlineContentSize)
+                            + st.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+                            + st.ReadLengthOrPercentPx(PropertyId.PaddingRight, availInlineContentSize);
+                        if (leading != 0)
+                        {
+                            var f = textRuns[firstRunIdx];
+                            textRuns[firstRunIdx] =
+                                f with { LeadingChromeAdvancePx = f.LeadingChromeAdvancePx + leading };
+                        }
+                        if (trailing != 0)
+                        {
+                            var lastIdx = textRuns.Count - 1;
+                            var l = textRuns[lastIdx];
+                            textRuns[lastIdx] =
+                                l with { TrailingChromeAdvancePx = l.TrailingChromeAdvancePx + trailing };
+                        }
+                        // RC-1 (rule 7) — the wrapper's horizontal SPACING is now honored, but a
+                        // non-replaced inline's background / border is not yet PAINTED (a separate
+                        // line-fragment feature). Surface it once per real layout so a visible bordered
+                        // inline (a badge / pill) isn't dropped SILENTLY. Style-gated border-width read.
+                        if (!_inlineDecorationDropDiagnosed
+                            && _measurePurpose == MeasurePurpose.Layout
+                            && (st.ReadLengthPxOrZero(PropertyId.BorderTopWidth) > 0
+                                || st.ReadLengthPxOrZero(PropertyId.BorderRightWidth) > 0
+                                || st.ReadLengthPxOrZero(PropertyId.BorderBottomWidth) > 0
+                                || st.ReadLengthPxOrZero(PropertyId.BorderLeftWidth) > 0))
+                        {
+                            _inlineDecorationDropDiagnosed = true;
+                            OptimizingBreakResolver.SafeEmit(_diagnostics, new PaginateDiagnostic(
+                                PaginateDiagnosticCodes.LayoutInlineUnsupported001,
+                                "BlockLayouter: a non-replaced inline element's border/background is not "
+                                + "painted (its horizontal margin/border/padding spacing IS now honored). "
+                                + "Inline-box decoration painting is a documented residual "
+                                + "(docs/deferrals.md); wrap the content in a block/inline-block to paint it.",
+                                PaginateDiagnosticSeverity.Warning));
+                        }
+                    }
+                    break;
+                }
+                case BoxKind.AnonymousInline:
+                    // An anonymous inline wrapper reuses the parent's style by reference and paints
+                    // nothing, so it has NO author chrome to contribute — just recurse.
                     skipCount += CollectInlineTextRuns(
                         child, textRuns, parentBlockStyle, availInlineContentSize,
                         atomicContents, cancellationToken);

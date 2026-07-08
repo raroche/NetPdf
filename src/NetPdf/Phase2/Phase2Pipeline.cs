@@ -198,6 +198,11 @@ internal static class Phase2Pipeline
     private static ImmutableArray<CssStylesheet> ExtractStylesheets(IDocument document)
     {
         var output = ImmutableArray.CreateBuilder<CssStylesheet>();
+        // The engine's built-in user-agent stylesheet always comes first (RC-UA). It sits at the
+        // CssStylesheetOrigin.UserAgent origin (the lowest), so every author rule overrides it; it
+        // supplies heading sizes/weights/margins, b/strong/th bold, em/i italic, list indentation,
+        // th centering, etc. that were otherwise missing on un-styled HTML.
+        output.Add(UserAgentStylesheet.Instance);
         var order = 0;
         foreach (var rawSheet in document.StyleSheets.OfType<ICssStyleSheet>())
         {

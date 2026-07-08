@@ -1138,7 +1138,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,
             mainSizeProperty, crossSizeProperty, containerCrossSize,
-            containerDefiniteCrossSize, isWrapping,
+            containerDefiniteCrossSize, containerDefiniteMainSize, isWrapping,
             fragmentainer, layout.WritingMode, layout.IsRtl,
             effectiveDiagnostics, contentMeasureBudget, cancellationToken);
 
@@ -3366,6 +3366,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         PropertyId crossSizeProperty,
         double containerCrossSize,
         double containerDefiniteCrossSize,
+        double containerDefiniteMainSize,
         bool isWrapping,
         FragmentainerContext fragmentainer,
         WritingMode writingMode,
@@ -3447,6 +3448,40 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     var crossBorderBox = item.Style.CrossBorderBoxSizePx(
                         crossSizeProperty, containerDefiniteCrossSize);
                     itemBlockBudget = Math.Max(0, crossBorderBox - item.Style.BlockBorderPaddingPx());
+                }
+                // F4 (10-event-ticket barcode) — the COLUMN analogue of the row fix above: a column
+                // item's BLOCK axis IS its MAIN axis. When the main size is DEFINITE the item's used
+                // main size is already resolved in resolvedItemMainSizes (§9.7 flexing + min/max
+                // clamping, a BORDER-box size), and it — not the page budget — is the percentage-height
+                // base for the item's children (CSS 2.2 §10.5; the flex item is their containing block).
+                // Pre-fix a definite-height column item (`.barcode { height: 58px }`) still handed its
+                // children the page/fragmentainer budget, so a `height: 100%` bar resolved against the
+                // A4 content box (751pt instead of 43.5pt). Definite = NOT content-determined
+                // (flex-basis auto/content with auto height content-sizes → resolvedItemMainSizes is
+                // stale 0 here, filled AFTER the measure at :3465–3475, so keep the page budget) AND
+                // NOT a percentage main size / flex-basis against an INDEFINITE container main (a %
+                // against indefinite is auto per css-sizing-3 §5.1.1 → keep the page budget).
+                var mainSlot = item.Style.Get(mainSizeProperty);
+                var mainIsPercentAgainstIndefinite =
+                    (mainSlot.Tag == ComputedSlotTag.Percentage
+                     || item.Style.ReadFlexBasis().Kind == FlexBasisKind.Percentage)
+                    && !double.IsFinite(containerDefiniteMainSize);
+                // Definite = an explicit length / definite flex-basis (resolvedItemMainSizes holds the
+                // §9.7-flexed used main size — an explicit `height` + `flex-grow` in a definite-height
+                // column grows correctly here). NOT content-determined items (flex-basis auto/content +
+                // auto height): their resolvedItemMainSizes is either still 0 (auto-height container —
+                // content-sizes AFTER this measure at :3465) or a page-sized hypothetical (their base
+                // size is measured at the page budget), so it is NOT a usable %-base here — keep the
+                // page budget. (Growing a `flex:1 1 auto` auto-height item to its DEFINITE-container
+                // flexed height as the %-base needs an auto-basis column base size that isn't page-
+                // sized — a separate flex base-sizing follow-up, review [P1].) Percentage main / basis
+                // against an indefinite container is auto → page budget.
+                var definiteMain = !IsMainSizeContentDetermined(item, mainSizeProperty)
+                    && !mainIsPercentAgainstIndefinite;
+                if (isColumn && definiteMain)
+                {
+                    itemBlockBudget = Math.Max(
+                        0, resolvedItemMainSizes[itemIdx] - item.Style.BlockBorderPaddingPx());
                 }
 
                 var buffer = LayoutItemContentIntoBuffer(

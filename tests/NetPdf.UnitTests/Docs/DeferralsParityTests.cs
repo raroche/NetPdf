@@ -47,6 +47,7 @@ public sealed class DeferralsParityTests
         "inline-atomic-boxes",
         "inline-box-decoration-painting",
         "table-auto-fixed-spans-borders",
+        "table-cell-vertical-align-baseline",
         "multicol-balancing-pagination",
         "float-continuation-propagation",
         "flex-layouter-features",

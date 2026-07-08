@@ -550,6 +550,41 @@ grepping the ID).
 
 
 
+## table-cell-vertical-align-baseline
+
+- **ID** — `table-cell-vertical-align-baseline`
+- **Status** — `approximated`. `top` / `middle` / `bottom` are exact; the
+  WHATWG `middle` default is applied; only the `baseline` distribution is
+  approximated.
+- **Behavior** — `TableLayouter.ResolveUsedCellVerticalAlign` +
+  `CellContentAlignmentShift` implement CSS 2.2 §17.5.3 by distributing a
+  cell's free block space: `top` → 0, `middle` → half, `bottom` → all. A cell
+  with no author `vertical-align` resolves to `middle` (the UA rule
+  `table, thead, tbody, tfoot, tr { vertical-align: middle }` + a code-side
+  walk cell → row → row-group → table). `baseline` — and the non-core
+  keywords `sub` / `super` / `text-top` / `text-bottom` and any length /
+  percentage — are all treated as the walk default (`middle`), so no cell
+  currently gets a true first-baseline-aligned distribution.
+- **Missing** — the §17.5.3 `baseline` mode: aligning each baseline-aligned
+  cell's first in-flow line-box baseline to the row's max baseline (and growing
+  the row for the resulting shifts). The table content sink
+  (`TableLayouter.MeasuringFragmentSink`) tracks only the content block extent,
+  not a `FirstBaselineFromOrigin`, so the per-cell first baseline needed for the
+  row-baseline max is not available. `vertical-align: baseline` explicitly set
+  on a cell is therefore rendered as `middle`, not baseline.
+- **Trigger** — a corpus/customer case where per-cell baseline alignment across
+  a mixed-font row is visibly required, or a conformance case asserting it.
+- **Owner files** — `src/NetPdf.Layout/Layouters/TableLayouter.cs`
+  (`MeasuringFragmentSink` needs first-baseline tracking mirroring
+  `BufferingMeasureSink.FirstBaselineFromOrigin`; `CellContentAlignmentShift`
+  gains a `baseline` branch that shifts by `rowBaseline − cellBaseline` and
+  grows the row height for it before offsets settle).
+- **Removal condition** — `baseline` cells align their first baselines to the
+  row baseline (with row growth) and a unit test asserts a smaller-font cell
+  shifts down so its first baseline coincides with a larger-font sibling's.
+
+
+
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`

@@ -7,5 +7,3 @@ Root
         TextRun @element=p "item description"
         InlineBox @element=p ::after
           TextRun @element=p "."
-      AnonymousBlock
-        TextRun @element=body "\n"

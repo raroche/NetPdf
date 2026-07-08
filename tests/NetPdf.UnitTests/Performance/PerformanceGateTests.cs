@@ -59,7 +59,10 @@ public sealed class PerformanceGateTests
     [Trait("Category", "Performance")]
     public void Report_20_page_renders_within_1500ms_p50()
     {
-        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Report(sections: 22, rowsPerSection: 18),
+        // rowsPerSection recalibrated 18 → 34 after RC-9 (WP-1): the cell double-padding fix removed the
+        // ~1.5–2× row-height inflation, so the old 22×18 fixture now lays out in ~11 pages. 22×34 restores
+        // the intended ~22-page (exit-criterion-7) workload against the corrected, un-inflated row height.
+        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Report(sections: 22, rowsPerSection: 34),
             warmup: 2, iters: 7);
         // Bound BOTH sides: the deterministic synthetic fixture lands at a fixed page count, so a regression
         // that duplicates pages or over-fragments (→ 30-40 pages) must fail even if it stays under 1.5 s —
@@ -242,7 +245,8 @@ internal static class PerfFixtures
     }
 
     /// <summary>A paginating multi-section tabular report (each section a heading + a small table; the
-    /// tables fragment across pages). 22 sections × 18 rows ≈ 22 pages.</summary>
+    /// tables fragment across pages). 22 sections × 34 rows ≈ 22 pages with correct (un-inflated) row
+    /// heights — see the rowsPerSection note at the call site (RC-9 cell double-padding fix).</summary>
     internal static string Report(int sections, int rowsPerSection)
     {
         var sb = new StringBuilder("<!DOCTYPE html><html><head><style>"

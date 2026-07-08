@@ -7328,6 +7328,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(
         Box block, double containingInlinePx, MeasurePurpose measurePurpose)
     {
+        // An AnonymousBlock wrapper (whitespace / block-in-inline fixup, or the inline-only
+        // table-cell wrapper — BoxBuilder.FixupAnonymousBlocks) REUSES its real parent's
+        // ComputedStyle by reference, so reading margin / border / padding / width off block.Style
+        // here would charge the PARENT's own box model to a box that PAINTS none — double-counting
+        // the parent's chrome. This is the RC-9 sub-bug: a `<td>` with inline-only content wraps
+        // its text in an AnonymousBlock carrying the cell's style, so the cell's padding was emitted
+        // TWICE (once on the cell, once on the wrapper) → inflated row heights. The painter skips
+        // anonymous-box decorations and the measure pass already zeroes this chrome (see the
+        // AnonymousBlock guard in the measure recursion ~L9894); mirror it here so the EMIT read and
+        // the measure agree. The wrapper's inherited line-height still governs its wrapped text.
+        if (block.Kind == BoxKind.AnonymousBlock)
+        {
+            return new(
+                MarginInlineStart: 0, MarginInlineEnd: 0, MarginBlockStart: 0, MarginBlockEnd: 0,
+                BorderInlineStart: 0, BorderInlineEnd: 0, BorderBlockStart: 0, BorderBlockEnd: 0,
+                PaddingInlineStart: 0, PaddingInlineEnd: 0, PaddingBlockStart: 0, PaddingBlockEnd: 0,
+                DeclaredWidthPx: 0,
+                LineHeightOverridePx: block.Style.ReadLineHeightPx(
+                    block.Style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16)));
+        }
+
         // Rewrite % padding to used px FIRST (body-percent cycle) — TextPainter's content-origin
         // inset reads the same slots at paint time. Only a real layout PERSISTS; a dropped measure
         // leaves the slot Percentage so the speculative containing size never reaches the shared

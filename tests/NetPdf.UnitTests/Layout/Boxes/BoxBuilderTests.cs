@@ -344,6 +344,77 @@ public sealed class BoxBuilderTests
     }
 
     // ============================================================
+    // RC-9 — collapsible inter-tag whitespace generates NO box
+    // (CSS 2.1 §9.2.2.1). Pretty-printed HTML must not synthesize
+    // phantom AnonymousBlocks between block siblings.
+    // ============================================================
+
+    [Fact]
+    public async Task Whitespace_only_run_between_block_siblings_generates_no_anonymous_block()
+    {
+        // Pretty-printed: newline + indent between each pair of <p>. Those
+        // collapsible-whitespace runs must NOT become AnonymousBlocks.
+        var root = await BuildAsync("<div>\n  <p>a</p>\n  <p>b</p>\n  <p>c</p>\n</div>");
+        var div = FindFirst(root, "div")!;
+        Assert.Equal(3, div.Children.Count);
+        foreach (var child in div.Children)
+        {
+            Assert.Equal(BoxKind.BlockContainer, child.Kind);
+            Assert.Equal("p", child.SourceElement!.LocalName);
+        }
+    }
+
+    [Fact]
+    public async Task Pretty_printed_and_tight_markup_produce_the_same_box_tree()
+    {
+        var pretty = await BuildAsync("<div>\n  <p>a</p>\n  <p>b</p>\n</div>");
+        var tight = await BuildAsync("<div><p>a</p><p>b</p></div>");
+        var prettyDiv = FindFirst(pretty, "div")!;
+        var tightDiv = FindFirst(tight, "div")!;
+        Assert.Equal(tightDiv.Children.Count, prettyDiv.Children.Count);
+        Assert.Equal(2, prettyDiv.Children.Count);
+    }
+
+    [Fact]
+    public async Task Whitespace_run_is_preserved_under_white_space_pre()
+    {
+        // white-space: pre preserves the inter-tag whitespace, so the run
+        // between the blocks DOES generate an anonymous block.
+        var root = await BuildAsync(
+            "<div>\n  <p>a</p>\n  <p>b</p>\n</div>",
+            "div { white-space: pre }");
+        var div = FindFirst(root, "div")!;
+        Assert.Contains(div.Children, c => c.Kind == BoxKind.AnonymousBlock);
+    }
+
+    [Fact]
+    public async Task Run_with_inline_elements_and_spaces_is_preserved_between_blocks()
+    {
+        // `<span>a</span> <span>b</span>` between two blocks is NOT
+        // whitespace-only (it carries inline element boxes + a significant
+        // space), so it must be wrapped, not dropped.
+        var root = await BuildAsync(
+            "<div><p>x</p><span>a</span> <span>b</span><p>y</p></div>");
+        var div = FindFirst(root, "div")!;
+        var wrapper = div.Children.Single(c => c.Kind == BoxKind.AnonymousBlock);
+        // The wrapper keeps both spans (and the separating space run).
+        Assert.Contains(wrapper.Children, c => c.SourceElement?.LocalName == "span");
+        Assert.True(wrapper.Children.Count >= 2);
+    }
+
+    [Fact]
+    public async Task Inline_only_table_cell_still_wraps_its_text_after_whitespace_fix()
+    {
+        // Regression guard: the RC-9 whitespace drop must not remove a cell's
+        // real text. `<td>Widget</td>` content stays wrapped in an anonymous
+        // block (CSS Tables L3 §11.5.3 cell content is block-level).
+        var root = await BuildAsync("<table><tr><td>Widget</td></tr></table>");
+        var cell = FindFirst(root, "td")!;
+        var anon = cell.Children.Single(c => c.Kind == BoxKind.AnonymousBlock);
+        Assert.Equal("Widget", anon.Children[0].Text);
+    }
+
+    // ============================================================
     // Style sharing + box-ownership
     // ============================================================
 

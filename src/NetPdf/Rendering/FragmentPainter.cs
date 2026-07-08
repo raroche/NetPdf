@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Collections.Generic;
+using System.Diagnostics;
 using SkiaSharp;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
@@ -161,6 +162,14 @@ internal static class FragmentPainter
             var topPx = contentOriginTopPx + fragment.BlockOffset;
             var widthPx = fragment.InlineSize;
             var heightPx = fragment.BlockSize;
+            // RC-10 hardening — a grossly NEGATIVE fragment size is always an upstream coordinate bug
+            // (a repeated table-header cell once sized itself from a shifted prefix-array boundary and
+            // came out at −880px), and the plain `continue` below made that silent end-to-end. A zero /
+            // hairline-negative size is legitimate (empty box, float rounding) and stays silent; the
+            // −0.5px floor keeps this from tripping on rounding while catching real geometry corruption.
+            Debug.Assert(widthPx >= -0.5 && heightPx >= -0.5,
+                $"FragmentPainter: grossly negative fragment size ({widthPx:0.##}x{heightPx:0.##}) "
+                + $"for {fragment.Box.Kind} — upstream coordinate bug (see RC-10).");
             if (widthPx <= 0 || heightPx <= 0) continue;
 
             // box-decoration-break: slice (inline-only line splitting) — when this fragment is a block-axis

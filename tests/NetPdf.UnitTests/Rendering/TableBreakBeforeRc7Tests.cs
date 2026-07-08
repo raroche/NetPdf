@@ -1,7 +1,6 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
-using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using NetPdf;
@@ -23,7 +22,7 @@ public sealed class TableBreakBeforeRc7Tests
     // Count text-position operators (coordinate-terminated `<x> <y> Td`) — a robust proxy for painted
     // text runs that can't match stray bytes in the compressed font stream.
     private static int TextRuns(byte[] pdf) =>
-        Regex.Matches(Encoding.Latin1.GetString(pdf), @"[\d.]+ [\d.]+ Td").Count;
+        Regex.Matches(Encoding.Latin1.GetString(pdf), @"-?\d+(?:\.\d+)? -?\d+(?:\.\d+)? Td").Count;
 
     private static PdfRenderResult Render(int cardHeightPx, int footerRows)
     {

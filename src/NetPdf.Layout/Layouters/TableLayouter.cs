@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using NetPdf.Css.ComputedValues;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
@@ -2363,6 +2365,56 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         return LayoutAttemptResult.AllDone(cost: 0);
     }
 
+    /// <summary>CSS 2.2 §17.5.3 + WHATWG HTML Rendering "Tables" — the USED <c>vertical-align</c> of a
+    /// table cell as a <see cref="VerticalAlignResolver"/> keyword index. <c>vertical-align</c> is not
+    /// inherited in the cascade (and the CSS-wide <c>inherit</c> keyword is not plumbed for it), so the
+    /// WHATWG default is emulated by a code-side walk: return the FIRST explicit
+    /// <c>top</c>/<c>middle</c>/<c>bottom</c> found walking cell → row → row-group → table, else
+    /// <c>middle</c>. The UA rule <c>table, thead, tbody, tfoot, tr { vertical-align: middle }</c> puts a
+    /// <c>middle</c> on the row so an author <c>table { vertical-align: top }</c> is correctly shadowed at
+    /// the row (browser behavior), while an author <c>tr</c>/<c>td</c> value (higher origin) still wins.
+    /// The other §17.5.3 values (<c>baseline</c>, <c>sub</c>, <c>super</c>, <c>text-top</c>,
+    /// <c>text-bottom</c>, length/percentage) are all skipped → they fall to the walk default; a cell can
+    /// therefore not currently resolve to a true <c>baseline</c> distribution (indistinguishable from the
+    /// unset initial value at the slot level — a documented approximation, see
+    /// <c>docs/deferrals.md#table-cell-vertical-align-baseline</c>).</summary>
+    private static int ResolveUsedCellVerticalAlign(Box cell)
+    {
+        for (Box? b = cell; b is not null; b = b.Parent)
+        {
+            var slot = b.Style.Get(PropertyId.VerticalAlign);
+            if (slot.Tag == ComputedSlotTag.Keyword)
+            {
+                var k = slot.AsKeyword();
+                if (k is VerticalAlignResolver.Top or VerticalAlignResolver.Middle
+                    or VerticalAlignResolver.Bottom)
+                    return k;
+            }
+            if (b.Kind is BoxKind.Table or BoxKind.InlineTable) break;   // don't walk past the table
+        }
+        return VerticalAlignResolver.Middle;   // WHATWG default
+    }
+
+    /// <summary>CSS 2.2 §17.5.3 — the block-axis shift applied to a cell's buffered CONTENT so it aligns
+    /// within the cell's (possibly rowspan-) spanned border box of height <paramref name="cellSpanHeight"/>.
+    /// <c>top</c> — and <c>baseline</c>, APPROXIMATED as top because the table content sink tracks no
+    /// first-baseline (see <c>docs/deferrals.md#table-cell-vertical-align-baseline</c>) — yield 0;
+    /// <c>middle</c> half the free space; <c>bottom</c> all of it. Free space is the spanned height minus
+    /// the cell's natural border-box height (<see cref="CellPlacement.ContentBlockExtent"/>, which already
+    /// includes the cell's own border+padding). Only the CONTENT moves — the cell's border/background
+    /// fragment keeps the full spanned height (browser behavior: align content within the cell box, not the
+    /// box within the row), so <c>FragmentPainter</c> stays untouched. A uniform single-line row has
+    /// free == 0 for every cell → 0 shift → byte-identical.</summary>
+    private static double CellContentAlignmentShift(in CellPlacement placement, double cellSpanHeight)
+    {
+        var valign = ResolveUsedCellVerticalAlign(placement.Cell);
+        if (valign is not VerticalAlignResolver.Middle and not VerticalAlignResolver.Bottom)
+            return 0.0;   // top + baseline(≈top)
+        var free = cellSpanHeight - placement.ContentBlockExtent;
+        if (!(free > 0.0)) return 0.0;
+        return valign == VerticalAlignResolver.Middle ? free / 2.0 : free;
+    }
+
     /// <summary>Per Phase 3 Task 13 cycle 1 — emit the row + cell +
     /// content fragments for the row window
     /// <c>[windowStart, windowEndExclusive)</c>. Walks the three
@@ -2460,7 +2512,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             for (var i = 0; i < bucket.Count; i++)
             {
                 var placement = bucket[i];
-                placement.ContentBuffer.FlushTo(_sink, rowBlockOffsets[r]);
+                // CSS 2.2 §17.5.3 — shift the content down to align it within the cell's spanned
+                // border box (WHATWG default `middle`; author top/middle/bottom honored).
+                var cellSpanHeight =
+                    rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
+                    - rowEndBlockOffset[placement.OriginRow];
+                var valignShift = CellContentAlignmentShift(placement, cellSpanHeight);
+                placement.ContentBuffer.FlushTo(_sink, rowBlockOffsets[r] + valignShift);
                 if (diagSink is not null)
                 {
                     placement.DiagnosticsBuffer?.FlushTo(diagSink);
@@ -2656,7 +2714,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             for (var i = 0; i < bucket.Count; i++)
             {
                 var placement = bucket[i];
-                placement.ContentBuffer.FlushKeepingBuffer(_sink, rowBlockOffsets[r]);
+                // CSS 2.2 §17.5.3 — repeated-header cell content aligns within its spanned box too.
+                // Match Phase B's RC-10 span-height (SUM of row heights, immune to resume shifts).
+                var cellSpanHeight = 0.0;
+                for (var rr = placement.OriginRow; rr < placement.OriginRow + placement.RowSpan; rr++)
+                    cellSpanHeight += rows[rr].RowHeight;
+                var valignShift = CellContentAlignmentShift(placement, cellSpanHeight);
+                placement.ContentBuffer.FlushKeepingBuffer(_sink, rowBlockOffsets[r] + valignShift);
                 if (shouldFlushDiagnostics)
                 {
                     placement.DiagnosticsBuffer?.FlushTo(flushDiagnostics!);
@@ -2744,7 +2808,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             for (var i = 0; i < bucket.Count; i++)
             {
                 var placement = bucket[i];
-                placement.ContentBuffer.FlushKeepingBuffer(_sink, rowBlockOffsets[r]);
+                // CSS 2.2 §17.5.3 — repeated-footer cell content aligns within its spanned box.
+                var cellSpanHeight =
+                    rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
+                    - rowEndBlockOffset[placement.OriginRow];
+                var valignShift = CellContentAlignmentShift(placement, cellSpanHeight);
+                placement.ContentBuffer.FlushKeepingBuffer(_sink, rowBlockOffsets[r] + valignShift);
                 if (shouldFlushDiagnostics)
                 {
                     placement.DiagnosticsBuffer?.FlushTo(flushDiagnostics!);

@@ -59,6 +59,7 @@ internal static class UserAgentStylesheet
         caption { text-align: center; }
         th { font-weight: bold; text-align: center; }
         td, th { padding: 1px; }
+        table, thead, tbody, tfoot, tr { vertical-align: middle; }
         hr { border-width: 1px; border-style: solid; margin-top: 0.5em; margin-bottom: 0.5em; }
         """;
 

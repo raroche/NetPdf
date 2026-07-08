@@ -2370,6 +2370,14 @@ internal static class LineBuilder
         for (var i = 0; i < text.Length; i++)
         {
             var c = text[i];
+            // Apostrophes — straight ' (U+0027) and the typographic ' (U+2019) — are INTRA-word in
+            // contractions / possessives (don't, Roland's) per CSS Text L3 §2.1.1 (a "word" is a UAX #29
+            // word). Treat them as TRANSPARENT: neither starting a new word (so "don't" → "Don't", not
+            // "Don'T") nor consuming a pending word-start (so a leading "'twas" still yields "'Twas").
+            if (c is '\u0027' or '\u2019')
+            {
+                continue;
+            }
             if (char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsSeparator(c) || char.IsSymbol(c))
             {
                 atWordStart = true;

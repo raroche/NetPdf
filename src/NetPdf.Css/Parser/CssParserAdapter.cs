@@ -1097,14 +1097,23 @@ internal static class CssParserAdapter
         foreach (var property in properties)
         {
             if (property is null || string.IsNullOrEmpty(property.Name)) continue;
-            // RC-13 — skip EMPTY-valued declarations. AngleSharp expands a shorthand whose value is a
-            // `var()` reference (e.g. `background: var(--tint)`) into its ~10 longhands with EMPTY-STRING
-            // values (it can't resolve the custom property at parse time). Forwarding those as real
-            // declarations let a later empty `background-color: ""` WIN the cascade over the
-            // preprocessor-recovered `background-color: var(--tint)`, painting the element transparent
-            // (the missing zebra stripes in 07/08). An empty declaration value is invalid CSS and must
-            // never enter the cascade; the recovery path carries the real `var()` value.
-            if (string.IsNullOrWhiteSpace(property.Value)) continue;
+            // RC-13 — skip EMPTY-valued declarations, but ONLY for standard properties. AngleSharp expands
+            // a shorthand whose value is a `var()` reference (e.g. `background: var(--tint)`) into its ~10
+            // longhands with EMPTY-STRING values (it can't resolve the custom property at parse time).
+            // Forwarding those as real declarations let a later empty `background-color: ""` WIN the cascade
+            // over the preprocessor-recovered `background-color: var(--tint)`, painting the element
+            // transparent (the missing zebra stripes in 07/08). An empty STANDARD declaration value is
+            // invalid CSS and must never enter the cascade; the recovery path carries the real `var()`
+            // value. A CUSTOM property (`--x`) is EXEMPT: an empty token stream (`--x: ;`) is VALID and
+            // meaningful — dropping it before VarResolver collects it would change `var(--x, fallback)`
+            // semantics (wrongly falling back / removing a theme token).
+            // Scope the empty-value drop to STANDARD properties. Today AngleSharp already omits an empty
+            // custom property (`--x: ;`) upstream, so this branch only ever sees the empty standard
+            // longhands the shorthand-var() expansion produces — but guarding it keeps the drop from ever
+            // removing an authored custom-property declaration (whose empty token stream is valid and must
+            // reach VarResolver) should that upstream behavior change.
+            var isCustomProperty = property.Name.StartsWith("--", StringComparison.Ordinal);
+            if (!isCustomProperty && string.IsNullOrWhiteSpace(property.Value)) continue;
             output.Add(new CssDeclaration(
                 Property: property.Name,
                 Value: new CssValue(property.Value ?? string.Empty),

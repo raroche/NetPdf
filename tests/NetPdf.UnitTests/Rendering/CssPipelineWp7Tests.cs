@@ -68,4 +68,15 @@ public sealed class CssPipelineWp7Tests
     {
         Assert.True(Para("text-transform:capitalize", "hello world").SequenceEqual(Para("", "Hello World")));
     }
+
+    [Fact]
+    public void Text_transform_capitalize_keeps_apostrophe_words_intact()
+    {
+        // Apostrophes are intra-word (CSS Text L3 §2.1.1): "don't" → "Don't", NOT "Don'T"; and a
+        // possessive "roland's" → "Roland's". Before the fix the apostrophe reset the word-start flag
+        // so the letter after it was wrongly capitalized.
+        Assert.True(Para("text-transform:capitalize", "don't worry").SequenceEqual(Para("", "Don't Worry")));
+        Assert.False(Para("text-transform:capitalize", "don't worry").SequenceEqual(Para("", "Don'T Worry")));
+        Assert.True(Para("text-transform:capitalize", "roland's cat").SequenceEqual(Para("", "Roland's Cat")));
+    }
 }

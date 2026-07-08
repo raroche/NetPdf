@@ -346,9 +346,13 @@ internal static class LineBuilder
         // Rebuild the concat text. Cheap O(N); avoids needing
         // Itemize to plumb it back to the caller (which would break
         // the existing Itemize signature + tests).
+        // Per-source-run start offset in the concat buffer (RC-1 — used to place a wrapper's
+        // open/close-edge chrome on the FIRST/LAST itemized run covering that source leaf).
+        var sourceStart = new int[sourceTextRuns.Count];
         var concatTotal = 0;
         for (var i = 0; i < sourceTextRuns.Count; i++)
         {
+            sourceStart[i] = concatTotal;
             concatTotal += sourceTextRuns[i].Text.Length;
         }
         var concatBuf = new StringBuilder(concatTotal);
@@ -425,6 +429,11 @@ internal static class LineBuilder
                 direction, runScript, language,
                 cancellationToken);
 
+            // RC-1 — fold an enclosing non-replaced InlineBox's open/close-edge chrome
+            // (margin/border/padding-left/right, set by BlockLayouter.CollectInlineTextRuns) into this
+            // run's boundary glyphs BEFORE the advance sum, so the wrap/paint pen already carries it.
+            ApplyInlineChromeAdvance(glyphs, run, sourceTextRuns[run.SourceTextRunIndex], sourceStart);
+
             // Cycle 2 — sum XAdvance for fast wrap-pass measurement.
             // HarfBuzz XAdvance is in CSS px (HbShaper handles font-
             // units → pixels conversion at construction time).
@@ -437,6 +446,51 @@ internal static class LineBuilder
             output[runIdx] = new ShapedRun(run, glyphs, totalAdvance);
         }
         return output;
+    }
+
+    /// <summary>RC-1 — fold an enclosing non-replaced <c>InlineBox</c>'s horizontal box-model chrome into
+    /// a shaped run's boundary glyphs. <paramref name="src"/> carries the OPEN-edge advance
+    /// (<c>margin+border+padding-left</c>) on its <see cref="TextRun.LeadingChromeAdvancePx"/> and the
+    /// CLOSE-edge advance on <see cref="TextRun.TrailingChromeAdvancePx"/> (both accumulated across nested
+    /// wrappers by <c>BlockLayouter.CollectInlineTextRuns</c>). Leading lands only on the FIRST itemized
+    /// run covering the source leaf (its glyph 0 is shifted right by that much AND its advance grows, so
+    /// the following text is pushed right without a break opportunity); trailing lands only on the LAST
+    /// itemized run's last glyph. A source leaf that itemizes into ONE run (the common case) gets both.
+    /// <para>Scope: LTR runs only. RTL inline chrome is a documented deferral (it needs the visual-order
+    /// mirror — leading maps to the right edge); it is rare and would otherwise place the advance on the
+    /// wrong side, so an RTL run is left byte-identical for now.</para></summary>
+    private static void ApplyInlineChromeAdvance(
+        ShapedGlyph[] glyphs, ItemizedRun run, TextRun src, int[] sourceStart)
+    {
+        if (src.LeadingChromeAdvancePx == 0 && src.TrailingChromeAdvancePx == 0) return;
+        if (glyphs.Length == 0 || run.IsRtl) return;   // nothing to attach to / RTL deferred
+
+        var srcStart = sourceStart[run.SourceTextRunIndex];
+        var srcEnd = srcStart + src.Text.Length;
+
+        if (run.Utf16Start == srcStart && src.LeadingChromeAdvancePx != 0)
+        {
+            var g0 = glyphs[0];
+            // Insert `leading` px of blank space before the first glyph: draw it `leading` to the right
+            // (XOffset) AND move the pen past it (XAdvance) so every following glyph shifts right in step.
+            // A large NEGATIVE margin must not drive the glyph's XAdvance below 0 (Wrap asserts it), so
+            // clamp the applied amount to -XAdvance and apply that SAME amount to XOffset too — otherwise
+            // the glyph would shift left by the full (unclamped) negative while the pen stayed put,
+            // desynchronising its ink from the following glyphs' positions (Copilot review, #295).
+            var applied = Math.Max((float)src.LeadingChromeAdvancePx, -g0.XAdvance);
+            glyphs[0] = g0 with
+            {
+                XOffset = g0.XOffset + applied,
+                XAdvance = g0.XAdvance + applied,
+            };
+        }
+        if (run.Utf16Start + run.Utf16Length == srcEnd && src.TrailingChromeAdvancePx != 0)
+        {
+            var gl = glyphs[^1];
+            // Same non-negative clamp (no XOffset on the trailing edge — it's pure pen advance).
+            var applied = Math.Max((float)src.TrailingChromeAdvancePx, -gl.XAdvance);
+            glyphs[^1] = gl with { XAdvance = gl.XAdvance + applied };
+        }
     }
 
     /// <summary>Per Phase 3 Task 9 cycle 3a — wrapping pass. Takes
@@ -2273,7 +2327,7 @@ internal static class LineBuilder
                 var normalized = NormalizeSegmentBreaks(raw);
                 preNormalized[i] = ReferenceEquals(raw, normalized)
                     ? runs[i]
-                    : new TextRun(normalized, runs[i].Style);
+                    : runs[i] with { Text = normalized };   // RC-1: preserve leading/trailing chrome + Atomic
             }
             return preNormalized;
         }
@@ -2299,9 +2353,10 @@ internal static class LineBuilder
                 inWs = false;
                 continue;
             }
-            output[r] = new TextRun(
-                CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
-                runs[r].Style);
+            output[r] = runs[r] with
+            {
+                Text = CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
+            };   // RC-1: preserve leading/trailing chrome + Atomic
         }
 
         if (output.Length > 0)
@@ -2310,8 +2365,7 @@ internal static class LineBuilder
             var t = output[last].Text;
             if (t.Length > 0 && t[t.Length - 1] == ' ')
             {
-                output[last] = new TextRun(t.Substring(0, t.Length - 1),
-                    output[last].Style);
+                output[last] = output[last] with { Text = t.Substring(0, t.Length - 1) };
             }
         }
 
@@ -2358,7 +2412,7 @@ internal static class LineBuilder
         };
         return string.Equals(transformed, run.Text, StringComparison.Ordinal)
             ? run
-            : new TextRun(transformed, run.Style);
+            : run with { Text = transformed };   // RC-1: preserve leading/trailing chrome + Atomic
     }
 
     /// <summary>CSS <c>text-transform: capitalize</c> — upper-case the first typographic letter of each
@@ -2526,7 +2580,7 @@ internal static class LineBuilder
                 var normalized = NormalizeSegmentBreaks(raw);
                 output[r] = ReferenceEquals(raw, normalized)
                     ? runs[r]
-                    : new TextRun(normalized, runs[r].Style);
+                    : runs[r] with { Text = normalized };   // RC-1: preserve chrome + Atomic
                 // Reset inWs for the next run — preserve content
                 // doesn't interact with collapse decisions either side.
                 inWs = false;
@@ -2535,9 +2589,10 @@ internal static class LineBuilder
             {
                 // Collapse mode (Normal / NoWrap / PreLine).
                 var preserveBreaks = mode == WhiteSpace.PreLine;
-                output[r] = new TextRun(
-                    CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
-                    runs[r].Style);
+                output[r] = runs[r] with
+                {
+                    Text = CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
+                };   // RC-1: preserve chrome + Atomic
             }
         }
 
@@ -2553,9 +2608,7 @@ internal static class LineBuilder
             var t = output[lastIdx].Text;
             if (t.Length > 0 && t[t.Length - 1] == ' ')
             {
-                output[lastIdx] = new TextRun(
-                    t.Substring(0, t.Length - 1),
-                    output[lastIdx].Style);
+                output[lastIdx] = output[lastIdx] with { Text = t.Substring(0, t.Length - 1) };
             }
         }
 

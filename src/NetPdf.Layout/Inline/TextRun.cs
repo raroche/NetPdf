@@ -44,4 +44,19 @@ namespace NetPdf.Layout.Inline;
 /// REPLACEMENT CHARACTER (so concat/index bookkeeping stays aligned); the shaper produces one synthetic
 /// glyph whose advance is <see cref="InlineAtomic.AdvancePx"/> instead of calling HarfBuzz. Null for
 /// ordinary text runs (the byte-identical default).</param>
-internal readonly record struct TextRun(string Text, ComputedStyle Style, InlineAtomic? Atomic = null);
+/// <param name="LeadingChromeAdvancePx">RC-1 — extra inline-START advance (px) contributed by an
+/// enclosing non-replaced <c>InlineBox</c>'s OPEN edge: <c>margin-left + border-left + padding-left</c>
+/// (CSS 2.2 §8.3/§8.4). Set by <c>BlockLayouter.CollectInlineTextRuns</c> on the FIRST leaf run of the
+/// wrapper's content; the shaper folds it into the first glyph's <c>XOffset</c> + <c>XAdvance</c> so the
+/// following text is pushed right by that much (no new break opportunity — unlike a U+FFFC atomic).
+/// Accumulates across nested wrappers. 0 for the byte-identical default.</param>
+/// <param name="TrailingChromeAdvancePx">RC-1 — extra inline-END advance (px) from the wrapper's CLOSE
+/// edge: <c>margin-right + border-right + padding-right</c>. Set on the LAST leaf run of the wrapper's
+/// content; the shaper folds it into the last glyph's <c>XAdvance</c>. Accumulates across nested wrappers.
+/// 0 for the byte-identical default.</param>
+internal readonly record struct TextRun(
+    string Text,
+    ComputedStyle Style,
+    InlineAtomic? Atomic = null,
+    double LeadingChromeAdvancePx = 0,
+    double TrailingChromeAdvancePx = 0);

@@ -523,6 +523,19 @@ internal static class TextPainter
                     originalIds[g] = gid;
                     fc.Used.Add(gid);
                 }
+                // FONT-MISSING-GLYPH-001 (rule 7) — the shaper flagged this run as containing a VISIBLE
+                // .notdef (a non-whitespace character the font + fallback chain couldn't map — "tofu").
+                // Surface it once per conversion (Info). Whitespace/format .notdefs are excluded at shape
+                // time (they paint nothing), so a real document isn't flagged for an unmapped space.
+                if (run.HasVisibleMissingGlyph && diagnosed.Add("\0font-missing-glyph"))
+                {
+                    diagnostics?.Emit(new Diagnostic(
+                        DiagnosticCodes.FontMissingGlyph001,
+                        "A character was rendered as .notdef (tofu) — the resolved font and its fallback "
+                        + "chain lack a glyph for it. The rest of the text still paints; extend the font "
+                        + "fallback chain to cover the missing codepoint(s).",
+                        DiagnosticSeverity.Info));
+                }
 
                 // Baseline: centre the run font's em box in the line box (half-leading), then
                 // drop to the baseline by the ascent. Metrics from the run's parsed font. When the line

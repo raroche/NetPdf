@@ -360,11 +360,18 @@ grepping the ID).
   `TableContinuation.RepeatHead` / `RepeatFoot` flags drive the
   resume page: when set, the resume layouter re-emits the
   header at the top + footer at the bottom of the body window.
-  The new `LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001` diagnostic
-  fires when header + footer combined exceed the fragmentainer
-  (no room for any body row alongside the repeat contract)
-  header + footer commit atomically + body is skipped to avoid
-  infinite continuation loops. The locked footer
+  The `LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001` diagnostic
+  fires (header + footer commit atomically + body is skipped)
+  ONLY when the header + footer stack exceeds a FRESH page's
+  budget — genuinely can't fit anywhere. RC-7 — when the stack
+  merely exceeds the CURRENT-page REMAINDER (the table was pushed
+  low by preceding content) but fits a fresh page, the dispatching
+  BlockLayouter now breaks BEFORE the table (dry-run
+  `TableLayouter.DryRunWontFitAtOffset`) so the whole table moves
+  to a fresh page + renders every row instead of dropping the
+  body. The break-before can't loop: the flag is set only when the
+  table is pushed below a fresh page's origin, so on the resume
+  page (table at the top) it clears. The locked footer
   position is IMMEDIATELY AFTER THE LAST BODY ROW on each page
   (not bottom-anchored to the fragmentainer); sub-+ may
   revisit bottom-anchoring.**— captions (`<caption>`) lay

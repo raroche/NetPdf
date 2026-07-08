@@ -49,7 +49,10 @@ public sealed class PerformanceGateTests
     [Trait("Category", "Performance")]
     public void Invoice_3_page_renders_within_200ms_p50()
     {
-        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Invoice(lineItems: 80), warmup: 5, iters: 15);
+        // lineItems recalibrated 80 → 68 after RC-UA (WP-2): the UA stylesheet adds the h1 and <p>
+        // default margins the fixture didn't previously carry, so 80 rows now spill to 4 pages. 68
+        // rows restores the intended clean 3-page (exit-criterion-7) workload.
+        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Invoice(lineItems: 68), warmup: 5, iters: 15);
         Assert.Equal(3, pages);   // the fixture must actually paginate to 3 pages for the gate to be meaningful
         Assert.True(p50 <= 200.0,
             $"Exit criterion 7: the 3-page invoice p50 {p50:F1} ms exceeds the 200 ms gate.");

@@ -3466,6 +3466,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     (mainSlot.Tag == ComputedSlotTag.Percentage
                      || item.Style.ReadFlexBasis().Kind == FlexBasisKind.Percentage)
                     && !double.IsFinite(containerDefiniteMainSize);
+                // Definite = an explicit length / definite flex-basis (resolvedItemMainSizes holds the
+                // §9.7-flexed used main size — an explicit `height` + `flex-grow` in a definite-height
+                // column grows correctly here). NOT content-determined items (flex-basis auto/content +
+                // auto height): their resolvedItemMainSizes is either still 0 (auto-height container —
+                // content-sizes AFTER this measure at :3465) or a page-sized hypothetical (their base
+                // size is measured at the page budget), so it is NOT a usable %-base here — keep the
+                // page budget. (Growing a `flex:1 1 auto` auto-height item to its DEFINITE-container
+                // flexed height as the %-base needs an auto-basis column base size that isn't page-
+                // sized — a separate flex base-sizing follow-up, review [P1].) Percentage main / basis
+                // against an indefinite container is auto → page budget.
                 var definiteMain = !IsMainSizeContentDetermined(item, mainSizeProperty)
                     && !mainIsPercentAgainstIndefinite;
                 if (isColumn && definiteMain)

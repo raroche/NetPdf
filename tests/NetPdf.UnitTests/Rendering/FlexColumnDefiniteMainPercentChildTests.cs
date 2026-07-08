@@ -112,6 +112,28 @@ public sealed class FlexColumnDefiniteMainPercentChildTests
     }
 
     [Fact]
+    public void Explicit_height_flex_grow_item_uses_its_grown_height_as_the_percent_base()
+    {
+        // An EXPLICIT-height column item with flex-grow (definite basis) grows in §9.7 BEFORE the
+        // content measure, so resolvedItemMainSizes holds its grown height → a height:100% child
+        // resolves against that. Container 400px, item height:50px flex-grow:1 (only flexible item)
+        // + a fixed 100px sibling → the item grows to 300px (= 225pt). (An AUTO-basis `flex:1 1 auto`
+        // item is a separate flex base-sizing follow-up — see the Content_determined guard below.)
+        var heights = BarHeights(Doc(
+            "<div class='stub'><div class='fixed'></div>"
+            + "<div class='item'><div class='fill'></div></div></div>",
+            ".stub{display:flex;flex-direction:column;width:210px;height:400px}"
+            + ".fixed{height:100px}"
+            + ".item{height:50px;flex-grow:1}"
+            + ".fill{background:#1e1b2e;height:100%;width:40px}"));
+
+        Assert.NotEmpty(heights);
+        Assert.All(heights, h => Assert.True(h is > 180 and < 260,
+            $"fill height {h:0.##}pt — the flex-grown item height (400px−100px=300px=225pt) was not "
+            + "used as the %-height base."));
+    }
+
+    [Fact]
     public void Content_determined_auto_height_item_keeps_the_page_budget_for_content()
     {
         // Guard the IsMainSizeContentDetermined gate: an AUTO-height column item content-sizes; a

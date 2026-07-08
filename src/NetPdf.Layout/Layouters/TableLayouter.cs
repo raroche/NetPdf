@@ -779,16 +779,26 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             }
         }
         if (_measuredPlacements is null) return false;
+        // CSS 2.2 §17.5.3 — a short cell's content is shifted DOWN by its vertical-align free space
+        // (middle/bottom), so its block boundaries land at bufferOffset + shift. The cut must see
+        // the SHIFTED boundaries so the emit-time splitter (EmitSlicedRow, which flushes at the same
+        // shift) and this dry-run agree (review [P1]). The tall cell that drives the split has
+        // free == 0 → shift == 0, so its boundaries are unchanged. Split rows are RowSpan == 1
+        // (guarded below), so the row height is the cell's full spanned height.
+        var rowHeightForShift = _measuredRows is { } mr && rowIndex >= 0 && rowIndex < mr.Count
+            ? mr[rowIndex].RowHeight
+            : 0.0;
         var limit = priorCut + avail;
         for (var i = 0; i < _measuredPlacements.Count; i++)
         {
             var p = _measuredPlacements[i];
             if (p.OriginRow != rowIndex) continue;
             if (p.RowSpan > 1) return false;
+            var valignShift = CellContentAlignmentShift(p, rowHeightForShift);
             var buf = p.ContentBuffer.Buffered;
             for (var j = 0; j < buf.Count; j++)
             {
-                var bottom = buf[j].BlockOffset + buf[j].BlockSize;
+                var bottom = buf[j].BlockOffset + buf[j].BlockSize + valignShift;
                 if (bottom > priorCut && bottom <= limit && bottom > cut)
                 {
                     cut = bottom;
@@ -2397,19 +2407,21 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
     /// <summary>CSS 2.2 §17.5.3 — the block-axis shift applied to a cell's buffered CONTENT so it aligns
     /// within the cell's (possibly rowspan-) spanned border box of height <paramref name="cellSpanHeight"/>.
-    /// <c>top</c> — and <c>baseline</c>, APPROXIMATED as top because the table content sink tracks no
-    /// first-baseline (see <c>docs/deferrals.md#table-cell-vertical-align-baseline</c>) — yield 0;
-    /// <c>middle</c> half the free space; <c>bottom</c> all of it. Free space is the spanned height minus
-    /// the cell's natural border-box height (<see cref="CellPlacement.ContentBlockExtent"/>, which already
-    /// includes the cell's own border+padding). Only the CONTENT moves — the cell's border/background
-    /// fragment keeps the full spanned height (browser behavior: align content within the cell box, not the
-    /// box within the row), so <c>FragmentPainter</c> stays untouched. A uniform single-line row has
-    /// free == 0 for every cell → 0 shift → byte-identical.</summary>
+    /// <see cref="ResolveUsedCellVerticalAlign"/> only ever yields <c>top</c>/<c>middle</c>/<c>bottom</c>
+    /// (<c>baseline</c> and the non-core keywords are folded to the walk default <c>middle</c> — the table
+    /// content sink tracks no first-baseline, so a true <c>baseline</c> distribution is deferred, see
+    /// <c>docs/deferrals.md#table-cell-vertical-align-baseline</c>): <c>top</c> → 0, <c>middle</c> → half
+    /// the free space, <c>bottom</c> → all of it. Free space is the spanned height minus the cell's natural
+    /// border-box height (<see cref="CellPlacement.ContentBlockExtent"/>, which already includes the cell's
+    /// own border+padding). Only the CONTENT moves — the cell's border/background fragment keeps the full
+    /// spanned height (browser behavior: align content within the cell box, not the box within the row), so
+    /// <c>FragmentPainter</c> stays untouched. A uniform single-line row has free == 0 for every cell → 0
+    /// shift → byte-identical.</summary>
     private static double CellContentAlignmentShift(in CellPlacement placement, double cellSpanHeight)
     {
         var valign = ResolveUsedCellVerticalAlign(placement.Cell);
         if (valign is not VerticalAlignResolver.Middle and not VerticalAlignResolver.Bottom)
-            return 0.0;   // top + baseline(≈top)
+            return 0.0;   // top (baseline/others already folded to middle upstream)
         var free = cellSpanHeight - placement.ContentBlockExtent;
         if (!(free > 0.0)) return 0.0;
         return valign == VerticalAlignResolver.Middle ? free / 2.0 : free;
@@ -2592,12 +2604,22 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
 
         // Phase C — slice each cell's buffered content into the window.
+        // CSS 2.2 §17.5.3 — position a short cell's content by its vertical-align free-space shift
+        // (top → 0, middle → half, bottom → all) even across a page split (review [P1]). The shift
+        // is baked into the slice window: passing `[sliceStart − shift, sliceEnd − shift)` with
+        // `additionalBlockOffset = rowTop` makes FlushSlice include a fragment when
+        // `bufferOffset + shift ∈ [sliceStart, sliceEnd)` and emit it at `rowTop + (bufferOffset +
+        // shift − sliceStart)` — i.e. shifted down within its slice, landing on whichever page its
+        // shifted position falls in. Split rows are RowSpan == 1, so the row height is the full
+        // spanned height. The tall cell (free == 0) is unaffected → byte-identical.
         var sliceEnd = sliceStart + sliceHeight;
+        var rowHeightForShift = rows[rowIndex].RowHeight;
         var hasMore = false;
         for (var i = 0; i < bucket.Count; i++)
         {
+            var valignShift = CellContentAlignmentShift(bucket[i], rowHeightForShift);
             if (bucket[i].ContentBuffer.FlushSlice(
-                    _sink, rowTop, sliceStart, sliceEnd))
+                    _sink, rowTop, sliceStart - valignShift, sliceEnd - valignShift))
             {
                 hasMore = true;
             }

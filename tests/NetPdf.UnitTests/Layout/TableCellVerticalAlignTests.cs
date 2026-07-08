@@ -92,6 +92,23 @@ public sealed class TableCellVerticalAlignTests
     }
 
     [Fact]
+    public void Explicit_baseline_is_approximated_as_middle_documented_deferral()
+    {
+        // review [P3] — locks the documented approximation
+        // (docs/deferrals.md#table-cell-vertical-align-baseline): the table content sink has no
+        // first-baseline, so an explicit `vertical-align: baseline` cell is NOT baseline-distributed
+        // — it folds to the walk default `middle`. Assert it renders identical to explicit middle
+        // (and NOT top). When true baseline support lands, this test changes with the deferral.
+        var baseline = ShortCellY("vertical-align:baseline");
+        var middle = ShortCellY("vertical-align:middle");
+        var top = ShortCellY("vertical-align:top");
+        Assert.True(System.Math.Abs(baseline - middle) < 0.5,
+            $"explicit baseline (y={baseline:0.##}) should currently match middle (y={middle:0.##}) "
+            + "per the documented approximation.");
+        Assert.True(top > baseline + 1, $"baseline ({baseline:0.#}) must not be top-aligned ({top:0.#})");
+    }
+
+    [Fact]
     public void Author_row_vertical_align_top_overrides_the_ua_middle_default()
     {
         // vertical-align on the <tr> must reach the cell (inheritance in the WHATWG model) and put the

@@ -655,6 +655,92 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
+    public void IntraCell_split_row_bottom_aligned_short_cell_emits_once_and_shifts_down()
+    {
+        // review [P1] — CSS 2.2 §17.5.3 vertical-align must be honored ACROSS an intra-cell page
+        // split. A split row with a TALL left cell (6×200px) and a SHORT right cell (one 100px block)
+        // whose vertical-align is `bottom`: the short block must (a) emit EXACTLY once across the
+        // pages (the valign-shifted FlushSlice must not drop or duplicate it) and (b) be positioned
+        // by its bottom shift (free = 1200−100 = 1100), landing near the row bottom on a LATER page —
+        // NOT at the page-1 top (the pre-fix behavior).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+
+        var tallCell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var tallAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        for (var i = 0; i < 6; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 200);
+            tallAnon.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        tallCell.AppendChild(tallAnon);
+
+        var shortStyle = MakeStyle();
+        shortStyle.Set(PropertyId.VerticalAlign, ComputedSlot.FromKeyword(7));   // bottom
+        var shortCell = Box.ForElement(BoxKind.TableCell, shortStyle, MakeElement());
+        var shortBlockStyle = MakeStyle();
+        SetLengthPx(shortBlockStyle, PropertyId.Height, 100);
+        var shortBlock = Box.ForElement(BoxKind.BlockContainer, shortBlockStyle, MakeElement());
+        shortCell.AppendChild(shortBlock);
+
+        row.AppendChild(tallCell);
+        row.AppendChild(shortCell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        var pages = 0;
+        TableContinuation? cont = null;
+        var done = false;
+        while (!done && pages < 8)
+        {
+            using var pl = new TableLayouter(
+                rootBox: table, sink: sink, incomingContinuation: cont,
+                diagnostics: diagSink, shaperResolver: shaper);
+            pl.ConfigureEmission(0, 0, 600);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var lc = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var r = new BreakResolver();
+            var res = pl.AttemptLayout(ctx, ref lc, r, LayoutAttemptStrategy.LastResort);
+            pages++;
+            if (res.Outcome == LayoutAttemptOutcome.AllDone) done = true;
+            else
+            {
+                Assert.Equal(LayoutAttemptOutcome.PageComplete, res.Outcome);
+                cont = Assert.IsType<TableContinuation>(res.Continuation);
+            }
+        }
+        Assert.True(done, "the split table did not finish paginating");
+
+        // (a) The short cell's block emits EXACTLY once — no loss, no duplication.
+        double? shortBlockY = null;
+        var shortEmits = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (!ReferenceEquals(f.Box, shortBlock)) continue;
+            shortEmits++;
+            shortBlockY = f.BlockOffset;
+        }
+        Assert.Equal(1, shortEmits);
+
+        // (b) It is bottom-shifted (well below the page/row top), not emitted at the first-slice top.
+        Assert.NotNull(shortBlockY);
+        Assert.True(shortBlockY!.Value > 100,
+            $"bottom-aligned short cell emitted at y={shortBlockY:0.##} — the vertical-align shift was "
+            + "not applied across the split (pre-fix it lands at the page-1 top).");
+
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
     public void IntraCell_split_row_taller_than_two_pages_paginates_three_pages()
     {
         // Per Phase 3 Task 17 cycle 5c.2d — a row taller than TWO pages

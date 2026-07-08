@@ -48,8 +48,15 @@ namespace NetPdf.Layout.Inline;
 /// <see cref="TotalAdvance"/> equals that width. The painter skips the synthetic glyph — the atomic's
 /// box is painted from its own emitted fragment — but still advances the line cursor by it. Null for
 /// ordinary text runs.</param>
+/// <param name="HasVisibleMissingGlyph">WP-9 (rule 7) — <see langword="true"/> when at least one glyph
+/// in this run is the <c>.notdef</c> ("tofu") glyph AND its source character is NOT whitespace / a
+/// format control (which legitimately paint nothing). Computed at shape time, where the source codepoint
+/// is available; the paint pass reads it to emit <c>FONT-MISSING-GLYPH-001</c> once so a character the
+/// font + fallback chain couldn't map isn't dropped silently. <see langword="false"/> for fully-mapped
+/// runs (the byte-identical default).</param>
 internal readonly record struct ShapedRun(
     ItemizedRun Source,
     ShapedGlyph[] Glyphs,
     double TotalAdvance,
-    InlineAtomic? Atomic = null);
+    InlineAtomic? Atomic = null,
+    bool HasVisibleMissingGlyph = false);

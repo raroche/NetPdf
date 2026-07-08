@@ -1050,6 +1050,16 @@ internal static class DiagnosticCodes
     public const string PaintTextFontUnresolved001 = "PAINT-TEXT-FONT-UNRESOLVED-001";
 
     /// <summary>
+    /// A character was rendered as <c>.notdef</c> ("tofu") because the resolved font — and every font in
+    /// its fallback chain — lacks a glyph for that codepoint. The rest of the text still paints; only the
+    /// unmapped character shows the font's missing-glyph box. Surfaced (Info) rather than dropped silently
+    /// per the diagnostics-not-silent-corruption rule. Deduplicated within a conversion. Extending the
+    /// fallback chain to a bundled symbol font is a tracked follow-up.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string FontMissingGlyph001 = "FONT-MISSING-GLYPH-001";
+
+    /// <summary>
     /// Per Phase 3 Task 23 — a page margin box's laid-out content is TALLER than its content area: the box
     /// was clamped to the page-margin band but its content block-height exceeds the available height. The
     /// common case is a vertical (left/right) EDGE box whose shrink-to-fit height hit the band limit, or a

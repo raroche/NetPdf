@@ -438,12 +438,32 @@ internal static class LineBuilder
             // HarfBuzz XAdvance is in CSS px (HbShaper handles font-
             // units → pixels conversion at construction time).
             double totalAdvance = 0;
+            var hasVisibleMissingGlyph = false;
             for (var g = 0; g < glyphs.Length; g++)
             {
                 totalAdvance += glyphs[g].XAdvance;
+                // WP-9 (rule 7) — a .notdef (glyph 0) whose SOURCE character is a real (non-whitespace,
+                // non-format) codepoint is visible "tofu": the font couldn't map it. The glyph's Cluster
+                // is the offset into the concat buffer (HbShaper's hb_buffer_add_utf16 contract), so read
+                // the source char there. Whitespace / control chars that shape to .notdef paint nothing,
+                // so they are NOT flagged (avoids a false "missing glyph" for an unmapped space).
+                if (glyphs[g].GlyphId == 0)
+                {
+                    var cluster = glyphs[g].Cluster;
+                    if ((uint)cluster < (uint)concatText.Length)
+                    {
+                        var srcChar = concatText[cluster];
+                        if (!char.IsWhiteSpace(srcChar) && !char.IsControl(srcChar)
+                            && srcChar is not ('\u00AD' or '\uFFFC'))   // soft hyphen / object-replacement
+                        {
+                            hasVisibleMissingGlyph = true;
+                        }
+                    }
+                }
             }
 
-            output[runIdx] = new ShapedRun(run, glyphs, totalAdvance);
+            output[runIdx] = new ShapedRun(
+                run, glyphs, totalAdvance, HasVisibleMissingGlyph: hasVisibleMissingGlyph);
         }
         return output;
     }

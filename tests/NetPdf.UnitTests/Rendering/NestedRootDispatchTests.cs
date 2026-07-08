@@ -19,8 +19,17 @@ namespace NetPdf.UnitTests.Rendering;
 /// </summary>
 public sealed class NestedRootDispatchTests
 {
+    // Count text-SHOW operators (Tj / TJ), NOT Td. These tests render with the DEFAULT font resolver
+    // (a real embedded font), and a real font's binary contains the byte substring "Td" (e.g. in its
+    // name/OS-2 tables) — so counting " Td" would tally phantom matches from the font stream and pass
+    // even if NO glyphs were painted (the RC-5 false-positive class, WP-6/#291).
+    //
+    // Match the OPERAND-TERMINATED form — a PDF hex-string close `>` (or array close `]`) then the
+    // operator — not a bare `\bTj\b`. NetPdf emits `<glyph-hex> Tj` / `[...] TJ`, so this counts real
+    // show operators while a stray `Tj`/`TJ` byte pair inside the compressed FontFile2 stream can't match
+    // (it would need the exact `> Tj` / `] TJ` sequence) — Copilot review, #294.
     private static int TextRunCount(byte[] pdf) =>
-        Regex.Matches(Encoding.Latin1.GetString(pdf), @" Td\b").Count;
+        Regex.Matches(Encoding.Latin1.GetString(pdf), @"(?:>|\]) T[jJ]\b").Count;
 
     private const string TableRows =
         "<table><tr><td>Subtotal</td><td>$100</td></tr>"

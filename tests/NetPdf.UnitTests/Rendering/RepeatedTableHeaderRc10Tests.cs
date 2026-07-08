@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -59,10 +60,20 @@ public sealed class RepeatedTableHeaderRc10Tests
     [Fact]
     public void No_negative_size_header_fragments_are_emitted_on_continuation_pages()
     {
-        // A negative "x y w h re" rectangle in any content stream signals the RC-10 coordinate bug.
+        // A negative-SIZE "x y w h re" rectangle in any content stream signals the RC-10 coordinate
+        // bug. Match the full 4-operand form and flag a negative WIDTH (3rd) or HEIGHT (4th) operand
+        // — an earlier version only looked at the number immediately before `re` (height), so a
+        // regression producing a negative width would have slipped through.
         var res = HtmlPdf.ConvertDetailed(MultiPageTable(120), new HtmlPdfOptions { PrintBackgrounds = true });
         var s = Encoding.Latin1.GetString(res.Pdf);
-        var negativeRects = Regex.Matches(s, @"-\d+\.?\d* re").Count;
+        var rect = new Regex(@"(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+re");
+        var negativeRects = 0;
+        foreach (Match m in rect.Matches(s))
+        {
+            var w = double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
+            var h = double.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
+            if (w < 0 || h < 0) negativeRects++;
+        }
         Assert.Equal(0, negativeRects);
     }
 }

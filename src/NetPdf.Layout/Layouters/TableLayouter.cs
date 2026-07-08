@@ -1573,7 +1573,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 EmitHeaderRows(
                     rows!, placementsByRow, columnOffsetsLocal!,
-                    rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                    rowBlockOffsets, usedInlineSize,
                     headerStart: 0, headerEndExclusive: headerCount,
                     flushDiagnostics: _diagnostics ?? layout.Diagnostics,
                     diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
@@ -1804,7 +1804,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 EmitHeaderRows(
                     rows!, placementsByRow, columnOffsetsLocal!,
-                    rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                    rowBlockOffsets, usedInlineSize,
                     headerStart: 0, headerEndExclusive: headerCount,
                     flushDiagnostics: splitHeaderDiagSink,
                     diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
@@ -2107,7 +2107,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     {
                         EmitHeaderRows(
                             rows!, placementsByRow, columnOffsetsLocal!,
-                            rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                            rowBlockOffsets, usedInlineSize,
                             headerStart: 0, headerEndExclusive: headerCount,
                             flushDiagnostics: _diagnostics ?? layout.Diagnostics,
                             diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
@@ -2207,7 +2207,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         {
             EmitHeaderRows(
                 rows!, placementsByRow, columnOffsetsLocal!,
-                rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                rowBlockOffsets, usedInlineSize,
                 headerStart: 0, headerEndExclusive: headerCount,
                 flushDiagnostics: _diagnostics ?? layout.Diagnostics,
                 diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
@@ -2535,12 +2535,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// within the same instance are no-ops for diagnostics. On RESUME
     /// pages the constructor sets the flag to true so the resume
     /// layouter doesn't re-emit duplicate header diagnostics.</para></summary>
+    // NOTE: unlike EmitFooterRows, this no longer takes the rowEndBlockOffset prefix array —
+    // repeated header cells are sized from the SUM of their spanned row heights (RC-10, Phase B
+    // below), which is immune to the continuation-page coordinate shift that made the prefix-array
+    // delta go negative.
     private void EmitHeaderRows(
         List<RowMeasurement> rows,
         List<CellPlacement>?[] placementsByRow,
         double[] columnOffsets,
         double[] rowBlockOffsets,
-        double[] rowEndBlockOffset,
         double usedInlineSize,
         int headerStart,
         int headerEndExclusive,

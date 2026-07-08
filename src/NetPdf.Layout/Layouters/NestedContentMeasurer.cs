@@ -110,9 +110,11 @@ internal static class NestedContentMeasurer
         // The box is its own content's decoration owner: a content fragment
         // whose box IS this box (the inline-only-root case) paints text only.
         var buffer = new BufferingMeasureSink(decorationOwner: box);
+        var innerInlineSize = availInlineContentSize > 0 ? availInlineContentSize : 1;
+        var innerBlockSize = Math.Max(blockBudget, 1);
         var innerFragmentainer = new FragmentainerContext(
-            contentInlineSize: availInlineContentSize > 0 ? availInlineContentSize : 1,
-            blockSize: Math.Max(blockBudget, 1));
+            contentInlineSize: innerInlineSize,
+            blockSize: innerBlockSize);
         var innerLayout = new LayoutContext(innerFragmentainer)
         {
             WritingMode = writingMode,
@@ -121,33 +123,109 @@ internal static class NestedContentMeasurer
             // Carries the purpose transitively into the nested layouter (+ its own nested measures).
             MeasurePurpose = purpose,
         };
-        using var layouter = new BlockLayouter(
-            rootBox: box,
-            sink: buffer,
-            incomingContinuation: null,
-            // PR-#182 review P2 — an optional diagnostics sink (the caller passes
-            // a BUFFERING one for flex item content so a nested inline / font
-            // problem surfaces, flushed only when the item commits). Null = the
-            // grid sizing / pre-measure dry-runs (grid's real emission surfaces
-            // content diagnostics on its own DispatchGridItemContents pass).
-            diagnostics: diagnostics,
-            shaperResolver: shaperResolver,
-            // A nested paginatable grid / flex inside the box is a CSS
-            // Fragmentation "parallel flow"; suppress its pagination here (the
-            // content commits atomically) so a discarded continuation doesn't
-            // silently lose content (PR-#182 review P1 — flex too, not just grid).
-            disableGridPagination: true,
-            disableFlexPagination: true,
-            // The common item (`<div>text</div>`) has DIRECT inline children;
-            // opt the nested layouter into emitting the inline-only ROOT's own
-            // content (else the block-only child loop skips the box's text).
-            layoutRootInlineContent: true,
-            suppressOutOfFlowEmission: suppressOutOfFlowEmission);
-        // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
-        // opportunities so they don't collapse min-content to glyph width (mirrors the
-        // table cell min-content pass via TableLayouter.MeasureCellContent).
-        layouter.SetIntrinsicSizingMode(intrinsicSizingMode);
         using var resolver = new BreakResolver();
+
+        // RC-6 / RC-8 — ROOT-display dispatch. The nested content root may ITSELF be a flex / grid /
+        // table container: a flex item that is `display: flex` (RC-6 — the SVG-logo-above-name brand
+        // rows), or a `<table>` that is a DIRECT flex/grid item (RC-8 — 07-tax's missing totals table).
+        // A plain BlockLayouter only flex/grid-dispatches its CHILDREN and never consults the ROOT box's
+        // own display, so a flex root stacks its items as block flow, and a table root — whose
+        // TableRowGroup/TableRow children are neither block-flow-owned nor inline — has EVERY child
+        // skipped, measuring 0 extent → the table is silently DROPPED (a rule-7 violation). Route each
+        // container root to its own layouter, mirroring the child dispatch BlockLayouter already does.
+        ILayouter layouter;
+        if (box.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer)
+        {
+            var flex = new FlexLayouter(
+                rootBox: box, sink: buffer, incomingContinuation: null,
+                diagnostics: diagnostics, shaperResolver: shaperResolver,
+                recordPositionedGeometry: null);
+            flex.ConfigureEmission(
+                contentInlineOffset: 0, contentBlockOffset: 0,
+                contentInlineSize: innerInlineSize, contentBlockSize: innerBlockSize,
+                allowPagination: false);
+            layouter = flex;
+        }
+        else if (box.Kind is BoxKind.GridContainer or BoxKind.InlineGridContainer)
+        {
+            var grid = new GridLayouter(
+                rootBox: box, sink: buffer, incomingContinuation: null,
+                diagnostics: diagnostics, shaperResolver: shaperResolver);
+            grid.ConfigureEmission(
+                contentInlineOffset: 0, contentBlockOffset: 0,
+                contentInlineSize: innerInlineSize, contentBlockSize: innerBlockSize,
+                allowPagination: false);
+            layouter = grid;
+        }
+        else if (box.Kind is BoxKind.Table or BoxKind.InlineTable)
+        {
+            // A nested table root lays out ATOMICALLY (a CSS Fragmentation "parallel flow", like the
+            // flex/grid branches with allowPagination:false). Give it an effectively-unbounded block
+            // budget so it emits EVERY row rather than paginating against the caller's (possibly small)
+            // measure budget — otherwise the buffer's ContentBlockExtent reports only the fitting rows
+            // and the caller (e.g. grid track sizing) under-sizes the track and truncates the table.
+            var tableFragmentainer = new FragmentainerContext(
+                contentInlineSize: innerInlineSize,
+                blockSize: EffectivelyUnboundedBlockBudgetPx);
+            var tableLayout = new LayoutContext(tableFragmentainer)
+            {
+                WritingMode = writingMode,
+                IsRtl = isRtl,
+                Diagnostics = diagnostics,
+                MeasurePurpose = purpose,
+            };
+            using var table = new TableLayouter(
+                rootBox: box, sink: buffer, incomingContinuation: null,
+                diagnostics: diagnostics, shaperResolver: shaperResolver);
+            table.ConfigureEmission(
+                contentInlineOffset: 0, contentBlockOffset: 0, contentInlineSize: innerInlineSize);
+            // The table computes its column layout + row heights here (mirrors the emit dispatch);
+            // AttemptLayout then emits the row/cell fragments into the buffer.
+            _ = table.MeasureContentHeight(tableFragmentainer, ref tableLayout, cancellationToken);
+            if (speculative) _nestingDepth++;
+            try
+            {
+                _ = table.AttemptLayout(
+                    tableFragmentainer, ref tableLayout, resolver,
+                    LayoutAttemptStrategy.LastResort, cancellationToken);
+            }
+            finally
+            {
+                if (speculative) _nestingDepth--;
+            }
+            return buffer;
+        }
+        else
+        {
+            var block = new BlockLayouter(
+                rootBox: box,
+                sink: buffer,
+                incomingContinuation: null,
+                // PR-#182 review P2 — an optional diagnostics sink (the caller passes
+                // a BUFFERING one for flex item content so a nested inline / font
+                // problem surfaces, flushed only when the item commits). Null = the
+                // grid sizing / pre-measure dry-runs (grid's real emission surfaces
+                // content diagnostics on its own DispatchGridItemContents pass).
+                diagnostics: diagnostics,
+                shaperResolver: shaperResolver,
+                // A nested paginatable grid / flex inside the box is a CSS
+                // Fragmentation "parallel flow"; suppress its pagination here (the
+                // content commits atomically) so a discarded continuation doesn't
+                // silently lose content (PR-#182 review P1 — flex too, not just grid).
+                disableGridPagination: true,
+                disableFlexPagination: true,
+                // The common item (`<div>text</div>`) has DIRECT inline children;
+                // opt the nested layouter into emitting the inline-only ROOT's own
+                // content (else the block-only child loop skips the box's text).
+                layoutRootInlineContent: true,
+                suppressOutOfFlowEmission: suppressOutOfFlowEmission);
+            // PR #208 [P2] — intrinsic (min-content) measurement ignores break-word's soft
+            // opportunities so they don't collapse min-content to glyph width (mirrors the
+            // table cell min-content pass via TableLayouter.MeasureCellContent).
+            block.SetIntrinsicSizingMode(intrinsicSizingMode);
+            layouter = block;
+        }
+
         // Count THIS speculative measure against the nesting budget while its content (which may
         // spawn its own nested measures) lays out; balanced + ONLY for speculative measures.
         if (speculative) _nestingDepth++;
@@ -160,6 +238,7 @@ internal static class NestedContentMeasurer
         finally
         {
             if (speculative) _nestingDepth--;
+            (layouter as IDisposable)?.Dispose();
         }
         return buffer;
     }

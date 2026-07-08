@@ -1343,41 +1343,82 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             IsRtl = outerLayout.IsRtl,
         };
 
-        using var itemLayouter = new BlockLayouter(
-            rootBox: itemBox,
-            sink: translatingSink,
-            incomingContinuation: null,
-            diagnostics: _diagnostics,
-            shaperResolver: _shaperResolver,
-            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
-            // P1#1 — grid items are a CSS Fragmentation L3
-            // "parallel flow" + GridLayouter discards the inner
-            // BlockLayouter's result (= no continuation propagation
-            // to the outer grid). A paginatable direct-child grid
-            // inside a grid item would return
-            // PageComplete(GridContinuation) → silent row loss on
-            // the discarded continuation. Suppress grid pagination
-            // here until nested-continuation propagation is wired
-            // (= 5c.2d scope).
-            disableGridPagination: true,
-            // PR-#182 review P1 — a grid cell with a tall nested column-flex
-            // would otherwise PageComplete(FlexContinuation) into this discarded
-            // result + drop the deferred items. Suppress flex pagination too so
-            // the cell content is atomic.
-            disableFlexPagination: true,
-            // Non-block-pagination arc (grid content-sized rows) — the common
-            // grid item (`<div>text</div>`) has DIRECT inline children; opt the
-            // nested layouter into emitting the inline-only ROOT's own content
-            // (else the block-only child loop skips the cell's text — the same
-            // gap flex items had). See BlockLayouter's _layoutRootInlineContent.
-            layoutRootInlineContent: true);
+        // RC-6 / RC-8 — ROOT-display dispatch (mirrors NestedContentMeasurer). A grid item that is
+        // ITSELF a flex / grid / table container must be laid out by the matching layouter, NOT a plain
+        // BlockLayouter (which dispatches only CHILDREN): a table grid item would otherwise have every
+        // row skipped and be silently DROPPED (RC-8), and a flex grid item would stack its items.
         using var itemResolver = new BreakResolver();
-        _ = itemLayouter.AttemptLayout(
-            innerFragmentainer,
-            ref innerLayout,
-            itemResolver,
-            LayoutAttemptStrategy.LastResort,
-            cancellationToken);
+        ILayouter itemLayouter;
+        if (itemBox.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer)
+        {
+            var flex = new FlexLayouter(
+                rootBox: itemBox, sink: translatingSink, incomingContinuation: null,
+                diagnostics: _diagnostics, shaperResolver: _shaperResolver,
+                recordPositionedGeometry: null);
+            flex.ConfigureEmission(0, 0, cellInlineSize, cellBlockSize, allowPagination: false);
+            itemLayouter = flex;
+        }
+        else if (itemBox.Kind is BoxKind.GridContainer or BoxKind.InlineGridContainer)
+        {
+            var grid = new GridLayouter(
+                rootBox: itemBox, sink: translatingSink, incomingContinuation: null,
+                diagnostics: _diagnostics, shaperResolver: _shaperResolver);
+            grid.ConfigureEmission(0, 0, cellInlineSize, cellBlockSize, allowPagination: false);
+            itemLayouter = grid;
+        }
+        else if (itemBox.Kind is BoxKind.Table or BoxKind.InlineTable)
+        {
+            var table = new TableLayouter(
+                rootBox: itemBox, sink: translatingSink, incomingContinuation: null,
+                diagnostics: _diagnostics, shaperResolver: _shaperResolver);
+            table.ConfigureEmission(0, 0, cellInlineSize);
+            _ = table.MeasureContentHeight(innerFragmentainer, ref innerLayout, cancellationToken);
+            itemLayouter = table;
+        }
+        else
+        {
+            itemLayouter = new BlockLayouter(
+                rootBox: itemBox,
+                sink: translatingSink,
+                incomingContinuation: null,
+                diagnostics: _diagnostics,
+                shaperResolver: _shaperResolver,
+                // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
+                // P1#1 — grid items are a CSS Fragmentation L3
+                // "parallel flow" + GridLayouter discards the inner
+                // BlockLayouter's result (= no continuation propagation
+                // to the outer grid). A paginatable direct-child grid
+                // inside a grid item would return
+                // PageComplete(GridContinuation) → silent row loss on
+                // the discarded continuation. Suppress grid pagination
+                // here until nested-continuation propagation is wired
+                // (= 5c.2d scope).
+                disableGridPagination: true,
+                // PR-#182 review P1 — a grid cell with a tall nested column-flex
+                // would otherwise PageComplete(FlexContinuation) into this discarded
+                // result + drop the deferred items. Suppress flex pagination too so
+                // the cell content is atomic.
+                disableFlexPagination: true,
+                // Non-block-pagination arc (grid content-sized rows) — the common
+                // grid item (`<div>text</div>`) has DIRECT inline children; opt the
+                // nested layouter into emitting the inline-only ROOT's own content
+                // (else the block-only child loop skips the cell's text — the same
+                // gap flex items had). See BlockLayouter's _layoutRootInlineContent.
+                layoutRootInlineContent: true);
+        }
+        try
+        {
+            _ = itemLayouter.AttemptLayout(
+                innerFragmentainer,
+                ref innerLayout,
+                itemResolver,
+                LayoutAttemptStrategy.LastResort,
+                cancellationToken);
+        }
+        finally
+        {
+            (itemLayouter as System.IDisposable)?.Dispose();
+        }
     }
 
     /// <summary>Per PR-#92 review F1 — a fragment-sink wrapper that

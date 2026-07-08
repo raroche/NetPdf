@@ -101,3 +101,23 @@ docs/security/fuzzing.md
 # Aligns with Directory.Build.props DefaultItemExcludes.
 * [2-9].cs
 * [1-9][0-9].cs
+
+# Finder-duplicate hygiene for the public/orphan-branch launch (RC-3 / WP-8).
+# The extensions below are generated docs (docfx `.yml`/`.manifest`), CI/config
+# (`.yml`/`.yaml`), and prose docs (`.md`) that live in *tracked* directories
+# (.github/workflows, docs-site/api, docs/security, …). A `Foo 2.md` there is
+# never legitimate — it's a Time Machine / iCloud dup — and an orphan-branch
+# bulk `git add` would otherwise sweep it (incl. duplicate live workflow files)
+# into the first public commit. No legitimately-numbered file of these types is
+# tracked; force-add one with `git add -f` if that ever changes. Unlike the
+# source-shaped patterns above this intentionally also covers `.md` because the
+# launch-hygiene risk (dups of consumer docs like deployment.md) outweighs the
+# `.html`/`.png` fixture concern that kept `.md` out of the source list.
+* [0-9].yml
+* [1-9][0-9].yml
+* [0-9].yaml
+* [1-9][0-9].yaml
+* [0-9].manifest
+* [1-9][0-9].manifest
+* [0-9].md
+* [1-9][0-9].md

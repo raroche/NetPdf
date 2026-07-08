@@ -25,7 +25,16 @@ or in your `.csproj`:
 <PackageReference Include="NetPdf" Version="1.0.0" />
 ```
 
-**Requirements:** the .NET 10 SDK/runtime. NetPdf runs on **Linux, macOS, and Windows** (x64 and arm64); the permissive-licensed HarfBuzz + Skia native assets are restored automatically as part of the package — no extra install, no browser, no system dependency. It is **Native-AOT compatible** and trimmable.
+**Requirements:** the .NET 10 SDK/runtime. NetPdf runs on **Linux, macOS, and Windows** (x64 and arm64); the permissive-licensed HarfBuzz + Skia native assets are restored automatically as part of the package — no browser, no subprocess, no manual native install on Windows or macOS. It is **Native-AOT compatible** and trimmable.
+
+> **Linux slim containers:** Skia's raster-fallback native (`libSkiaSharp`) dynamically links **fontconfig**. Full desktop and most default CI Linux images already ship it, but minimal images (`mcr.microsoft.com/dotnet/runtime-deps:*-alpine`, `debian:*-slim`, distroless) do not, and you'll get a `DllNotFoundException`/`Unable to load shared library` at first render. Install it in your image:
+>
+> ```dockerfile
+> # Debian/Ubuntu slim
+> RUN apt-get update && apt-get install -y --no-install-recommends libfontconfig1 && rm -rf /var/lib/apt/lists/*
+> # Alpine
+> RUN apk add --no-cache fontconfig ttf-dejavu
+> ```
 
 Optional add-on packages provide non-English hyphenation dictionaries — see [Language packs](#language-packs).
 

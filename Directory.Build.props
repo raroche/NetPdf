@@ -58,8 +58,15 @@
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
 
-    <!-- README + tags. -->
+    <!-- README + icon + release notes. -->
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <!--
+      PackageReleaseNotes is plain text on nuget.org (not a rendered link), so we
+      point readers at the machine-readable CHANGELOG rather than duplicating it.
+      Keep the version in sync with VersionPrefix below at each release.
+    -->
+    <PackageReleaseNotes>First stable release. Full changelog: https://github.com/raroche/NetPdf/blob/main/CHANGELOG.md</PackageReleaseNotes>
 
     <!--
       Versioning. Directory.Build.props is the MSBuild source-of-truth — every
@@ -121,9 +128,10 @@
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
   </ItemGroup>
 
-  <!-- Pack the README + NOTICE + THIRD-PARTY-NOTICES into shipping packages. -->
+  <!-- Pack the README + icon + NOTICE + THIRD-PARTY-NOTICES into shipping packages. -->
   <ItemGroup Condition="'$(IsPackable)' == 'true'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)icon.png" Pack="true" PackagePath="\" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="\" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>

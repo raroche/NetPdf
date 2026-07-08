@@ -3,9 +3,9 @@
   <PropertyGroup>
     <RootNamespace>NetPdf</RootNamespace>
     <AssemblyName>NetPdf</AssemblyName>
-    <Description>Pure C# / .NET 10 HTML+CSS-to-PDF rendering engine. Apache-2.0. No browser engine, no subprocess at render time, AOT-tested. Native deps (HarfBuzzSharp, SkiaSharp) are permissive-licensed and bundled via the official native-asset NuGets. The public-facing facade project.</Description>
+    <Description>Convert HTML + CSS to PDF in pure C# / .NET 10 — no browser engine, no Chromium, no subprocess at render time. Apache-2.0. A single dependency-light package with a one-line API (HtmlPdf.Convert). Native text-shaping and image deps (HarfBuzzSharp, SkiaSharp) are permissive-licensed and bundled via the official native-asset NuGets, with full Linux/Windows/macOS RID coverage.</Description>
     <PackageId>NetPdf</PackageId>
-    <PackageTags>pdf;html;css;rendering;paged-media;document;invoice;report</PackageTags>
+    <PackageTags>pdf;html;css;html-to-pdf;rendering;paged-media;document;invoice;report</PackageTags>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
@@ -60,6 +60,15 @@
 
   <PropertyGroup>
     <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);BundleInternalProjectAssemblies</TargetsForTfmSpecificBuildOutput>
+    <!--
+      Mirror of the DLL bundling for the SYMBOL package (.snupkg). Without this,
+      BundleInternalProjectAssemblies ships the 7 internal engine DLLs but their
+      .pdbs are left behind, so the symbol package carries only NetPdf.pdb — ~90%
+      of any consumer stack trace (Css/Layout/Paginate/Paint/Pdf/Text/Svg) has no
+      line numbers (RC-3 H1). The internal projects emit portable PDBs by default
+      in Release; this target routes each into lib/<tfm>/ of the snupkg.
+    -->
+    <TargetsForTfmSpecificDebugSymbolsInPackage>$(TargetsForTfmSpecificDebugSymbolsInPackage);BundleInternalProjectSymbols</TargetsForTfmSpecificDebugSymbolsInPackage>
   </PropertyGroup>
 
   <Target Name="BundleInternalProjectAssemblies">
@@ -84,6 +93,32 @@
       <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Text\bin\$(Configuration)\$(TargetFramework)\NetPdf.Text.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Text\bin\$(Configuration)\$(TargetFramework)\NetPdf.Text.xml')" />
       <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Svg\bin\$(Configuration)\$(TargetFramework)\NetPdf.Svg.dll" />
       <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Svg\bin\$(Configuration)\$(TargetFramework)\NetPdf.Svg.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Svg\bin\$(Configuration)\$(TargetFramework)\NetPdf.Svg.xml')" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="BundleInternalProjectSymbols">
+    <!--
+      Bundle each internal NetPdf.* project's .pdb into the symbol package's
+      lib/<tfm>/ folder (RC-3 H1). Mirrors the DLL list in
+      BundleInternalProjectAssemblies; if a new internal project is added,
+      append it in BOTH targets. Each item needs TargetPath + TargetFramework
+      metadata for the pack machinery to place it into the .snupkg.
+    -->
+    <ItemGroup>
+      <_NetPdfInternalPdb Include="NetPdf.Css" />
+      <_NetPdfInternalPdb Include="NetPdf.Layout" />
+      <_NetPdfInternalPdb Include="NetPdf.Paginate" />
+      <_NetPdfInternalPdb Include="NetPdf.Paint" />
+      <_NetPdfInternalPdb Include="NetPdf.Pdf" />
+      <_NetPdfInternalPdb Include="NetPdf.Text" />
+      <_NetPdfInternalPdb Include="NetPdf.Svg" />
+    </ItemGroup>
+    <ItemGroup>
+      <TfmSpecificDebugSymbolsFile Include="$(MSBuildThisFileDirectory)..\%(_NetPdfInternalPdb.Identity)\bin\$(Configuration)\$(TargetFramework)\%(_NetPdfInternalPdb.Identity).pdb"
+                                   Condition="Exists('$(MSBuildThisFileDirectory)..\%(_NetPdfInternalPdb.Identity)\bin\$(Configuration)\$(TargetFramework)\%(_NetPdfInternalPdb.Identity).pdb')">
+        <TargetPath>/lib/$(TargetFramework)/%(_NetPdfInternalPdb.Identity).pdb</TargetPath>
+        <TargetFramework>$(TargetFramework)</TargetFramework>
+      </TfmSpecificDebugSymbolsFile>
     </ItemGroup>
   </Target>
 

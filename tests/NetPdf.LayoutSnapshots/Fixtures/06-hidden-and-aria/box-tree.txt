@@ -9,5 +9,3 @@ Root
             TextRun @element=p "aria-hidden body"
         BlockContainer @element=p
           TextRun @element=p "visible body"
-      AnonymousBlock
-        TextRun @element=body "\n"

@@ -25,5 +25,3 @@ Root
               TableCell @element=td
                 AnonymousBlock
                   TextRun @element=td "Total: 100"
-      AnonymousBlock
-        TextRun @element=body "\n"

@@ -899,6 +899,23 @@ internal static class BoxBuilder
         static void FlushRun(Box parent, ref List<Box>? run)
         {
             if (run is null || run.Count == 0) return;
+            // CSS 2.1 §9.2.2.1 — a sequence of inline content between block-level siblings that is
+            // ONLY collapsible white-space generates NO box at all (it would collapse away). Pretty-
+            // printed HTML puts a newline+indent between every pair of block children; without this
+            // each such run became a phantom AnonymousBlock that REUSES the parent's ComputedStyle by
+            // reference (below) and therefore charged the parent's own MARGIN once per whitespace run
+            // (the measure pass already zeroes an anonymous box's border/padding/height — see
+            // BlockLayouter ~L9894 — but not its margin, and the emit paths do not zero it either),
+            // inflating vertical layout and pushing content onto extra pages (RC-9). Mirrors the flex
+            // (FlushFlexTextRun) and table (StripWhitespaceTextRuns) whitespace-dropping already done
+            // elsewhere. Gated on collapsing white-space so pre / pre-wrap / pre-line / break-spaces
+            // keep their significant whitespace; a run with ANY inline element or non-whitespace text
+            // (e.g. `<span>a</span> <span>b</span>`) is preserved whole.
+            if (IsCollapsibleWhitespaceOnlyRun(run))
+            {
+                run = null;
+                return;
+            }
             // The anonymous block REUSES the parent's style REF on purpose: the anonymous direct-text
             // runs also reuse it (BoxBuilder text-run creation), and InlineVerticalAlign detects
             // "block-direct text" by ReferenceEquals(runStyle, blockStyle) to suppress a cell's/block's
@@ -911,6 +928,26 @@ internal static class BoxBuilder
             parent.AppendChild(wrapper);
             run = null;
         }
+    }
+
+    /// <summary><see langword="true"/> when every box in <paramref name="run"/> is a
+    /// <see cref="BoxKind.TextRun"/> holding only collapsible white-space — i.e. the whole run would
+    /// collapse to nothing per CSS 2.1 §9.2.2.1 and must generate no anonymous block box (RC-9). A
+    /// run is preserved (returns <see langword="false"/>) if it contains any inline-level element box
+    /// (its <see cref="Box.Text"/> is empty, so it is never "whitespace"), any text run with a
+    /// non-whitespace character, or any text run whose <c>white-space</c> preserves whitespace
+    /// (pre / pre-wrap / break-spaces / pre-line — keyword ids 1/3/4/5; only normal=0 and nowrap=2
+    /// collapse).</summary>
+    private static bool IsCollapsibleWhitespaceOnlyRun(List<Box> run)
+    {
+        foreach (var c in run)
+        {
+            if (c.Kind != BoxKind.TextRun) return false;
+            if (!IsWhitespaceOnly(c.Text)) return false;
+            var whiteSpace = c.Style.ReadKeywordOrDefault(PropertyId.WhiteSpace, defaultIndex: 0);
+            if (whiteSpace is not (0 or 2)) return false;
+        }
+        return true;
     }
 
     /// <summary><see langword="true"/> when <paramref name="kind"/> establishes

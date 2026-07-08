@@ -14,5 +14,3 @@ Root
           Marker @element=li ::marker
             TextRun @element=li "3. "
           TextRun @element=li "third"
-      AnonymousBlock
-        TextRun @element=body "\n"

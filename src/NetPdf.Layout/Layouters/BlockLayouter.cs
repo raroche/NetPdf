@@ -1784,6 +1784,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // F3 — a table wrapper's auto inline margins (`margin: 0 auto`) must distribute against
+            // its FINAL used width. The grid pre-measure above can WIDEN borderBoxInlineSize past the
+            // declared width when the column min-content overflows it, so re-resolve here — the
+            // earlier call (before the pre-measure) used the pre-widening width. ResolveAutoInlineMargins
+            // is idempotent when no widening happened (it recomputes the same leftover), so this is a
+            // no-op for the common fits-within case. InlineTable is excluded (inline-level, no block
+            // auto-margins); the pre-measure's cell offsets are relative + re-anchored at emit, so
+            // updating the margin after the pre-measure is safe.
+            if (child.Kind is BoxKind.Table)
+            {
+                ResolveAutoInlineMargins(
+                    child, borderBoxInlineSize, availInlineSize,
+                    ref marginInlineStart, ref marginInlineEnd);
+            }
+
             // Per Phase 3 Task 14 cycle 1 hardening (Findings 1 + 2) —
             // multicol container pre-measure. For multicol containers,
             // grow `borderBoxBlockSize` to fit the columnized content
@@ -5606,6 +5621,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                 }
 
+                // F3 — re-distribute a table wrapper's auto inline margins (`margin: 0 auto`) against
+                // its FINAL used width: the grid pre-measure above may have widened
+                // childBorderBoxInlineSize past the declared width (min-content overflow), so the
+                // earlier call (5276, pre-measure) used the pre-widening width. Idempotent when no
+                // widening happened. Table only (InlineTable flows inline — no block auto-margins).
+                if (child.Kind is BoxKind.Table)
+                {
+                    ResolveAutoInlineMargins(
+                        child, childBorderBoxInlineSize, contentInlineSize,
+                        ref marginInlineStart, ref marginInlineEnd);
+                }
+
                 // RC-7 — break BEFORE a positionally-oversized nested table. Its repeated header+footer
                 // stack can't fit the remainder at this offset (so the emit pass's catastrophic branch
                 // would commit zero body rows + drop the body) but WOULD fit a fresh page, and the table
@@ -7722,8 +7749,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // FlexContainer / GridContainer included (PR #204 review [P2]) — `display: flex;
         // width: 200px; margin: 0 auto` centers the container, matching the explicit-width
         // gate in ResolveInFlowBorderBoxInlineSize (both sets must stay in lockstep).
+        // Table included (F3 used-table-width — `table { width: 150px; margin: 0 auto }` centers
+        // now that the wrapper has a definite used width). InlineTable is NOT — it is inline-level
+        // (atomic to line layout), so block-level auto-margin distribution does not apply.
         if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
-            or BoxKind.FlexContainer or BoxKind.GridContainer)) return;
+            or BoxKind.FlexContainer or BoxKind.GridContainer or BoxKind.Table)) return;
         // EXPLICIT width (a tag test, so the legal `width: 0` / `0%` distributes too — post-PR-#164
         // review P3) OR an explicit `max-width` (a `width: auto` block that max-width clamps below the
         // range still has a definite used width, so `margin: 0 auto` centers it — CSS 2.2 §10.3.3 +

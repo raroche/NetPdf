@@ -1688,7 +1688,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 rowBlockOffsets[r] -= resumeRowOffsetShift;
             }
-            for (var r = bodyStart; r < rowCount + 1; r++)
+            // RC-10 (Option A) — start at bodyStart + 1, NOT bodyStart. rowEndBlockOffset is a prefix
+            // array where rowEndBlockOffset[bodyStart] is the END of the last HEADER row (= the header/
+            // body boundary), which must NOT move: the header repeats at its page-1 position every page.
+            // Shifting it corrupted the repeated header cell's size (see EmitHeaderRows Phase B). Safe
+            // because a shift only occurs when resumeAtRow > bodyStart (else the shift is 0), and rowspans
+            // never cross a page break — so no body row emitted on a shifted page starts at bodyStart.
+            for (var r = bodyStart + 1; r < rowCount + 1; r++)
             {
                 rowEndBlockOffset[r] -= resumeRowOffsetShift;
             }
@@ -2572,9 +2578,17 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     columnOffsets[placement.OriginCol + placement.ColSpan]
                     - columnOffsets[placement.OriginCol];
                 var cellBlockOffset = rowBlockOffsets[r];
-                var cellBlockSize =
-                    rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
-                    - rowEndBlockOffset[placement.OriginRow];
+                // RC-10 (Option B) — size a repeated header cell from the SUM of its spanned row
+                // heights, NOT from the rowEndBlockOffset prefix array. On a resume page the body/
+                // footer offsets are shifted up (see the resumeRowOffsetShift block in AttemptLayout),
+                // and the header/body boundary entry rowEndBlockOffset[bodyStart] was caught in that
+                // shift — so `rowEnd[origin+span] - rowEnd[origin]` for a header cell went NEGATIVE on
+                // continuation pages, and FragmentPainter silently skips a non-positive-size fragment
+                // → the header background/borders vanished on every page after the first. Summing row
+                // heights is immune to any coordinate shift (header rowspans never cross the group).
+                var cellBlockSize = 0.0;
+                for (var rr = placement.OriginRow; rr < placement.OriginRow + placement.RowSpan; rr++)
+                    cellBlockSize += rows[rr].RowHeight;
                 _sink.Emit(new BoxFragment(
                     Box: placement.Cell,
                     InlineOffset: cellInlineOffset,

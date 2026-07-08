@@ -1097,6 +1097,14 @@ internal static class CssParserAdapter
         foreach (var property in properties)
         {
             if (property is null || string.IsNullOrEmpty(property.Name)) continue;
+            // RC-13 — skip EMPTY-valued declarations. AngleSharp expands a shorthand whose value is a
+            // `var()` reference (e.g. `background: var(--tint)`) into its ~10 longhands with EMPTY-STRING
+            // values (it can't resolve the custom property at parse time). Forwarding those as real
+            // declarations let a later empty `background-color: ""` WIN the cascade over the
+            // preprocessor-recovered `background-color: var(--tint)`, painting the element transparent
+            // (the missing zebra stripes in 07/08). An empty declaration value is invalid CSS and must
+            // never enter the cascade; the recovery path carries the real `var()` value.
+            if (string.IsNullOrWhiteSpace(property.Value)) continue;
             output.Add(new CssDeclaration(
                 Property: property.Name,
                 Value: new CssValue(property.Value ?? string.Empty),

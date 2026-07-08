@@ -5,6 +5,8 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
+using NetPdf.Css.Properties;
+using NetPdf.Layout.Layouters;
 using NetPdf.Text.Bidi;
 using NetPdf.Text.Hyphenation;
 using NetPdf.Text.LineBreaking;
@@ -2258,6 +2260,9 @@ internal static class LineBuilder
     {
         ArgumentNullException.ThrowIfNull(runs);
         if (runs.Count == 0) return runs;
+        // RC-12 — apply `text-transform` per run BEFORE white-space processing + shaping. `text-transform`
+        // was registered but consumed NOWHERE, so `uppercase` etc. rendered as the original case.
+        runs = ApplyTextTransforms(runs);
 
         if (mode is WhiteSpace.Pre or WhiteSpace.PreWrap or WhiteSpace.BreakSpaces)
         {
@@ -2311,6 +2316,85 @@ internal static class LineBuilder
         }
 
         return output;
+    }
+
+    /// <summary>RC-12 — apply each run's <c>text-transform</c> (CSS Text L3 §2.1) to its text before
+    /// white-space processing + shaping. Returns the SAME list when no run is transformed (the common
+    /// case, byte-identical). Atomic runs (U+FFFC) and whitespace pass through unchanged. <c>capitalize</c>
+    /// detects word starts WITHIN a run; a word straddling a run boundary is a documented residual
+    /// (deferrals.md). Casing is invariant-culture — locale-tailored casing is a documented residual.</summary>
+    private static IReadOnlyList<TextRun> ApplyTextTransforms(IReadOnlyList<TextRun> runs)
+    {
+        TextRun[]? copy = null;
+        for (var i = 0; i < runs.Count; i++)
+        {
+            var transformed = ApplyTextTransform(runs[i]);
+            if (!string.Equals(transformed.Text, runs[i].Text, StringComparison.Ordinal))
+            {
+                if (copy is null)
+                {
+                    copy = new TextRun[runs.Count];
+                    for (var j = 0; j < runs.Count; j++) copy[j] = runs[j];
+                }
+                copy[i] = transformed;
+            }
+        }
+        return copy ?? runs;
+    }
+
+    private static TextRun ApplyTextTransform(TextRun run)
+    {
+        // Atomic (U+FFFC) runs are opaque; empty text has nothing to transform.
+        if (run.Atomic is not null || run.Text.Length == 0) return run;
+        // Keyword contract (KeywordResolver): none=0, capitalize=1, uppercase=2, lowercase=3;
+        // full-width=4 / full-size-kana=5 are deferred (pass through).
+        var tt = run.Style.ReadKeywordOrDefault(PropertyId.TextTransform, defaultIndex: 0);
+        var transformed = tt switch
+        {
+            1 => Capitalize(run.Text),
+            2 => run.Text.ToUpperInvariant(),
+            3 => run.Text.ToLowerInvariant(),
+            _ => run.Text,
+        };
+        return string.Equals(transformed, run.Text, StringComparison.Ordinal)
+            ? run
+            : new TextRun(transformed, run.Style);
+    }
+
+    /// <summary>CSS <c>text-transform: capitalize</c> — upper-case the first typographic letter of each
+    /// WORD (a letter after whitespace / punctuation / separator / symbol, or the run start).</summary>
+    private static string Capitalize(string text)
+    {
+        char[]? chars = null;
+        var atWordStart = true;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            // Apostrophes — straight ' (U+0027) and the typographic ' (U+2019) — are INTRA-word in
+            // contractions / possessives (don't, Roland's) per CSS Text L3 §2.1.1 (a "word" is a UAX #29
+            // word). Treat them as TRANSPARENT: neither starting a new word (so "don't" → "Don't", not
+            // "Don'T") nor consuming a pending word-start (so a leading "'twas" still yields "'Twas").
+            if (c is '\u0027' or '\u2019')
+            {
+                continue;
+            }
+            if (char.IsWhiteSpace(c) || char.IsPunctuation(c) || char.IsSeparator(c) || char.IsSymbol(c))
+            {
+                atWordStart = true;
+                continue;
+            }
+            if (atWordStart)
+            {
+                var up = char.ToUpperInvariant(c);
+                if (up != c)
+                {
+                    chars ??= text.ToCharArray();
+                    chars[i] = up;
+                }
+            }
+            atWordStart = false;
+        }
+        return chars is null ? text : new string(chars);
     }
 
     /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 1 — per-source-
@@ -2407,6 +2491,9 @@ internal static class LineBuilder
         // Per cycle 3d sub-cycle 1 review Rec #4 — pre-cancelled
         // tokens fast-path out before any allocation.
         cancellationToken.ThrowIfCancellationRequested();
+
+        // RC-12 — apply `text-transform` per run BEFORE white-space processing + shaping.
+        runs = ApplyTextTransforms(runs);
 
         var output = new TextRun[runs.Count];
         // Initial `inWs = true` strips document-leading whitespace

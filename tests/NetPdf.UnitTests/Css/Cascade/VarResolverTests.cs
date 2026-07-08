@@ -174,28 +174,25 @@ public sealed class VarResolverTests
     [Fact]
     public async Task Multiple_vars_in_single_value_all_resolve()
     {
-        // Test against a longhand property so AngleSharp preserves the var()-bearing value.
+        // Test against a genuine LONGHAND (transform) so AngleSharp preserves the var()-bearing value as
+        // a single pending-substitution value with MULTIPLE var() refs — a var()-in-shorthand (e.g.
+        // padding) is expanded to EMPTY longhands AngleSharp can't resolve, and those empty declarations
+        // are (correctly, RC-13) dropped before the cascade rather than falsely "resolving" to nothing.
         var doc = await ParseHtml("<p>x</p>");
         var sheet = await ParseSheet(
-            "p { --w: 2px; --c: red; padding: var(--w) var(--w) var(--w) var(--c) }");
+            "p { --a: 5px; --b: 10px; transform: translate(var(--a), var(--b)) }");
         var cascade = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
             CssMediaContext.DefaultPrint);
         var resolved = VarResolver.Resolve(cascade, doc);
 
         var styles = resolved.TryGetStylesFor(Q(doc, "p"));
         Assert.NotNull(styles);
-        // At least one padding-* longhand should hold the substituted value.
-        bool foundSubstitution = false;
-        foreach (var name in styles!.Properties)
-        {
-            if (!name.StartsWith("padding", System.StringComparison.Ordinal)) continue;
-            var winner = styles.GetWinner(name);
-            if (winner is null) continue;
-            // After var() substitution, neither var( nor --w/--c remain in the resolved text.
-            Assert.DoesNotContain("var(", winner.ResolvedValue);
-            foundSubstitution = true;
-        }
-        Assert.True(foundSubstitution, "expected at least one padding-* longhand with substitution");
+        var transform = styles!.GetWinner("transform");
+        Assert.NotNull(transform);
+        // BOTH var()s substituted: neither var( nor the custom-property names remain.
+        Assert.DoesNotContain("var(", transform!.ResolvedValue);
+        Assert.Contains("5px", transform.ResolvedValue);
+        Assert.Contains("10px", transform.ResolvedValue);
     }
 
     [Fact]

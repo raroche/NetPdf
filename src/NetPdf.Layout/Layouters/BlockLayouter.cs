@@ -4536,7 +4536,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var translatingSink = new AbsoluteTranslatingSink(
             outerSink: _sink,
             inlineTranslation: inlineOrigin,
-            blockTranslation: blockOrigin);
+            blockTranslation: blockOrigin,
+            // The box's own decoration was already emitted by EmitOneFixedBox / EmitOneAbsoluteBox;
+            // the root-inline content fragment this dispatch produces must paint text only (RC-5).
+            decorationOwner: box);
         var innerFragmentainer = new FragmentainerContext(
             contentInlineSize: inlineSize,
             blockSize: blockSize)
@@ -4559,7 +4562,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             shaperResolver: _shaperResolver,
             // Fixed content isn't paginated, so a nested grid mustn't
             // paginate inside it either (it would drop rows past the box).
-            disableGridPagination: noPaginate);
+            disableGridPagination: noPaginate,
+            // RC-5 — a position:fixed / position:absolute box with INLINE-ONLY content (the ubiquitous
+            // `<div class="footer">Total: $384.00</div>`) had its own inline text SILENTLY DROPPED: the
+            // root-inline gate (see _layoutRootInlineContent) is off by default, so the block-only child
+            // loop skipped the box's direct text runs. Opt in here so fixed/abspos boxes render their
+            // text (index.pdf's footer text was missing on every page).
+            layoutRootInlineContent: true);
         using var innerResolver = new BreakResolver();
         // The result is intentionally not consumed: with pagination
         // suppressed (fixed) the content fully overflows in one pass; the
@@ -4584,26 +4593,38 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         private readonly double _inlineTranslation;
         private readonly double _blockTranslation;
         private readonly int _baseline;
+        private readonly Box? _decorationOwner;
 
         public AbsoluteTranslatingSink(
             IBlockFragmentSink outerSink,
             double inlineTranslation,
-            double blockTranslation)
+            double blockTranslation,
+            Box? decorationOwner = null)
         {
             _outer = outerSink;
             _inlineTranslation = inlineTranslation;
             _blockTranslation = blockTranslation;
             _baseline = outerSink.Cursor;
+            _decorationOwner = decorationOwner;
         }
 
         public int Cursor => _outer.Cursor - _baseline;
 
         public void Emit(BoxFragment fragment)
         {
+            // RC-5 — the inline-only-root content fragment (box == the abspos/fixed box itself) paints
+            // TEXT ONLY: EmitOneFixedBox / EmitOneAbsoluteBox already emitted the box's own border-box
+            // (decoration) fragment, so re-painting the decoration here would double it. Opting the
+            // content dispatch into root-inline layout (layoutRootInlineContent: true, the RC-5 fix for
+            // dropped fixed/abspos text) is what surfaced this fragment; suppress its decoration so only
+            // the text paints. Block-CHILD fragments (box != the box) keep their own decoration.
+            var suppressDecoration = _decorationOwner is not null
+                && ReferenceEquals(fragment.Box, _decorationOwner);
             _outer.Emit(fragment with
             {
                 InlineOffset = fragment.InlineOffset + _inlineTranslation,
                 BlockOffset = fragment.BlockOffset + _blockTranslation,
+                SuppressBoxDecoration = fragment.SuppressBoxDecoration || suppressDecoration,
             });
         }
 

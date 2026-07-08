@@ -1347,6 +1347,13 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         // ITSELF a flex / grid / table container must be laid out by the matching layouter, NOT a plain
         // BlockLayouter (which dispatches only CHILDREN): a table grid item would otherwise have every
         // row skipped and be silently DROPPED (RC-8), and a flex grid item would stack its items.
+        //
+        // KNOWN LIMITATION (follow-up): the plain-block branch below is an abspos delegation boundary
+        // (its nested BlockLayouter runs a post-flow abspos pass), but the flex/grid/table container-root
+        // branches are not — Flex/Grid/TableLayouter don't emit out-of-flow descendants, and the outer
+        // grid abspos walk deliberately doesn't descend into items. So a position:absolute descendant of
+        // a container-ROOT grid item is not emitted here. Tracked for the root-dispatch abspos follow-up
+        // (see WP-4 handoff); the common RC-6/RC-8 cases have no such descendant.
         using var itemResolver = new BreakResolver();
         ILayouter itemLayouter;
         if (itemBox.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer)
@@ -1368,12 +1375,31 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         }
         else if (itemBox.Kind is BoxKind.Table or BoxKind.InlineTable)
         {
-            var table = new TableLayouter(
+            // A table grid item lays out ATOMICALLY like the flex/grid branches (allowPagination:
+            // false). TableLayouter has no allowPagination toggle — it paginates against the
+            // fragmentainer block size — so give it an effectively-unbounded budget (mirrors
+            // NestedContentMeasurer's table branch). Against the cell-sized budget a multi-page
+            // table would PageComplete(TableContinuation), and since grid-item content is atomic
+            // (cycle-1: no nested-continuation propagation, the result is discarded) its remaining
+            // rows would be silently truncated. Overflowing the cell is the spec'd cycle-1 behavior.
+            var tableFragmentainer = new FragmentainerContext(
+                contentInlineSize: cellInlineSize,
+                blockSize: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx);
+            var tableLayout = new LayoutContext(tableFragmentainer)
+            {
+                Diagnostics = outerLayout.Diagnostics,
+                WritingMode = outerLayout.WritingMode,
+                IsRtl = outerLayout.IsRtl,
+            };
+            using var table = new TableLayouter(
                 rootBox: itemBox, sink: translatingSink, incomingContinuation: null,
                 diagnostics: _diagnostics, shaperResolver: _shaperResolver);
             table.ConfigureEmission(0, 0, cellInlineSize);
-            _ = table.MeasureContentHeight(innerFragmentainer, ref innerLayout, cancellationToken);
-            itemLayouter = table;
+            _ = table.MeasureContentHeight(tableFragmentainer, ref tableLayout, cancellationToken);
+            _ = table.AttemptLayout(
+                tableFragmentainer, ref tableLayout, itemResolver,
+                LayoutAttemptStrategy.LastResort, cancellationToken);
+            return;
         }
         else
         {

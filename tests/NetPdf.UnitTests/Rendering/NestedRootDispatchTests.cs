@@ -64,6 +64,30 @@ public sealed class NestedRootDispatchTests
     }
 
     [Fact]
+    public void Tall_table_grid_item_in_a_small_track_renders_every_row_not_truncated()
+    {
+        // A multi-row `<table>` grid item whose grid track is SHORTER than the table. The item content
+        // is atomic (the grid discards the inner layouter's result), so laying the table out against the
+        // small cell-sized budget would PageComplete(TableContinuation) and silently truncate the
+        // remaining rows. It must instead lay out atomically (effectively-unbounded budget) and emit
+        // every row — overflowing the cell — identical to the same table in a plain block.
+        var manyRows = new StringBuilder("<table>");
+        for (var i = 0; i < 20; i++)
+            manyRows.Append("<tr><td>Row</td><td>").Append(i).Append("</td></tr>");
+        manyRows.Append("</table>");
+
+        var grid = HtmlPdf.ConvertDetailed(
+            "<style>.w{display:grid;grid-template-rows:40px}td{padding:2px}</style>"
+            + "<div class=\"w\">" + manyRows + "</div>");
+        var block = HtmlPdf.ConvertDetailed(
+            "<style>.w{display:block}td{padding:2px}</style>"
+            + "<div class=\"w\">" + manyRows + "</div>");
+
+        Assert.True(TextRunCount(block.Pdf) > 0, "control (block) table should render text");
+        Assert.Equal(TextRunCount(block.Pdf), TextRunCount(grid.Pdf));
+    }
+
+    [Fact]
     public void Flex_item_that_is_itself_flex_lays_out_horizontally_not_stacked()
     {
         // RC-6: a flex item that is `display: flex` (icon + name lockup). Before the fix it fell to

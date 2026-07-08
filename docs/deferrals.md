@@ -533,6 +533,20 @@ grepping the ID).
     `break-inside: avoid`; RTL writing modes / row reversal / caption
     inline-axis keyword routing; HTML5 colspan='0'/rowspan='0'
     remainder semantics; percentage column widths.
+  - **F3 used-table-width (partial).** An explicit `width` (px / %) on a
+    `display: table` / `inline-table` wrapper is now HONORED
+    (`BlockLayouter.ResolveInFlowBorderBoxInlineSize` includes the table
+    kinds — the declared border-box width sizes the wrapper + becomes the
+    grid's available width, floored at GRIDMIN by the column algorithm).
+    STILL DEFERRED: shrink-to-fit for `width: auto` tables (they still fill
+    the containing block, not max-content — CSS 2.2 §17.5.2 auto width);
+    percentage cell/column widths (drop to 0); the nested-table max-content
+    `1e6` probe poison; and the caption-width floor these need (narrowing an
+    auto wrapper to its grid collapses captions/0-content tables — the
+    caption/wrapper width derives from the grid, so shrink-to-fit must floor
+    the table width by the caption's content width). These land together as
+    a dedicated PR (they break the 23 auto-width table-contract tests as an
+    intended re-pin + need the caption floor to avoid regressions).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
     — now consumes the table's
     `MeasuredUsedInlineSize` to widen the wrapper's border-box

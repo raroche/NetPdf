@@ -1795,19 +1795,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
-            // F3 — a table wrapper's auto inline margins (`margin: 0 auto`) must distribute against
-            // its FINAL used width. The grid pre-measure above can WIDEN borderBoxInlineSize past the
-            // declared width when the column min-content overflows it, so re-resolve here — the
-            // earlier call (before the pre-measure) used the pre-widening width. ResolveAutoInlineMargins
-            // is idempotent when no widening happened (it recomputes the same leftover), so this is a
-            // no-op for the common fits-within case. InlineTable is excluded (inline-level, no block
-            // auto-margins); the pre-measure's cell offsets are relative + re-anchored at emit, so
-            // updating the margin after the pre-measure is safe.
+            // F3 — a table wrapper's auto inline margins (`margin: 0 auto`) must distribute against its
+            // FINAL used width: the grid pre-measure above SHRINKS an auto table (or WIDENS a declared
+            // table on min-content overflow), so the earlier call (before the pre-measure) used the
+            // pre-shrink/pre-widen width. Re-resolve here against the final borderBoxInlineSize, then —
+            // since PreMeasureTableIfNeeded already ConfigureEmission'd the table at the PRE-centering
+            // inline offset — shift the table's configured inline offset by the margin DELTA so the emit
+            // lands centered (offset-only; block offset + measured heights/widths are unchanged, so no
+            // re-measure is needed). InlineTable is excluded (inline-level, no block auto-margins).
             if (child.Kind is BoxKind.Table)
             {
+                var marginBeforeReResolve = marginInlineStart;
                 ResolveAutoInlineMargins(
                     child, borderBoxInlineSize, availInlineSize,
                     ref marginInlineStart, ref marginInlineEnd);
+                var marginDelta = marginInlineStart - marginBeforeReResolve;
+                if (marginDelta != 0.0)
+                    pendingTableLayouter?.ShiftContentInlineOffset(marginDelta);
             }
 
             // Per Phase 3 Task 14 cycle 1 hardening (Findings 1 + 2) —
@@ -5638,16 +5642,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                 }
 
-                // F3 — re-distribute a table wrapper's auto inline margins (`margin: 0 auto`) against
-                // its FINAL used width: the grid pre-measure above may have widened
-                // childBorderBoxInlineSize past the declared width (min-content overflow), so the
-                // earlier call (5276, pre-measure) used the pre-widening width. Idempotent when no
-                // widening happened. Table only (InlineTable flows inline — no block auto-margins).
+                // F3 — re-distribute a table wrapper's auto inline margins (`margin: 0 auto`) against its
+                // FINAL used width (the grid pre-measure above SHRINKS an auto table / WIDENS a declared
+                // one), then shift the already-configured table inline offset by the margin DELTA so the
+                // emit lands centered (the pre-measure ConfigureEmission'd it at the pre-centering
+                // offset). Offset-only — heights/widths are unchanged. Table only (InlineTable flows
+                // inline — no block auto-margins).
                 if (child.Kind is BoxKind.Table)
                 {
+                    var marginBeforeReResolve = marginInlineStart;
                     ResolveAutoInlineMargins(
                         child, childBorderBoxInlineSize, contentInlineSize,
                         ref marginInlineStart, ref marginInlineEnd);
+                    var marginDelta = marginInlineStart - marginBeforeReResolve;
+                    if (marginDelta != 0.0)
+                        nestedPendingTable?.ShiftContentInlineOffset(marginDelta);
                 }
 
                 // RC-7 — break BEFORE a positionally-oversized nested table. Its repeated header+footer
@@ -7682,13 +7691,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   <item><see cref="BoxKind.AnonymousBlock"/> SHARES its parent's style object, so the
     ///   parent's explicit width would double-apply (plus re-add the parent's borders/padding);
     ///   per Display L3 §3.1 anonymous boxes take the initial <c>width: auto</c>.</item>
-    ///   <item><see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/> wrappers now honor
-    ///   an explicit <c>width</c> (F3 used-table-width Step B, CSS 2.2 §17.5.2): the declared
-    ///   border-box width is the wrapper size and becomes the grid's available width (floored at
-    ///   GRIDMIN by the column algorithm). A <c>width: auto</c> table still FILLS the available range
-    ///   here — auto shrink-to-fit is the deferred remainder of F3 (see
-    ///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>); the MEASURED grid only WIDENS the
-    ///   wrapper when it overflows (Task 12 Finding 6).</item>
+    ///   <item><see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/> wrappers honor an
+    ///   explicit <c>width</c> (F3 used-table-width, CSS 2.2 §17.5.2): the declared border-box width
+    ///   is the wrapper size and becomes the grid's available width (floored at GRIDMIN). A
+    ///   <c>width: auto</c> table fills the available range HERE, then the caller NARROWS the wrapper
+    ///   to the MEASURED grid's shrink-to-fit width (Step C — the table-driven feedback below);
+    ///   `margin: 0 auto` centers the resulting definite-width table.</item>
     ///   <item><see cref="BoxKind.BlockReplacedElement"/> sizes like a plain block
     ///   (img-pipeline cycle): the sizing pre-pass writes the §10.3.2 used width/height into
     ///   the slots, so an explicit width here is the image's used size — filling would
@@ -7741,8 +7749,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // (minus margins); §10.4 — min-width/max-width then clamp that USED
             // width (e.g. `max-width: 600px` on an auto-width content column).
             // No-op when neither is set, so the fill path stays byte-identical
-            // (PR #203 review [P2]). Gated to plain block kinds — anonymous / flex
-            // / grid / table fill is unchanged (they own their width logic).
+            // (PR #203 review [P2]). A `width: auto` TABLE also fills HERE, but its caller then
+            // narrows the wrapper to the measured grid's shrink-to-fit width (F3 Step C) — the fill
+            // is just the "available width" input to the column algorithm's shrink clamp.
             var autoFillWidth = Math.Max(0,
                 availableInlineSize - marginInlineStart - marginInlineEnd);
             return child.ClampBorderBoxToMinMax(
@@ -7786,7 +7795,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // §10.4; the `borderBoxInlineSize` passed in is already the max-width-clamped used width, so the
         // leftover below is 0 when max-width doesn't actually clamp → byte-identical for the fill case).
         // A plain auto-width box with no max-width keeps the fill behavior (auto margins read 0).
-        if (!HasExplicitWidth(child) && !HasExplicitMaxWidth(child)) return;
+        // F3 — a Table ALWAYS has a definite used width (explicit OR the measured shrink-to-fit width),
+        // so `table { margin: 0 auto }` centers even without an explicit `width`. The caller passes the
+        // FINAL (post-shrink) borderBoxInlineSize, so the leftover is real. (Non-table auto boxes still
+        // need an explicit width / max-width to have a definite width to center.)
+        if (child.Kind is not BoxKind.Table && !HasExplicitWidth(child) && !HasExplicitMaxWidth(child)) return;
         var leftAuto = child.Style.Get(PropertyId.MarginLeft).Tag == ComputedSlotTag.Keyword;
         var rightAuto = child.Style.Get(PropertyId.MarginRight).Tag == ComputedSlotTag.Keyword;
         if (!leftAuto && !rightAuto) return;

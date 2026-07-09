@@ -90,6 +90,25 @@ public sealed class TableShrinkToFitTests
             $"col A {r.W:0.##}pt — a nested %-table poisoned the cell max-content (col grew huge)."));
     }
 
+    [Theory]
+    [InlineData("<colgroup><col style='width:100%'><col></colgroup>")]   // CSS percent on <col>
+    [InlineData("<colgroup><col width='100%'><col></colgroup>")]          // HTML width attr percent
+    public void Col_percent_spacer_absorbs_extra(string colgroup)
+    {
+        // review [P2] — Step E must also honor a percentage declared on `<col>` / `<colgroup>`, not
+        // only on a cell. A `<col width:100%>` spacer column absorbs the surplus so the content column
+        // ("Total") shrinks to max-content and hugs the right edge.
+        var content = Rects(
+            "<table style='width:100%'>" + colgroup
+            + "<tbody><tr><td></td><td class='c'>Total</td></tr></tbody></table>",
+            "1 0 0", ".c{background:#f00}");
+        Assert.Single(content);
+        Assert.True(content[0].W < 40, $"content cell {content[0].W:0.##}pt should be max-content (~26).");
+        Assert.True(content[0].X > 500 && System.Math.Abs(content[0].X + content[0].W - 595.28) < 1.0,
+            $"content cell [{content[0].X:0.##}..{content[0].X + content[0].W:0.##}] should hug the right "
+            + "edge — the <col> percent spacer did not absorb the surplus.");
+    }
+
     private sealed class SynthResolver : IFontResolver
     {
         private static readonly byte[] FontBytes = SyntheticFont.Build();

@@ -90,6 +90,21 @@ public sealed class TableExplicitWidthTests
     }
 
     [Fact]
+    public void Auto_width_shrink_to_fit_table_with_auto_margins_is_centered()
+    {
+        // review [P2] — a `width: auto` table now has a definite (shrink-to-fit) used width, so
+        // `margin: 0 auto` centers it. "Total" ≈ 26pt in a 595.28pt page → centered at x ≈ 284.6.
+        var rects = CellRects("<table><tbody><tr><td>Total</td></tr></tbody></table>", "margin:0 auto");
+        Assert.NotEmpty(rects);
+        Assert.All(rects, r =>
+        {
+            Assert.True(r.W < 40, $"width {r.W:0.##}pt should be shrunk max-content.");
+            Assert.True(System.Math.Abs(r.X - (595.28 - r.W) / 2) < 1.5,
+                $"cell x {r.X:0.##}pt — a shrink-to-fit `margin:0 auto` table did not center.");
+        });
+    }
+
+    [Fact]
     public void Auto_margin_min_content_overflow_stays_on_page()
     {
         // review [P2] ordering / min-content case — a tiny declared width whose content can't fit

@@ -540,10 +540,12 @@ grepping the ID).
     `ComputeColumnWidthsAuto` + the measured grid narrows the wrapper in both
     BlockLayouter dispatch paths); `table { margin: 0 auto }` centers; a
     `width: N%` NESTED table behaves as auto under the intrinsic max-content
-    probe (Step D — kills the `1e6` poison); and percentage columns absorb
-    the saturated-path surplus so the `<td width:100%>` spacer idiom pushes a
+    probe (Step D — kills the `1e6` poison); and percentage columns (from a
+    cell OR a `<col>`/`<colgroup>`, CSS or the HTML `width="N%"` attribute)
+    absorb the saturated-path surplus so the `width:100%` spacer idiom pushes a
     following content cell to the right edge (Step E — `DistributeSaturatedExtra`,
-    §3.5.3). A table with NO max-content (all-empty cells, `sumMax == 0`) keeps
+    §3.5.3); a `width: auto` shrink-to-fit table also centers under
+    `margin: 0 auto`. A table with NO max-content (all-empty cells, `sumMax == 0`) keeps
     the fill (a 0-width wrapper is degenerate — its emit + caption are dropped).
     RESIDUAL: the DEEP-NESTED spacer idiom (index.html's totals card = items
     table → colspan cell → `w-full` wrapper → auto cell → totals table, 3

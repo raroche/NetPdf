@@ -414,6 +414,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         _emissionConfigured = true;
     }
 
+    /// <summary>F3 — shift the configured content inline-start by <paramref name="delta"/> after the
+    /// pre-measure. A `width: auto` table's auto inline margins (`margin: 0 auto`) can only be resolved
+    /// once its shrink-to-fit width is measured, which happens AFTER <see cref="ConfigureEmission"/> was
+    /// called with the pre-centering offset. Centering changes only the inline START (by the margin
+    /// delta) — the block offset + measured row heights + column widths are unaffected — so the emit
+    /// re-anchors correctly without a re-measure. Cell inline offsets derive from
+    /// <see cref="_contentInlineOffset"/>, so shifting it moves the whole grid uniformly.</summary>
+    public void ShiftContentInlineOffset(double delta)
+    {
+        _contentInlineOffset += delta;
+    }
+
     private double _contentInlineOffset;
     private double _contentBlockOffset;
     private double _contentInlineSize;
@@ -4441,8 +4453,10 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // <colgroup> as siblings of <tr> in the source HTML, which
             // BoxBuilder slots under the synthesized TableGrid.
             var colCursor = 0;
+            // Fixed layout (table-layout: fixed) doesn't use the auto-layout percent-column surplus
+            // distribution — pass a throwaway percents array (collected but unread here).
             CollectColumnsFromGridLevel(
-                wrapper, columnCount, widths, hasDeclared, ref colCursor,
+                wrapper, columnCount, widths, hasDeclared, new double[columnCount], ref colCursor,
                 cancellationToken);
 
             // Pass B — walk first-row placements. Sub-cycle 4 hardening
@@ -4600,19 +4614,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // — see docs/deferrals.md#table-auto-fixed-spans-borders.
         var declaredWidths = new double[columnCount];
         var columnHasDeclared = new bool[columnCount];
+        // F3 Step E — per-column PERCENTAGE widths so the saturated path can route the surplus to
+        // percentage columns before the equal split (CSS Tables L3 §3.5.3 — the `width: 100%` spacer
+        // idiom). Sourced from BOTH `<col>`/`<colgroup>` declarations (in the grid-level walk, span-
+        // distributed) AND the first row's single-column cells (`<td class="w-full">`), taking the max.
+        var columnPercents = new double[columnCount];
         var colCursor = 0;
         CollectColumnsFromGridLevel(
-            wrapper, columnCount, declaredWidths, columnHasDeclared,
+            wrapper, columnCount, declaredWidths, columnHasDeclared, columnPercents,
             ref colCursor, cancellationToken);
         ApplyFirstRowCellWidths(
             placements, declaredWidths, columnHasDeclared, columnCount,
             cancellationToken);
 
-        // F3 Step E — per-column PERCENTAGE widths (from the first row's single-column cells: the
-        // `<td class="w-full">` spacer idiom). Collected so the saturated path can route the surplus
-        // to percentage columns before the equal split (CSS Tables L3 §3.5.3). Colspan>1 percent
-        // cells are not distributed here (rare; the equal split still applies).
-        var columnPercents = new double[columnCount];
         for (var i = 0; i < placements.Count; i++)
         {
             var p = placements[i];
@@ -5051,7 +5065,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// declarations are silently ignored per CSS Tables L3 §11.1).</para>
     /// </summary>
     private static void CollectColumnsFromGridLevel(
-        Box wrapper, int columnCount, double[] widths, bool[] hasDeclared,
+        Box wrapper, int columnCount, double[] widths, bool[] hasDeclared, double[] columnPercents,
         ref int colCursor, CancellationToken cancellationToken)
     {
         // Wrapper-level children first (rare but valid per Display 3 if
@@ -5061,7 +5075,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             VisitColumnishChild(
-                wrapper.Children[i], columnCount, widths, hasDeclared,
+                wrapper.Children[i], columnCount, widths, hasDeclared, columnPercents,
                 ref colCursor, cancellationToken);
         }
 
@@ -5072,9 +5086,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             VisitColumnishChild(
-                grid.Children[i], columnCount, widths, hasDeclared,
+                grid.Children[i], columnCount, widths, hasDeclared, columnPercents,
                 ref colCursor, cancellationToken);
         }
+    }
+
+    /// <summary>F3 Step E — record a <c>&lt;col&gt;</c>/<c>&lt;colgroup&gt;</c> percentage width across
+    /// the <c>[start, end)</c> columns it just claimed (max-wins, mirroring the cell collection).</summary>
+    private static void ApplyPercentToColumns(double pct, int start, int end, double[] columnPercents)
+    {
+        if (!(pct > 0)) return;
+        for (var c = start; c < end && c < columnPercents.Length; c++)
+            if (pct > columnPercents[c]) columnPercents[c] = pct;
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 4 — visit one direct
@@ -5088,7 +5111,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// <c>span</c> consecutive columns.
     /// </summary>
     private static void VisitColumnishChild(
-        Box child, int columnCount, double[] widths, bool[] hasDeclared,
+        Box child, int columnCount, double[] widths, bool[] hasDeclared, double[] columnPercents,
         ref int colCursor, CancellationToken cancellationToken)
     {
         switch (child.Kind)
@@ -5097,9 +5120,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 var span = ParseColumnSpan(child);
                 var width = ReadColumnWidthPx(child);
+                var colStart = colCursor;
                 ApplyDeclaredWidthToColumns(
                     width, span, columnCount, widths, hasDeclared,
                     ref colCursor, cancellationToken);
+                ApplyPercentToColumns(ReadColumnWidthPercent(child), colStart, colCursor, columnPercents);
                 break;
             }
             case BoxKind.TableColumnGroup:
@@ -5125,18 +5150,23 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                         if (inner.Kind != BoxKind.TableColumn) continue;
                         var span = ParseColumnSpan(inner);
                         var width = ReadColumnWidthPx(inner);
+                        var colStart = colCursor;
                         ApplyDeclaredWidthToColumns(
                             width, span, columnCount, widths, hasDeclared,
                             ref colCursor, cancellationToken);
+                        ApplyPercentToColumns(
+                            ReadColumnWidthPercent(inner), colStart, colCursor, columnPercents);
                     }
                 }
                 else
                 {
                     var span = ParseColumnSpan(child);
                     var width = ReadColumnWidthPx(child);
+                    var colStart = colCursor;
                     ApplyDeclaredWidthToColumns(
                         width, span, columnCount, widths, hasDeclared,
                         ref colCursor, cancellationToken);
+                    ApplyPercentToColumns(ReadColumnWidthPercent(child), colStart, colCursor, columnPercents);
                 }
                 break;
             }
@@ -5192,15 +5222,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     ///     attribute is parsed as a non-negative integer in CSS px;
     ///     non-integer / negative values are ignored.</item>
     /// </list>
-    /// Returns 0 when both are absent / invalid. Percentage column
-    /// widths (e.g. <c>20%</c>) are NOT supported — sub-cycle 5+ work,
-    /// see <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.
+    /// Returns 0 when both are absent / invalid. A PERCENTAGE column width (e.g. <c>20%</c>) does not
+    /// contribute a fixed px min/max here (it maps to 0), but F3 Step E reads it SEPARATELY via
+    /// <see cref="ReadColumnWidthPercent"/> to route the auto-layout saturated-path surplus to that
+    /// column (CSS Tables L3 §3.5.3 — the <c>width: 100%</c> spacer idiom).
     /// </summary>
     private static double ReadColumnWidthPx(Box box)
     {
-        // CSS width (resolved-px). Percentages + auto map to 0 per
-        // ReadLengthPxOrZero's contract — that's the documented sub-
-        // cycle-4 simplification.
+        // CSS width (resolved-px). Percentages + auto map to 0 per ReadLengthPxOrZero's contract — a
+        // percent doesn't set a fixed px column width; F3 Step E's ReadColumnWidthPercent handles it.
         var cssWidth = box.Style.ReadLengthPxOrZero(PropertyId.Width);
         if (cssWidth > 0) return ColumnBorderBoxWidth(box, cssWidth);
 

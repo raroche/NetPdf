@@ -3,6 +3,7 @@
 
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace NetPdf.UnitTests.Docs;
@@ -64,6 +65,9 @@ public sealed class DeferralsParityTests
         "abspos-cycle-1-explicit-only",
         "fixed-cycle-1",
         "layout-to-pdf-pipeline",
+        "visual-regression-cross-engine-tolerance",
+        "ci-nonblocking-platform-native-deps",
+        "ci-nonblocking-macos-x64-runner-availability",
     };
 
     [Fact]
@@ -140,6 +144,90 @@ public sealed class DeferralsParityTests
                 $"vocabulary. Allowed: approximated | throws | not-started. " +
                 $"Saw: '{snippet.Trim()}'.");
             pos = snippetEnd;
+        }
+    }
+
+    /// <summary>The exact Priority LEVEL each newly-added deferral (that carries the optional Priority
+    /// field) must declare. Guards the field per-ID so a new entry can't silently drop its Priority line —
+    /// the `seen >= 2` count alone would still pass if one of three lost its Priority (PR #315 review [P2]).
+    /// Add an entry here when a new deferral carries a Priority; the level must match the doc.</summary>
+    private static readonly System.Collections.Generic.Dictionary<string, string> ExpectedPriorities = new()
+    {
+        ["visual-regression-cross-engine-tolerance"] = "P2",
+        ["ci-nonblocking-platform-native-deps"] = "P3",
+        ["ci-nonblocking-macos-x64-runner-availability"] = "P3",
+    };
+
+    /// <summary>The documented label for each level (schema: `P1` high / `P2` medium / `P3` low).</summary>
+    private static readonly System.Collections.Generic.Dictionary<string, string> PriorityLabels = new()
+    {
+        ["P1"] = "high",
+        ["P2"] = "medium",
+        ["P3"] = "low",
+    };
+
+    [Fact]
+    public void Deferrals_priority_lines_use_a_defined_level_with_matching_label_and_carry_a_rationale()
+    {
+        // The optional Priority field, when present, must use P1|P2|P3, the label must MATCH the schema
+        // mapping (P1 high / P2 medium / P3 low — so `P1 (low)` is rejected, PR #315 review [P3]), and it
+        // must carry a one-line rationale. Without this a malformed `P0`/`High`, a mismatched label, or a
+        // rationale-less line would keep CI green.
+        var content = LoadDeferralsDoc();
+        const string marker = "**Priority** — ";
+        // `**P2 (medium).**` — capture level + label + the rationale that starts on the same line.
+        var lineRegex = new Regex(@"^\*\*(P[123])\s+\(([a-z]+)\)\.?\*\*\s+(\S[^\r\n]*)$");
+        var pos = 0;
+        var seen = 0;
+        while (true)
+        {
+            var start = content.IndexOf(marker, pos, StringComparison.Ordinal);
+            if (start < 0) break;
+            start += marker.Length;
+            var eol = content.IndexOfAny(new[] { '\r', '\n' }, start);
+            if (eol < 0) eol = content.Length;
+            var line = content.Substring(start, eol - start);
+            var m = lineRegex.Match(line);
+            Assert.True(m.Success,
+                "Priority line in docs/deferrals.md is malformed. Expected " +
+                "`**P1|P2|P3 (label).** <rationale>` (P1 high / P2 medium / P3 low). " +
+                $"Saw: '{line.Trim()}'.");
+            var level = m.Groups[1].Value;
+            var label = m.Groups[2].Value;
+            Assert.True(PriorityLabels[level] == label,
+                $"Priority '{level}' in docs/deferrals.md is labeled '({label})' but the schema maps " +
+                $"{level} → '{PriorityLabels[level]}'. Saw: '{line.Trim()}'.");
+            Assert.True(m.Groups[3].Value.Trim().Length > 0,
+                $"Priority '{level}' in docs/deferrals.md has no rationale. Saw: '{line.Trim()}'.");
+            seen++;
+            pos = eol;
+        }
+        // Guard against the marker/format silently changing so nothing is validated.
+        Assert.True(seen >= ExpectedPriorities.Count,
+            $"expected at least {ExpectedPriorities.Count} well-formed Priority lines; matched {seen}.");
+    }
+
+    [Fact]
+    public void Newly_added_deferrals_carry_their_expected_priority_level()
+    {
+        // Per-ID guard (PR #315 review [P2]): each newly-added deferral must still declare its Priority at the
+        // expected level. A durable map so backlog ordering can't silently drift and no new entry loses its
+        // Priority line unnoticed.
+        var content = LoadDeferralsDoc();
+        foreach (var (id, level) in ExpectedPriorities)
+        {
+            var anchor = content.IndexOf($"**ID** — `{id}`", StringComparison.Ordinal);
+            Assert.True(anchor >= 0,
+                $"deferral '{id}' (in ExpectedPriorities) has no entry in docs/deferrals.md.");
+            // The entry's own section runs from its ID anchor to the next `## ` heading.
+            var nextSection = content.IndexOf("\n## ", anchor, StringComparison.Ordinal);
+            var section = nextSection < 0
+                ? content.Substring(anchor)
+                : content.Substring(anchor, nextSection - anchor);
+            Assert.True(
+                section.Contains($"**Priority** — **{level} (", StringComparison.Ordinal),
+                $"deferral '{id}' must declare Priority '{level}' (schema label " +
+                $"'{PriorityLabels[level]}'), but its entry does not. Update the entry or ExpectedPriorities.");
         }
     }
 

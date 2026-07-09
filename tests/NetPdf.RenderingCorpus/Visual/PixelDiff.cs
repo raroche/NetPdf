@@ -24,6 +24,11 @@ public readonly record struct PixelDiffResult(int MaxChannelDelta, double Ssim, 
 /// rasterized to <see cref="RasterImage"/> elsewhere; this only compares.</summary>
 public static class PixelDiff
 {
+    // These are the engine-vs-SELF regression tolerances. Activating the gate against the pinned-Chrome
+    // reference PNGs is a CROSS-engine diff (two rasterizers differ at every AA glyph edge), which these
+    // strict values reject even on pixel-correct layout — see the `visual-regression-cross-engine-tolerance`
+    // deferral in docs/deferrals.md for the tolerance-policy decision that must precede committing references.
+
     /// <summary>Per-pixel RGBA channel tolerance: a difference of this much or more on any channel of any
     /// pixel fails the gate (Phase-4 exit criterion: per-pixel RGBA Δ &lt; 4).</summary>
     public const int MaxPerPixelDelta = 4;

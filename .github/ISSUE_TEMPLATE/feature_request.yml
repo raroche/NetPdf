@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a CSS feature, capability, or improvement for NetPdf.
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, check the [compatibility matrix](../../docs/compatibility-matrix.md) and
+        [deferrals](../../docs/deferrals.md) — the feature may already be planned, deliberately deferred, or
+        out of scope.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The use case or document you can't render today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed feature
+      description: The CSS property / behavior you want. Link the relevant W3C / ISO / UAX spec section if you know it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried
+      description: How you're currently getting by (pre-compiled CSS, different markup, etc.).
+    validations:
+      required: false

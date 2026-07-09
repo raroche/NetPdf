@@ -1,0 +1,60 @@
+name: Bug report
+description: A rendering, layout, or output defect in NetPdf.
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **Do not** file security vulnerabilities here — follow
+        [SECURITY.md](../../SECURITY.md) instead. A minimal HTML+CSS repro is the single most useful thing
+        you can provide.
+  - type: textarea
+    id: repro-html
+    attributes:
+      label: Minimal HTML/CSS that reproduces the issue
+      description: The smallest self-contained document that shows the problem. Inline the CSS if you can.
+      render: html
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output
+      description: What the PDF should look like (and, if relevant, how a browser's print-to-PDF renders it).
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      description: What NetPdf produced. Attach the PDF or a screenshot if possible, plus any emitted diagnostic codes.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: NetPdf version
+      placeholder: e.g. 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (x64)
+        - Linux (arm64)
+        - macOS (arm64)
+        - macOS (x64)
+        - Windows (x64)
+        - Windows (arm64)
+        - Other / multiple
+    validations:
+      required: true
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET runtime
+      placeholder: e.g. .NET 10.0.x (JIT) or Native-AOT
+    validations:
+      required: false

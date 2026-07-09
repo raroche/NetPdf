@@ -51,6 +51,12 @@ public sealed class ReleaseVersionParityTests
         // prior history instead of post-release work. Three invariants: (1) `[Unreleased]` compares FROM the
         // latest staged release version; (2) that latest version has its own `[<version>]:` compare-link; and
         // (3) that link compares `previous...latest` (not a stale/arbitrary base).
+        //
+        // The compare-link endpoints reference git TAGS, which conventionally carry a `v` prefix even though
+        // the changelog HEADINGS are bare semver (Keep a Changelog style) — e.g. tag `v1.0.0` for heading
+        // `[1.0.0]`. Using the bare version in the link would 404 when the tag is `v`-prefixed, so accept an
+        // OPTIONAL `v` on each tag endpoint (PR #316 review [P1]). Tags are mixed in this repo (`0.9.0-rc1`
+        // has no prefix, `v1.0.0` does), so this stays tolerant rather than requiring one convention.
         var path = Path.Combine(RepoRoot(), "CHANGELOG.md");
         var versions = ReadChangelogVersions(path); // newest-first, excluding [Unreleased]
         Assert.True(versions.Count > 0, "No versioned heading found in CHANGELOG.md.");
@@ -58,20 +64,25 @@ public sealed class ReleaseVersionParityTests
         var previous = versions.Count > 1 ? versions[1] : null; // e.g. "0.7.0-beta"
         var text = File.ReadAllText(path);
 
+        // A compare endpoint matches a heading version if it equals it, optionally with a leading `v` tag prefix.
+        static bool TagRefMatches(string endpoint, string headingVersion) =>
+            endpoint == headingVersion || endpoint == "v" + headingVersion;
+
         var unreleased = Regex.Match(text, @"(?m)^\[Unreleased\]:.*?/compare/(.+?)\.\.\.HEAD\s*$");
         Assert.True(unreleased.Success,
             "CHANGELOG.md is missing an `[Unreleased]: …/compare/<base>...HEAD` link-reference.");
-        Assert.True(unreleased.Groups[1].Value == latest,
+        Assert.True(TagRefMatches(unreleased.Groups[1].Value, latest),
             $"CHANGELOG [Unreleased] compares from '{unreleased.Groups[1].Value}' but the latest staged release " +
-            $"is '{latest}'. Re-base it on '{latest}...HEAD' when staging the release.");
+            $"is '{latest}' (tag may be '{latest}' or 'v{latest}'). Re-base it on the '{latest}' tag when staging.");
 
-        var release = Regex.Match(text, $@"(?m)^\[{Regex.Escape(latest)}\]:.*?/compare/(.+?)\.\.\.{Regex.Escape(latest)}\s*$");
+        var release = Regex.Match(text, $@"(?m)^\[{Regex.Escape(latest)}\]:.*?/compare/(.+?)\.\.\.(v?{Regex.Escape(latest)})\s*$");
         Assert.True(release.Success,
-            $"CHANGELOG.md is missing a `[{latest}]: …/compare/<base>...{latest}` compare-link reference.");
+            $"CHANGELOG.md is missing a `[{latest}]: …/compare/<base>...{latest}` compare-link reference " +
+            $"(the target tag may be '{latest}' or 'v{latest}').");
         if (previous is not null)
-            Assert.True(release.Groups[1].Value == previous,
+            Assert.True(TagRefMatches(release.Groups[1].Value, previous),
                 $"CHANGELOG [{latest}] compares from '{release.Groups[1].Value}' but the previous release is " +
-                $"'{previous}'. The staged release link should compare '{previous}...{latest}'.");
+                $"'{previous}' (tag may be '{previous}' or 'v{previous}'). It should compare '{previous}...{latest}'.");
     }
 
     /// <summary>All versioned `## [X] — …` headings in file order (newest first), excluding `[Unreleased]`.</summary>

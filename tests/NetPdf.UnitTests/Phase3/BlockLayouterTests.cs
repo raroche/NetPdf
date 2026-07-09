@@ -927,6 +927,51 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
+    public void Auto_height_float_content_sizes_in_the_break_precheck_and_defers()
+    {
+        // PR #314 review [P1] — WouldFloatOverflow must content-size an AUTO-height float the SAME way
+        // EmitFloat does (ContentSizeAutoFloatBlock), else a tall auto-height float passes break planning
+        // as "fits" (its chrome-only height reads ~0) and then EXPANDS during emit and overflows the page.
+        // Here a 700-tall block leaves 100px; an auto-height float whose CONTENT is a 150px child block
+        // totals 700 + 150 = 850 > 800 → it must DEFER cleanly to a fresh page. Pre-fix the pre-check saw
+        // the float as 0-tall → 700 ≤ 800 → it EMITTED + overflowed (a PAGINATION-FORCED-OVERFLOW-001)
+        // instead of deferring. Mirrors Float_percentage_padding_defers_at_the_page_boundary but exercises
+        // the auto-height content-sizing arc rather than the %-padding arc.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 700);
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement()));
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);   // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        // height: auto (unset) — content-sized from the 150px child block below.
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        var innerStyle = MakeStyle();
+        SetLengthPx(innerStyle, PropertyId.Height, 150);
+        floatBox.AppendChild(Box.ForElement(BoxKind.BlockContainer, innerStyle, MakeElement()));
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<BlockContinuation>(result.Continuation);
+        Assert.Equal(1, cont.ResumeAtChild);
+        Assert.Single(sink.Fragments);   // only the 700 block; the auto-height float deferred cleanly.
+        Assert.DoesNotContain(
+            diagSink.Diagnostics, d => d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
     public void Float_percentage_padding_insets_its_children_after_the_used_value_rewrite()
     {
         // PR #165 review P1 — EmitFloat rewrites the used % padding IN PLACE before the child

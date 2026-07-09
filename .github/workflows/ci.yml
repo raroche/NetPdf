@@ -50,7 +50,7 @@ jobs:
           - { os: macos-14,        label: macos-arm64, aot: true }
           - { os: macos-13,        label: macos-x64,   aot: true, nonblocking: true }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
         with:
@@ -104,7 +104,7 @@ jobs:
     timeout-minutes: 40
     container: mcr.microsoft.com/dotnet/sdk:10.0-alpine
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install AOT + SkiaSharp prerequisites (clang, musl-dev, zlib, fontconfig, fonts)
         # ttf-dejavu + freetype give the SkiaSharp/HarfBuzz text stack real fonts; without them the stock
         # SDK-alpine image has none, so text collapses to zero size and decoration/annotation-counting tests
@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
         with:
@@ -145,7 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up .NET 10
         uses: actions/setup-dotnet@v4
         with:

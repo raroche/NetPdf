@@ -16,7 +16,7 @@ Closes #
 - [ ] Tests pass: `dotnet test NetPdf.slnx -c Release --nologo`
 - [ ] Added/updated **both** unit and integration coverage for the behavior changed
 - [ ] Byte-identity goldens/snapshots are unchanged, **or** intentionally re-pinned with a reason below
-- [ ] No banned dependencies added (or a reviewed `docs/legal/dependency-dossier.md` entry is included)
+- [ ] No banned dependencies added (a new dependency has maintainer license/provenance review + passes the vulnerable-package scan)
 - [ ] AOT-clean: no reflection in core paths
 - [ ] Deterministic: same input → same PDF bytes
 - [ ] New unsupported-feature paths emit a diagnostic code (no silent content drops)

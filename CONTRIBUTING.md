@@ -28,8 +28,9 @@ Every change must honor these — they are enforced by review and CI:
    engine's source. If you read another implementation for *understanding*, note it in a one-line comment.
    See [`docs/clean-room-policy.md`](docs/clean-room-policy.md).
 2. **No banned dependencies.** No `System.Drawing`, no browser engines, no AGPL/copyleft, no revenue-capped
-   libraries. A new dependency needs a reviewed entry in
-   [`docs/legal/dependency-dossier.md`](docs/legal/dependency-dossier.md) before the `PackageVersion` lands.
+   libraries. A new dependency needs maintainer review (license + provenance, and the CI vulnerable-package
+   scan) before the `PackageVersion` lands. Approved deps: AngleSharp, AngleSharp.Css, HarfBuzzSharp,
+   SkiaSharp (raster fallback only).
 3. **AOT-clean.** No reflection in core paths (`Activator.CreateInstance`, `Type.GetType(string)`, runtime
    codegen). Use source generators where dynamic registration would otherwise be needed.
 4. **Determinism.** Same input → same PDF bytes. No PRNG, no `DateTime.Now` in shipped code.
@@ -37,8 +38,9 @@ Every change must honor these — they are enforced by review and CI:
 6. **Diagnostics, not silent corruption.** Unsupported features emit a stable code from
    [`docs/diagnostics-codes.md`](docs/diagnostics-codes.md) — never drop content silently.
 
-Full coding standards (SOLID, DRY-with-rule-of-three, YAGNI, naming, testing) live in
-[`docs/coding-standards.md`](docs/coding-standards.md).
+Beyond these, follow the usual standards (SOLID, DRY with the rule of three, YAGNI, clear naming) and — most
+importantly — **match the surrounding code**: its idioms, comment density, and naming. Read a few nearby files
+before adding to one.
 
 ## Tests
 

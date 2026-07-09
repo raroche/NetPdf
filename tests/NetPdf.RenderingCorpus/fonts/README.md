@@ -20,7 +20,9 @@ requires regenerating them (see `../docker/README.md`).
 DejaVu Fonts — a public-domain-friendly superset of the **Bitstream Vera** fonts. Bitstream Vera is
 © 2003 Bitstream, Inc. (Bitstream Vera Fonts Copyright, a permissive MIT-style license); the DejaVu changes
 are in the public domain. "DejaVu" and "Bitstream Vera" are not used to promote derivative works without
-permission, per the license. Full text: <https://dejavu-fonts.github.io/License.html>. These files are used
-here only as **test fixtures** — they are **not** redistributed in any shipped NuGet package.
+permission, per the license. The **full license text is committed locally** in [`LICENSE.txt`](LICENSE.txt)
+next to the fonts (so compliance can be audited without an external link); it is also published upstream at
+<https://dejavu-fonts.github.io/License.html>. These files are used here only as **test fixtures** — they are
+**not** redistributed in any shipped NuGet package.
 
 Source: DejaVu Fonts v2.37 (`ttf/DejaVuSans*.ttf`), <https://github.com/dejavu-fonts/dejavu-fonts>.

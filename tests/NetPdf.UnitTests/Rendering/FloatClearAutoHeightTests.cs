@@ -18,11 +18,14 @@ namespace NetPdf.UnitTests.Rendering;
 /// as 0), so its footprint was ~0-tall; (2) an inline-only (text) block with <c>clear</c> never resolved
 /// clearance. Together, a <c>clear</c> footer after a float was placed at the float's TOP and OVERLAPPED it.
 ///
-/// <para>Coverage here: <c>clear:both</c> after a right float, <c>clear:left</c> after a left float, a
-/// DIRECT-TEXT float with padding/border (the inline-only-root chrome must not be double-counted), and the
-/// break-planning pre-check content-sizing an auto-height float so a too-tall float DEFERS to a fresh page
-/// instead of overflowing. Assertions are RELATIVE (marker-below-marker, page index) so they don't pin
-/// exact geometry.</para>
+/// <para>Executable end-to-end coverage here (via the facade + PDF text-run positions, relative
+/// marker-below-marker assertions): <c>clear:both</c> after a right BLOCK-CHILD float, and <c>clear:left</c>
+/// after a left BLOCK-CHILD float. Two related cases are deliberately NOT end-to-end here and are covered /
+/// explained elsewhere — see the notes below each: the DIRECT-TEXT float chrome double-count guard (a
+/// separate pre-existing emission gap makes it unobservable through the facade), and the break-planning
+/// pre-check that DEFERS a too-tall auto-height float (body floats route through the recursion, so it is
+/// covered by the lower-level
+/// <see cref="NetPdf.UnitTests.Phase3.BlockLayouterTests.Auto_height_float_content_sizes_in_the_break_precheck_and_defers"/>).</para>
 /// </summary>
 public sealed class FloatClearAutoHeightTests
 {
@@ -63,7 +66,7 @@ public sealed class FloatClearAutoHeightTests
         runs.Single(r => r.G == glyphs);
 
     // ── clear:both after a right float ────────────────────────────────────────────────────────────────
-    // Markers have UNIQUE glyph lengths (18 / 19); all body words are short (<= 8) so Single() is exact.
+    // Markers have UNIQUE glyph lengths (17 / 19); all body words are short (<= 5) so Single() is exact.
     private const string RightFloatDoc =
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><style>"
         + "@page{size:A4;margin:20mm}body{font-family:Arial;font-size:14px;margin:0}"

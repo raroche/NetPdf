@@ -1046,6 +1046,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // return path — cycle-2c-style continuations would be needed).
         _capturedFragmentainer = fragmentainer;
         _capturedDiagSink = layout.Diagnostics ?? _diagnostics;
+        // Captured for the recursion (EmitNestedFloat has no `ref LayoutContext`) — the ambient writing-mode
+        // + direction for content-sizing an auto-height nested float's block axis.
+        _capturedWritingMode = layout.WritingMode;
+        _capturedIsRtl = layout.IsRtl;
         // Cross-COMPONENT per-conversion grid measure cache (measurement-cache
         // cycle) — capture the shared cache the root pipeline wired through the
         // layout context into an instance field, so PreMeasureGridRowExtent + the
@@ -5119,6 +5123,29 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     ? 0.0
                     : child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, contentInlineSize);
 
+                // Honor `clear` on an inline-only (text-bearing) block. This branch historically computed
+                // marginTop but SKIPPED clearance (the general nested-block clear path below is unreachable
+                // for an inline-only block), so a `clear:both` text footer after a right-floated totals box
+                // OVERLAPPED it (the `01-classic` case). Per CSS 2.2 §9.5.2 clearance places the border-box
+                // top at max(hypothetical-position, cleared-float-bottom) — NOT marginTop stacked on top of
+                // the float bottom — so advance the recursive cursor only by the EXTRA past the hypothetical
+                // (which already includes marginTop). The line box breaks adjacency, so no margin collapse to
+                // reconcile. Byte-identical when no float is being cleared (extra = 0).
+                var inlineClearKind = child.Style.ReadClearKind();
+                if (inlineClearKind != ClearKind.None)
+                {
+                    var inlineHypotheticalTop = contentTop + childCursor + inlineOnlyMarginStart;
+                    var inlineClearedTop = _floatManager.GetClearedBlockY(
+                        contentTop + childCursor, inlineClearKind);
+                    var inlineExtraClearance = inlineClearedTop - inlineHypotheticalTop;
+                    if (inlineExtraClearance > 0)
+                    {
+                        childCursor += inlineExtraClearance;
+                        hasPrior = false;   // §8.3.1 — clearance creates a new collapse boundary.
+                        prevMarginEnd = 0;
+                    }
+                }
+
                 // `inline-only-block-line-splitting` — resume a prior line split of THIS block
                 // (one-shot consume of the chained continuation, mirroring grid/multicol). On
                 // resume the block re-enters at the top of a fresh page with no margin-top.
@@ -6890,6 +6917,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var marginBoxBlockSize = box.MarginBoxBlockSize;
         var marginBoxInlineSize = box.MarginBoxInlineSize;
 
+        // AUTO-height nested float — content-size the block axis so it registers its real footprint with
+        // FloatManager (else `clear` on a following sibling clears to the float's TOP → overlap). Uses the
+        // captured writing-mode/direction (the recursion has no `ref LayoutContext`).
+        if (_capturedFragmentainer is { } nestedFloatFrag)
+        {
+            (borderBoxBlockSize, marginBoxBlockSize) = ContentSizeAutoFloatBlock(
+                child, box, nestedFloatFrag, _capturedWritingMode, _capturedIsRtl, cancellationToken);
+        }
+
         // For BFC-wide containing block — see EmitFloat doc comment
         // for the cycle 1 simplification. Pass the nested-relative
         // BFC Y as currentBlockY.
@@ -7109,6 +7145,38 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             MarginBoxInlineSize: Math.Max(0, marginInlineStart + borderBoxInlineSize + marginInlineEnd));
     }
 
+    /// <summary>Content-size an AUTO-height float's block axis. <see cref="ReadFloatBoxModel"/> reads
+    /// <c>height: auto</c> as 0 (<c>ReadLengthPxOrZero</c>), so its <c>BorderBoxBlockSize</c> is chrome-ONLY:
+    /// the float would register a ~0-tall footprint with <see cref="FloatManager"/>, which breaks <c>clear</c>
+    /// (a following <c>clear</c> block clears to the float's TOP, not its bottom → it OVERLAPS the float — the
+    /// <c>01-classic</c> right-floated-totals + cleared-footer case) AND paints a collapsed border box.
+    /// Measure the float's CONTENT height at its content-box inline size (the same nested measurer the
+    /// flex/table auto-sizing use) and fold it in. Returns the (border-box, margin-box) block sizes to use —
+    /// unchanged for an explicit-height float or when the content is no taller than the chrome (the fold is a
+    /// max, so byte-identical in those cases).</summary>
+    private (double BorderBox, double MarginBox) ContentSizeAutoFloatBlock(
+        Box child, in FloatBoxModel box, FragmentainerContext fragmentainer,
+        WritingMode writingMode, bool isRtl, CancellationToken cancellationToken)
+    {
+        if (!IsHeightAuto(child) || box.BorderBoxInlineSize <= 0)
+            return (box.BorderBoxBlockSize, box.MarginBoxBlockSize);
+
+        var pctBase = _measurePurpose.ZeroesCyclicPercentInsets() ? 0.0 : fragmentainer.ContentInlineSize;
+        var inlineChrome = child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, pctBase)
+            + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, pctBase)
+            + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var contentInline = Math.Max(0, box.BorderBoxInlineSize - inlineChrome);
+        var content = NestedContentMeasurer.Measure(
+            child, contentInline, fragmentainer.BlockSize, _shaperResolver,
+            writingMode, isRtl, cancellationToken, _capturedDiagSink ?? _diagnostics);
+        // The chrome-only border box IS the border+padding top/bottom; add the measured content extent.
+        var sizedBorderBox = content.ContentBlockExtent + box.BorderBoxBlockSize;
+        return sizedBorderBox > box.BorderBoxBlockSize
+            ? (sizedBorderBox, box.MarginBoxBlockSize - box.BorderBoxBlockSize + sizedBorderBox)
+            : (box.BorderBoxBlockSize, box.MarginBoxBlockSize);
+    }
+
     /// <summary>Captured at AttemptLayout entry; used by
     /// EmitNestedFloat as the BFC-wide containing inline size.</summary>
     private double _bfcContentInlineSize;
@@ -7126,6 +7194,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// AttemptLayout entry; the ambient diagnostic sink for nested-
     /// float overflow emission.</summary>
     private IPaginateDiagnosticsSink? _capturedDiagSink;
+
+    /// <summary>Captured at AttemptLayout entry so <see cref="EmitNestedFloat"/> (which has no
+    /// <c>ref LayoutContext</c>) can content-size an auto-height nested float via the same writing-mode /
+    /// direction the emit pass uses.</summary>
+    private WritingMode _capturedWritingMode;
+    private bool _capturedIsRtl;
 
     /// <summary>Measurement-cache cycle — the per-conversion grid measure cache
     /// captured from the layout context at AttemptLayout entry. Used by
@@ -7182,6 +7256,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var borderBoxInlineSize = box.BorderBoxInlineSize;
         var marginBoxBlockSize = box.MarginBoxBlockSize;
         var marginBoxInlineSize = box.MarginBoxInlineSize;
+
+        // AUTO-height float — content-size the block axis (see ContentSizeAutoFloatBlock).
+        (borderBoxBlockSize, marginBoxBlockSize) = ContentSizeAutoFloatBlock(
+            child, box, fragmentainer, layout.WritingMode, layout.IsRtl, cancellationToken);
 
         // Cycle 1 — containing block is the BFC content area
         // (inlineStart=0, inlineEnd=fragmentainer.ContentInlineSize).

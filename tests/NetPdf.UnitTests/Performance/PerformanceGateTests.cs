@@ -51,8 +51,13 @@ public sealed class PerformanceGateTests
     {
         // lineItems recalibrated 80 → 68 after RC-UA (WP-2): the UA stylesheet adds the h1 and <p>
         // default margins the fixture didn't previously carry, so 80 rows now spill to 4 pages. 68
-        // rows restores the intended clean 3-page (exit-criterion-7) workload.
-        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Invoice(lineItems: 68), warmup: 5, iters: 15);
+        // rows restored the intended clean 3-page (exit-criterion-7) workload.
+        // Recalibrated 68 → 88 after the recursive nested-table cursor over-advance fix
+        // (BlockLayouter.cs:5621) — a `<table>` followed by a trailing `<p>` no longer over-advances the
+        // flow cursor by the table's row-0 natural full-page extent, so the trailing paragraph + last rows
+        // pack onto the previous page instead of spilling to an extra one. 68 rows now lay out in 2 pages;
+        // 88 (mid the 74–104 three-page band under the synthetic font) restores the clean 3-page workload.
+        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Invoice(lineItems: 88), warmup: 5, iters: 15);
         Assert.Equal(3, pages);   // the fixture must actually paginate to 3 pages for the gate to be meaningful
         Assert.True(p50 <= 200.0,
             $"Exit criterion 7: the 3-page invoice p50 {p50:F1} ms exceeds the 200 ms gate.");
@@ -63,9 +68,13 @@ public sealed class PerformanceGateTests
     public void Report_20_page_renders_within_1500ms_p50()
     {
         // rowsPerSection recalibrated 18 → 34 after RC-9 (WP-1): the cell double-padding fix removed the
-        // ~1.5–2× row-height inflation, so the old 22×18 fixture now lays out in ~11 pages. 22×34 restores
+        // ~1.5–2× row-height inflation, so the old 22×18 fixture now lays out in ~11 pages. 22×34 restored
         // the intended ~22-page (exit-criterion-7) workload against the corrected, un-inflated row height.
-        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Report(sections: 22, rowsPerSection: 34),
+        // Recalibrated 34 → 40 after the recursive nested-table cursor over-advance fix
+        // (BlockLayouter.cs:5621) — back-to-back `<h2>`+`<table>` sections no longer over-advance past each
+        // fragmented table's last fragment, so following sections pack tighter (22×34 now lays out in
+        // 19 pages). 22×40 = 22 pages under the synthetic font, restoring the intended ~22-page workload.
+        var (pages, p50) = PerfFixtures.Median(PerfFixtures.Report(sections: 22, rowsPerSection: 40),
             warmup: 2, iters: 7);
         // Bound BOTH sides: the deterministic synthetic fixture lands at a fixed page count, so a regression
         // that duplicates pages or over-fragments (→ 30-40 pages) must fail even if it stays under 1.5 s —

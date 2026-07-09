@@ -1439,15 +1439,30 @@ grepping the ID).
       **atomic** granularity (the "mid-split" limitation — a subtree
       commits on one page or breaks between children, without filling the trailing
       page). Closing that is the deferred mid-split engine work, tracked here. The
-      overlap (the visible defect) is resolved. **SCOPE:** the fix is
+      overlap (the visible defect) is resolved. **SCOPE:** the original fix was
       NOWRAP single-line row flex — `autoRowContentCross` is `max(item cross)`
-      (the single line's cross), and both dispatch resize consumers gate on
-      `!IsFlexWrapping`. A `flex-wrap: wrap` auto-height row flex still
-      under-reports its cross (the wrap pre-measure `FlexLinePacker.SumCrossExtent`
-      reads DECLARED cross sizes, 0 for content-determined items; the correct value
-      is Σ per-line max content cross + row gaps) — a following sibling can still
-      overlap. Separate open case. Row-WRAP line-split resume (no dual-input resize
-      consumer) is a separate residual, also unfixed on a fresh resume page.
+      (the single line's cross), and both dispatch resize consumers gated on
+      `!IsFlexWrapping`. **✅ WRAP auto-height row now shipped (06 travel-voucher
+      "What's Included" overlap):** `FlexLayouter.AttemptLayout` folds the
+      content-measured cross into EACH packed line (`lines[i].LineCrossSize =
+      max(declared, Σ-per-item-max content cross via `itemBaselineCrossSizes`)`) and
+      re-derives the auto container cross = Σ per-line cross + row gaps (CSS Flexbox
+      §9.4 steps 8+15), so the emission cursor stacks the lines instead of collapsing
+      them to a shared offset and `maxEmittedCrossBottom` → `LastEmittedBlockExtent`
+      reports the true stacked extent. Both `DispatchFlexInner` resize consumers
+      (outer + recursive) now gate on `!= WrapReverse` (was `!IsFlexWrapping`), so the
+      wrapper resizes + the sibling cursor advances for a wrapping auto-height row too
+      — a trailing sibling (`.terms` after a wrapped `.included` list) no longer
+      overlaps. Gated to auto-height, non-wrap-reverse rows; an explicit container
+      height feeds align-content distribution (separate path), wrap-reverse derives its
+      cross origin from the unfragmented extent (deferred). **STILL OPEN — the
+      PRE-measure `FlexLinePacker.SumCrossExtent` / `PreMeasureFlexMultiLineCrossExtent`
+      still reads DECLARED cross sizes** (0 for content-determined items): the
+      post-layout `LastEmittedBlockExtent` correction fixes the single-page overlap,
+      but a wrapping auto-height flex TALL ENOUGH to paginate could still under-report
+      to the paginatable-flex clamp during pre-measure (a multi-page wrapping
+      auto-height flex — no corpus case yet). Row-WRAP line-split resume (no dual-input
+      resize consumer) is a separate residual, also unfixed on a fresh resume page.
     - ✅**shipped:**
       `DispatchFlexInner` helper now used by BOTH direct
       recursive paths to eliminate drift between them. 135 + 107

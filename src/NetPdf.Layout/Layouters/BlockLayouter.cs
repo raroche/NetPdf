@@ -3616,13 +3616,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
                 else if (IsFlexContainer(child) && IsHeightAuto(child)
                     && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
-                    && !child.Style.ReadFlexWrap().IsFlexWrapping())
+                    && child.Style.ReadFlexWrap() != FlexWrapValue.WrapReverse)
                 {
-                    // Corpus-fidelity (03 itinerary footer overlap), mirror of the recursive site — an
-                    // AUTO-height ROW flex's used cross size is its content cross extent (FlexLinePacker
-                    // sizes lines from the items' DECLARED cross only, 0 for auto). `outerFlexLastEmittedExtent`
-                    // carries the real content cross; resize the wrapper + advance the cursor by it so a
-                    // trailing sibling doesn't overlap the flex content. Byte-identical when content fits.
+                    // Corpus-fidelity (03 itinerary footer overlap + 06 travel-voucher "What's Included"
+                    // overlap), mirror of the recursive site — an AUTO-height ROW flex's used cross size is
+                    // its content cross extent (FlexLinePacker sizes lines from the items' DECLARED cross
+                    // only, 0 for auto). `outerFlexLastEmittedExtent` carries the real content cross:
+                    // nowrap → FlexLayouter's `autoRowContentCross`; wrap → the summed per-line content
+                    // cross (the wrap fold now grows each line's cross size so `maxEmittedCrossBottom`
+                    // reports the stacked-line extent). Resize the wrapper + advance the cursor by it so a
+                    // trailing sibling lands below the flex content instead of overlapping it. wrap-reverse
+                    // stays excluded (its cross origin derives from the unfragmented extent — deferred).
+                    // Byte-identical when content fits (the guard keeps the larger value only).
                     var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
                     var resizedFlexWrapperBlockSize = flexChromeBlock + outerFlexLastEmittedExtent;
                     if (resizedFlexWrapperBlockSize > marginBoxBlockSizeForCursor - topShift - marginEnd)
@@ -5613,6 +5618,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         childEffectiveBlockSize = tableDriven;
                     }
+                    // Mirror the OUTER-dispatch table clamp (BlockLayouter.cs:2428-2432) at the
+                    // recursion site. `childSubtreeExtent` was measured by
+                    // MeasureSubtreeVisualBlockExtentRecursive, which walks the table from row 0 at
+                    // page-top (resumeAtRow:0, startOffsetOverride defaulting to 0) — so on the table's
+                    // LAST fragment it over-measures the extent as a fresh full page of rows, and the
+                    // Math.Max above baked that into `childEffectiveBlockSize`. `tableDriven` (from the
+                    // resume-aware DryRun, useDryRunCommittedHeight:true) is the REAL committed extent of
+                    // this fragment and now lives in `childBorderBoxBlockSize` (what the fragment actually
+                    // paints, via ResolveAutoHeightEmittedBlockSize). Clamp the cursor-advance extent back
+                    // down to it so a trailing sibling after a table that finished high on the page flows
+                    // right below it instead of being pushed onto a fresh page over a mostly-empty one
+                    // (invoice-10/11: `.note`/`.stamp` marooned on the next page under ~2/3 blank space).
+                    // Gated inside `nestedPendingTable is not null` so ONLY table wrappers clamp — a flex/
+                    // grid wrapper whose effective extent was legitimately GROWN past its border box
+                    // (e.g. the auto-height wrap fold) is untouched. Byte-identical for a table that fits
+                    // one page (tableDriven == the natural extent, so the clamp is a no-op).
+                    if (childEffectiveBlockSize > childBorderBoxBlockSize)
+                    {
+                        childEffectiveBlockSize = childBorderBoxBlockSize;
+                    }
 
                     // Per Phase 3 Task 12 sub-cycle 5 hardening
                     // Finding 6 — widen the wrapper's INLINE border-
@@ -6468,16 +6493,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
                 else if (IsFlexContainer(child) && IsHeightAuto(child)
                     && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
-                    && !child.Style.ReadFlexWrap().IsFlexWrapping())
+                    && child.Style.ReadFlexWrap() != FlexWrapValue.WrapReverse)
                 {
-                    // Corpus-fidelity (03 itinerary footer overlap) — an AUTO-height ROW flex's used cross
-                    // (block) size is its content cross extent, but FlexLinePacker sizes lines from the
-                    // items' DECLARED cross only (0 for auto-height items), so the wrapper's resolved
-                    // border box is chrome-only. `nestedFlexLastEmittedExtent` now carries the real content
-                    // cross (FlexLayouter's `autoRowContentCross`); resize the wrapper + advance the cursor
-                    // by it so a trailing sibling (`.note` after a `.timeline` of flex `.day` rows) lands
-                    // below the content instead of overlapping it. Byte-identical when content fits the
-                    // resolved box (the guard keeps the larger value only).
+                    // Corpus-fidelity (03 itinerary footer overlap + 06 travel-voucher "What's Included"
+                    // overlap) — an AUTO-height ROW flex's used cross (block) size is its content cross
+                    // extent, but FlexLinePacker sizes lines from the items' DECLARED cross only (0 for
+                    // auto-height items), so the wrapper's resolved border box is chrome-only.
+                    // `nestedFlexLastEmittedExtent` now carries the real content cross — nowrap →
+                    // FlexLayouter's `autoRowContentCross`; wrap → the summed per-line content cross (the
+                    // wrap fold grows each line so `maxEmittedCrossBottom` reports the stacked-line
+                    // extent). Resize the wrapper + advance the cursor by it so a trailing sibling (`.note`
+                    // after a `.timeline` of flex `.day` rows, or `.terms` after a wrapped `.included`
+                    // list) lands below the content instead of overlapping it. wrap-reverse stays excluded
+                    // (cross origin derives from the unfragmented extent — deferred). Byte-identical when
+                    // content fits the resolved box (the guard keeps the larger value only).
                     var flexChromeBlock = borderStart + paddingStart + paddingEnd + borderEnd;
                     var resizedFlexWrapperBlockSize = flexChromeBlock + nestedFlexLastEmittedExtent;
                     if (resizedFlexWrapperBlockSize > childEffectiveBlockSize)

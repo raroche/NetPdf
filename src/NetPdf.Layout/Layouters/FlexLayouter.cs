@@ -1200,6 +1200,52 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             containerCrossSize = autoRowContentCross;
         }
 
+        // Corpus-fidelity (06 travel-voucher "What's Included" overlap) — the WRAP companion to
+        // the nowrap auto-height fold above, closing the "still-open case" flagged in the SCOPE note.
+        // For a MULTI-LINE (`flex-wrap: wrap`) AUTO-height ROW container CSS Flexbox L1 §9.4 sizes
+        // each flex line to the MAX used cross size of the items ON THAT LINE (step 8) and the
+        // container's auto cross size to the SUM of the lines' cross sizes + row gaps (step 15).
+        // FlexLinePacker sized every line from the items' DECLARED cross only (0 for an auto-height
+        // item — it doesn't content-measure), so absent this fold EVERY line's `LineCrossSize` is 0:
+        // the emission cursor never advances, so all lines stack at the same cross offset (items
+        // overlap), and `maxEmittedCrossBottom` → `LastEmittedBlockExtent` come out 0 so the wrapper
+        // reports a chrome-only box + the trailing sibling overlaps it. `itemBaselineCrossSizes`
+        // (computed for every ROW flex above) holds each item's content-measured cross border box;
+        // take the per-line max, grow each line, and re-derive the auto container cross from the line
+        // sum + `crossGapTotal` (§9.4 step 15). Gated to auto-height, non-wrap-reverse rows: an
+        // explicit container cross is the used size and feeds align-content distribution (a separate,
+        // still-open path); wrap-reverse derives its cross-axis SWAP origin from the UNFRAGMENTED
+        // extent (deferred, mirroring the emission-loop swap). Byte-identical when every line's
+        // content is no taller than its declared cross (the per-line grow + the container fold are
+        // both `max`), and the auto container's freeCrossSpace was 0 so align-content contributed no
+        // offset/stretch to disturb.
+        var isWrapAutoHeightRow = !isColumn && isWrapping && !isWrapReverse
+            && _rootBox.Style.Get(PropertyId.Height).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        if (isWrapAutoHeightRow && itemBaselineCrossSizes is not null)
+        {
+            var sumLineCrossFromContent = 0.0;
+            for (var li = 0; li < lines.Count; li++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var line = lines[li];
+                var contentLineCross = 0.0;
+                var endPos = line.FirstItemIndex + line.ItemCount;
+                for (var sp = line.FirstItemIndex; sp < endPos; sp++)
+                {
+                    var idx = _sortedFlexChildIndices[sp];
+                    var cs = itemBaselineCrossSizes[idx];
+                    if (!double.IsNaN(cs) && cs > contentLineCross) contentLineCross = cs;
+                }
+                if (contentLineCross > line.LineCrossSize)
+                {
+                    lines[li] = line with { LineCrossSize = contentLineCross };
+                }
+                sumLineCrossFromContent += lines[li].LineCrossSize;
+            }
+            var autoWrapCross = sumLineCrossFromContent + crossGapTotal;
+            if (autoWrapCross > containerCrossSize) containerCrossSize = autoWrapCross;
+        }
+
         // PR #189 review P2 — the row-nowrap content-measure budget is a PRACTICAL cap
         // (NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx), not truly unbounded:
         // an item whose measured content REACHES it was clipped by the single atomic pass.

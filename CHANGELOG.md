@@ -56,5 +56,5 @@ The first stable release. `HtmlPdf.Convert(html)` runs the full HTML → CSS →
 - Single `NetPdf` NuGet package bundling the whole engine; optional `NetPdf.Languages.*` hyphenation add-ons.
 - Source Link + symbol packages for source-stepping.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/1.0.0...HEAD
-[1.0.0]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...1.0.0
+[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...v1.0.0

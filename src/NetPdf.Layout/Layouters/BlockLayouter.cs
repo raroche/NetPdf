@@ -1418,7 +1418,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // suppressed (fixed-box content), never defer a float to a
                 // next page (there is none): emit it so it overflows with
                 // the rest of the content instead of being dropped.
-                if (WouldFloatOverflow(child, floatSide.Value, fragmentainer)
+                if (WouldFloatOverflow(
+                        child, floatSide.Value, fragmentainer,
+                        layout.WritingMode, layout.IsRtl, cancellationToken)
                     && pageHasPriorContent
                     && !fragmentainer.SuppressBlockPagination)
                 {
@@ -5126,24 +5128,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // Honor `clear` on an inline-only (text-bearing) block. This branch historically computed
                 // marginTop but SKIPPED clearance (the general nested-block clear path below is unreachable
                 // for an inline-only block), so a `clear:both` text footer after a right-floated totals box
-                // OVERLAPPED it (the `01-classic` case). Per CSS 2.2 §9.5.2 clearance places the border-box
-                // top at max(hypothetical-position, cleared-float-bottom) — NOT marginTop stacked on top of
-                // the float bottom — so advance the recursive cursor only by the EXTRA past the hypothetical
-                // (which already includes marginTop). The line box breaks adjacency, so no margin collapse to
-                // reconcile. Byte-identical when no float is being cleared (extra = 0).
-                var inlineClearKind = child.Style.ReadClearKind();
-                if (inlineClearKind != ClearKind.None)
+                // OVERLAPPED it (the `01-classic` case). Clearance is inserted ABOVE marginTop (§9.5.2) via
+                // the shared helper (PR #314 review [P2] — same math as the top-level DispatchInlineOnlyBlock
+                // path). The line box breaks adjacency, so no margin collapse to reconcile. Byte-identical
+                // when no float is being cleared (extra = 0).
+                var inlineExtraClearance = InlineOnlyClearanceExtraPx(
+                    child, contentTop + childCursor, inlineOnlyMarginStart);
+                if (inlineExtraClearance > 0)
                 {
-                    var inlineHypotheticalTop = contentTop + childCursor + inlineOnlyMarginStart;
-                    var inlineClearedTop = _floatManager.GetClearedBlockY(
-                        contentTop + childCursor, inlineClearKind);
-                    var inlineExtraClearance = inlineClearedTop - inlineHypotheticalTop;
-                    if (inlineExtraClearance > 0)
-                    {
-                        childCursor += inlineExtraClearance;
-                        hasPrior = false;   // §8.3.1 — clearance creates a new collapse boundary.
-                        prevMarginEnd = 0;
-                    }
+                    childCursor += inlineExtraClearance;
+                    hasPrior = false;   // §8.3.1 — clearance creates a new collapse boundary.
+                    prevMarginEnd = 0;
                 }
 
                 // `inline-only-block-line-splitting` — resume a prior line split of THIS block
@@ -7052,7 +7047,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// followed by a 400-tall float on an 800-page should defer at
     /// y=900 but the check saw 0+400 and emitted instead).</para></summary>
     private bool WouldFloatOverflow(
-        Box child, FloatSide side, FragmentainerContext fragmentainer)
+        Box child, FloatSide side, FragmentainerContext fragmentainer,
+        WritingMode writingMode, bool isRtl, CancellationToken cancellationToken)
     {
         // The float's margin-box block-size from the SHARED box-model
         // reads (PR #165 review P1 — the pre-check read absolute-only
@@ -7061,6 +7057,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // percentages; the shared model keeps both percent-aware).
         var box = ReadFloatBoxModel(child, fragmentainer.ContentInlineSize, _measurePurpose);
 
+        // Content-size an AUTO-height float's block axis the SAME way emission does
+        // (ContentSizeAutoFloatBlock, shared with EmitFloat / EmitNestedFloat). PR #314 review [P1]:
+        // pre-fix this pre-check compared the CHROME-ONLY margin-box (height:auto reads as 0), so a tall
+        // auto-height float could pass break planning as "fits" and then expand during emit and overflow
+        // instead of cleanly deferring to the next page.
+        var (_, marginBoxBlockSize) = ContentSizeAutoFloatBlock(
+            child, box, fragmentainer, writingMode, isRtl, cancellationToken);
+
         // Per post-PR-31 review (P1 #3 + Copilot #1) — use the
         // FloatManager peek API which mirrors PlaceFloat's stacking
         // rule (max of currentBlockY + same-side max-bottom). This
@@ -7068,7 +7072,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // below the cursor.
         var hypotheticalY = _floatManager.PeekPlaceFloatBlockOffset(
             side, fragmentainer.UsedBlockSize);
-        return hypotheticalY + box.MarginBoxBlockSize > fragmentainer.BlockSize;
+        return hypotheticalY + marginBoxBlockSize > fragmentainer.BlockSize;
     }
 
     /// <summary>A float's used box-model extents — the single source of truth shared by
@@ -7167,11 +7171,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, pctBase)
             + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
         var contentInline = Math.Max(0, box.BorderBoxInlineSize - inlineChrome);
+        // NATURAL block extent — an effectively-unbounded block budget (PR #314 review [P1]). A page-sized
+        // budget (`fragmentainer.BlockSize`) CLIPS a float taller than the page, so its footprint registers
+        // too small with FloatManager and later cleared content overlaps the unmeasured remainder. This is a
+        // block-extent measure at a DEFINITE content width, so % padding/margins inside the float resolve
+        // against that width (`DefiniteWidthExtent`) rather than being zeroed like a cyclic intrinsic probe.
         var content = NestedContentMeasurer.Measure(
-            child, contentInline, fragmentainer.BlockSize, _shaperResolver,
-            writingMode, isRtl, cancellationToken, _capturedDiagSink ?? _diagnostics);
-        // The chrome-only border box IS the border+padding top/bottom; add the measured content extent.
-        var sizedBorderBox = content.ContentBlockExtent + box.BorderBoxBlockSize;
+            child, contentInline,
+            blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+            _shaperResolver, writingMode, isRtl, cancellationToken, _capturedDiagSink ?? _diagnostics,
+            purpose: _measurePurpose.ForNested(MeasurePurpose.DefiniteWidthExtent));
+        // Two-shape rule (mirrors the inline-block auto-height branch): an inline-only ROOT buffer's
+        // ContentBlockExtent ALREADY folds the float's block chrome in (a direct-text float with padding/
+        // border would DOUBLE-count it otherwise — PR #314 review [P2]); a block-children buffer reports
+        // content-only, so add the chrome-only border box (border+padding top/bottom).
+        var sizedBorderBox = content.ContainsDecorationOwnerFragment
+            ? content.ContentBlockExtent
+            : content.ContentBlockExtent + box.BorderBoxBlockSize;
         return sizedBorderBox > box.BorderBoxBlockSize
             ? (sizedBorderBox, box.MarginBoxBlockSize - box.BorderBoxBlockSize + sizedBorderBox)
             : (box.BorderBoxBlockSize, box.MarginBoxBlockSize);
@@ -8709,6 +8725,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return (force, avoid, parity);
     }
 
+    /// <summary>Extra clearance (px) inserted ABOVE an inline-only (text-bearing) block's margin-top so its
+    /// border-box top clears the relevant float(s). CSS 2.2 §9.5.2: the border-box top is
+    /// <c>max(hypothetical-top, cleared-float-bottom)</c> — NOT marginTop STACKED on the float bottom — so
+    /// the return value is the amount PAST the hypothetical position (which already includes marginTop), or
+    /// 0 when no float is cleared. Shared by the top-level <see cref="DispatchInlineOnlyBlock"/> path and the
+    /// <see cref="EmitBlockSubtreeRecursive"/> inline-only branch (both previously computed marginTop but the
+    /// general nested-block clear path is unreachable for an inline-only block, so a <c>clear</c> footer after
+    /// a float OVERLAPPED it — the <c>01-classic</c> case). Byte-identical when no float is cleared.</summary>
+    private double InlineOnlyClearanceExtraPx(Box block, double bfcTopBeforeMargin, double marginBlockStart)
+    {
+        var clearKind = block.Style.ReadClearKind();
+        if (clearKind == ClearKind.None) return 0.0;
+        var hypotheticalTop = bfcTopBeforeMargin + marginBlockStart;
+        var clearedTop = _floatManager.GetClearedBlockY(bfcTopBeforeMargin, clearKind);
+        return Math.Max(0.0, clearedTop - hypotheticalTop);
+    }
+
     private LayoutAttemptResult? DispatchInlineOnlyBlock(
         Box inlineOnlyBlock,
         int childIdx,
@@ -8767,6 +8800,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // collapse arithmetic. This matches the cycle 1 behavior;
         // cycle 2 will integrate with the collapse chain.
         var topShift = metrics.MarginBlockStart;
+        // Honor `clear` on a TOP-LEVEL inline-only block (PR #314 review [P2]) — the recursive inline-only
+        // branch already does this, but a direct BlockLayouter use / future root-shape change reaching here
+        // must clear floats too, else a `clear` text block after a float overlaps it. Clearance is inserted
+        // ABOVE marginTop (§9.5.2). Skipped for a nested-content root (`suppressOwnMargins`) — an item-content
+        // root doesn't clear against its own (empty) BFC float context. Byte-identical when no float clears.
+        if (!suppressOwnMargins)
+            topShift += InlineOnlyClearanceExtraPx(
+                inlineOnlyBlock, fragmentainer.UsedBlockSize, metrics.MarginBlockStart);
         var computation = ComputeInlineOnlyBlockLayoutCached(
             inlineOnlyBlock,
             metrics,

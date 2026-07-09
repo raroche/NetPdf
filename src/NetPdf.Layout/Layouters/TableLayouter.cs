@@ -4608,6 +4608,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             placements, declaredWidths, columnHasDeclared, columnCount,
             cancellationToken);
 
+        // F3 Step E — per-column PERCENTAGE widths (from the first row's single-column cells: the
+        // `<td class="w-full">` spacer idiom). Collected so the saturated path can route the surplus
+        // to percentage columns before the equal split (CSS Tables L3 §3.5.3). Colspan>1 percent
+        // cells are not distributed here (rare; the equal split still applies).
+        var columnPercents = new double[columnCount];
+        for (var i = 0; i < placements.Count; i++)
+        {
+            var p = placements[i];
+            if (p.OriginRow != 0 || p.ColSpan != 1 || p.OriginCol >= columnCount) continue;
+            var pct = ReadColumnWidthPercent(p.Cell);
+            if (pct > columnPercents[p.OriginCol]) columnPercents[p.OriginCol] = pct;
+        }
+
         // ============================================================
         //  Step 1 — per-cell intrinsic widths via speculative layouts.
         // ============================================================
@@ -4823,8 +4836,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             var extra = usedTableWidth - sumMax;
             if (extra > Tolerance)
             {
-                var perColumn = extra / columnCount;
-                for (var c = 0; c < columnCount; c++) widths[c] += perColumn;
+                DistributeSaturatedExtra(
+                    widths, columnPercents, usedTableWidth, extra, columnCount, Tolerance);
             }
             return widths;
         }
@@ -5235,6 +5248,73 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
         if (n < 0) return 0;
         return ColumnBorderBoxWidth(box, n);
+    }
+
+    /// <summary>F3 used-table-width Step E — the RAW percentage of a cell's / col's declared
+    /// <c>width: N%</c> (e.g. 100 for <c>width: 100%</c>), or 0 for a non-percentage width. Used to
+    /// route the auto-layout saturated path's surplus to percentage columns before the equal split
+    /// (CSS Tables L3 §3.5.3) so the <c>&lt;td class="w-full"&gt;</c> spacer idiom absorbs the extra.</summary>
+    private static double ReadColumnWidthPercent(Box box)
+    {
+        var slot = box.Style.Get(PropertyId.Width);
+        if (slot.Tag == ComputedSlotTag.Percentage) return slot.AsPercentage();
+        // HTML `width="N%"` attribute (the px path drops it to 0 at ReadColumnWidthPx:5223).
+        var raw = box.SourceElement?.GetAttribute("width");
+        if (!string.IsNullOrEmpty(raw) && raw.EndsWith('%')
+            && double.TryParse(raw.AsSpan(0, raw.Length - 1),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var pct) && pct > 0)
+        {
+            return pct;
+        }
+        return 0;
+    }
+
+    /// <summary>F3 Step E — distribute the saturated-path SURPLUS (usedTableWidth − sumMax) across
+    /// columns. Percentage columns (CSS Tables L3 §3.5.3) get priority: each percent column's TARGET is
+    /// <c>pct/100 × usedTableWidth</c> (normalized when Σpct &gt; 100), and the surplus fills those
+    /// targets first (proportional, capped at the target above the column's max-content) so a
+    /// <c>width: 100%</c> spacer absorbs the leftover and non-percent columns stay at their max-content;
+    /// any remainder splits equally across all columns (the pre-E behavior — byte-identical when no
+    /// column declares a percent).</summary>
+    private static void DistributeSaturatedExtra(
+        double[] widths, double[] columnPercents, double usedTableWidth,
+        double extra, int columnCount, double tolerance)
+    {
+        var sumPct = 0.0;
+        for (var c = 0; c < columnCount; c++) sumPct += columnPercents[c];
+        var scale = sumPct > 100.0 ? 100.0 / sumPct : 1.0;   // §3.5.3 — normalize when Σpct > 100.
+
+        var targets = new double[columnCount];
+        var sumTargets = 0.0;
+        for (var c = 0; c < columnCount; c++)
+        {
+            if (columnPercents[c] <= 0) continue;
+            var growth = columnPercents[c] * scale / 100.0 * usedTableWidth - widths[c];
+            if (growth > tolerance)
+            {
+                targets[c] = growth;
+                sumTargets += growth;
+            }
+        }
+
+        var remaining = extra;
+        if (sumTargets > tolerance)
+        {
+            var give = Math.Min(extra, sumTargets);
+            for (var c = 0; c < columnCount; c++)
+            {
+                if (targets[c] <= 0) continue;
+                widths[c] += give * (targets[c] / sumTargets);
+            }
+            remaining = extra - give;
+        }
+
+        if (remaining > tolerance && columnCount > 0)
+        {
+            var perColumn = remaining / columnCount;
+            for (var c = 0; c < columnCount; c++) widths[c] += perColumn;
+        }
     }
 
     /// <summary>Box-sizing audit (CSS Basic UI 4 §10) — map a cell's DECLARED width to

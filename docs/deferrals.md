@@ -533,20 +533,25 @@ grepping the ID).
     `break-inside: avoid`; RTL writing modes / row reversal / caption
     inline-axis keyword routing; HTML5 colspan='0'/rowspan='0'
     remainder semantics; percentage column widths.
-  - **F3 used-table-width (partial).** An explicit `width` (px / %) on a
-    `display: table` / `inline-table` wrapper is now HONORED
-    (`BlockLayouter.ResolveInFlowBorderBoxInlineSize` includes the table
-    kinds — the declared border-box width sizes the wrapper + becomes the
-    grid's available width, floored at GRIDMIN by the column algorithm).
-    STILL DEFERRED: shrink-to-fit for `width: auto` tables (they still fill
-    the containing block, not max-content — CSS 2.2 §17.5.2 auto width);
-    percentage cell/column widths (drop to 0); the nested-table max-content
-    `1e6` probe poison; and the caption-width floor these need (narrowing an
-    auto wrapper to its grid collapses captions/0-content tables — the
-    caption/wrapper width derives from the grid, so shrink-to-fit must floor
-    the table width by the caption's content width). These land together as
-    a dedicated PR (they break the 23 auto-width table-contract tests as an
-    intended re-pin + need the caption floor to avoid regressions).
+  - **F3 used-table-width (LANDED — one residual).** Auto-table
+    shrink-to-fit now works (CSS 2.2 §17.5.2 / CSS Tables L3 §3): an explicit
+    `width` (px/%) is honored (Step B); a `width: auto` table shrinks its
+    columns to max-content (Steps A+C — `usedTableWidth` in
+    `ComputeColumnWidthsAuto` + the measured grid narrows the wrapper in both
+    BlockLayouter dispatch paths); `table { margin: 0 auto }` centers; a
+    `width: N%` NESTED table behaves as auto under the intrinsic max-content
+    probe (Step D — kills the `1e6` poison); and percentage columns absorb
+    the saturated-path surplus so the `<td width:100%>` spacer idiom pushes a
+    following content cell to the right edge (Step E — `DistributeSaturatedExtra`,
+    §3.5.3). A table with NO max-content (all-empty cells, `sumMax == 0`) keeps
+    the fill (a 0-width wrapper is degenerate — its emit + caption are dropped).
+    RESIDUAL: the DEEP-NESTED spacer idiom (index.html's totals card = items
+    table → colspan cell → `w-full` wrapper → auto cell → totals table, 3
+    levels) still splits its label/value to opposite edges — the percentage
+    does not propagate through that many nested intrinsic measures (the direct
+    2-cell spacer works; see `TableShrinkToFitTests`). Pickup: trace the
+    percent-column / max-content propagation through the nested cell-content
+    measures for the 3-level case.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
     — now consumes the table's
     `MeasuredUsedInlineSize` to widen the wrapper's border-box

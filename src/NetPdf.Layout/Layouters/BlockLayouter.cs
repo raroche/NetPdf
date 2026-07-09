@@ -1641,7 +1641,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // block. Per the body-explicit-width gap fix — an explicit
             // `width` on a plain block container overrides the fill.
             var borderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
-                child, availInlineSize, fragmentainer.ContentInlineSize, marginInlineStart, marginInlineEnd);
+                child, availInlineSize, fragmentainer.ContentInlineSize, marginInlineStart, marginInlineEnd,
+                isIntrinsicProbe: _measurePurpose == MeasurePurpose.IntrinsicContribution);
             // §10.3.3 auto margins (auto-margins cycle): `margin: 0 auto` centres an explicit-width
             // block — must run before any inline-offset consumption below. The distribution range
             // is the FLOAT-ADJUSTED available range (the same range placement uses — review P1).
@@ -5282,7 +5283,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // block container overrides the fill), so a nested div
             // sizes identically to a top-level one.
             var childBorderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
-                child, contentInlineSize, contentInlineSize, marginInlineStart, marginInlineEnd);
+                child, contentInlineSize, contentInlineSize, marginInlineStart, marginInlineEnd,
+                isIntrinsicProbe: _measurePurpose == MeasurePurpose.IntrinsicContribution);
             ResolveAutoInlineMargins(
                 child, childBorderBoxInlineSize, contentInlineSize,
                 ref marginInlineStart, ref marginInlineEnd);   // §10.3.3 — auto-margins cycle.
@@ -7701,18 +7703,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <see cref="ResolveAutoInlineMargins"/> (the caller applies it right after this).</summary>
     private static double ResolveInFlowBorderBoxInlineSize(
         Box child, double availableInlineSize, double containingInlinePx,
-        double marginInlineStart, double marginInlineEnd)
+        double marginInlineStart, double marginInlineEnd,
+        bool isIntrinsicProbe = false)
     {
         if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem or BoxKind.BlockReplacedElement
             or BoxKind.FlexContainer or BoxKind.GridContainer
             or BoxKind.Table or BoxKind.InlineTable)
         {
+            // F3 Step D — under an intrinsic (max-content) probe a PERCENTAGE width on a TABLE behaves
+            // as AUTO (CSS Sizing L3 §5.2.4 — cyclic percentage sizes), so a `width: 100%` nested table
+            // shrinks-to-fit its OWN content instead of resolving 100% against the ~1e6 probe width (the
+            // nested-table max-content poison that made the containing cell measure ~1e6). Scope-limited
+            // to table kinds so plain blocks under probes keep today's behavior.
+            var percentTableUnderProbe = isIntrinsicProbe
+                && child.Kind is BoxKind.Table or BoxKind.InlineTable
+                && child.Style.Get(PropertyId.Width).Tag == ComputedSlotTag.Percentage;
             // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
             // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available
             // range), as do the padding percentages (§8.4). Explicitness is a TAG test, so the
             // legal `width: 0` / `0%` sizes a zero-content border box instead of filling
             // (post-PR-#164 review P3).
-            if (HasExplicitWidth(child))
+            if (HasExplicitWidth(child) && !percentTableUnderProbe)
             {
                 var declaredWidth = child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
                 var inlineInsets = child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)

@@ -72,6 +72,26 @@ public static class VisualHarness
     /// even run. Pinned here so a future page-size change is a single edit shared by both diff render sites.</summary>
     public static PageSize ReferencePageSize => PageSize.Letter;
 
+    /// <summary>Sub-pixel page-size rounding slack (px). Chrome and NetPdf can rasterize the SAME logical
+    /// page size (US Letter, 792 pt tall) to pixel heights differing by a couple of px at 300 dpi — Chrome
+    /// rounds 792 pt → 3301, NetPdf → 3299. A delta THIS small is a rounding artifact, not a layout bug.</summary>
+    public const int PageRoundingSlackPx = 2;
+
+    /// <summary>Crop both rasters to their common minimum dimensions when they differ by at most
+    /// <see cref="PageRoundingSlackPx"/> on each axis (dropping only page-edge margin whitespace), so the
+    /// page-for-page diff isn't defeated by rasterization rounding. A LARGER delta is a real page-size bug
+    /// and is returned unchanged, so <see cref="PixelDiff.Compare"/> still surfaces it as a size mismatch.</summary>
+    public static (RasterImage Expected, RasterImage Actual) ReconcilePageRounding(RasterImage expected, RasterImage actual)
+    {
+        var dw = Math.Abs(expected.Width - actual.Width);
+        var dh = Math.Abs(expected.Height - actual.Height);
+        if ((dw == 0 && dh == 0) || dw > PageRoundingSlackPx || dh > PageRoundingSlackPx)
+            return (expected, actual);
+        var w = Math.Min(expected.Width, actual.Width);
+        var h = Math.Min(expected.Height, actual.Height);
+        return (expected.CropTo(w, h), actual.CropTo(w, h));
+    }
+
     /// <summary>The reference PNG path for a 1-based page of an invoice (e.g.
     /// <c>01-classic-pure-css.html</c> page 1 → <c>references/01-classic-pure-css-page-001.png</c>).</summary>
     public static string ReferencePagePath(string invoiceFileName, int pageNumber) =>

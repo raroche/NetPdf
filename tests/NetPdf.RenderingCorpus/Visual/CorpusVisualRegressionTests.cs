@@ -70,8 +70,11 @@ public sealed class CorpusVisualRegressionTests(ITestOutputHelper output)
 
         for (var i = 0; i < pages.Count; i++)
         {
-            var expected = VisualHarness.LoadPng(references[i]);
-            var diff = PixelDiff.Compare(expected, pages[i]);
+            var reference = VisualHarness.LoadPng(references[i]);
+            // Reconcile a sub-pixel page-height rounding difference (Chrome vs NetPdf rasterize the same
+            // Letter page to a ≤2 px different height) before the exact-size diff; a larger delta still throws.
+            var (expected, actual) = VisualHarness.ReconcilePageRounding(reference, pages[i]);
+            var diff = PixelDiff.Compare(expected, actual);
             _output.WriteLine($"{invoice} page {i + 1}: {diff}");
             Assert.True(diff.WithinTolerance,
                 $"{invoice} page {i + 1} exceeds the visual tolerance: {diff}. "

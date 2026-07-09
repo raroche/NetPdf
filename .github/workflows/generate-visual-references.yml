@@ -1,0 +1,41 @@
+# Maintainer tool (workflow_dispatch ONLY) — generate the visual-regression Chrome reference PNGs on Linux
+# and upload them as an artifact for the maintainer to review + commit under
+# tests/NetPdf.RenderingCorpus/references/. Deliberately NOT wired into push/PR CI: references are a
+# deliberate, reviewed baseline (upstream Chrome/font drift must never silently change what the gate asserts,
+# per tests/NetPdf.RenderingCorpus/references/README.md).
+#
+# It builds the PINNED-Chrome Docker image (Playwright Chromium + the committed DejaVu pack aliased via
+# fontconfig) and runs generate-references.py, so Chrome shapes the same glyphs as NetPdf's PinnedFontResolver.
+#
+# After the run: download the `visual-references` artifact, drop the PNGs under
+# tests/NetPdf.RenderingCorpus/references/, commit, and let CorpusVisualRegressionTests enforce the diff.
+name: generate-visual-references
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: generate Chrome reference PNGs (pinned fonts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the pinned reference-generator image (context = repo root)
+        run: docker build -f tests/NetPdf.RenderingCorpus/docker/Dockerfile -t netpdf-visual-refs .
+      - name: Generate references (Playwright Chromium print-to-PDF → PDFium raster @ 300 dpi)
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work netpdf-visual-refs \
+            python3 tests/NetPdf.RenderingCorpus/docker/generate-references.py
+      - name: Show the generated references
+        run: ls -la tests/NetPdf.RenderingCorpus/references/
+      - name: Upload the reference PNGs for the maintainer to review + commit
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-references
+          path: tests/NetPdf.RenderingCorpus/references/*.png
+          if-no-files-found: error
+          retention-days: 7

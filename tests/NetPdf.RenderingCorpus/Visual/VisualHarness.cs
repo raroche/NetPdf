@@ -55,6 +55,16 @@ public static class VisualHarness
     /// (1-based, zero-padded). Absent until the maintainer generates them — the gate is inert while empty.</summary>
     public static string ReferenceDir => Path.Combine(RepoRoot, "tests", "NetPdf.RenderingCorpus", "references");
 
+    /// <summary>The committed, PINNED font pack (DejaVu Sans, RIBBI) both renderers share so the diff
+    /// measures LAYOUT-ENGINE differences, not font drift between the .NET host and the pinned-Chrome
+    /// reference generator (which is aliased to the SAME DejaVu via <c>docker/Dockerfile</c>'s fontconfig).
+    /// NetPdf renders with <see cref="PinnedFonts"/>; Chrome resolves the corpus families to DejaVu Sans.</summary>
+    public static string FontsDir => Path.Combine(RepoRoot, "tests", "NetPdf.RenderingCorpus", "fonts");
+
+    /// <summary>A fresh <see cref="IFontResolver"/> that serves the pinned DejaVu Sans pack for EVERY family,
+    /// so the NetPdf side of the diff is font-deterministic and matches the Chrome reference oracle.</summary>
+    public static IFontResolver PinnedFonts() => new PinnedFontResolver();
+
     /// <summary>The reference PNG path for a 1-based page of an invoice (e.g.
     /// <c>01-classic-pure-css.html</c> page 1 → <c>references/01-classic-pure-css-page-001.png</c>).</summary>
     public static string ReferencePagePath(string invoiceFileName, int pageNumber) =>

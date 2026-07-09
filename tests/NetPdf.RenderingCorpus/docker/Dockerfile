@@ -9,9 +9,12 @@ FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
 RUN pip install --no-cache-dir pypdfium2==4.30.0
 
 # A PINNED font pack used by BOTH Chrome and NetPdf keeps the diff stable across machines. Copy the repo's
-# committed fonts in here and point fontconfig at them (and wire a matching FontResolver on the NetPdf side).
-#   COPY tests/NetPdf.RenderingCorpus/fonts/ /usr/share/fonts/netpdf/
-#   RUN fc-cache -f
+# committed DejaVu Sans pack in and alias the corpus families + generic sans-serif to it (00-netpdf-pin.conf),
+# so Chrome shapes the SAME glyphs the NetPdf-side PinnedFontResolver does. Build context = repo ROOT:
+#   docker build -f tests/NetPdf.RenderingCorpus/docker/Dockerfile -t netpdf-visual-refs .
+COPY tests/NetPdf.RenderingCorpus/fonts/ /usr/share/fonts/netpdf/
+COPY tests/NetPdf.RenderingCorpus/docker/00-netpdf-pin.conf /etc/fonts/conf.d/00-netpdf-pin.conf
+RUN fc-cache -f
 
 WORKDIR /work
 # The generator is invoked explicitly (see README.md) so the image is a reusable reference-rendering tool:

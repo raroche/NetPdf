@@ -32,8 +32,10 @@ public sealed class CorpusVisualRegressionTests(ITestOutputHelper output)
     [MemberData(nameof(DiffableInvoices))]
     public void Corpus_invoice_converts_to_a_pdf(string invoice)
     {
-        // End-to-end smoke independent of the visual backend: NetPdf renders the (self-contained) invoice.
-        var pdf = HtmlPdf.Convert(VisualHarness.ReadInvoiceHtml(invoice));
+        // End-to-end smoke independent of the visual backend: NetPdf renders the (self-contained) invoice
+        // with the PINNED font pack (so it matches the Chrome reference oracle when the diff runs).
+        var pdf = HtmlPdf.Convert(VisualHarness.ReadInvoiceHtml(invoice),
+            new HtmlPdfOptions { FontResolver = VisualHarness.PinnedFonts() });
         Assert.NotEmpty(pdf);
     }
 
@@ -56,8 +58,11 @@ public sealed class CorpusVisualRegressionTests(ITestOutputHelper output)
                 return;
         }
 
-        // Diff: rasterize every NetPdf page and diff page-for-page against the committed references.
-        var pdf = HtmlPdf.Convert(VisualHarness.ReadInvoiceHtml(invoice));
+        // Diff: rasterize every NetPdf page and diff page-for-page against the committed references. NetPdf
+        // renders with the PINNED DejaVu pack — the SAME font Chrome used to generate the references — so the
+        // diff isolates layout-engine deltas from font differences.
+        var pdf = HtmlPdf.Convert(VisualHarness.ReadInvoiceHtml(invoice),
+            new HtmlPdfOptions { FontResolver = VisualHarness.PinnedFonts() });
         var pages = rasterizer!.RasterizeAllPages(pdf, VisualHarness.Dpi);
         var references = VisualHarness.ReferencePagePaths(invoice);
         Assert.True(pages.Count == references.Count,

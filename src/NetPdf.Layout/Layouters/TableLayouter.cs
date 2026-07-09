@@ -4771,10 +4771,24 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             sumMax += colMax[c];
         }
 
-        // tableWidth = clamp(contentInlineSize, sumMin, sumMax).
-        var tableWidth = contentInlineSize;
-        if (tableWidth < sumMin) tableWidth = sumMin;
-        else if (tableWidth > sumMax) tableWidth = sumMax;
+        // F3 used-table-width (CSS 2.2 §17.5.2 / CSS Tables L3 §3.2). An AUTO-width table
+        // shrinks-to-fit: clamp(contentInlineSize, sumMin, sumMax). An EXPLICIT-width table (its
+        // declared width was already resolved into `contentInlineSize` by
+        // BlockLayouter.ResolveInFlowBorderBoxInlineSize — Step B) uses that width, floored at
+        // GRIDMIN (sumMin) per §17.5.2 — it may exceed sumMax, in which case the saturated path
+        // distributes the surplus. Pre-F3 the saturated + interpolation paths spent
+        // `contentInlineSize` (the fill/available width) directly, so every auto table filled its
+        // containing block instead of shrinking.
+        var wrapperHasExplicitWidth =
+            wrapper.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+        var usedTableWidth = wrapperHasExplicitWidth
+            ? Math.Max(contentInlineSize, sumMin)
+            // A table with NO max-content (sumMax == 0 — all cells empty) keeps the fill instead of
+            // shrinking to 0: a 0-width auto table is degenerate (its wrapper emit is dropped, taking
+            // any caption/structure with it). Real tables have content (sumMax > 0) and shrink-to-fit.
+            : sumMax > 0
+                ? Math.Clamp(contentInlineSize, sumMin, sumMax)
+                : contentInlineSize;
 
         // ============================================================
         //  Step 4 — distribute width to columns.
@@ -4796,16 +4810,17 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return widths;
         }
 
-        if (contentInlineSize + Tolerance >= sumMax)
+        if (usedTableWidth + Tolerance >= sumMax)
         {
-            // Saturated path: contentInlineSize >= sumMax — every
-            // column reaches its max-content; the extra space is
-            // distributed equally across all columns (per the §3 spec
-            // step "if the table-width is greater than the
-            // max-content-table-width, the difference [...] is
-            // distributed equally between all columns").
+            // Saturated path: the USED table width >= sumMax — every column reaches its
+            // max-content; the extra space (only non-zero for an explicit width wider than sumMax)
+            // is distributed equally across all columns (per the §3 spec step "if the table-width is
+            // greater than the max-content-table-width, the difference [...] is distributed equally
+            // between all columns"). For an AUTO table usedTableWidth == sumMax here → extra == 0 →
+            // columns are exactly their max-content = shrink-to-fit (F3). Step E may instead route the
+            // extra to percentage columns before the equal split.
             for (var c = 0; c < columnCount; c++) widths[c] = colMax[c];
-            var extra = contentInlineSize - sumMax;
+            var extra = usedTableWidth - sumMax;
             if (extra > Tolerance)
             {
                 var perColumn = extra / columnCount;
@@ -4829,7 +4844,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         if (range <= Tolerance)
         {
             for (var c = 0; c < columnCount; c++) widths[c] = colMin[c];
-            var extra = contentInlineSize - sumMin;
+            var extra = usedTableWidth - sumMin;
             if (extra > Tolerance && columnCount > 0)
             {
                 var perColumn = extra / columnCount;
@@ -4838,7 +4853,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return widths;
         }
 
-        var available = tableWidth - sumMin;
+        var available = usedTableWidth - sumMin;
         for (var c = 0; c < columnCount; c++)
         {
             widths[c] = colMin[c] + available * (colMax[c] - colMin[c]) / range;

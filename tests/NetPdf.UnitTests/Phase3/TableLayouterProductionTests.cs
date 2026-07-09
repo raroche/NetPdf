@@ -347,7 +347,11 @@ public sealed class TableLayouterProductionTests
             }
         }
         Assert.NotNull(headerFragment);
-        Assert.Equal(600, headerFragment!.Value.InlineSize);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // The colspan=2 cell spans both columns at their max-content ("Header" ≈ 43.2pt
+        // drives the two spanned columns), NOT 2 × 300pt fill. It still starts at inline
+        // offset 0 and spans the full grid width.
+        Assert.Equal(43.2, headerFragment!.Value.InlineSize, precision: 1);
         Assert.Equal(0, headerFragment.Value.InlineOffset);
     }
 
@@ -600,10 +604,11 @@ public sealed class TableLayouterProductionTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Col 0 is floored by <col width="100"> AND gets the
-        // saturated-path extra; col 1 only gets the extra. Both
-        // sum to contentInlineSize=600.
-        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box,
+        // so there is no saturated-path extra. Col 0 is floored by <col width="100"> (its
+        // "A" max-content is smaller) → 100; col 1 is its intrinsic "B" (≈ 6). The grid
+        // total is their sum (≈ 106), NOT 600. Col 0 (floored) still wins over col 1.
+        Assert.Equal(106, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
         Assert.True(cells[0].InlineSize > cells[1].InlineSize,
             $"Expected col 0 (floored by <col width=100>) wider than col 1 "
             + $"(intrinsic only); got col0={cells[0].InlineSize}, col1={cells[1].InlineSize}.");
@@ -645,9 +650,10 @@ public sealed class TableLayouterProductionTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Combined widths cover the wrapper's content-inline-size
-        // (600 from the test fixture).
-        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // The combined widths are the columns' max-content total ("A" = 6pt +
+        // "BBBBBBBBBB" = 60pt = 66), NOT the 600pt fill.
+        Assert.Equal(66, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
         // Column 0 (shorter content) is narrower than column 1
         // (longer content) — the §3 shrink-to-fit derives widths
         // from intrinsic content extents.
@@ -702,10 +708,12 @@ public sealed class TableLayouterProductionTests
         Assert.True(cells[1].InlineSize > cells[3].InlineSize,
             $"Expected description col (width={cells[1].InlineSize}) "
             + $"to be wider than date col (width={cells[3].InlineSize}).");
-        // The four columns sum to contentInlineSize = 600.
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // The four columns sum to their max-content total (≈ 189.6), NOT the 600pt fill.
+        // The description column is still the widest (ordering asserted above).
         var totalWidth = cells[0].InlineSize + cells[1].InlineSize
             + cells[2].InlineSize + cells[3].InlineSize;
-        Assert.Equal(600, totalWidth, precision: 3);
+        Assert.Equal(189.6, totalWidth, precision: 1);
     }
 
     // ====================================================================
@@ -801,11 +809,11 @@ public sealed class TableLayouterProductionTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Each column carries the 20px padding inline-edges; the
-        // sum still equals contentInlineSize (600) under the
-        // saturated path. The content fragment should be inset
-        // by padding-left within the cell.
-        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // Each column still carries its 20px padding inline-edges, so the grid total is
+        // the sum of the padded max-contents ("A"+pad = 26pt, "B"+pad = 26pt = 52), NOT
+        // the 600pt fill. The content fragment is still inset by padding-left in the cell.
+        Assert.Equal(52, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
     }
 
     [Fact]

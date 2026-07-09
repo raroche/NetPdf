@@ -1777,7 +1777,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         + wrapperPaddingInlineStart + wrapperPaddingInlineEnd;
                     var tableDrivenBorderBoxInline =
                         tableMeasuredUsedInlineSize + wrapperBorderPaddingInline;
-                    if (tableDrivenBorderBoxInline > borderBoxInlineSize)
+                    // F3 used-table-width Step C — a `width: auto` table shrinks-to-fit: adopt the
+                    // MEASURED grid width even when it is NARROWER than the fill (previously
+                    // widen-only, so an auto table always kept the full available width). An
+                    // explicit-width wrapper must NOT narrow — its declared width wins (§17.5.2), so
+                    // keep the widen-only behavior there (a grid wider than the declared width still
+                    // overflows the wrapper, matching the fixed-layout overflow contract). Also require
+                    // a POSITIVE measured grid width to narrow: a table with no measurable content
+                    // (all-empty cells → grid 0) keeps the available width — a 0-width wrapper is
+                    // degenerate (BlockLayouter drops its emit, taking any caption with it).
+                    if (tableDrivenBorderBoxInline > borderBoxInlineSize
+                        || (!HasExplicitWidth(child) && tableMeasuredUsedInlineSize > 0))
                     {
                         borderBoxInlineSize = tableDrivenBorderBoxInline;
                     }
@@ -5615,7 +5625,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         + nestedPaddingInlineStart + nestedPaddingInlineEnd;
                     var nestedTableDrivenInline =
                         nestedMeasuredUsedInline + nestedBorderPaddingInline;
-                    if (nestedTableDrivenInline > childBorderBoxInlineSize)
+                    // F3 used-table-width Step C (recursion-path mirror) — an auto-width nested table
+                    // shrinks-to-fit; adopt the measured grid width even when narrower than the fill.
+                    // An explicit-width wrapper stays widen-only (declared width wins). A 0-measured
+                    // grid keeps the available width (degenerate 0-width wrapper — see the outer path).
+                    if (nestedTableDrivenInline > childBorderBoxInlineSize
+                        || (!HasExplicitWidth(child) && nestedMeasuredUsedInline > 0))
                     {
                         childBorderBoxInlineSize = nestedTableDrivenInline;
                     }

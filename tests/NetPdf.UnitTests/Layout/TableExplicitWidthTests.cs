@@ -64,14 +64,14 @@ public sealed class TableExplicitWidthTests
     }
 
     [Fact]
-    public void Auto_width_table_still_fills_the_available_width()
+    public void Auto_width_table_shrinks_to_fit_its_content()
     {
-        // Regression guard: shrink-to-fit for auto tables is the DEFERRED remainder of F3, so a
-        // `width: auto` table must keep filling its containing block (current behavior, unchanged).
+        // F3 used-table-width — a `width: auto` table now SHRINKS-TO-FIT (CSS 2.2 §17.5.2): a single
+        // cell of "X" collapses to that cell's max-content, far narrower than the ~595pt fill.
         var widths = CellRectWidths("<table><tbody><tr><td>X</td></tr></tbody></table>");
         Assert.NotEmpty(widths);
-        Assert.All(widths, w => Assert.True(w > 500,
-            $"auto-width cell {w:0.##}pt — an auto table should still fill (~595pt) until shrink-to-fit lands."));
+        Assert.All(widths, w => Assert.True(w < 50,
+            $"auto-width cell {w:0.##}pt — an auto table should shrink to its content, not fill (~595pt)."));
     }
 
     [Fact]

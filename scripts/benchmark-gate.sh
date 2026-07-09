@@ -36,14 +36,10 @@ esac
 PLATFORM_KEY="${OS}-${ARCH}"
 BASELINE_DIR="$BASELINE_ROOT/phase-1-${PLATFORM_KEY}"
 
-if [ ! -d "$BASELINE_DIR" ]; then
-  echo "warn: no baseline pinned for platform '$PLATFORM_KEY' at $BASELINE_DIR" >&2
-  echo "      Capture one with: ./scripts/benchmark-gate.sh capture" >&2
-  exit 2
-fi
-
-# 'capture' subcommand: run + replace the baseline (used during deliberate
-# re-baselining; never run by CI).
+# 'capture' subcommand: run + (re)write the baseline (used during deliberate
+# re-baselining; never run by CI). Handled BEFORE the "baseline missing" guard so the
+# FIRST baseline for a platform CAN be captured — otherwise the guard's `exit 2` fires
+# first and a brand-new platform (e.g. linux-x64 on the CI runner) can never be seeded.
 if [ "${1:-}" = "capture" ]; then
   echo "==> Capturing new baseline for $PLATFORM_KEY"
   rm -rf "$ARTIFACTS_DIR"
@@ -54,6 +50,12 @@ if [ "${1:-}" = "capture" ]; then
   echo "==> Baseline written to $BASELINE_DIR"
   echo "    Review the diff in git, verify the changes are deliberate, then commit."
   exit 0
+fi
+
+if [ ! -d "$BASELINE_DIR" ]; then
+  echo "warn: no baseline pinned for platform '$PLATFORM_KEY' at $BASELINE_DIR" >&2
+  echo "      Capture one with: ./scripts/benchmark-gate.sh capture" >&2
+  exit 2
 fi
 
 echo "==> Running benchmark suite ($PLATFORM_KEY)"

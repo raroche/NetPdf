@@ -3,6 +3,7 @@
 
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace NetPdf.UnitTests.Docs;
@@ -66,6 +67,7 @@ public sealed class DeferralsParityTests
         "layout-to-pdf-pipeline",
         "visual-regression-cross-engine-tolerance",
         "ci-nonblocking-platform-native-deps",
+        "ci-nonblocking-macos-x64-runner-availability",
     };
 
     [Fact]
@@ -143,6 +145,44 @@ public sealed class DeferralsParityTests
                 $"Saw: '{snippet.Trim()}'.");
             pos = snippetEnd;
         }
+    }
+
+    [Fact]
+    public void Deferrals_priority_lines_use_a_defined_level_and_carry_a_rationale()
+    {
+        // The optional Priority field, when present, must use P1|P2|P3 AND carry a one-line rationale
+        // (schema preamble: "`P1` (high) / `P2` (medium) / `P3` (low), with a one-line rationale"). Without
+        // this, a future edit could write `P0`/`High`, omit the rationale, or malform the syntax and CI would
+        // stay green. Lightweight schema protection matching the ID/status guards above.
+        var content = LoadDeferralsDoc();
+        const string marker = "**Priority** — ";
+        // Priority value is a bold token like `**P2 (medium).**` immediately followed by the rationale on the
+        // same line (which may then wrap onto following lines — we only assert the rationale STARTS non-empty).
+        var lineRegex = new Regex(@"^\*\*(P[123])\b[^\r\n*]*\*\*\s+(\S[^\r\n]*)$");
+        var pos = 0;
+        var seen = 0;
+        while (true)
+        {
+            var start = content.IndexOf(marker, pos, StringComparison.Ordinal);
+            if (start < 0) break;
+            start += marker.Length;
+            var eol = content.IndexOfAny(new[] { '\r', '\n' }, start);
+            if (eol < 0) eol = content.Length;
+            var line = content.Substring(start, eol - start);
+            var m = lineRegex.Match(line);
+            Assert.True(m.Success,
+                "Priority line in docs/deferrals.md is malformed. Expected " +
+                "`**P1|P2|P3 (word).** <rationale>` (levels: P1 high / P2 medium / P3 low). " +
+                $"Saw: '{line.Trim()}'.");
+            Assert.True(m.Groups[2].Value.Trim().Length > 0,
+                $"Priority '{m.Groups[1].Value}' in docs/deferrals.md has no rationale. Saw: '{line.Trim()}'.");
+            seen++;
+            pos = eol;
+        }
+        // Guard against the marker/format silently changing so nothing is validated (the newer entries carry
+        // a Priority, so at least a couple must be present + well-formed).
+        Assert.True(seen >= 2,
+            $"expected the newer deferral entries to carry a well-formed Priority field; matched {seen}.");
     }
 
     private static string LoadDeferralsDoc()

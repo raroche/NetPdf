@@ -25,7 +25,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     # Two matrix legs are NON-BLOCKING (continue-on-error via a `nonblocking: true` flag) — they run and
-    # surface status but don't gate merge. Both are tracked as Phase-5 remainders:
+    # surface status but don't gate merge. Both are tracked as Phase-5 remainders in docs/deferrals.md:
+    #   linux-arm64 → deferral `ci-nonblocking-platform-native-deps` (also covers the alpine leg below);
+    #   macos-x64   → deferral `ci-nonblocking-macos-x64-runner-availability`.
     #   * linux-arm64 — SkiaSharp's raster-fallback native (libSkiaSharp) on the arm64 image is
     #     under-provisioned: it resolves symbols from the *system* libuuid / libfreetype the runner doesn't
     #     satisfy (undefined uuid_generate_random, then — once libuuid is preloaded — FT_Get_BDF_Property).
@@ -92,7 +94,8 @@ jobs:
   # environment gap that needs hardening on a real Alpine runner (musl native-asset + font
   # deps), not reproducible on the macOS/glibc dev box. Until that's hardened the leg runs and
   # surfaces its status but does not gate merge; the five glibc/Windows/macOS legs above are the
-  # enforcing matrix. Tracked as a known CI-hardening remainder.
+  # enforcing matrix. Tracked as a known CI-hardening remainder: docs/deferrals.md deferral
+  # `ci-nonblocking-platform-native-deps`.
   build-test-alpine:
     name: build+test (alpine-musl-x64, non-blocking)
     runs-on: ubuntu-latest

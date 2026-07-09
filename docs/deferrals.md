@@ -3953,6 +3953,17 @@ grepping the ID).
   SSIM-based floor (~0.90) with the per-pixel-Δ demoted to diagnostic-only, then
   commit the reference PNGs. `01-classic` is verified to render correctly (so its
   0.958 is AA noise, not a defect); `04-anvil` is not yet visually verified.
+- **Evidence / reproduce** — the `maxΔ≈255` / `SSIM≈0.958` figures are for `01-classic`
+  ONLY; `04-anvil` is NOT yet measured, so the proposed `~0.90` floor is a starting
+  hypothesis, not a finalized policy (do not enforce until both diffable invoices are
+  measured). To reproduce the numbers on a Linux runner (Chrome + fonts are pinned in
+  the Docker image, so the raster is deterministic there): (1) generate the Chrome
+  references — `gh workflow run generate-visual-references.yml`, download the artifact
+  into `tests/NetPdf.RenderingCorpus/references/`; (2) run the gate —
+  `dotnet test tests/NetPdf.RenderingCorpus -c Release --filter FullyQualifiedName~CorpusVisualRegression`;
+  the per-page `maxΔ` / `ssim` are printed by `PixelDiffResult.ToString()` (format
+  `WxH maxΔ=… ssim=…`). Re-run after any layout fix to confirm the SSIM does not move
+  (the `01-classic` float/clear check above was done exactly this way).
 - **Trigger** — a decision to enforce cross-engine visual fidelity: set the
   cross-engine tolerance, verify each diffable invoice renders correctly
   (`01-classic` done, `04-anvil` pending), and commit the reference PNGs.
@@ -3968,9 +3979,12 @@ grepping the ID).
 ## ci-nonblocking-platform-native-deps
 
 - **ID** — `ci-nonblocking-platform-native-deps`
-- **Status** — `not-started`. The two legs are `continue-on-error: true`
-  (non-blocking) and currently fail at the Test step.
-- **Priority** — **P3 (low).** These are the two NON-enforcing extra RIDs; the
+- **Status** — `not-started`. The two NATIVE-DEPENDENCY legs (`linux-arm64` +
+  `alpine-musl-x64`) are `continue-on-error: true` (non-blocking) and currently fail
+  at the Test step. (The third non-blocking leg, `macos-x64`, is a distinct
+  runner-availability issue tracked separately as
+  [`ci-nonblocking-macos-x64-runner-availability`](#ci-nonblocking-macos-x64-runner-availability).)
+- **Priority** — **P3 (low).** These are the two NON-enforcing native-dep RIDs; the
   enforcing matrix (`linux-x64`, `windows-x64`, `macos-arm64`) already covers the
   shipping platforms, so this is platform-coverage confidence, not a correctness
   gate. Bump if a customer targets Alpine/arm64.
@@ -3990,3 +4004,29 @@ grepping the ID).
 - **Owner files** — `.github/workflows/ci.yml` (the `build-test` arm64-scoped
   install step + the `build-test-alpine` `apk add` step).
 - **Removal condition** — both non-blocking legs pass the Test step in CI (green).
+
+
+
+## ci-nonblocking-macos-x64-runner-availability
+
+- **ID** — `ci-nonblocking-macos-x64-runner-availability`
+- **Status** — `not-started`. The `macos-x64` (macos-13) matrix leg is
+  `continue-on-error: true` (non-blocking) and is chronically UNSCHEDULABLE — it
+  stays queued for the whole timeout rather than failing on a test.
+- **Priority** — **P3 (low).** `macos-arm64` provides the enforcing macOS coverage;
+  Intel-mac is best-effort. This is a hosted-runner-availability gap, not a
+  NetPdf correctness or native-dependency issue — distinct from
+  [`ci-nonblocking-platform-native-deps`](#ci-nonblocking-platform-native-deps)
+  (which is about missing SkiaSharp/HarfBuzz native libs on arm64/alpine).
+- **Behavior** — the `build+test (macos-x64, non-blocking)` CI leg runs but doesn't
+  gate merge. GitHub is deprecating the Intel-mac hosted runners, so the leg is
+  routinely unschedulable and stays queued until the workflow timeout.
+- **Missing** — a schedulable Intel-mac runner. Nothing in NetPdf can fix this; it
+  is entirely a GitHub-hosted-runner-fleet constraint.
+- **Trigger** — GitHub restores reliable Intel-mac hosted-runner availability, OR a
+  decision to drop the `macos-x64` leg entirely (macos-arm64 already gives enforcing
+  macOS coverage), OR a customer needs verified Intel-mac support.
+- **Owner files** — `.github/workflows/ci.yml` (the `macos-13` / `macos-x64` matrix
+  `include` entry + its `nonblocking: true` flag).
+- **Removal condition** — the `macos-x64` leg either schedules + passes reliably in
+  CI, or is removed from the matrix (with this entry deleted in the same commit).

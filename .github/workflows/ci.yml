@@ -93,9 +93,10 @@ jobs:
   # (libSkiaSharp) fails to load under musl on the stock SDK-alpine image — a pre-existing
   # environment gap that needs hardening on a real Alpine runner (musl native-asset + font
   # deps), not reproducible on the macOS/glibc dev box. Until that's hardened the leg runs and
-  # surfaces its status but does not gate merge; the five glibc/Windows/macOS legs above are the
-  # enforcing matrix. Tracked as a known CI-hardening remainder: docs/deferrals.md deferral
-  # `ci-nonblocking-platform-native-deps`.
+  # surfaces its status but does not gate merge; the ENFORCING matrix is exactly three legs —
+  # linux-x64, windows-x64, macos-arm64 — while linux-arm64 and macos-x64 (above) plus this alpine
+  # leg are the three NON-BLOCKING legs. Tracked as a known CI-hardening remainder: docs/deferrals.md
+  # deferral `ci-nonblocking-platform-native-deps`.
   build-test-alpine:
     name: build+test (alpine-musl-x64, non-blocking)
     runs-on: ubuntu-latest

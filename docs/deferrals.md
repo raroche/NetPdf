@@ -23,8 +23,9 @@ can verify entries don't drift away from source. Required labels:
 - **Owner files** — files (and rough locations) that change when picked up.
 - **Removal condition** — explicit criterion for deleting the entry.
 - **Priority** *(optional)* — relative pickup value: `P1` (high) / `P2` (medium) /
-  `P3` (low), with a one-line rationale. Newer entries carry it so the backlog can
-  be worked value-first; older entries may omit it (add on next touch).
+  `P3` (low), with a brief rationale (a sentence or two; it may soft-wrap across
+  lines like the other fields). Newer entries carry it so the backlog can be worked
+  value-first; older entries may omit it (add on next touch).
 
 When you add a deferral, also add its ID to the expected list in
 `DeferralsParityTests.cs` (and reference this doc in the throw-message /

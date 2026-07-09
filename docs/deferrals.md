@@ -1445,8 +1445,8 @@ grepping the ID).
       `!IsFlexWrapping`. **✅ WRAP auto-height row now shipped (06 travel-voucher
       "What's Included" overlap):** `FlexLayouter.AttemptLayout` folds the
       content-measured cross into EACH packed line (`lines[i].LineCrossSize =
-      max(declared, Σ-per-item-max content cross via `itemBaselineCrossSizes`)`) and
-      re-derives the auto container cross = Σ per-line cross + row gaps (CSS Flexbox
+      max(declared, per-line MAX of the items' content cross via `itemBaselineCrossSizes`)`)
+      and re-derives the auto container cross = Σ per-line cross + row gaps (CSS Flexbox
       §9.4 steps 8+15), so the emission cursor stacks the lines instead of collapsing
       them to a shared offset and `maxEmittedCrossBottom` → `LastEmittedBlockExtent`
       reports the true stacked extent. Both `DispatchFlexInner` resize consumers

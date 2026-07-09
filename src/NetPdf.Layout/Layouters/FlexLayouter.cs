@@ -1172,11 +1172,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // the sibling cursor past the real content — otherwise a trailing sibling overlaps the flex content
         // (03 `.note` over the `.timeline`). Byte-identical when the content is no taller than the resolved
         // cross (max ≤ existing).
-        // SCOPE (review) — NOWRAP single-line only: `max(item cross)` is the line's cross size for one
-        // line. For `flex-wrap: wrap` the auto cross is the SUM of each packed line's max content cross +
-        // row gaps, and the wrap cross pre-measure (FlexLinePacker.SumCrossExtent) still reads DECLARED
-        // cross sizes — so a content-sized wrapped flex is a separate (still-open) case; not folded here to
-        // avoid under/over-counting. An explicit height is the used block size, so gate that out too.
+        // SCOPE — this NOWRAP branch handles the single line (`max(item cross)` IS the line's cross size).
+        // The `flex-wrap: wrap` companion — where the auto container cross is the SUM of each packed line's
+        // max content cross + row gaps — is folded IMMEDIATELY BELOW (the `isWrapAutoHeightRow` block). The
+        // residual that REMAINS open is the wrap PRE-measure (`FlexLinePacker.SumCrossExtent`, via
+        // `BlockLayouter.PreMeasureFlexMultiLineCrossExtent`), which still reads DECLARED cross sizes — so a
+        // wrapping auto-height flex tall enough to PAGINATE is not yet content-sized before dispatch
+        // (docs/deferrals.md). An explicit height is the used block size, so gate that out too.
         var autoRowContentCross = 0.0;
         var isAutoHeightRow = !isColumn && !isWrapping
             && _rootBox.Style.Get(PropertyId.Height).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;

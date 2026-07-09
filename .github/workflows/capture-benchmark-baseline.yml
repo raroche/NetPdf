@@ -1,11 +1,11 @@
 # Maintainer tool (workflow_dispatch ONLY) — capture the `linux-x64` BenchmarkDotNet baseline on a stable CI
 # runner and upload it as an artifact for the maintainer to review + commit under
-# `tests/NetPdf.Benchmarks/baselines/linux-x64/`. Deliberately NOT wired into push/PR CI: a baseline is a
+# `tests/NetPdf.Benchmarks/baselines/phase-1-linux-x64/`. Deliberately NOT wired into push/PR CI: a baseline is a
 # deliberate re-basing step (see tests/NetPdf.Benchmarks/baselines/README.md), captured on the gated
 # environment (linux-x64 CI) rather than a dev box so the numbers represent what the gate actually runs against.
 #
 # After the run: download the `benchmark-baseline-linux-x64` artifact, drop it under
-# tests/NetPdf.Benchmarks/baselines/linux-x64/, and commit. The `ci`/`docs` benchmark gate then flips from
+# tests/NetPdf.Benchmarks/baselines/phase-1-linux-x64/, and commit. The `ci`/`docs` benchmark gate then flips from
 # neutral (exit 2, "no baseline yet") to enforcing the +25% tolerance against these numbers.
 name: capture-benchmark-baseline
 
@@ -34,13 +34,13 @@ jobs:
         run: bash scripts/benchmark-gate.sh capture
       - name: Show the captured baseline
         run: |
-          ls -la tests/NetPdf.Benchmarks/baselines/linux-x64/
+          ls -la tests/NetPdf.Benchmarks/baselines/phase-1-linux-x64/
           echo "--- git status ---"
           git status --short
       - name: Upload the linux-x64 baseline for the maintainer to commit
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-baseline-linux-x64
-          path: tests/NetPdf.Benchmarks/baselines/linux-x64/
+          path: tests/NetPdf.Benchmarks/baselines/phase-1-linux-x64/
           if-no-files-found: error
           retention-days: 7

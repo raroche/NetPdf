@@ -20,8 +20,12 @@ import sys
 # The harness corpus holds SELF-CONTAINED invoices (remote assets vendored as data: URIs) so Chrome fetches
 # nothing the NetPdf side blocks — a hard requirement for a deterministic diff.
 DPI = 300
+# Keep in sync with VisualHarness.DiffableInvoices (the C# runner diffs the same set). Chrome resolves these
+# invoices' font families to the committed DejaVu Sans via the image's fontconfig pin (00-netpdf-pin.conf),
+# matching NetPdf's PinnedFontResolver so the diff isolates layout deltas from font differences.
 DIFFABLE_INVOICES = [
     "01-classic-pure-css.html",
+    "04-anvil-running-elements.html",
 ]
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]

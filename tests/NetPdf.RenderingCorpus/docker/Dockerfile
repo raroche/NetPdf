@@ -10,7 +10,7 @@ FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
 # in a location the plain `python3 generate-references.py` invocation didn't import ("No module named
 # 'playwright'"); reinstalling via pip puts it on the invoked interpreter's path alongside pypdfium2. Chromium
 # itself is already bundled in the base image, so no `playwright install` is needed.
-RUN pip install --no-cache-dir playwright==1.49.0 pypdfium2==4.30.0
+RUN pip install --no-cache-dir playwright==1.49.0 pypdfium2==4.30.0 Pillow
 
 # A PINNED font pack used by BOTH Chrome and NetPdf keeps the diff stable across machines. Copy the repo's
 # committed DejaVu Sans pack in and alias the corpus families + generic sans-serif to it (00-netpdf-pin.conf),

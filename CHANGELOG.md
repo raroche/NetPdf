@@ -4,7 +4,15 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
-Post-`1.0.0` improvements accumulate here until the next release is cut.
+Post-`1.0.1` improvements accumulate here until the next release is cut.
+
+## [1.0.1]
+
+A patch release: layout fixes for auto-height floats around page breaks, plus repository and release hygiene. No public API changes.
+
+### Fixed
+- **Auto-height float sizing in the break planner.** The break-planning pre-check now content-sizes an auto-height float, so a float taller than the remaining space on a page defers to a fresh page instead of overflowing it. (#314, #316)
+- **`clear` after a float.** An inline-only (text) block with `clear` now resolves clearance correctly and no longer overlaps a preceding auto-height float. (#314, #316)
 
 ## [1.0.0]
 
@@ -56,5 +64,6 @@ The first stable release. `HtmlPdf.Convert(html)` runs the full HTML → CSS →
 - Single `NetPdf` NuGet package bundling the whole engine; optional `NetPdf.Languages.*` hyphenation add-ons.
 - Source Link + symbol packages for source-stepping.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/raroche/NetPdf/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...v1.0.0

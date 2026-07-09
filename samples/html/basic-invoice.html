@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invoice INV-1001</title>
+<style>
+  @page {
+    size: A4; margin: 20mm;
+    @top-left     { content: "ACME Corp"; }
+    @top-right    { content: "Invoice INV-1001"; }
+    @bottom-right { content: "Page " counter(page) " / " counter(pages); }
+  }
+  body { font-family: sans-serif; color: #1a1a1a; font-size: 12px; }
+  h1 { color: #14396b; margin: 0 0 4px; }
+  .bill { display: flex; justify-content: space-between; margin: 20px 0; }
+  .bill div { line-height: 1.5; }
+  .muted { color: #666; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  thead { display: table-header-group; }   /* column headers repeat every page */
+  tfoot { display: table-footer-group; }   /* running totals repeat every page */
+  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+  th { background: #14396b; color: #fff; }
+  td.num, th.num { text-align: right; }
+  tr { break-inside: avoid; }              /* never split a line-item row across pages */
+  tfoot td { font-weight: bold; background: #eef2fb; }
+  h2 { break-after: avoid; color: #14396b; font-size: 14px; }
+</style>
+</head>
+<body>
+  <h1>INVOICE</h1>
+  <div class="muted">INV-1001 &middot; Issued 2026-07-05 &middot; Due 2026-08-04</div>
+  <div class="bill">
+    <div><strong>From</strong><br>ACME Corp<br>500 Industrial Way<br>Portland, OR 97201</div>
+    <div><strong>Bill to</strong><br>Northwind Traders<br>12 Market Street<br>Seattle, WA 98101</div>
+  </div>
+  <h2>Line items</h2>
+  <table>
+    <thead>
+      <tr><th>#</th><th>Description</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Amount</th></tr>
+    </thead>
+    <tfoot>
+      <tr><td colspan="4" class="num">Total due</td><td class="num">$1,284.00</td></tr>
+    </tfoot>
+    <tbody>
+      <tr><td>1</td><td>Consulting — discovery workshop</td><td class="num">8</td><td class="num">$90.00</td><td class="num">$720.00</td></tr>
+      <tr><td>2</td><td>UX audit report</td><td class="num">1</td><td class="num">$240.00</td><td class="num">$240.00</td></tr>
+      <tr><td>3</td><td>Prototype build</td><td class="num">4</td><td class="num">$60.00</td><td class="num">$240.00</td></tr>
+      <tr><td>4</td><td>Project management</td><td class="num">2</td><td class="num">$42.00</td><td class="num">$84.00</td></tr>
+    </tbody>
+  </table>
+  <p class="muted">Payment terms: net 30. Thank you for your business.</p>
+</body>
+</html>

@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Day-by-Day Itinerary</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm;
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); }
+    @top-left { content: "Azure Horizon Travel"; font-size: 8pt; color: #7a8699; }
+    @top-right { content: "Mediterranean Jewels 2026"; font-size: 8pt; color: #7a8699; }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1f2a3a;
+    font-size: 10.5pt;
+    line-height: 1.55;
+    margin: 0;
+  }
+
+  .brandbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 14px;
+    border-bottom: 2px solid #0f7a5a;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .name { font-size: 15pt; font-weight: 700; color: #0f7a5a; letter-spacing: 0.3px; }
+  .brand .sub  { font-size: 8.5pt; color: #7a8699; }
+  .traveler { text-align: right; font-size: 9pt; color: #52627a; }
+  .traveler strong { color: #1f2a3a; }
+
+  .hero {
+    margin-top: 20px;
+    background: linear-gradient(120deg, #0f7a5a 0%, #16b58a 100%);
+    color: #fff;
+    border-radius: 14px;
+    padding: 22px 26px;
+    box-shadow: 0 6px 16px rgba(15,122,90,0.22);
+  }
+  .hero h1 { font-size: 21pt; margin: 0; }
+  .hero .dates { font-size: 10.5pt; opacity: 0.92; margin-top: 4px; }
+
+  .glance {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .glance .g {
+    flex: 1;
+    border: 1px solid #d4e7df;
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: #f4fbf8;
+    text-align: center;
+  }
+  .glance .g .lbl { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.8px; color: #7a8699; }
+  .glance .g .val { font-size: 13pt; font-weight: 700; color: #0f7a5a; margin-top: 3px; }
+
+  h2.sec {
+    font-size: 11pt;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #0f7a5a;
+    border-bottom: 1px solid #d7dee7;
+    padding-bottom: 5px;
+    margin: 26px 0 8px;
+  }
+
+  .timeline { margin-top: 10px; }
+
+  .day {
+    display: flex;
+    gap: 16px;
+    padding: 12px 0;
+    border-left: 3px solid #d4e7df;
+    margin-left: 18px;
+    padding-left: 22px;
+    position: relative;
+  }
+  .day .badge {
+    position: absolute;
+    left: -20px;
+    top: 12px;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: #0f7a5a;
+    color: #fff;
+    font-weight: 700;
+    font-size: 8pt;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 6px rgba(15,122,90,0.3);
+  }
+  .day .body { flex: 1; }
+  .day .toprow {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .day .loc { font-size: 12pt; font-weight: 700; color: #14503c; }
+  .day .date { font-size: 9pt; color: #7a8699; }
+  .day .acts { margin: 6px 0 0; padding: 0; list-style: none; font-size: 9.5pt; }
+  .day .acts li { display: flex; gap: 10px; padding: 2px 0; }
+  .day .acts .t {
+    min-width: 62px;
+    color: #0f7a5a;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .day .acts .d { color: #33414f; }
+
+  .note {
+    margin-top: 22px;
+    font-size: 8.5pt;
+    color: #7a8699;
+    border-top: 1px solid #e4e9ef;
+    padding-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="brandbar">
+    <div class="brand">
+      <svg width="46" height="46" viewBox="0 0 46 46" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <circle cx="23" cy="23" r="22" fill="#0f7a5a"/>
+        <path d="M14 30 C18 20, 28 20, 32 30" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="30" cy="16" r="4" fill="#ffd166"/>
+        <path d="M30 20 L30 30" stroke="#16b58a" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="14" cy="30" r="2.4" fill="#fff"/>
+        <circle cx="32" cy="30" r="2.4" fill="#fff"/>
+      </svg>
+      <div>
+        <div class="name">Azure Horizon Travel</div>
+        <div class="sub">Your Personal Voyage Itinerary</div>
+      </div>
+    </div>
+    <div class="traveler">
+      Traveler: <strong>Daniel &amp; Elena Whitfield</strong><br>
+      Ref: <strong>AZ-2026-084517</strong><br>
+      Advisor: Priya Nandakumar
+    </div>
+  </div>
+
+  <div class="hero">
+    <h1>Mediterranean Jewels</h1>
+    <div class="dates">7-Night Voyage &middot; June 6 &ndash; June 13, 2026 &middot; Aboard the Celestial Meridian</div>
+  </div>
+
+  <div class="glance">
+    <div class="g"><div class="lbl">Nights</div><div class="val">7</div></div>
+    <div class="g"><div class="lbl">Ports</div><div class="val">6</div></div>
+    <div class="g"><div class="lbl">Countries</div><div class="val">3</div></div>
+    <div class="g"><div class="lbl">Stateroom</div><div class="val">10218</div></div>
+    <div class="g"><div class="lbl">Embark</div><div class="val">Barcelona</div></div>
+  </div>
+
+  <h2 class="sec">Your Day-by-Day Plan</h2>
+  <div class="timeline">
+
+    <div class="day">
+      <div class="badge">Day 1</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Barcelona, Spain</span><span class="date">Sat, Jun 6, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">2:00 PM</span><span class="d">Terminal check-in and boarding at Moll Adossat pier</span></li>
+          <li><span class="t">4:30 PM</span><span class="d">Welcome sail-away party on the Sunset Deck</span></li>
+          <li><span class="t">6:00 PM</span><span class="d">Ship departs Barcelona</span></li>
+          <li><span class="t">8:00 PM</span><span class="d">Dinner at the Meridian Grand Dining Room</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 2</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Palma de Mallorca, Spain</span><span class="date">Sun, Jun 7, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">8:00 AM</span><span class="d">Arrive in port; independent exploration ashore</span></li>
+          <li><span class="t">9:30 AM</span><span class="d">Guided tour: Palma Cathedral &amp; Old Town</span></li>
+          <li><span class="t">1:00 PM</span><span class="d">Tapas lunch at Santa Catalina market</span></li>
+          <li><span class="t">5:00 PM</span><span class="d">All aboard; depart Palma</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 3</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">At Sea</span><span class="date">Mon, Jun 8, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">10:00 AM</span><span class="d">Mediterranean cooking demonstration</span></li>
+          <li><span class="t">2:00 PM</span><span class="d">Spa afternoon &amp; poolside relaxation</span></li>
+          <li><span class="t">8:30 PM</span><span class="d">Headliner show at the Meridian Theater</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 4</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Naples (Pompeii), Italy</span><span class="date">Tue, Jun 9, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">7:00 AM</span><span class="d">Arrive Naples</span></li>
+          <li><span class="t">8:30 AM</span><span class="d">Excursion: Ruins of Pompeii guided walk</span></li>
+          <li><span class="t">1:30 PM</span><span class="d">Wood-fired pizza lunch in Naples</span></li>
+          <li><span class="t">6:00 PM</span><span class="d">Depart Naples</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 5</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Rome (Civitavecchia), Italy</span><span class="date">Wed, Jun 10, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">6:30 AM</span><span class="d">Arrive Civitavecchia; motorcoach to Rome</span></li>
+          <li><span class="t">9:00 AM</span><span class="d">Colosseum &amp; Roman Forum guided tour</span></li>
+          <li><span class="t">12:30 PM</span><span class="d">Vatican Museums &amp; Sistine Chapel</span></li>
+          <li><span class="t">7:00 PM</span><span class="d">Depart Civitavecchia</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 6</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Florence (Livorno), Italy</span><span class="date">Thu, Jun 11, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">7:00 AM</span><span class="d">Arrive Livorno</span></li>
+          <li><span class="t">9:00 AM</span><span class="d">Florence: Duomo &amp; Ponte Vecchio walking tour</span></li>
+          <li><span class="t">2:00 PM</span><span class="d">Tuscan wine tasting in Chianti countryside</span></li>
+          <li><span class="t">6:30 PM</span><span class="d">Depart Livorno</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 7</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Marseille, France</span><span class="date">Fri, Jun 12, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">8:00 AM</span><span class="d">Arrive Marseille</span></li>
+          <li><span class="t">9:30 AM</span><span class="d">Old Port &amp; Notre-Dame de la Garde visit</span></li>
+          <li><span class="t">12:30 PM</span><span class="d">Bouillabaisse lunch by the harbor</span></li>
+          <li><span class="t">5:00 PM</span><span class="d">Farewell dinner; depart Marseille</span></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="day">
+      <div class="badge">Day 8</div>
+      <div class="body">
+        <div class="toprow"><span class="loc">Barcelona, Spain</span><span class="date">Sat, Jun 13, 2026</span></div>
+        <ul class="acts">
+          <li><span class="t">6:00 AM</span><span class="d">Arrive Barcelona</span></li>
+          <li><span class="t">8:00 AM</span><span class="d">Disembark; private transfer to airport</span></li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="note">
+    Times are local to each port and subject to change based on weather and captain's discretion.
+    Please be back on board no later than 30 minutes before each scheduled departure.
+    For assistance during your voyage, contact Guest Services (dial 0) or Azure Horizon Travel at +1 (800) 555-0177.
+  </div>
+
+</body>
+</html>

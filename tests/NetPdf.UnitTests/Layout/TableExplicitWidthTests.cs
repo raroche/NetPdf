@@ -64,14 +64,14 @@ public sealed class TableExplicitWidthTests
     }
 
     [Fact]
-    public void Auto_width_table_still_fills_the_available_width()
+    public void Auto_width_table_shrinks_to_fit_its_content()
     {
-        // Regression guard: shrink-to-fit for auto tables is the DEFERRED remainder of F3, so a
-        // `width: auto` table must keep filling its containing block (current behavior, unchanged).
+        // F3 used-table-width — a `width: auto` table now SHRINKS-TO-FIT (CSS 2.2 §17.5.2): a single
+        // cell of "X" collapses to that cell's max-content, far narrower than the ~595pt fill.
         var widths = CellRectWidths("<table><tbody><tr><td>X</td></tr></tbody></table>");
         Assert.NotEmpty(widths);
-        Assert.All(widths, w => Assert.True(w > 500,
-            $"auto-width cell {w:0.##}pt — an auto table should still fill (~595pt) until shrink-to-fit lands."));
+        Assert.All(widths, w => Assert.True(w < 50,
+            $"auto-width cell {w:0.##}pt — an auto table should shrink to its content, not fill (~595pt)."));
     }
 
     [Fact]
@@ -86,6 +86,21 @@ public sealed class TableExplicitWidthTests
             Assert.True(System.Math.Abs(r.W - 112.5) < 1.0, $"width {r.W:0.##}pt (expected 112.5)");
             Assert.True(System.Math.Abs(r.X - 241.39) < 2.0,
                 $"cell x {r.X:0.##}pt — a `margin: 0 auto` explicit-width table did not center (expected ≈241.4).");
+        });
+    }
+
+    [Fact]
+    public void Auto_width_shrink_to_fit_table_with_auto_margins_is_centered()
+    {
+        // review [P2] — a `width: auto` table now has a definite (shrink-to-fit) used width, so
+        // `margin: 0 auto` centers it. "Total" ≈ 26pt in a 595.28pt page → centered at x ≈ 284.6.
+        var rects = CellRects("<table><tbody><tr><td>Total</td></tr></tbody></table>", "margin:0 auto");
+        Assert.NotEmpty(rects);
+        Assert.All(rects, r =>
+        {
+            Assert.True(r.W < 40, $"width {r.W:0.##}pt should be shrunk max-content.");
+            Assert.True(System.Math.Abs(r.X - (595.28 - r.W) / 2) < 1.5,
+                $"cell x {r.X:0.##}pt — a shrink-to-fit `margin:0 auto` table did not center.");
         });
     }
 

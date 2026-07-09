@@ -111,15 +111,15 @@ public sealed class TableLayouterTests
         Assert.Equal(2, rowFragments.Count);
         Assert.Equal(4, cellFragments.Count);
 
-        // Equal column split — content inline size is 600 (no padding /
-        // border on the wrapper in this test); column width = 300.
-        Assert.Equal(300, cellFragments[0].InlineSize);
-        Assert.Equal(300, cellFragments[1].InlineSize);
+        // F3 used-table-width — a `width: auto` table SHRINKS-TO-FIT: each column is its
+        // max-content ("X" = 7.2pt in the synthetic font), NOT an equal split of the 600pt fill.
+        Assert.Equal(7.2, cellFragments[0].InlineSize, 1);
+        Assert.Equal(7.2, cellFragments[1].InlineSize, 1);
         Assert.Equal(0, cellFragments[0].InlineOffset);
-        Assert.Equal(300, cellFragments[1].InlineOffset);
+        Assert.Equal(7.2, cellFragments[1].InlineOffset, 1);
 
-        // Row 0 spans full width.
-        Assert.Equal(600, rowFragments[0].InlineSize);
+        // Row 0 spans the shrunk grid width (2 × 7.2 = 14.4pt), not the 600pt fill.
+        Assert.Equal(14.4, rowFragments[0].InlineSize, 1);
         Assert.Equal(0, rowFragments[0].InlineOffset);
     }
 
@@ -5310,11 +5310,12 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Per Finding 2 — col 0 is floored by <col width="100"> +
-        // gets +250 from the saturated-path extra distribution =
-        // 350; col 1 gets only the +250 from the extra = 250.
-        Assert.Equal(350, cells[0].InlineSize);
-        Assert.Equal(250, cells[1].InlineSize);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box,
+        // so there is no saturated-path extra to distribute. Col 0 is floored to its
+        // <col width="100"> max-content (its cell is empty, so the floor wins) = 100;
+        // col 1 is empty with no floor → 0. The <col> floor is still demonstrated (100 > 0).
+        Assert.Equal(100, cells[0].InlineSize, 1);
+        Assert.Equal(0, cells[1].InlineSize, 1);
     }
 
     [Fact]
@@ -5366,10 +5367,13 @@ public sealed class TableLayouterTests
         }
         Assert.Equal(2, cells.Count);
         // Col 0's max-content exceeds 50 → col 0 gets max-content
-        // (not clamped). The cells sum to contentInlineSize=600.
+        // (not clamped). The floor-doesn't-clamp intent is preserved.
         Assert.True(cells[0].InlineSize > 50,
             $"Expected col 0 width > 50 (intrinsic max-content), got {cells[0].InlineSize}");
-        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // The grid total is the sum of column max-contents ("AAAAAAAAAAAA" = 72pt +
+        // empty col 1 = 0), NOT the 600pt fill.
+        Assert.Equal(72, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
     }
 
     // ====================================================================
@@ -5428,8 +5432,10 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Both columns sum to contentInlineSize = 600.
-        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // The columns sum to their max-content total ("A" = 6pt + "BBBBB" = 30pt = 36),
+        // NOT the 600pt fill.
+        Assert.Equal(36, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
         // Cell A (shorter text) gets a NARROWER column than cell B
         // (longer text). Pre-sub-cycle-5 the equal-split made
         // cells[0].InlineSize == cells[1].InlineSize; sub-cycle 5
@@ -5505,12 +5511,19 @@ public sealed class TableLayouterTests
         // content "AB" — sumMin = sumMax = 2 * glyphWidth ≈ 12px (well
         // below 600). Saturated path: each column reaches its max +
         // an equal share of the (large) excess → both columns are
-        // equal and sum to contentInlineSize.
+        // equal and sum to the table width.
+        //
+        // F3 shrink-to-fit: an AUTO (`width: auto`) table has NO extra above max-content
+        // to distribute — its used width == sum of max-content. To keep THIS test's intent
+        // (the saturated path distributing extra equally), give the table an EXPLICIT width
+        // (600) wider than its content (sumMax ≈ 24) so there genuinely IS extra to spread.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
         var root = Box.CreateRoot(MakeStyle());
-        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var tableStyle = MakeStyle();
+        SetLengthPx(tableStyle, PropertyId.Width, 600);
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
         var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
 
         var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
@@ -5538,8 +5551,8 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Symmetric content + saturated path → both cells = 300 (sum
-        // = contentInlineSize = 600).
+        // Symmetric content + saturated path → both cells = 300 (sum = the explicit
+        // table width 600). The 600 - 24 = 576 extra above max-content is split equally.
         Assert.Equal(300, cells[0].InlineSize, precision: 3);
         Assert.Equal(300, cells[1].InlineSize, precision: 3);
     }
@@ -5677,14 +5690,17 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(3, cells.Count);
-        // Symmetric content + saturated path → cols 0 + 1 each = 300;
-        // colspan cell = 600 (sum); row 1 cells = 300 each.
-        Assert.Equal(600, cells[0].InlineSize, precision: 3);
-        Assert.Equal(0, cells[0].InlineOffset, precision: 3);
-        Assert.Equal(300, cells[1].InlineSize, precision: 3);
-        Assert.Equal(0, cells[1].InlineOffset, precision: 3);
-        Assert.Equal(300, cells[2].InlineSize, precision: 3);
-        Assert.Equal(300, cells[2].InlineOffset, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box.
+        // Columns are their max-content ("AB" = 12pt each), NOT an equal split of 600.
+        // The colspan=2 cell still spans BOTH columns (width = col0 + col1 = 24, offset 0);
+        // row 1's cells anchor at col 0 / col 1 (12pt each; offsets 0 and 12). The
+        // colspan-distributes-across-columns intent is preserved.
+        Assert.Equal(24, cells[0].InlineSize, precision: 1);
+        Assert.Equal(0, cells[0].InlineOffset, precision: 1);
+        Assert.Equal(12, cells[1].InlineSize, precision: 1);
+        Assert.Equal(0, cells[1].InlineOffset, precision: 1);
+        Assert.Equal(12, cells[2].InlineSize, precision: 1);
+        Assert.Equal(12, cells[2].InlineOffset, precision: 1);
     }
 
     [Fact]
@@ -5883,12 +5899,13 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Col 0 floored by first-row cell width=200 → col 0 gets at
-        // least 200; saturated-path extra distributed across the
-        // remaining 400 → +200 each → col 0 = 400, col 1 = 200.
+        // Col 0 floored by first-row cell width=200 → col 0 gets at least 200.
         Assert.True(cells[0].InlineSize >= 200,
             $"Expected col 0 >= 200 (floored), got {cells[0].InlineSize}");
-        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // F3 shrink-to-fit: a `width: auto` table no longer fills the 600pt content box,
+        // so there is no extra to distribute. The grid total is the sum of column
+        // max-contents (col 0 floored to 200 + empty col 1 = 0), NOT the 600pt fill.
+        Assert.Equal(200, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
     }
 
     [Fact]

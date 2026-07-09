@@ -64,6 +64,8 @@ public sealed class DeferralsParityTests
         "abspos-cycle-1-explicit-only",
         "fixed-cycle-1",
         "layout-to-pdf-pipeline",
+        "visual-regression-cross-engine-tolerance",
+        "ci-nonblocking-platform-native-deps",
     };
 
     [Fact]

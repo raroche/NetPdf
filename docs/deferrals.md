@@ -22,6 +22,9 @@ can verify entries don't drift away from source. Required labels:
 - **Trigger** — the condition that moves this off the deferral list.
 - **Owner files** — files (and rough locations) that change when picked up.
 - **Removal condition** — explicit criterion for deleting the entry.
+- **Priority** *(optional)* — relative pickup value: `P1` (high) / `P2` (medium) /
+  `P3` (low), with a one-line rationale. Newer entries carry it so the backlog can
+  be worked value-first; older entries may omit it (add on next touch).
 
 When you add a deferral, also add its ID to the expected list in
 `DeferralsParityTests.cs` (and reference this doc in the throw-message /
@@ -3919,3 +3922,71 @@ grepping the ID).
 - **Removal condition** — a bordered / backgrounded inline paints its decoration
   per line box; the `LAYOUT-INLINE-UNSUPPORTED-001` inline-decoration warning is
   removed.
+
+
+
+## visual-regression-cross-engine-tolerance
+
+- **ID** — `visual-regression-cross-engine-tolerance`
+- **Status** — `not-started`. The gate is INERT (no reference PNGs committed), so
+  it never fails; every other piece of the harness is wired.
+- **Priority** — **P2 (medium).** A live visual-regression gate gives ongoing
+  protection against rendering regressions across the whole engine — high long-term
+  value for a rendering library. But activation needs a tolerance-policy decision
+  and carries some CI flakiness, and the engine ships correct output without it, so
+  it's not release-blocking.
+- **Behavior** — `tests/NetPdf.RenderingCorpus/Visual/CorpusVisualRegressionTests`
+  diffs NetPdf's render of each diffable corpus invoice against a committed **Chrome
+  reference PNG** (per page, 300 dpi). It stays inert (logged skip) while the
+  `references/` dir has no PNGs. Fully wired: the PDFium rasterizer, the pinned
+  DejaVu font pack shared by BOTH sides (`PinnedFontResolver` + the Docker
+  fontconfig alias), the page-size pin (US Letter, matching Chrome's default), the
+  ≤2px page-rounding reconcile, and the `generate-visual-references.yml`
+  workflow_dispatch that produces the Chrome references on a Linux runner.
+- **Missing** — the committed tolerance is per-pixel RGBA **Δ<4 AND SSIM≥0.98**
+  (`PixelDiff.MaxPerPixelDelta` / `MinSsim`). That is an engine-vs-**SELF**
+  regression tolerance; NetPdf-vs-Chrome is a **cross-engine** diff — two different
+  rasterizers differ at every anti-aliased glyph edge, so `maxΔ≈255` and
+  `SSIM≈0.958` **even when the layout is pixel-correct** (verified: fixing the
+  `01-classic` float/clear overlap did NOT move the SSIM). The gate therefore cannot
+  be activated at that tolerance. Needs a cross-engine tolerance policy: an
+  SSIM-based floor (~0.90) with the per-pixel-Δ demoted to diagnostic-only, then
+  commit the reference PNGs. `01-classic` is verified to render correctly (so its
+  0.958 is AA noise, not a defect); `04-anvil` is not yet visually verified.
+- **Trigger** — a decision to enforce cross-engine visual fidelity: set the
+  cross-engine tolerance, verify each diffable invoice renders correctly
+  (`01-classic` done, `04-anvil` pending), and commit the reference PNGs.
+- **Owner files** — `tests/NetPdf.RenderingCorpus/Visual/PixelDiff.cs` (tolerance
+  constants + the gate metric); `tests/NetPdf.RenderingCorpus/references/*.png`
+  (commit, via `gh workflow run generate-visual-references.yml`);
+  `tests/NetPdf.RenderingCorpus/Visual/CorpusVisualRegressionTests.cs`.
+- **Removal condition** — reference PNGs committed for every diffable invoice, the
+  gate enforces a documented cross-engine tolerance, and CI is green.
+
+
+
+## ci-nonblocking-platform-native-deps
+
+- **ID** — `ci-nonblocking-platform-native-deps`
+- **Status** — `not-started`. The two legs are `continue-on-error: true`
+  (non-blocking) and currently fail at the Test step.
+- **Priority** — **P3 (low).** These are the two NON-enforcing extra RIDs; the
+  enforcing matrix (`linux-x64`, `windows-x64`, `macos-arm64`) already covers the
+  shipping platforms, so this is platform-coverage confidence, not a correctness
+  gate. Bump if a customer targets Alpine/arm64.
+- **Behavior** — the `build+test (linux-arm64, non-blocking)` and
+  `build+test (alpine-musl-x64, non-blocking)` CI legs run but don't gate merge.
+  They fail at the Test step on SkiaSharp/HarfBuzz native-dependency gaps in those
+  runner images (fontconfig + font packs were added; the next gap surfaces after
+  each fix).
+- **Missing** — the remaining native deps for the SkiaSharp text stack on those
+  platforms. **arm64** (ubuntu-24.04-arm): `libSkiaSharp.so: undefined symbol:
+  uuid_generate_random` → install `libuuid1` (and whatever the next symbol needs).
+  **alpine** (musl): the raster-fallback native (`libSkiaSharp`) load + any font
+  deps beyond the added `ttf-dejavu`/`freetype`/`fontconfig`. Iterative: each fix
+  tends to reveal the next missing lib.
+- **Trigger** — a decision to make the two extra RIDs green (or enforcing), OR a
+  customer running on Alpine / Linux-arm64 hits a native-load failure.
+- **Owner files** — `.github/workflows/ci.yml` (the `build-test` arm64-scoped
+  install step + the `build-test-alpine` `apk add` step).
+- **Removal condition** — both non-blocking legs pass the Test step in CI (green).

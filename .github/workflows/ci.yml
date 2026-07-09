@@ -60,6 +60,19 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
 
+      # The ubuntu-24.04-arm runner ships a fontconfig sample conf that uses a <reset-dirs> element the
+      # installed fontconfig rejects; the parse error crashes the SkiaSharp/HarfBuzz test host ("Test host
+      # process crashed"). Drop the offending conf and install a base font so text-dependent tests render.
+      # Scoped to the arm64 leg so the x64 leg's font resolution (and its byte-identical snapshots) are
+      # untouched.
+      - name: Harden fontconfig + fonts (linux-arm64)
+        if: matrix.label == 'linux-arm64'
+        run: |
+          sudo rm -f /etc/fonts/conf.d/05-reset-dirs-sample.conf \
+                     /usr/share/fontconfig/conf.avail/05-reset-dirs-sample.conf || true
+          sudo apt-get install -y fonts-dejavu-core
+          sudo fc-cache -f || true
+
       - name: Build (Release, 0 warnings)
         run: dotnet build NetPdf.slnx -c Release --nologo
 
@@ -88,8 +101,11 @@ jobs:
     container: mcr.microsoft.com/dotnet/sdk:10.0-alpine
     steps:
       - uses: actions/checkout@v4
-      - name: Install AOT + SkiaSharp prerequisites (clang, musl-dev, zlib, fontconfig)
-        run: apk add --no-cache clang build-base zlib-dev bash fontconfig
+      - name: Install AOT + SkiaSharp prerequisites (clang, musl-dev, zlib, fontconfig, fonts)
+        # ttf-dejavu + freetype give the SkiaSharp/HarfBuzz text stack real fonts; without them the stock
+        # SDK-alpine image has none, so text collapses to zero size and decoration/annotation-counting tests
+        # render nothing (Expected N, Actual 0).
+        run: apk add --no-cache clang build-base zlib-dev bash fontconfig freetype ttf-dejavu
       - name: Build (Release)
         run: dotnet build NetPdf.slnx -c Release --nologo
       - name: Test

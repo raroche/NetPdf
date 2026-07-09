@@ -65,6 +65,13 @@ public static class VisualHarness
     /// so the NetPdf side of the diff is font-deterministic and matches the Chrome reference oracle.</summary>
     public static IFontResolver PinnedFonts() => new PinnedFontResolver();
 
+    /// <summary>The page size NetPdf must render the corpus at to match the reference oracle. The generator
+    /// drives Chrome's <c>page.pdf(prefer_css_page_size=True)</c>, and the corpus invoices declare no explicit
+    /// <c>@page size</c>, so Chrome falls back to its default US <b>Letter</b> — 2550×3301 px at 300 dpi.
+    /// NetPdf's own default is A4 (2481×3509), so without this the rasters differ in size and the diff can't
+    /// even run. Pinned here so a future page-size change is a single edit shared by both diff render sites.</summary>
+    public static PageSize ReferencePageSize => PageSize.Letter;
+
     /// <summary>The reference PNG path for a 1-based page of an invoice (e.g.
     /// <c>01-classic-pure-css.html</c> page 1 → <c>references/01-classic-pure-css-page-001.png</c>).</summary>
     public static string ReferencePagePath(string invoiceFileName, int pageNumber) =>

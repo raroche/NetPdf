@@ -24,4 +24,22 @@ public sealed record RasterImage(int Width, int Height, byte[] Rgba)
             throw new System.ArgumentException(
                 $"raster buffer length {Rgba.Length} != expected {ExpectedLength} for {Width}x{Height} RGBA");
     }
+
+    /// <summary>Return the top-left <paramref name="width"/>×<paramref name="height"/> sub-raster (row-major
+    /// RGBA copy). Used to reconcile a sub-pixel page-size rounding difference between the two renderers:
+    /// Chrome and NetPdf can rasterize the SAME logical page size (US Letter, 792 pt) to a 1–2 px different
+    /// pixel height, and cropping both to the common minimum drops only page-bottom/right margin whitespace.
+    /// No-op when the requested size already equals this raster's.</summary>
+    public RasterImage CropTo(int width, int height)
+    {
+        if (width == Width && height == Height) return this;
+        if (width < 0 || height < 0 || width > Width || height > Height)
+            throw new System.ArgumentException($"crop {width}x{height} out of bounds for {Width}x{Height}");
+        var dst = new byte[width * height * 4];
+        var srcStride = Width * 4;
+        var dstStride = width * 4;
+        for (var y = 0; y < height; y++)
+            System.Array.Copy(Rgba, y * srcStride, dst, y * dstStride, dstStride);
+        return new RasterImage(width, height, dst);
+    }
 }

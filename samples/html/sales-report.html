@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Monthly Sales Report — March 2026 — Meridian Travel Co.</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm;
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); }
+  }
+
+  :root {
+    --accent: #4338ca;
+    --accent-2: #7c3aed;
+    --pos: #059669;
+    --ink: #1c2430;
+    --muted: #6b7684;
+    --line: #e6e8f0;
+    --tint: #f5f5fd;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    font-size: 11px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  .report-head {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 14px; margin-bottom: 20px;
+  }
+  .rh-left h1 { margin: 0; font-size: 24px; font-weight: 800; color: var(--accent); letter-spacing: 0.3px; }
+  .rh-left .sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .rh-right { text-align: right; font-size: 10px; color: var(--muted); line-height: 1.6; }
+  .badge {
+    display: inline-block; background: var(--tint); color: var(--accent);
+    border: 1px solid var(--line); border-radius: 20px;
+    padding: 3px 12px; font-size: 10px; font-weight: 700; margin-bottom: 6px;
+  }
+
+  .kpis { display: flex; gap: 12px; margin-bottom: 24px; }
+  .kpi {
+    flex: 1;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 14px 16px;
+    background: linear-gradient(160deg, #ffffff 0%, var(--tint) 100%);
+    box-shadow: 0 2px 6px rgba(67,56,202,0.08);
+  }
+  .kpi .label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); }
+  .kpi .value { font-size: 22px; font-weight: 800; color: var(--ink); margin-top: 4px; }
+  .kpi .delta { font-size: 10px; margin-top: 2px; }
+  .kpi .delta.up { color: var(--pos); }
+
+  .section-title {
+    font-size: 13px; font-weight: 700; color: var(--accent);
+    margin: 0 0 12px; padding-bottom: 5px; border-bottom: 1px solid var(--line);
+  }
+
+  .chart { margin-bottom: 26px; }
+  .bar-row { display: flex; align-items: center; margin-bottom: 9px; }
+  .bar-label { width: 150px; font-size: 10px; color: var(--ink); }
+  .bar-track { flex: 1; background: #eef0f8; border-radius: 6px; height: 18px; overflow: hidden; }
+  .bar-fill {
+    height: 100%; border-radius: 6px;
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
+  }
+  .bar-value { width: 88px; text-align: right; font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  table.regions { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  table.regions thead th {
+    background: var(--accent); color: #fff;
+    padding: 9px 12px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+    text-align: left; font-weight: 600;
+  }
+  table.regions thead th.num { text-align: right; }
+  table.regions tbody td { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  table.regions tbody tr:nth-child(even) { background: var(--tint); }
+  table.regions td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.regions tr.total td {
+    font-weight: 800; background: #eae7fb; border-top: 2px solid var(--accent);
+  }
+
+  .highlights { border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px 14px 18px; background: var(--tint); }
+  .highlights ul { margin: 8px 0 0; padding-left: 18px; }
+  .highlights li { margin: 5px 0; color: var(--ink); }
+  .highlights li strong { color: var(--accent); }
+</style>
+</head>
+<body>
+
+  <div class="report-head">
+    <div class="rh-left">
+      <div class="badge">INTERNAL — CONFIDENTIAL</div>
+      <h1>Monthly Sales Report</h1>
+      <div class="sub">Reporting period: 1–31 March 2026</div>
+    </div>
+    <div class="rh-right">
+      Prepared for<br>
+      <strong>Board of Directors, Meridian Travel Co.</strong><br>
+      Prepared by: Revenue Operations<br>
+      Issued: 3 April 2026<br>
+      Report #: SR-2026-03
+    </div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">Total Revenue</div>
+      <div class="value">$1.84M</div>
+      <div class="delta up">▲ 12.4% vs Feb</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Bookings</div>
+      <div class="value">1,247</div>
+      <div class="delta up">▲ 8.1% vs Feb</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Avg Booking Value</div>
+      <div class="value">$1,476</div>
+      <div class="delta up">▲ 4.0% vs Feb</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Growth (YoY)</div>
+      <div class="value">+21.7%</div>
+      <div class="delta up">▲ ahead of target</div>
+    </div>
+  </div>
+
+  <div class="chart">
+    <div class="section-title">Revenue by Product Line</div>
+    <div class="bar-row">
+      <div class="bar-label">International Airfare</div>
+      <div class="bar-track"><div class="bar-fill" style="width:100%;"></div></div>
+      <div class="bar-value">$742K</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">Hotels &amp; Resorts</div>
+      <div class="bar-track"><div class="bar-fill" style="width:71%;"></div></div>
+      <div class="bar-value">$528K</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">Tours &amp; Experiences</div>
+      <div class="bar-track"><div class="bar-fill" style="width:44%;"></div></div>
+      <div class="bar-value">$326K</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">Cruise Packages</div>
+      <div class="bar-track"><div class="bar-fill" style="width:20%;"></div></div>
+      <div class="bar-value">$148K</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-label">Travel Insurance</div>
+      <div class="bar-track"><div class="bar-fill" style="width:13%;"></div></div>
+      <div class="bar-value">$96K</div>
+    </div>
+  </div>
+
+  <div class="section-title">Regional Breakdown</div>
+  <table class="regions">
+    <thead>
+      <tr>
+        <th>Region</th>
+        <th class="num">Bookings</th>
+        <th class="num">Revenue</th>
+        <th class="num">Commission</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Asia Pacific</td><td class="num">418</td><td class="num">$612,400</td><td class="num">$61,240</td></tr>
+      <tr><td>North America</td><td class="num">262</td><td class="num">$389,100</td><td class="num">$38,910</td></tr>
+      <tr><td>Europe</td><td class="num">205</td><td class="num">$318,700</td><td class="num">$31,870</td></tr>
+      <tr><td>Middle East</td><td class="num">128</td><td class="num">$201,500</td><td class="num">$20,150</td></tr>
+      <tr><td>Oceania</td><td class="num">96</td><td class="num">$142,300</td><td class="num">$14,230</td></tr>
+      <tr><td>South America</td><td class="num">74</td><td class="num">$98,600</td><td class="num">$9,860</td></tr>
+      <tr><td>Africa</td><td class="num">41</td><td class="num">$54,200</td><td class="num">$5,420</td></tr>
+      <tr><td>Central Asia</td><td class="num">23</td><td class="num">$27,100</td><td class="num">$2,710</td></tr>
+      <tr class="total"><td>Total</td><td class="num">1,247</td><td class="num">$1,843,900</td><td class="num">$184,390</td></tr>
+    </tbody>
+  </table>
+
+  <div class="section-title">Highlights</div>
+  <div class="highlights">
+    <ul>
+      <li><strong>Asia Pacific</strong> remained the top-performing region, contributing 33% of total revenue on the back of strong SYD–SIN corporate demand.</li>
+      <li>Average booking value crossed <strong>$1,476</strong>, driven by a shift toward business-class and premium hotel inventory.</li>
+      <li><strong>Cruise Packages</strong> rebounded 34% month-over-month following the launch of the 2026 Mediterranean season.</li>
+      <li>Travel Insurance attach rate improved to <strong>62%</strong>, up from 55% in February.</li>
+      <li>Two enterprise accounts (Northwind Logistics, Aster Pharma) signed annual travel-management agreements worth an estimated <strong>$1.2M</strong> in forward bookings.</li>
+    </ul>
+  </div>
+
+</body>
+</html>

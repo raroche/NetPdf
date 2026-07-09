@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agency Commission Statement</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm;
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1f2933;
+    font-size: 11px;
+    line-height: 1.45;
+    margin: 0;
+  }
+
+  /* Header */
+  .statement-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 14px;
+    border-bottom: 3px solid #0f766e;
+    margin-bottom: 18px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand svg { display: block; }
+  .brand-text .name {
+    font-size: 18px;
+    font-weight: 700;
+    color: #0f766e;
+    letter-spacing: 0.5px;
+  }
+  .brand-text .tag {
+    font-size: 10px;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  .header-meta {
+    text-align: right;
+  }
+  .header-meta .title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #111827;
+  }
+  .header-meta .period {
+    font-size: 12px;
+    color: #0f766e;
+    font-weight: 600;
+    margin-top: 2px;
+  }
+  .header-meta .sub {
+    font-size: 10px;
+    color: #6b7280;
+    margin-top: 6px;
+  }
+  .header-meta .sub strong { color: #374151; }
+
+  /* Summary strip */
+  .summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .card {
+    flex: 1;
+    background: linear-gradient(160deg, #f0fdfa 0%, #ecfeff 100%);
+    border: 1px solid #99f6e4;
+    border-radius: 10px;
+    padding: 12px 14px;
+    box-shadow: 0 1px 3px rgba(15, 118, 110, 0.08);
+  }
+  .card.accent {
+    background: linear-gradient(160deg, #0f766e 0%, #115e59 100%);
+    border-color: #0f766e;
+  }
+  .card .label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #0f766e;
+    font-weight: 600;
+  }
+  .card.accent .label { color: #99f6e4; }
+  .card .value {
+    font-size: 19px;
+    font-weight: 700;
+    color: #0f172a;
+    margin-top: 4px;
+  }
+  .card.accent .value { color: #ffffff; }
+
+  .section-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #374151;
+    margin: 0 0 8px 0;
+  }
+
+  /* Data table */
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10.5px;
+    margin-bottom: 20px;
+  }
+  table.data thead th {
+    background: #0f766e;
+    color: #ffffff;
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+  table.data thead th.num { text-align: right; }
+  table.data tbody td {
+    padding: 7px 10px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  table.data tbody tr:nth-child(even) { background: #f9fafb; }
+  table.data td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  table.data .ref { font-weight: 600; color: #0f766e; }
+  .pill {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 20px;
+    font-size: 9px;
+    font-weight: 600;
+  }
+  .pill.cruise { background: #dbeafe; color: #1d4ed8; }
+  .pill.hotel  { background: #fef3c7; color: #b45309; }
+  .pill.flight { background: #ede9fe; color: #6d28d9; }
+  table.data tfoot td {
+    padding: 10px;
+    font-weight: 700;
+    font-size: 11px;
+    border-top: 2px solid #0f766e;
+    background: #f0fdfa;
+  }
+  table.data tfoot td.num { text-align: right; color: #0f766e; }
+
+  /* Payout footer block */
+  .payout {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-left: 4px solid #0f766e;
+    border-radius: 8px;
+    padding: 14px 18px;
+  }
+  .payout .block .label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #6b7280;
+  }
+  .payout .block .val {
+    font-size: 12px;
+    font-weight: 600;
+    color: #111827;
+    margin-top: 2px;
+  }
+  .payout .amount {
+    text-align: right;
+  }
+  .payout .amount .label { color: #6b7280; }
+  .payout .amount .val {
+    font-size: 22px;
+    font-weight: 700;
+    color: #0f766e;
+  }
+  .note {
+    margin-top: 14px;
+    font-size: 9px;
+    color: #9ca3af;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+  <div class="statement-header">
+    <div class="brand">
+      <svg width="46" height="46" viewBox="0 0 46 46" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="1" width="44" height="44" rx="11" fill="#0f766e"/>
+        <path d="M23 10 L34 30 L23 25 L12 30 Z" fill="#5eead4"/>
+        <circle cx="23" cy="21" r="3.4" fill="#ffffff"/>
+      </svg>
+      <div class="brand-text">
+        <div class="name">Meridian Voyages</div>
+        <div class="tag">Travel Partner Network</div>
+      </div>
+    </div>
+    <div class="header-meta">
+      <div class="title">Commission Statement</div>
+      <div class="period">Statement Period: June 2026</div>
+      <div class="sub">
+        Agent: <strong>Dana R. Whitfield</strong><br>
+        Agent ID: <strong>MV-40712</strong> &nbsp;&middot;&nbsp; Agency: <strong>Skyline Travel Co.</strong><br>
+        Issued: <strong>July 1, 2026</strong>
+      </div>
+    </div>
+  </div>
+
+  <div class="summary">
+    <div class="card">
+      <div class="label">Total Bookings</div>
+      <div class="value">12</div>
+    </div>
+    <div class="card">
+      <div class="label">Gross Sales</div>
+      <div class="value">$84,215</div>
+    </div>
+    <div class="card">
+      <div class="label">Total Commission</div>
+      <div class="value">$9,486</div>
+    </div>
+    <div class="card accent">
+      <div class="label">Payout Amount</div>
+      <div class="value">$9,486.20</div>
+    </div>
+  </div>
+
+  <p class="section-title">Booking Detail</p>
+
+  <table class="data">
+    <thead>
+      <tr>
+        <th>Booking Ref</th>
+        <th>Customer</th>
+        <th>Product</th>
+        <th>Travel Date</th>
+        <th class="num">Gross Amount</th>
+        <th class="num">Comm %</th>
+        <th class="num">Commission $</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="ref">BK-88213</td><td>Harold &amp; Lena Prescott</td>
+        <td><span class="pill cruise">Cruise</span></td><td>Jul 14, 2026</td>
+        <td class="num">$9,480.00</td><td class="num">12%</td><td class="num">$1,137.60</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88240</td><td>Marcus Tan</td>
+        <td><span class="pill hotel">Hotel</span></td><td>Jun 28, 2026</td>
+        <td class="num">$2,145.00</td><td class="num">10%</td><td class="num">$214.50</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88291</td><td>Priya Anand</td>
+        <td><span class="pill flight">Flight</span></td><td>Jul 03, 2026</td>
+        <td class="num">$1,860.00</td><td class="num">6%</td><td class="num">$111.60</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88317</td><td>The Okafor Family</td>
+        <td><span class="pill cruise">Cruise</span></td><td>Aug 09, 2026</td>
+        <td class="num">$14,320.00</td><td class="num">12%</td><td class="num">$1,718.40</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88354</td><td>Sofia Marchetti</td>
+        <td><span class="pill hotel">Hotel</span></td><td>Jul 20, 2026</td>
+        <td class="num">$3,675.00</td><td class="num">10%</td><td class="num">$367.50</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88398</td><td>Daniel &amp; Ruth Cho</td>
+        <td><span class="pill cruise">Cruise</span></td><td>Sep 02, 2026</td>
+        <td class="num">$11,050.00</td><td class="num">11%</td><td class="num">$1,215.50</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88421</td><td>Elena Vasquez</td>
+        <td><span class="pill flight">Flight</span></td><td>Jul 11, 2026</td>
+        <td class="num">$942.00</td><td class="num">6%</td><td class="num">$56.52</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88456</td><td>James Holloway</td>
+        <td><span class="pill hotel">Hotel</span></td><td>Aug 15, 2026</td>
+        <td class="num">$5,280.00</td><td class="num">10%</td><td class="num">$528.00</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88472</td><td>Aisha Rahman</td>
+        <td><span class="pill cruise">Cruise</span></td><td>Aug 22, 2026</td>
+        <td class="num">$8,640.00</td><td class="num">12%</td><td class="num">$1,036.80</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88503</td><td>Grant Sullivan</td>
+        <td><span class="pill flight">Flight</span></td><td>Jul 08, 2026</td>
+        <td class="num">$2,310.00</td><td class="num">6%</td><td class="num">$138.60</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88537</td><td>Nadia &amp; Omar Farouk</td>
+        <td><span class="pill hotel">Hotel</span></td><td>Sep 12, 2026</td>
+        <td class="num">$4,190.00</td><td class="num">10%</td><td class="num">$419.00</td>
+      </tr>
+      <tr>
+        <td class="ref">BK-88561</td><td>Beatrice Lindqvist</td>
+        <td><span class="pill cruise">Cruise</span></td><td>Oct 05, 2026</td>
+        <td class="num">$20,323.00</td><td class="num">12%</td><td class="num">$2,438.76</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="4">Totals &mdash; 12 Bookings</td>
+        <td class="num">$84,215.00</td>
+        <td class="num"></td>
+        <td class="num">$9,382.38</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div class="payout">
+    <div class="block">
+      <div class="label">Payout To</div>
+      <div class="val">Skyline Travel Co. &middot; Acct &bull;&bull;&bull;&bull; 6021</div>
+    </div>
+    <div class="block">
+      <div class="label">Payment Method</div>
+      <div class="val">ACH Direct Deposit</div>
+    </div>
+    <div class="block">
+      <div class="label">Payout Date</div>
+      <div class="val">July 10, 2026</div>
+    </div>
+    <div class="amount">
+      <div class="label">Total Payout</div>
+      <div class="val">$9,486.20</div>
+    </div>
+  </div>
+
+  <p class="note">
+    This statement reflects commissions on bookings ticketed and confirmed within the stated period.
+    Adjustments for cancellations may appear on a future statement. Questions? partners@meridianvoyages.example
+  </p>
+
+</body>
+</html>

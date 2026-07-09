@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Travel Voucher</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm;
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #1f2933;
+    font-size: 12px;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  /* Voucher header */
+  .voucher-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+    color: #ffffff;
+    border-radius: 14px 14px 0 0;
+    padding: 20px 24px;
+  }
+  .voucher-header .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .voucher-header .brand .name {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .voucher-header .brand .tag {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #bfdbfe;
+  }
+  .voucher-header .type {
+    text-align: right;
+  }
+  .voucher-header .type .kicker {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 2px; color: #bfdbfe;
+  }
+  .voucher-header .type .big {
+    font-size: 20px; font-weight: 800;
+  }
+
+  /* Code band */
+  .code-band {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-top: none;
+    border-radius: 0 0 14px 14px;
+    padding: 18px 24px 22px;
+    text-align: center;
+    margin-bottom: 22px;
+  }
+  .code-band .label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 2px; color: #2563eb; font-weight: 700;
+  }
+  .code-band .code {
+    font-family: "Courier New", monospace;
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: 6px;
+    color: #1e3a8a;
+    margin: 6px 0 12px;
+  }
+  /* faux barcode */
+  .barcode {
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    gap: 2px;
+    height: 44px;
+  }
+  .barcode span {
+    display: inline-block;
+    width: 3px;
+    background: #1e293b;
+    height: 100%;
+  }
+  .barcode span.t { width: 2px; }
+  .barcode span.w { width: 6px; }
+  .barcode span.g { background: transparent; width: 3px; }
+
+  /* Details grid */
+  .details {
+    display: flex;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 20px;
+  }
+  .details .col { flex: 1; }
+  .field { margin-bottom: 12px; }
+  .field .label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: #9ca3af; font-weight: 600;
+  }
+  .field .val { font-size: 14px; font-weight: 700; color: #111827; margin-top: 1px; }
+  .field .sub { font-size: 11px; color: #4b5563; font-weight: 400; }
+
+  .qr-col {
+    flex: 0 0 128px;
+    text-align: center;
+  }
+  .qr-col .caption { font-size: 9px; color: #9ca3af; margin-top: 6px; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* Dates strip */
+  .dates {
+    display: flex;
+    justify-content: space-between;
+    background: linear-gradient(160deg, #f8fafc 0%, #eff6ff 100%);
+    border: 1px solid #dbeafe;
+    border-radius: 10px;
+    padding: 14px 20px;
+    margin-bottom: 20px;
+  }
+  .dates .d { text-align: center; flex: 1; }
+  .dates .d .k { font-size: 9px; text-transform: uppercase; letter-spacing: 1px; color: #2563eb; font-weight: 700; }
+  .dates .d .v { font-size: 15px; font-weight: 700; color: #111827; margin-top: 2px; }
+  .dates .arrow { display: flex; align-items: center; color: #93c5fd; font-size: 20px; padding: 0 6px; }
+
+  .section-title {
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+    color: #1e3a8a; margin: 0 0 8px 0;
+  }
+
+  /* Included list */
+  .included {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 20px 0;
+    display: flex;
+    flex-wrap: wrap;
+  }
+  .included li {
+    width: 50%;
+    padding: 5px 0;
+    font-size: 11.5px;
+    color: #374151;
+  }
+  .included li::before {
+    content: "\2714";
+    color: #2563eb;
+    font-weight: 700;
+    margin-right: 8px;
+  }
+
+  /* Terms */
+  .terms {
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-left: 4px solid #2563eb;
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 10px;
+    color: #4b5563;
+    line-height: 1.6;
+  }
+  .terms .section-title { color: #374151; }
+  .terms ol { margin: 4px 0 0 0; padding-left: 16px; }
+  .terms li { margin-bottom: 3px; }
+</style>
+</head>
+<body>
+
+  <div class="voucher-header">
+    <div class="brand">
+      <svg width="42" height="42" viewBox="0 0 42 42" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="1" width="40" height="40" rx="10" fill="#ffffff" opacity="0.15"/>
+        <path d="M21 8 L31 27 L21 22 L11 27 Z" fill="#bfdbfe"/>
+        <circle cx="21" cy="18" r="3" fill="#ffffff"/>
+      </svg>
+      <div>
+        <div class="name">Meridian Voyages</div>
+        <div class="tag">Hotel Stay Voucher</div>
+      </div>
+    </div>
+    <div class="type">
+      <div class="kicker">Redeemable Voucher</div>
+      <div class="big">HOTEL</div>
+    </div>
+  </div>
+
+  <div class="code-band">
+    <div class="label">Confirmation Code</div>
+    <div class="code">HV-9K3T-2610</div>
+    <div class="barcode">
+      <span></span><span class="t"></span><span class="w"></span><span class="g"></span>
+      <span></span><span class="w"></span><span class="t"></span><span></span>
+      <span class="g"></span><span class="w"></span><span></span><span class="t"></span>
+      <span class="w"></span><span class="g"></span><span></span><span class="t"></span>
+      <span class="w"></span><span></span><span class="g"></span><span class="t"></span>
+      <span class="w"></span><span></span><span class="t"></span><span class="w"></span>
+      <span class="g"></span><span></span><span class="t"></span><span class="w"></span>
+      <span></span><span class="g"></span><span class="t"></span><span class="w"></span>
+    </div>
+  </div>
+
+  <div class="details">
+    <div class="col">
+      <div class="field">
+        <div class="label">Guest Name</div>
+        <div class="val">Beatrice Lindqvist</div>
+        <div class="sub">2 Adults &middot; 1 Room</div>
+      </div>
+      <div class="field">
+        <div class="label">Property</div>
+        <div class="val">The Coral Bay Resort &amp; Spa</div>
+        <div class="sub">1725 Ocean Terrace Drive, Nassau, The Bahamas</div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="field">
+        <div class="label">Room Type</div>
+        <div class="val">Oceanfront Deluxe King</div>
+        <div class="sub">Rate: $412 / night &middot; 4 nights</div>
+      </div>
+      <div class="field">
+        <div class="label">Booking Reference</div>
+        <div class="val">BK-88561</div>
+        <div class="sub">Booked via Skyline Travel Co.</div>
+      </div>
+    </div>
+    <div class="qr-col">
+      <svg width="128" height="128" viewBox="0 0 29 29" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <rect width="29" height="29" fill="#ffffff"/>
+        <!-- finder patterns -->
+        <path d="M0 0h7v7h-7z M1 1h5v5h-5z M2 2h3v3h-3z" fill="#1e3a8a" fill-rule="evenodd"/>
+        <path d="M22 0h7v7h-7z M23 1h5v5h-5z M24 2h3v3h-3z" fill="#1e3a8a" fill-rule="evenodd"/>
+        <path d="M0 22h7v7h-7z M1 23h5v5h-5z M2 24h3v3h-3z" fill="#1e3a8a" fill-rule="evenodd"/>
+        <!-- pseudo-random data modules -->
+        <g fill="#1e3a8a">
+          <rect x="9" y="1" width="1" height="1"/><rect x="11" y="1" width="1" height="1"/>
+          <rect x="14" y="1" width="1" height="1"/><rect x="17" y="1" width="1" height="1"/>
+          <rect x="9" y="3" width="1" height="1"/><rect x="12" y="3" width="1" height="1"/>
+          <rect x="15" y="3" width="1" height="1"/><rect x="19" y="3" width="1" height="1"/>
+          <rect x="8" y="5" width="1" height="1"/><rect x="11" y="5" width="1" height="1"/>
+          <rect x="13" y="5" width="1" height="1"/><rect x="16" y="5" width="1" height="1"/>
+          <rect x="1" y="9" width="1" height="1"/><rect x="3" y="9" width="1" height="1"/>
+          <rect x="5" y="9" width="1" height="1"/><rect x="9" y="9" width="1" height="1"/>
+          <rect x="12" y="9" width="1" height="1"/><rect x="15" y="9" width="1" height="1"/>
+          <rect x="18" y="9" width="1" height="1"/><rect x="21" y="9" width="1" height="1"/>
+          <rect x="24" y="9" width="1" height="1"/><rect x="27" y="9" width="1" height="1"/>
+          <rect x="2" y="11" width="1" height="1"/><rect x="6" y="11" width="1" height="1"/>
+          <rect x="10" y="11" width="1" height="1"/><rect x="13" y="11" width="1" height="1"/>
+          <rect x="17" y="11" width="1" height="1"/><rect x="20" y="11" width="1" height="1"/>
+          <rect x="23" y="11" width="1" height="1"/><rect x="26" y="11" width="1" height="1"/>
+          <rect x="1" y="13" width="1" height="1"/><rect x="4" y="13" width="1" height="1"/>
+          <rect x="8" y="13" width="1" height="1"/><rect x="11" y="13" width="1" height="1"/>
+          <rect x="14" y="13" width="1" height="1"/><rect x="18" y="13" width="1" height="1"/>
+          <rect x="22" y="13" width="1" height="1"/><rect x="25" y="13" width="1" height="1"/>
+          <rect x="3" y="15" width="1" height="1"/><rect x="7" y="15" width="1" height="1"/>
+          <rect x="10" y="15" width="1" height="1"/><rect x="14" y="15" width="1" height="1"/>
+          <rect x="16" y="15" width="1" height="1"/><rect x="19" y="15" width="1" height="1"/>
+          <rect x="23" y="15" width="1" height="1"/><rect x="27" y="15" width="1" height="1"/>
+          <rect x="9" y="17" width="1" height="1"/><rect x="12" y="17" width="1" height="1"/>
+          <rect x="15" y="17" width="1" height="1"/><rect x="20" y="17" width="1" height="1"/>
+          <rect x="24" y="17" width="1" height="1"/><rect x="26" y="17" width="1" height="1"/>
+          <rect x="9" y="19" width="1" height="1"/><rect x="11" y="19" width="1" height="1"/>
+          <rect x="14" y="19" width="1" height="1"/><rect x="17" y="19" width="1" height="1"/>
+          <rect x="21" y="19" width="1" height="1"/><rect x="25" y="19" width="1" height="1"/>
+          <rect x="10" y="21" width="1" height="1"/><rect x="13" y="21" width="1" height="1"/>
+          <rect x="16" y="21" width="1" height="1"/><rect x="19" y="21" width="1" height="1"/>
+          <rect x="22" y="21" width="1" height="1"/><rect x="26" y="21" width="1" height="1"/>
+          <rect x="9" y="23" width="1" height="1"/><rect x="12" y="23" width="1" height="1"/>
+          <rect x="16" y="23" width="1" height="1"/><rect x="20" y="23" width="1" height="1"/>
+          <rect x="24" y="23" width="1" height="1"/><rect x="27" y="23" width="1" height="1"/>
+          <rect x="10" y="25" width="1" height="1"/><rect x="14" y="25" width="1" height="1"/>
+          <rect x="18" y="25" width="1" height="1"/><rect x="22" y="25" width="1" height="1"/>
+          <rect x="25" y="25" width="1" height="1"/><rect x="9" y="27" width="1" height="1"/>
+          <rect x="13" y="27" width="1" height="1"/><rect x="17" y="27" width="1" height="1"/>
+          <rect x="21" y="27" width="1" height="1"/><rect x="26" y="27" width="1" height="1"/>
+        </g>
+      </svg>
+      <div class="caption">Scan at Check-In</div>
+    </div>
+  </div>
+
+  <div class="dates">
+    <div class="d">
+      <div class="k">Check-In</div>
+      <div class="v">Oct 5, 2026</div>
+      <div class="sub">from 3:00 PM</div>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="d">
+      <div class="k">Check-Out</div>
+      <div class="v">Oct 9, 2026</div>
+      <div class="sub">by 11:00 AM</div>
+    </div>
+    <div class="arrow">&middot;</div>
+    <div class="d">
+      <div class="k">Nights</div>
+      <div class="v">4</div>
+      <div class="sub">Prepaid</div>
+    </div>
+  </div>
+
+  <p class="section-title">What's Included</p>
+  <ul class="included">
+    <li>Daily breakfast for 2 guests</li>
+    <li>Complimentary Wi-Fi throughout</li>
+    <li>Access to spa &amp; infinity pool</li>
+    <li>Welcome fruit basket &amp; sparkling wine</li>
+    <li>Airport shuttle (round trip)</li>
+    <li>Resort &amp; service fees prepaid</li>
+  </ul>
+
+  <div class="terms">
+    <p class="section-title">Redemption Instructions &amp; Terms</p>
+    <ol>
+      <li>Present this voucher (printed or digital) together with a valid government-issued photo ID at check-in.</li>
+      <li>This voucher is non-transferable and valid only for the guest and dates shown above.</li>
+      <li>Incidental charges (minibar, room service, resort activities) are payable directly to the property.</li>
+      <li>Cancellations within 14 days of arrival are subject to a one-night charge per the fare rules.</li>
+      <li>For assistance, contact Meridian Voyages 24/7 at support@meridianvoyages.example or +1 (800) 555-0142.</li>
+    </ol>
+  </div>
+
+</body>
+</html>

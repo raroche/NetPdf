@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Certificate of Completion — Advanced Data Engineering</title>
+<style>
+  @page { size: A4 landscape; margin: 14mm; }
+
+  :root {
+    --gold: #b08423;
+    --gold-2: #e8c874;
+    --navy: #1f2a44;
+    --ink: #24303f;
+    --muted: #6b7280;
+    --paper: #fffdf7;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    font-family: "Georgia", "Times New Roman", serif;
+    color: var(--ink);
+    margin: 0;
+    background: var(--paper);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Decorative double border */
+  .frame-outer {
+    border: 3px solid var(--gold);
+    border-radius: 6px;
+    padding: 6px;
+    background: linear-gradient(135deg, #fffef9 0%, #fbf5e6 100%);
+  }
+
+  .frame-inner {
+    border: 1px solid var(--gold-2);
+    border-radius: 4px;
+    padding: 26px 40px 30px;
+    text-align: center;
+    position: relative;
+  }
+
+  /* corner flourishes */
+  .corner {
+    position: absolute;
+    width: 40px;
+    height: 40px;
+  }
+  .corner.tl { top: 8px; left: 8px; }
+  .corner.tr { top: 8px; right: 8px; transform: scaleX(-1); }
+  .corner.bl { bottom: 8px; left: 8px; transform: scaleY(-1); }
+  .corner.br { bottom: 8px; right: 8px; transform: scale(-1,-1); }
+
+  .crest {
+    margin: 0 auto 6px;
+    width: 62px;
+    height: 62px;
+  }
+
+  .institution {
+    font-size: 13px;
+    letter-spacing: 0.28em;
+    text-transform: uppercase;
+    color: var(--gold);
+    font-weight: 700;
+    margin: 0 0 18px;
+  }
+
+  .cert-title {
+    font-size: 40px;
+    letter-spacing: 0.04em;
+    color: var(--navy);
+    margin: 0 0 4px;
+    font-weight: 700;
+  }
+
+  .cert-sub {
+    font-size: 14px;
+    color: var(--muted);
+    font-style: italic;
+    margin: 0 0 22px;
+  }
+
+  .presented {
+    font-size: 15px;
+    color: var(--ink);
+    margin: 0 0 6px;
+    letter-spacing: 0.02em;
+  }
+
+  .recipient {
+    font-family: "Snell Roundhand", "Apple Chancery", "Segoe Script", "Georgia", cursive;
+    font-size: 52px;
+    font-style: italic;
+    color: var(--navy);
+    margin: 4px 0 8px;
+    line-height: 1.1;
+  }
+
+  .rule {
+    width: 340px;
+    height: 2px;
+    margin: 8px auto 20px;
+    background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  }
+
+  .citation {
+    font-size: 15px;
+    line-height: 1.6;
+    max-width: 640px;
+    margin: 0 auto 8px;
+    color: var(--ink);
+  }
+
+  .course-name {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--navy);
+    margin: 10px 0 6px;
+  }
+
+  .meta-row {
+    display: flex;
+    justify-content: center;
+    gap: 40px;
+    margin: 14px 0 6px;
+  }
+
+  .meta {
+    text-align: center;
+  }
+  .meta .m-label {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 3px;
+    font-family: Arial, sans-serif;
+  }
+  .meta .m-value {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ink);
+    margin: 0;
+  }
+
+  /* seal + signatures */
+  .footer {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-top: 26px;
+    padding: 0 20px;
+  }
+
+  .sig {
+    flex: 0 0 220px;
+    text-align: center;
+  }
+  .sig .line {
+    border-top: 1.5px solid var(--navy);
+    margin: 0 10px 6px;
+  }
+  .sig .sig-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--navy);
+    margin: 0;
+    font-style: italic;
+  }
+  .sig .sig-title {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-family: Arial, sans-serif;
+    margin: 2px 0 0;
+  }
+
+  .seal {
+    flex: 0 0 120px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .seal .cert-id {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    font-family: "Courier New", monospace;
+    margin: 6px 0 0;
+  }
+</style>
+</head>
+<body>
+
+  <div class="frame-outer">
+    <div class="frame-inner">
+
+      <!-- corner flourishes -->
+      <svg class="corner tl" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#b08423" stroke-width="1.4">
+        <path d="M2 38 V10 Q2 2 10 2 H38"/>
+        <path d="M8 34 V14 Q8 8 14 8 H34"/>
+        <circle cx="10" cy="10" r="2.4" fill="#b08423" stroke="none"/>
+      </svg>
+      <svg class="corner tr" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#b08423" stroke-width="1.4">
+        <path d="M2 38 V10 Q2 2 10 2 H38"/>
+        <path d="M8 34 V14 Q8 8 14 8 H34"/>
+        <circle cx="10" cy="10" r="2.4" fill="#b08423" stroke="none"/>
+      </svg>
+      <svg class="corner bl" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#b08423" stroke-width="1.4">
+        <path d="M2 38 V10 Q2 2 10 2 H38"/>
+        <path d="M8 34 V14 Q8 8 14 8 H34"/>
+        <circle cx="10" cy="10" r="2.4" fill="#b08423" stroke="none"/>
+      </svg>
+      <svg class="corner br" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="#b08423" stroke-width="1.4">
+        <path d="M2 38 V10 Q2 2 10 2 H38"/>
+        <path d="M8 34 V14 Q8 8 14 8 H34"/>
+        <circle cx="10" cy="10" r="2.4" fill="#b08423" stroke="none"/>
+      </svg>
+
+      <!-- crest -->
+      <svg class="crest" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="crestg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#e8c874"/>
+            <stop offset="1" stop-color="#b08423"/>
+          </linearGradient>
+        </defs>
+        <path d="M32 4 L54 12 V30 Q54 50 32 60 Q10 50 10 30 V12 Z" fill="url(#crestg)" stroke="#8a6417" stroke-width="1.5"/>
+        <path d="M24 30 l6 6 12 -14" fill="none" stroke="#fffdf7" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+
+      <p class="institution">Northbridge Institute of Technology</p>
+
+      <h1 class="cert-title">Certificate of Completion</h1>
+      <p class="cert-sub">This is proudly presented to</p>
+
+      <p class="recipient">Elena Marchetti</p>
+      <div class="rule"></div>
+
+      <p class="citation">
+        for successfully completing all coursework, assessments, and the capstone
+        project required by the professional program in
+      </p>
+      <p class="course-name">Advanced Data Engineering &amp; Pipeline Architecture</p>
+
+      <div class="meta-row">
+        <div class="meta">
+          <p class="m-label">Completion Date</p>
+          <p class="m-value">12 June 2026</p>
+        </div>
+        <div class="meta">
+          <p class="m-label">Duration</p>
+          <p class="m-value">120 Hours</p>
+        </div>
+        <div class="meta">
+          <p class="m-label">Credits Awarded</p>
+          <p class="m-value">8.0 CEU</p>
+        </div>
+        <div class="meta">
+          <p class="m-label">Final Grade</p>
+          <p class="m-value">Distinction</p>
+        </div>
+      </div>
+
+      <div class="footer">
+        <div class="sig">
+          <div class="line"></div>
+          <p class="sig-name">Dr. Marcus Feldman</p>
+          <p class="sig-title">Lead Instructor</p>
+        </div>
+
+        <div class="seal">
+          <svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <radialGradient id="sealg" cx="0.5" cy="0.4" r="0.7">
+                <stop offset="0" stop-color="#f3dfa0"/>
+                <stop offset="1" stop-color="#b08423"/>
+              </radialGradient>
+            </defs>
+            <!-- ribbon -->
+            <path d="M38 62 L30 92 L42 84 L50 96 L58 84 L70 92 L62 62 Z" fill="#a5301f"/>
+            <!-- medallion -->
+            <circle cx="50" cy="44" r="34" fill="url(#sealg)" stroke="#8a6417" stroke-width="2"/>
+            <circle cx="50" cy="44" r="27" fill="none" stroke="#fffdf7" stroke-width="1.4" stroke-dasharray="3 3"/>
+            <path d="M50 26 l4.5 9.4 10.3 1.2 -7.6 7 1.9 10.2 -9.1 -4.9 -9.1 4.9 1.9 -10.2 -7.6 -7 10.3 -1.2 Z" fill="#fffdf7"/>
+          </svg>
+          <p class="cert-id">ID: NIT-2026-DE-04187</p>
+        </div>
+
+        <div class="sig">
+          <div class="line"></div>
+          <p class="sig-name">Priya Nair</p>
+          <p class="sig-title">Program Director</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>

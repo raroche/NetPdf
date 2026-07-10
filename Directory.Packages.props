@@ -18,8 +18,8 @@
       these two, with SkiaSharp/HarfBuzz kept at their new versions, makes the suite green. Do not bump until
       the background-image parsing regression is diagnosed against a newer AngleSharp.Css.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.1.2" />
-    <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
+    <PackageVersion Include="AngleSharp" Version="1.5.2" />
+    <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.216" />
     <PackageVersion Include="HarfBuzzSharp" Version="8.3.1.5" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.5" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="8.3.1.5" />

@@ -11,27 +11,34 @@
   <!-- Runtime dependencies (shipped). Each entry MUST pass a written license
        review before being added here (see docs/clean-room-policy.md). -->
   <ItemGroup>
+    <!--
+      HELD at 1.1.2 / beta.144. The Dependabot bump (AngleSharp 1.5.2 / AngleSharp.Css beta.216) REGRESSES
+      background-image rendering: `background-image: url(...)` stops painting entirely (29 background-paint
+      tests drop to zero image output, plus one cascade edge case). Verified by isolation — reverting only
+      these two, with SkiaSharp/HarfBuzz kept at their new versions, makes the suite green. Do not bump until
+      the background-image parsing regression is diagnosed against a newer AngleSharp.Css.
+    -->
     <PackageVersion Include="AngleSharp" Version="1.1.2" />
     <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="8.3.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="8.3.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="8.3.1.1" />
-    <PackageVersion Include="SkiaSharp" Version="3.119.2" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.2" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="3.119.2" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="3.119.2" />
+    <PackageVersion Include="HarfBuzzSharp" Version="8.3.1.5" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.5" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="8.3.1.5" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="8.3.1.5" />
+    <PackageVersion Include="SkiaSharp" Version="3.119.4" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
   <ItemGroup>
-    <PackageVersion Include="xunit" Version="2.9.2" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.2" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
-    <PackageVersion Include="SharpFuzz" Version="2.1.1" />
-    <PackageVersion Include="Microsoft.Playwright" Version="1.49.0" />
+    <PackageVersion Include="SharpFuzz" Version="2.3.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.61.0" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
          macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. Its SkiaSharp floor is
          3.119.2 — the repo-wide SkiaSharp pin above matches it, so the harness measures the same renderer
@@ -43,12 +50,13 @@
   <ItemGroup>
     <!--
       Pinned to a Roslyn version the source generator (NetPdf.SourceGen) can reference without forcing a
-      newer compiler than the build SDK ships. Dependabot's bump to 5.6.0 passed CI (runner SDK shipped
-      Roslyn 5.6+) but broke `dotnet build` on any SDK whose compiler is older (CS9057: "analyzer references
-      a newer compiler than the currently running version"). Bump only in lockstep with the minimum
-      supported .NET SDK — not to the latest Roslyn. Reverts PR #331.
+      newer compiler than the build SDK ships. Dependabot's bump to 5.6.0 (PR #331) passed CI (runner SDK
+      shipped Roslyn 5.6+) but broke `dotnet build` on any SDK whose compiler is older (CS9057: "analyzer
+      references a newer compiler than the currently running version"). 4.14.0 stays safely below the .NET 10
+      SDK's compiler, so it does not raise the build floor. Bump only in lockstep with the minimum supported
+      .NET SDK — not to the latest Roslyn.
     -->
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
     <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
   </ItemGroup>
 

@@ -1,8 +1,8 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "phase": 5,
   "phaseDescription": "Packaging & release (v1.0 launch)",
   "publicApiFrozen": true,
-  "lastUpdated": "2026-07-09",
+  "lastUpdated": "2026-07-10",
   "_note": "Informational only. The MSBuild source-of-truth is Directory.Build.props (VersionPrefix + VersionSuffix). When bumping versions, update BOTH files together, then create the git tag. ReleaseVersionParityTests guards that this file, Directory.Build.props, and the CHANGELOG's latest version heading agree. Phase 5 will introduce a small MSBuild task that reads this file directly."
 }

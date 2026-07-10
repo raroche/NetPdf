@@ -4,7 +4,15 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
-Post-`1.0.1` improvements accumulate here until the next release is cut.
+Post-`1.0.2` improvements accumulate here until the next release is cut.
+
+## [1.0.2]
+
+A maintenance release: dependency updates only. No functional or public API changes, and output is byte-for-byte unchanged (all rendering goldens are identical).
+
+### Changed
+- Updated bundled native/runtime dependencies to their latest patch releases: **SkiaSharp** 3.119.4 and **HarfBuzzSharp** 8.3.1.5.
+- Updated build and test tooling (test SDK, analyzers pin, CI actions).
 
 ## [1.0.1]
 
@@ -64,6 +72,7 @@ The first stable release. `HtmlPdf.Convert(html)` runs the full HTML → CSS →
 - Single `NetPdf` NuGet package bundling the whole engine; optional `NetPdf.Languages.*` hyphenation add-ons.
 - Source Link + symbol packages for source-stepping.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/raroche/NetPdf/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/raroche/NetPdf/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...v1.0.0

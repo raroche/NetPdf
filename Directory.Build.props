@@ -76,7 +76,7 @@
       doesn't parse XML; if they ever disagree, this file wins for what NuGet
       actually packs. Bump protocol: update BOTH files, commit, then `git tag`.
     -->
-    <VersionPrefix>1.0.1</VersionPrefix>
+    <VersionPrefix>1.0.2</VersionPrefix>
     <VersionSuffix></VersionSuffix>
 
     <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->
@@ -99,9 +99,9 @@
       any accidental public-API break vs. the last release.
     -->
     <EnablePackageValidation>true</EnablePackageValidation>
-    <!-- Enabled at v1.0.1 (1.0.0 is published on nuget.org): fail the build on any accidental
-         public-API break vs. the last release. -->
-    <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion>
+    <!-- Baseline = the previous published release (must exist on nuget.org): fail the build on any
+         accidental public-API break vs. that release. Bump this to <prev> on each release. -->
+    <PackageValidationBaselineVersion>1.0.1</PackageValidationBaselineVersion>
 
     <!-- NuGet client requirement. -->
     <MinClientVersion>5.0.0</MinClientVersion>

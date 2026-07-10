@@ -43,7 +43,7 @@ public sealed class HtmlPdfFacadeTests
         // would also pass `1.0.10` or an unrelated string carrying the fragment (PR-258 Copilot). Stable
         // releases from 1.0.0 on carry no prerelease suffix. Bump this on each release (guarded by
         // ReleaseVersionParityTests, which keeps the three version surfaces in agreement).
-        Assert.Matches(@"^1\.0\.1(\+.*)?$", version);
+        Assert.Matches(@"^1\.0\.2(\+.*)?$", version);
     }
 
     [Fact]

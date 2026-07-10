@@ -3,7 +3,7 @@
 # Pin the Playwright version (which pins a specific Chromium revision) — NEVER use a floating tag — so the
 # committed reference PNGs are reproducible and CI (Linux) does not drift against a developer's macOS fonts.
 # Bump this tag deliberately as part of a reference-regeneration, never implicitly.
-FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
 
 # pypdfium2 rasterizes the Chrome print-to-PDF at the harness DPI (PDFium — SkiaSharp cannot read PDF).
 # Install playwright into the SAME python that runs the generator too: the base image ships Playwright but

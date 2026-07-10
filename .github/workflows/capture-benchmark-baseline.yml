@@ -38,7 +38,7 @@ jobs:
           echo "--- git status ---"
           git status --short
       - name: Upload the linux-x64 baseline for the maintainer to commit
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-baseline-linux-x64
           path: tests/NetPdf.Benchmarks/baselines/phase-1-linux-x64/

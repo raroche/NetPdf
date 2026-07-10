@@ -79,7 +79,7 @@ Every existing free option for .NET fails one or more critical criteria:
 
 NetPdf fills the gap: **truly free, truly forever, truly open source.**
 
-Its direction is closer to **Prince**, **WeasyPrint**, **OpenHTMLtoPDF** than to Playwright/Puppeteer/wkhtmltopdf — layout-engine first, paint-engine second, PDF byte-writer third — all built from scratch using public W3C / Unicode / ISO specifications under a [clean-room policy](https://github.com/raroche/NetPdf/blob/main/docs/clean-room-policy.md).
+It is a print-focused document engine rather than a screen-rendering wrapper — layout-engine first, paint-engine second, PDF byte-writer third — all built from scratch using public W3C / Unicode / ISO specifications under a [clean-room policy](https://github.com/raroche/NetPdf/blob/main/docs/clean-room-policy.md).
 
 ## Using the API
 

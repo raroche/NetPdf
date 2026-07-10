@@ -5,6 +5,22 @@ paged output — not parity with an interactive browser. This page summarizes wh
 authoritative, feature-by-feature matrix is
 [`docs/compatibility-matrix.md`](https://github.com/raroche/NetPdf/blob/main/docs/compatibility-matrix.md).
 
+## Rendering fidelity — what to expect
+
+NetPdf does **not** aim to render identically to a web browser, and it deliberately doesn't try to. It is a
+print- and paged-media engine: its purpose is to turn document-shaped HTML and CSS into well-formed,
+deterministic PDFs, not to reproduce a browser's on-screen rendering pixel-for-pixel.
+
+For the content it is built for — invoices, statements, reports, letters, certificates, and similar
+documents — NetPdf targets **close visual parity with a browser's _print_ output** (the result of the
+browser's "Print → Save as PDF"), a different and more constrained target than interactive on-screen layout.
+
+"Renders identically to any browser" is therefore not a claim NetPdf makes. Screen-oriented or interactive
+layouts, scripted content, and pixel-exact matching of a specific browser engine are out of scope. Where a
+feature falls outside that scope, NetPdf emits a stable, structured [diagnostic](diagnostics.md) rather than
+silently approximating or dropping content, so the places where output differs are explicit rather than
+surprising.
+
 ## Status legend
 
 | | Meaning |

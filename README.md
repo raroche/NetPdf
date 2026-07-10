@@ -81,6 +81,14 @@ NetPdf fills the gap: **truly free, truly forever, truly open source.**
 
 It is a print-focused document engine rather than a screen-rendering wrapper — layout-engine first, paint-engine second, PDF byte-writer third — all built from scratch using public W3C / Unicode / ISO specifications under a [clean-room policy](https://github.com/raroche/NetPdf/blob/main/docs/clean-room-policy.md).
 
+## Rendering fidelity — what to expect
+
+NetPdf does **not** aim to render identically to a web browser, and it deliberately doesn't try to. It is a print- and paged-media engine: its purpose is to turn document-shaped HTML and CSS into well-formed, deterministic PDFs, not to reproduce a browser's on-screen rendering pixel-for-pixel.
+
+For the content it is built for — invoices, statements, reports, letters, certificates, and similar documents — NetPdf targets **close visual parity with a browser's _print_ output** (the result of the browser's "Print → Save as PDF"), which is a different and more constrained target than interactive on-screen layout.
+
+Accordingly, "renders identically to any browser" is not a claim NetPdf makes. Screen-oriented or interactive layouts, scripted content, and pixel-exact matching of a specific browser engine are out of scope. Where a feature falls outside that scope, NetPdf emits a stable, structured [diagnostic](https://github.com/raroche/NetPdf/blob/main/docs/diagnostics-codes.md) rather than silently approximating or dropping content — so the places where output differs are explicit, not surprising.
+
 ## Using the API
 
 The public surface is the single static `HtmlPdf` facade plus a small set of option/result types (namespace `NetPdf`). Every overload below returns real PDF bytes for the full feature set — layout, pagination, paged media, text shaping, images, and visual parity (gradients, shadows, transforms, filters, SVG). Unsupported features emit a stable structured diagnostic rather than throwing or silently dropping content.

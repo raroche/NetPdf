@@ -10,6 +10,12 @@ This document is the authoritative answer to "does NetPdf support feature X?" Up
 
 ---
 
+## Rendering fidelity
+
+NetPdf does **not** aim to render identically to a web browser, and deliberately does not try to. It is a print- and paged-media engine: it turns document-shaped HTML/CSS into well-formed, deterministic PDFs rather than reproducing a browser's on-screen rendering pixel-for-pixel. For the documents it targets (invoices, statements, reports, letters, certificates), it aims for **close visual parity with a browser's _print_ output** ("Print → Save as PDF") — not with interactive on-screen layout, and not with a specific browser engine byte-for-byte. Anything outside that scope is marked ❌ below and emits a diagnostic rather than being silently approximated or dropped.
+
+---
+
 ## HTML
 
 | Feature | Status | Notes |

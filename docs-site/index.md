@@ -5,8 +5,8 @@ _layout: landing
 # NetPdf
 
 **Pure C# / .NET 10 HTML + CSS → PDF.** No browser, no native Chromium, no subprocess at render time, no
-AGPL or revenue-capped dependencies. Apache-2.0. Direction: [Prince](https://www.princexml.com/) /
-[WeasyPrint](https://weasyprint.org/), not Playwright / wkhtmltopdf.
+AGPL or revenue-capped dependencies. Apache-2.0. A real HTML/CSS layout engine built for print and paged
+media — rendered straight to PDF, not driven through a headless browser.
 
 NetPdf ships its own HTML/CSS layout engine — block / inline / flex / grid / table layout, fragmentation
 across pages, international text shaping (HarfBuzz), a bounded "least-ugly page split" pagination cost model,

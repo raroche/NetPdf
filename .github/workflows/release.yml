@@ -44,7 +44,7 @@ jobs:
       # Check out the exact ref being released. On a tag push `github.ref` is the tag; on a manual
       # workflow_dispatch we check out the requested `tag` input (else the run would build the default
       # branch and could pack bytes that don't match the tag).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 

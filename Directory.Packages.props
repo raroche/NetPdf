@@ -20,10 +20,10 @@
     -->
     <PackageVersion Include="AngleSharp" Version="1.1.2" />
     <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="8.3.1.5" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.1" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.5" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="8.3.1.5" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="8.3.1.5" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.1" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.1" />
     <PackageVersion Include="SkiaSharp" Version="3.119.4" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />

@@ -56,8 +56,8 @@
       SDK's compiler, so it does not raise the build floor. Bump only in lockstep with the minimum supported
       .NET SDK — not to the latest Roslyn.
     -->
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
-    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.6.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="5.3.0" />
   </ItemGroup>
 
   <!-- Build infrastructure. -->

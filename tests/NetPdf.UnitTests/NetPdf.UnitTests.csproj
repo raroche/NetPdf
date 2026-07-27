@@ -31,6 +31,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      LINK (not ProjectReference) the benchmark gate's comparison logic. Referencing
+      NetPdf.Benchmarks would drag BenchmarkDotNet into this project's dependency graph just to test a
+      few dozen lines of pure JSON/dictionary code; BaselineComparison.cs is deliberately free of
+      BenchmarkDotNet types so it can be compiled straight into the test assembly instead.
+    -->
+    <Compile Include="..\NetPdf.Benchmarks\BaselineComparison.cs"
+             Link="Performance\BaselineComparison.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />

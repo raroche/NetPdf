@@ -60,10 +60,13 @@
     <!--
       PackageReleaseNotes is plain text on nuget.org (not a rendered link), so we
       point readers at the machine-readable CHANGELOG rather than duplicating it.
-      The notes intentionally carry no version string, so there is nothing here to
-      keep in sync with VersionPrefix — the CHANGELOG link is the source of truth.
+      The notes intentionally carry no version string AND no version-specific claim
+      (per PR #355 review [P2]: "First stable release." shipped unchanged in the
+      1.1.0 package), so there is nothing here to keep in sync with VersionPrefix —
+      the CHANGELOG link is the source of truth. `ReleaseVersionParityTests`
+      guards this: keep the text release-agnostic.
     -->
-    <PackageReleaseNotes>First stable release. Full changelog: https://github.com/raroche/NetPdf/blob/main/CHANGELOG.md</PackageReleaseNotes>
+    <PackageReleaseNotes>Release notes for this and every prior version: https://github.com/raroche/NetPdf/blob/main/CHANGELOG.md</PackageReleaseNotes>
 
     <!--
       Versioning. Directory.Build.props is the MSBuild source-of-truth — every

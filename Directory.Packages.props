@@ -40,9 +40,13 @@
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
     <PackageVersion Include="Microsoft.Playwright" Version="1.61.0" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
-         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. Its SkiaSharp floor is
-         3.119.2 — the repo-wide SkiaSharp pin above matches it, so the harness measures the same renderer
-         dependency set as production. -->
+         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. PDFtoImage 5.2.1
+         declares a SkiaSharp FLOOR of 3.119.2; production intentionally pins 4.150.1 above (PR #355), and
+         NuGet unifies the graph to that single higher version — so the harness still rasterizes against the
+         SAME SkiaSharp the shipped package uses. The tradeoff of the gap: PDFtoImage runs against a SkiaSharp
+         newer than it compiled against, so a removed 3.x API would surface as a runtime MissingMethodException
+         rather than a build break. The RenderingCorpus suite is what proves that hasn't happened — if it ever
+         fails after a SkiaSharp major bump, suspect this gap first. -->
     <PackageVersion Include="PDFtoImage" Version="5.2.1" />
   </ItemGroup>
 

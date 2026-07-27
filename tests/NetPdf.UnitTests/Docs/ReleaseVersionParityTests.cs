@@ -85,6 +85,48 @@ public sealed class ReleaseVersionParityTests
                 $"'{previous}' (tag may be '{previous}' or 'v{previous}'). It should compare '{previous}...{latest}'.");
     }
 
+    [Fact]
+    public void Release_metadata_carries_no_version_specific_language()
+    {
+        // Per PR #355 review [P2] — the OTHER half of version drift: metadata that carries a version-specific
+        // CLAIM rather than a version NUMBER. `PackageReleaseNotes` said "First stable release." and shipped
+        // that text unchanged inside the 1.1.0 .nupkg, and build/version.json's `phaseDescription` still read
+        // "Packaging & release (v1.0 launch)" at version 1.1.0. Neither surface is covered by the parity test
+        // above (which only compares version NUMBERS), so both drifted silently across a release.
+        //
+        // These two fields are deliberately release-AGNOSTIC — they are written once and never bumped. This
+        // test pins that intent: no semver-ish token, no "first/initial release" ordinal claim. If you need to
+        // say something version-specific, say it in CHANGELOG.md, which is versioned by design.
+        var root = RepoRoot();
+
+        var notes = Regex.Match(
+            File.ReadAllText(Path.Combine(root, "Directory.Build.props")),
+            @"<PackageReleaseNotes>(.*?)</PackageReleaseNotes>", RegexOptions.Singleline).Groups[1].Value;
+        Assert.True(notes.Length > 0, "Directory.Build.props is missing <PackageReleaseNotes>.");
+        AssertReleaseAgnostic(notes, "Directory.Build.props <PackageReleaseNotes>");
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "build", "version.json")));
+        var phase = doc.RootElement.GetProperty("phaseDescription").GetString() ?? string.Empty;
+        AssertReleaseAgnostic(phase, "build/version.json phaseDescription");
+    }
+
+    /// <summary>Fails when <paramref name="text"/> pins itself to one release — either a semver-ish token
+    /// (<c>1.0</c>, <c>v1.0.0</c>) or an ordinal-release claim (<c>first stable release</c>). URLs are
+    /// exempt: the CHANGELOG link is the whole point, and its path carries no version.</summary>
+    private static void AssertReleaseAgnostic(string text, string surface)
+    {
+        var version = Regex.Match(text, @"\bv?\d+\.\d+(\.\d+)?\b");
+        Assert.True(!version.Success,
+            $"{surface} carries the version-specific token '{version.Value}'. This field is written once and " +
+            "never bumped, so it silently ships stale on the next release — put version-specific wording in " +
+            "CHANGELOG.md instead.");
+
+        var ordinal = Regex.Match(text, @"\b(first|initial)\s+(stable\s+)?release\b", RegexOptions.IgnoreCase);
+        Assert.True(!ordinal.Success,
+            $"{surface} carries the version-specific claim '{ordinal.Value}'. It was true for exactly one " +
+            "release and ships stale on every one after it — put it in CHANGELOG.md instead.");
+    }
+
     /// <summary>All versioned `## [X] — …` headings in file order (newest first), excluding `[Unreleased]`.</summary>
     private static System.Collections.Generic.List<string> ReadChangelogVersions(string path)
     {

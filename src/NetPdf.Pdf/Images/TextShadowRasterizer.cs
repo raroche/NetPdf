@@ -112,17 +112,16 @@ internal static class TextShadowRasterizer
     {
         destOffsetXPx = destOffsetYPx = destWidthPx = destHeightPx = 0;
 
-        using var fullPath = new SKPath();
+        using var fullPathBuilder = new SKPathBuilder();
         for (var i = 0; i < glyphArray.Length; i++)
         {
             using var glyphPath = font.GetGlyphPath(glyphArray[i]);
             if (glyphPath is not null && !glyphPath.IsEmpty)
             {
-                using var placed = new SKPath();
-                glyphPath.Transform(SKMatrix.CreateTranslation(penXDevice[i], 0), placed);
-                fullPath.AddPath(placed);
+                fullPathBuilder.AddPath(glyphPath, penXDevice[i], 0, SKPathAddMode.Append);
             }
         }
+        using var fullPath = fullPathBuilder.Detach();
         if (fullPath.IsEmpty) return null; // an all-whitespace run paints no shadow.
 
         var ink = fullPath.TightBounds;

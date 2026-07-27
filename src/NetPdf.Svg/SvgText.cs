@@ -354,17 +354,17 @@ internal static class SvgText
         if (fillShader is not null)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = fillShader, IsAntialias = true };
-            canvas.DrawText(glyph, x, y, font, p);
+            canvas.DrawText(glyph, x, y, SKTextAlign.Left, font, p);
         }
         else if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Fill, Color = WithOpacity(style.Fill, style.FillOpacity), IsAntialias = true };
-            canvas.DrawText(glyph, x, y, font, p);
+            canvas.DrawText(glyph, x, y, SKTextAlign.Left, font, p);
         }
         if (style.StrokeWidth > 0 && style.Stroke is { } sc && style.StrokeRef is null)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Color = WithOpacity(sc, style.StrokeOpacity), IsAntialias = true };
-            canvas.DrawText(glyph, x, y, font, p);
+            canvas.DrawText(glyph, x, y, SKTextAlign.Left, font, p);
         }
     }
 
@@ -401,13 +401,13 @@ internal static class SvgText
             if (state.ResolveShader(fref, bounds, style.FillOpacity, style) is { } rp)
                 using (rp)
                 using (var p = new SKPaint { Style = SKPaintStyle.Fill, Shader = rp.Shader, IsAntialias = true })
-                    canvas.DrawText(textRun, x, baseline, font, p);
+                    canvas.DrawText(textRun, x, baseline, SKTextAlign.Left, font, p);
             else state.SawUnsupported = true;
         }
         else if (style.Fill.Alpha > 0 && style.FillOpacity > 0)
         {
             using var p = new SKPaint { Style = SKPaintStyle.Fill, Color = WithOpacity(style.Fill, style.FillOpacity), IsAntialias = true };
-            canvas.DrawText(textRun, x, baseline, font, p);
+            canvas.DrawText(textRun, x, baseline, SKTextAlign.Left, font, p);
         }
 
         if (style.StrokeWidth > 0)
@@ -417,13 +417,13 @@ internal static class SvgText
                 if (state.ResolveShader(sref, bounds, style.StrokeOpacity, style) is { } rp)
                     using (rp)
                     using (var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Shader = rp.Shader, IsAntialias = true })
-                        canvas.DrawText(textRun, x, baseline, font, p);
+                        canvas.DrawText(textRun, x, baseline, SKTextAlign.Left, font, p);
                 else state.SawUnsupported = true;
             }
             else if (style.Stroke is { } sc)
             {
                 using var p = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = style.StrokeWidth, Color = WithOpacity(sc, style.StrokeOpacity), IsAntialias = true };
-                canvas.DrawText(textRun, x, baseline, font, p);
+                canvas.DrawText(textRun, x, baseline, SKTextAlign.Left, font, p);
             }
         }
     }

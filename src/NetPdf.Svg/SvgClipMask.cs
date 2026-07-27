@@ -52,7 +52,8 @@ internal static class SvgClipMask
     /// when no child contributes geometry.</summary>
     private static SKPath? BuildClipPathGeometry(XElement clip, SvgStyle style, SvgRenderState state)
     {
-        SKPath? acc = null;
+        using var acc = new SKPathBuilder();
+        var hasPath = false;
         foreach (var child in clip.Elements())
         {
             var target = child;
@@ -71,10 +72,10 @@ internal static class SvgClipMask
             if (SvgTransform.Parse(SvgRasterizer.Attr(target, "transform")) is { } tm) sp.Transform(tm);
             if (useOffset is { } uo) sp.Transform(uo);
             if (useTransform is { } ut2) sp.Transform(ut2);
-            if (acc is null) acc = new SKPath(sp);
-            else acc.AddPath(sp);
+            acc.AddPath(sp, SKPathAddMode.Append);
+            hasPath = true;
         }
-        return acc;
+        return hasPath ? acc.Detach() : null;
     }
 
     /// <summary>The geometry bounding box of an element in its OWN coordinate space (its own

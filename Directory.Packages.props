@@ -11,8 +11,15 @@
   <!-- Runtime dependencies (shipped). Each entry MUST pass a written license
        review before being added here (see docs/clean-room-policy.md). -->
   <ItemGroup>
+    <!--
+      AngleSharp.Css is HELD at beta.144. The stable 1.0.0 release regresses background-image rendering:
+      `background-image: url(...)` stops painting (the background-paint and multi-layer image tests drop to
+      zero image output) and several pre-pass recovery tests no longer observe the dropped opaque-rule slots.
+      AngleSharp itself is bumped for GHSA-pgww-w46g-26qg; keep AngleSharp.Css pinned until the parser
+      regression is diagnosed.
+    -->
     <PackageVersion Include="AngleSharp" Version="1.6.0" />
-    <PackageVersion Include="AngleSharp.Css" Version="1.0.0" />
+    <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
     <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.1" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.1" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.1" />

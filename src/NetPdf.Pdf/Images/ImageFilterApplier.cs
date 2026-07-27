@@ -115,7 +115,7 @@ internal static class ImageFilterApplier
         using (chain)
         using (var paint = new SKPaint { IsAntialias = true, ImageFilter = chain })
         {
-            canvas.DrawBitmap(src, padL, padT, paint);
+            canvas.DrawBitmap(src, padL, padT, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None), paint);
         }
 
         using var image = surface.Snapshot();

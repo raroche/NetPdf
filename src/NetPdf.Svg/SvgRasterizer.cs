@@ -316,45 +316,48 @@ internal static class SvgRasterizer
                 var w = Len(el, "width", state, style, LenAxis.X); var h = Len(el, "height", state, style, LenAxis.Y);
                 if (!(w > 0) || !(h > 0)) return null;
                 var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
-                var path = new SKPath();
-                if (rx > 0 || ry > 0) path.AddRoundRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)), (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx));
-                else path.AddRect(new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h)));
-                return path;
+                using var builder = new SKPathBuilder();
+                var rect = new SKRect((float)x, (float)y, (float)(x + w), (float)(y + h));
+                if (rx > 0 || ry > 0)
+                    builder.AddRoundRect(rect, (float)(rx > 0 ? rx : ry), (float)(ry > 0 ? ry : rx), SKPathDirection.Clockwise);
+                else
+                    builder.AddRect(rect, SKPathDirection.Clockwise);
+                return builder.Detach();
             }
             case "circle":
             {
                 var r = Len(el, "r", state, style, LenAxis.Other);
                 if (!(r > 0)) return null;
-                var path = new SKPath();
-                path.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r);
-                return path;
+                using var builder = new SKPathBuilder();
+                builder.AddCircle((float)Len(el, "cx", state, style, LenAxis.X), (float)Len(el, "cy", state, style, LenAxis.Y), (float)r, SKPathDirection.Clockwise);
+                return builder.Detach();
             }
             case "ellipse":
             {
                 var rx = Len(el, "rx", state, style, LenAxis.X); var ry = Len(el, "ry", state, style, LenAxis.Y);
                 if (!(rx > 0) || !(ry > 0)) return null;
                 var cx = Len(el, "cx", state, style, LenAxis.X); var cy = Len(el, "cy", state, style, LenAxis.Y);
-                var path = new SKPath();
-                path.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)));
-                return path;
+                using var builder = new SKPathBuilder();
+                builder.AddOval(new SKRect((float)(cx - rx), (float)(cy - ry), (float)(cx + rx), (float)(cy + ry)), SKPathDirection.Clockwise);
+                return builder.Detach();
             }
             case "line":
             {
-                var path = new SKPath();
-                path.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
-                path.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
-                return path;
+                using var builder = new SKPathBuilder();
+                builder.MoveTo((float)Len(el, "x1", state, style, LenAxis.X), (float)Len(el, "y1", state, style, LenAxis.Y));
+                builder.LineTo((float)Len(el, "x2", state, style, LenAxis.X), (float)Len(el, "y2", state, style, LenAxis.Y));
+                return builder.Detach();
             }
             case "polyline":
             case "polygon":
             {
                 var pts = ParsePoints(Attr(el, "points"));
                 if (pts.Count < 2) return null;
-                var path = new SKPath();
-                path.MoveTo(pts[0]);
-                for (var i = 1; i < pts.Count; i++) path.LineTo(pts[i]);
-                if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase)) path.Close();
-                return path;
+                using var builder = new SKPathBuilder();
+                builder.MoveTo(pts[0]);
+                for (var i = 1; i < pts.Count; i++) builder.LineTo(pts[i]);
+                if (el.Name.LocalName.Equals("polygon", StringComparison.OrdinalIgnoreCase)) builder.Close();
+                return builder.Detach();
             }
             case "path":
             {
@@ -429,7 +432,7 @@ internal static class SvgRasterizer
             var dest = new SKRect(x, y, x + (float)w, y + (float)h);
             if (image.Width <= 0 || image.Height <= 0)
             {
-                canvas.DrawImage(image, dest);
+                canvas.DrawImage(image, dest, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None), null);
                 return;
             }
             // preserveAspectRatio (§8.8) — none stretches; meet fits inside; slice covers + clips to the rect.
@@ -441,11 +444,11 @@ internal static class SvgRasterizer
             {
                 var save = canvas.Save();
                 canvas.ClipRect(dest);
-                canvas.DrawImage(image, fitted);
+                canvas.DrawImage(image, fitted, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None), null);
                 canvas.RestoreToCount(save);
             }
             else
-                canvas.DrawImage(image, fitted);
+                canvas.DrawImage(image, fitted, new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None), null);
         }
     }
 

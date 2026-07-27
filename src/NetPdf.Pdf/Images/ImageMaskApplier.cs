@@ -42,10 +42,11 @@ internal static class ImageMaskApplier
 
         // Draw the base, then multiply its alpha by the mask's alpha (DstIn) — the mask scaled to fill
         // the base's pixel box. Result alpha = baseAlpha × maskAlpha; result RGB = base RGB.
-        canvas.DrawBitmap(baseDecoded, 0, 0);
+        var sampling = new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None);
+        canvas.DrawBitmap(baseDecoded, 0, 0, sampling);
         using (var paint = new SKPaint { IsAntialias = true, BlendMode = SKBlendMode.DstIn })
         {
-            canvas.DrawBitmap(maskDecoded, new SKRect(0, 0, w, h), paint);
+            canvas.DrawBitmap(maskDecoded, new SKRect(0, 0, w, h), sampling, paint);
         }
 
         using var image = surface.Snapshot();

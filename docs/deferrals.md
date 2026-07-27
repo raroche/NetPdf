@@ -4001,3 +4001,51 @@ grepping the ID).
   `include` entry + its `nonblocking: true` flag).
 - **Removal condition** — the `macos-x64` leg either schedules + passes reliably in
   CI, or is removed from the matrix (with this entry deleted in the same commit).
+
+
+
+## ci-branch-protection-required-contexts
+
+- **ID** — `ci-branch-protection-required-contexts`
+- **Status** — `not-started`. Three CI checks are WORKFLOW-enforcing (a failure turns
+  the run red) but not MERGE-enforcing, because branch protection's
+  `required_status_checks.contexts` on `main` has not been updated to list them.
+- **Priority** — **P2 (medium).** This is the gap between "CI says no" and "GitHub
+  won't let it merge". Two of the three are freshly promoted platform legs, but the
+  third is the PERFORMANCE gate — until it is required, a genuine perf regression
+  reports red and still merges, which silently weakens the performance contract in
+  `CLAUDE.md`. Not P1 only because the enforcing legs still surface the failure
+  loudly on the PR.
+- **Behavior** — `main` currently requires exactly: `build+test (linux-x64)`,
+  `build+test (windows-x64)`, `build+test (macos-arm64)`, `security-gate`,
+  `dependency-scan`. The following run and can fail the workflow, but do not block a
+  merge:
+  - `build+test (linux-arm64)` — promoted to enforcing in PR #357.
+  - `build+test (alpine-musl-x64)` — promoted to enforcing in PR #357.
+  - `benchmark gate (linux-x64)` — has measured again since PR #356 (before that it
+    aborted during restore, so it was never a gate at all).
+- **Missing** — a repository-settings change; there is nothing to change in the repo.
+  Adding the three contexts (alongside the five existing ones — the API REPLACES the
+  list, so all eight must be sent):
+  ```bash
+  gh api -X PATCH repos/raroche/NetPdf/branches/main/protection/required_status_checks \
+    -f 'contexts[]=build+test (linux-x64)' \
+    -f 'contexts[]=build+test (windows-x64)' \
+    -f 'contexts[]=build+test (macos-arm64)' \
+    -f 'contexts[]=build+test (linux-arm64)' \
+    -f 'contexts[]=build+test (alpine-musl-x64)' \
+    -f 'contexts[]=benchmark gate (linux-x64)' \
+    -f 'contexts[]=security-gate' \
+    -f 'contexts[]=dependency-scan'
+  ```
+  NOTE: context names must match the rendered job names EXACTLY. PR #357 renamed two
+  of them by dropping the `", non-blocking"` suffix, so the old names will never
+  report again — do not re-add them.
+- **Trigger** — the maintainer applies the settings change (it needs admin rights on
+  the repo, so it cannot land through a PR), OR a red enforcing leg is merged past
+  and causes a regression on `main`.
+- **Owner files** — none in-repo. Repository settings only:
+  Settings → Branches → `main` → "Require status checks to pass".
+- **Removal condition** — `gh api repos/raroche/NetPdf/branches/main/protection`
+  lists all three contexts under `required_status_checks.contexts` (delete this entry
+  in the same commit).

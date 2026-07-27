@@ -71,6 +71,11 @@ public sealed class DeferralsParityTests
         // alpine-musl-x64 are now enforcing. macos-x64 stays deferred — a runner-availability
         // gap nothing in this repo can fix.
         "ci-nonblocking-macos-x64-runner-availability",
+        // PR #357 review [P2]: promoting the two native legs made them WORKFLOW-enforcing but not
+        // MERGE-enforcing, and deleting the old deferral removed the only thing tracking that gap.
+        // This entry holds it (plus the still-unrequired benchmark gate) until branch protection is
+        // updated — a repo SETTING, so it cannot land through a PR.
+        "ci-branch-protection-required-contexts",
     };
 
     [Fact]
@@ -158,6 +163,7 @@ public sealed class DeferralsParityTests
     {
         ["visual-regression-cross-engine-tolerance"] = "P2",
         ["ci-nonblocking-macos-x64-runner-availability"] = "P3",
+        ["ci-branch-protection-required-contexts"] = "P2",
     };
 
     /// <summary>The documented label for each level (schema: `P1` high / `P2` medium / `P3` low).</summary>

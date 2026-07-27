@@ -60,7 +60,46 @@ fi
 
 echo "==> Running benchmark suite ($PLATFORM_KEY)"
 rm -rf "$ARTIFACTS_DIR"
-dotnet run --project "$BENCH_PROJ" -c Release -- --filter "*" --exporters JSON
+RUN_LOG="$(mktemp)"
+trap 'rm -f "$RUN_LOG"' EXIT
+set +e
+dotnet run --project "$BENCH_PROJ" -c Release -- --filter "*" --exporters JSON 2>&1 | tee "$RUN_LOG"
+RUN_EXIT=${PIPESTATUS[0]}
+set -e
+
+# A PARTIAL run must not reach `--compare`. BenchmarkDotNet exits 0 even when a generated
+# per-job project fails to build: it prints "has failed to build the auto-generated
+# boilerplate code", skips those benchmarks, and still exports whatever else ran. The gate
+# then compared a partial (or empty) result set against a full baseline and died inside
+# System.Text.Json with "target element has type 'Null'" (exit 134) — a crash that read as
+# an infrastructure flake and hid the fact that NO performance number was being checked at
+# all. Everything below turns those cases into an explicit, diagnosable exit 2.
+if [ "$RUN_EXIT" -ne 0 ]; then
+  echo "error: the benchmark run itself failed (exit $RUN_EXIT) — see the log above." >&2
+  exit 2
+fi
+if grep -q 'failed to build the auto-generated boilerplate' "$RUN_LOG"; then
+  echo "error: BenchmarkDotNet could not build one or more generated job projects, so the" >&2
+  echo "       suite is INCOMPLETE and the gate cannot certify performance." >&2
+  echo "       The generated project restores standalone under the benchmark project's" >&2
+  echo "       output dir; if it started inheriting the repo's Central Package Management" >&2
+  echo "       again, check the sentinel files written by the benchmarks csproj." >&2
+  exit 2
+fi
+
+shopt -s nullglob
+PRODUCED=("$ARTIFACTS_DIR"/*-report-full-compressed.json)
+EXPECTED=("$BASELINE_DIR"/*-report-full-compressed.json)
+shopt -u nullglob
+if [ ${#PRODUCED[@]} -eq 0 ]; then
+  echo "error: the benchmark run produced no JSON results in $ARTIFACTS_DIR." >&2
+  exit 2
+fi
+if [ ${#PRODUCED[@]} -lt ${#EXPECTED[@]} ]; then
+  echo "error: only ${#PRODUCED[@]} of ${#EXPECTED[@]} benchmark result files were produced —" >&2
+  echo "       the suite is incomplete, so the comparison would silently skip benchmarks." >&2
+  exit 2
+fi
 
 echo "==> Comparing against baseline at $BASELINE_DIR (tolerance ${TOLERANCE})"
 # `set -e` (top of script) would otherwise kill the script the instant `--compare`

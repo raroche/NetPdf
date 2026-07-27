@@ -24,28 +24,35 @@ jobs:
     name: build+test (${{ matrix.label }}${{ matrix.nonblocking && ', non-blocking' || '' }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
-    # Two matrix legs are NON-BLOCKING (continue-on-error via a `nonblocking: true` flag) — they run and
-    # surface status but don't gate merge. Both are tracked as Phase-5 remainders in docs/deferrals.md:
-    #   linux-arm64 → deferral `ci-nonblocking-platform-native-deps` (also covers the alpine leg below);
-    #   macos-x64   → deferral `ci-nonblocking-macos-x64-runner-availability`.
-    #   * linux-arm64 — SkiaSharp's raster-fallback native (libSkiaSharp) on the arm64 image is
-    #     under-provisioned: it resolves symbols from the *system* libuuid / libfreetype the runner doesn't
-    #     satisfy (undefined uuid_generate_random, then — once libuuid is preloaded — FT_Get_BDF_Property).
-    #     Chasing these per-symbol isn't reproducible on the macOS/x64 dev box; the real fix is to harden the
-    #     arm64 native (e.g. the self-contained NoDependencies SkiaSharp asset) on a real arm64 runner. NOTE:
-    #     do NOT set a matrix-wide LD_PRELOAD to paper over it — Git Bash (Cygwin) on the Windows leg honors
-    #     LD_PRELOAD and aborts if the named lib is absent.
-    #   * macos-x64 (macos-13) — GitHub is deprecating the Intel-mac hosted runners; the leg is chronically
-    #     unschedulable (stays queued for the whole timeout). macos-arm64 provides the enforcing macOS
-    #     coverage; Intel-mac is best-effort until a runner is available.
-    # Enforcing matrix: linux-x64, windows-x64, macos-arm64.
+    # ONE matrix leg is NON-BLOCKING (continue-on-error via a `nonblocking: true` flag) — it runs and
+    # surfaces status but doesn't gate merge:
+    #   * macos-x64 (macos-13) → deferral `ci-nonblocking-macos-x64-runner-availability`. GitHub is
+    #     deprecating the Intel-mac hosted runners; the leg is chronically unschedulable (stays queued for
+    #     the whole timeout). macos-arm64 provides the enforcing macOS coverage; Intel-mac is best-effort
+    #     until a runner is available.
+    #
+    # linux-arm64 is now ENFORCING (PR #357, closing deferral `ci-nonblocking-platform-native-deps`).
+    # It was non-blocking because libSkiaSharp on the arm64 image resolved symbols from a system
+    # libuuid/libfreetype the runner didn't satisfy (undefined uuid_generate_random, then
+    # FT_Get_BDF_Property). That is fixed: the fontconfig-hardening step below plus the SkiaSharp 4.150.1
+    # bump (#355) load the native cleanly, and the leg's only remaining failures were two font-dependent
+    # ASSERTIONS — not native loading — fixed in #356. It has since run the full suite green.
+    # NOTE: do NOT set a matrix-wide LD_PRELOAD to paper over any future symbol gap — Git Bash (Cygwin) on
+    # the Windows leg honors LD_PRELOAD and aborts if the named lib is absent.
+    #
+    # Enforcing matrix: linux-x64, linux-arm64, windows-x64, macos-arm64 (+ the alpine job below).
+    # CAVEAT: "enforcing" here means a failure turns the WORKFLOW red. It does not block a merge until
+    # the check is also listed in branch protection's required contexts — a repo SETTING, not something a
+    # PR can change. `build+test (linux-arm64)`, `build+test (alpine-musl-x64)` and
+    # `benchmark gate (linux-x64)` are not required yet; tracked as deferral
+    # `ci-branch-protection-required-contexts` in docs/deferrals.md (with the exact gh command).
     continue-on-error: ${{ matrix.nonblocking == true }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest,   label: linux-x64,   aot: true }
-          - { os: ubuntu-24.04-arm, label: linux-arm64, aot: true, nonblocking: true }
+          - { os: ubuntu-24.04-arm, label: linux-arm64, aot: true }
           - { os: windows-latest,  label: windows-x64, aot: true }
           - { os: macos-14,        label: macos-arm64, aot: true }
           - { os: macos-13,        label: macos-x64,   aot: true, nonblocking: true }
@@ -89,18 +96,16 @@ jobs:
         run: bash scripts/aot-parity.sh
 
   # T1/T2 — Alpine (musl) build + test + AOT, inside the pinned .NET SDK container.
-  # BEST-EFFORT / NON-BLOCKING (continue-on-error): the SkiaSharp raster-fallback native
-  # (libSkiaSharp) fails to load under musl on the stock SDK-alpine image — a pre-existing
-  # environment gap that needs hardening on a real Alpine runner (musl native-asset + font
-  # deps), not reproducible on the macOS/glibc dev box. Until that's hardened the leg runs and
-  # surfaces its status but does not gate merge; the ENFORCING matrix is exactly three legs —
-  # linux-x64, windows-x64, macos-arm64 — while linux-arm64 and macos-x64 (above) plus this alpine
-  # leg are the three NON-BLOCKING legs. Tracked as a known CI-hardening remainder: docs/deferrals.md
-  # deferral `ci-nonblocking-platform-native-deps`.
+  # ENFORCING since PR #357 (closing deferral `ci-nonblocking-platform-native-deps`). This leg was
+  # best-effort because the SkiaSharp raster-fallback native (libSkiaSharp) was believed not to load under
+  # musl on the stock SDK-alpine image. That premise no longer holds: with the apk prerequisites below the
+  # native loads and the full suite runs, and the leg's only remaining failures were two font-dependent
+  # ASSERTIONS — not native loading — fixed in #356. It has since run green.
+  # Enforcing legs: linux-x64, linux-arm64, windows-x64, macos-arm64, alpine-musl-x64. The only
+  # non-blocking leg left is macos-x64 (runner availability — see the note on the matrix above).
   build-test-alpine:
-    name: build+test (alpine-musl-x64, non-blocking)
+    name: build+test (alpine-musl-x64)
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 40
     container: mcr.microsoft.com/dotnet/sdk:10.0-alpine
     steps:

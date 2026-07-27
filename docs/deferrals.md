@@ -3977,37 +3977,6 @@ grepping the ID).
 
 
 
-## ci-nonblocking-platform-native-deps
-
-- **ID** — `ci-nonblocking-platform-native-deps`
-- **Status** — `not-started`. The two NATIVE-DEPENDENCY legs (`linux-arm64` +
-  `alpine-musl-x64`) are `continue-on-error: true` (non-blocking) and currently fail
-  at the Test step. (The third non-blocking leg, `macos-x64`, is a distinct
-  runner-availability issue tracked separately as
-  [`ci-nonblocking-macos-x64-runner-availability`](#ci-nonblocking-macos-x64-runner-availability).)
-- **Priority** — **P3 (low).** These are the two NON-enforcing native-dep RIDs; the
-  enforcing matrix (`linux-x64`, `windows-x64`, `macos-arm64`) already covers the
-  shipping platforms, so this is platform-coverage confidence, not a correctness
-  gate. Bump if a customer targets Alpine/arm64.
-- **Behavior** — the `build+test (linux-arm64, non-blocking)` and
-  `build+test (alpine-musl-x64, non-blocking)` CI legs run but don't gate merge.
-  They fail at the Test step on SkiaSharp/HarfBuzz native-dependency gaps in those
-  runner images (fontconfig + font packs were added; the next gap surfaces after
-  each fix).
-- **Missing** — the remaining native deps for the SkiaSharp text stack on those
-  platforms. **arm64** (ubuntu-24.04-arm): `libSkiaSharp.so: undefined symbol:
-  uuid_generate_random` → install `libuuid1` (and whatever the next symbol needs).
-  **alpine** (musl): the raster-fallback native (`libSkiaSharp`) load + any font
-  deps beyond the added `ttf-dejavu`/`freetype`/`fontconfig`. Iterative: each fix
-  tends to reveal the next missing lib.
-- **Trigger** — a decision to make the two extra RIDs green (or enforcing), OR a
-  customer running on Alpine / Linux-arm64 hits a native-load failure.
-- **Owner files** — `.github/workflows/ci.yml` (the `build-test` arm64-scoped
-  install step + the `build-test-alpine` `apk add` step).
-- **Removal condition** — both non-blocking legs pass the Test step in CI (green).
-
-
-
 ## ci-nonblocking-macos-x64-runner-availability
 
 - **ID** — `ci-nonblocking-macos-x64-runner-availability`
@@ -4016,9 +3985,10 @@ grepping the ID).
   stays queued for the whole timeout rather than failing on a test.
 - **Priority** — **P3 (low).** `macos-arm64` provides the enforcing macOS coverage;
   Intel-mac is best-effort. This is a hosted-runner-availability gap, not a
-  NetPdf correctness or native-dependency issue — distinct from
-  [`ci-nonblocking-platform-native-deps`](#ci-nonblocking-platform-native-deps)
-  (which is about missing SkiaSharp/HarfBuzz native libs on arm64/alpine).
+  NetPdf correctness or native-dependency issue — nothing in the repo can fix it,
+  which is why it is the ONLY non-blocking leg left after `linux-arm64` and
+  `alpine-musl-x64` became enforcing (PR #357, which closed the former
+  `ci-nonblocking-platform-native-deps` deferral).
 - **Behavior** — the `build+test (macos-x64, non-blocking)` CI leg runs but doesn't
   gate merge. GitHub is deprecating the Intel-mac hosted runners, so the leg is
   routinely unschedulable and stays queued until the workflow timeout.
@@ -4031,3 +4001,51 @@ grepping the ID).
   `include` entry + its `nonblocking: true` flag).
 - **Removal condition** — the `macos-x64` leg either schedules + passes reliably in
   CI, or is removed from the matrix (with this entry deleted in the same commit).
+
+
+
+## ci-branch-protection-required-contexts
+
+- **ID** — `ci-branch-protection-required-contexts`
+- **Status** — `not-started`. Three CI checks are WORKFLOW-enforcing (a failure turns
+  the run red) but not MERGE-enforcing, because branch protection's
+  `required_status_checks.contexts` on `main` has not been updated to list them.
+- **Priority** — **P2 (medium).** This is the gap between "CI says no" and "GitHub
+  won't let it merge". Two of the three are freshly promoted platform legs, but the
+  third is the PERFORMANCE gate — until it is required, a genuine perf regression
+  reports red and still merges, which silently weakens the performance contract in
+  `CLAUDE.md`. Not P1 only because the enforcing legs still surface the failure
+  loudly on the PR.
+- **Behavior** — `main` currently requires exactly: `build+test (linux-x64)`,
+  `build+test (windows-x64)`, `build+test (macos-arm64)`, `security-gate`,
+  `dependency-scan`. The following run and can fail the workflow, but do not block a
+  merge:
+  - `build+test (linux-arm64)` — promoted to enforcing in PR #357.
+  - `build+test (alpine-musl-x64)` — promoted to enforcing in PR #357.
+  - `benchmark gate (linux-x64)` — has measured again since PR #356 (before that it
+    aborted during restore, so it was never a gate at all).
+- **Missing** — a repository-settings change; there is nothing to change in the repo.
+  Adding the three contexts (alongside the five existing ones — the API REPLACES the
+  list, so all eight must be sent):
+  ```bash
+  gh api -X PATCH repos/raroche/NetPdf/branches/main/protection/required_status_checks \
+    -f 'contexts[]=build+test (linux-x64)' \
+    -f 'contexts[]=build+test (windows-x64)' \
+    -f 'contexts[]=build+test (macos-arm64)' \
+    -f 'contexts[]=build+test (linux-arm64)' \
+    -f 'contexts[]=build+test (alpine-musl-x64)' \
+    -f 'contexts[]=benchmark gate (linux-x64)' \
+    -f 'contexts[]=security-gate' \
+    -f 'contexts[]=dependency-scan'
+  ```
+  NOTE: context names must match the rendered job names EXACTLY. PR #357 renamed two
+  of them by dropping the `", non-blocking"` suffix, so the old names will never
+  report again — do not re-add them.
+- **Trigger** — the maintainer applies the settings change (it needs admin rights on
+  the repo, so it cannot land through a PR), OR a red enforcing leg is merged past
+  and causes a regression on `main`.
+- **Owner files** — none in-repo. Repository settings only:
+  Settings → Branches → `main` → "Require status checks to pass".
+- **Removal condition** — `gh api repos/raroche/NetPdf/branches/main/protection`
+  lists all three contexts under `required_status_checks.contexts` (delete this entry
+  in the same commit).

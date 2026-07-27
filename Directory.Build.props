@@ -27,17 +27,6 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn> <!-- CS1591: missing XML doc on internals. -->
 
-    <!--
-      NU5104 (a stable package has a prerelease dependency) is DELIBERATELY demoted from an error to
-      a VISIBLE warning rather than suppressed. NetPdf 1.0.0 depends on AngleSharp.Css, which has NO
-      stable 1.x release — only 1.0.0-beta.* (the last stable, 0.17.0, targets the AngleSharp 0.x API
-      and is incompatible with the AngleSharp 1.1.2 we require). So NetPdf's stable line carries a
-      prerelease AngleSharp.Css as a documented, maintainer-approved v1.0 exception (the parser is
-      mature; the -beta suffix reflects AngleSharp.Css's own release cadence). We do NOT hide it: pack
-      emits NU5104 so the exception is auditable at release time. Revisit if/when AngleSharp.Css ships
-      a stable 1.x. See the CHANGELOG 1.0.0 note.
-    -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU5104</WarningsNotAsErrors>
   </PropertyGroup>
 
   <!-- NuGet package authoring best practices. -->
@@ -76,7 +65,7 @@
       doesn't parse XML; if they ever disagree, this file wins for what NuGet
       actually packs. Bump protocol: update BOTH files, commit, then `git tag`.
     -->
-    <VersionPrefix>1.0.2</VersionPrefix>
+    <VersionPrefix>1.1.0</VersionPrefix>
     <VersionSuffix></VersionSuffix>
 
     <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->
@@ -101,7 +90,7 @@
     <EnablePackageValidation>true</EnablePackageValidation>
     <!-- Baseline = the previous published release (must exist on nuget.org): fail the build on any
          accidental public-API break vs. that release. Bump this to <prev> on each release. -->
-    <PackageValidationBaselineVersion>1.0.1</PackageValidationBaselineVersion>
+    <PackageValidationBaselineVersion>1.0.2</PackageValidationBaselineVersion>
 
     <!-- NuGet client requirement. -->
     <MinClientVersion>5.0.0</MinClientVersion>

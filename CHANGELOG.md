@@ -4,7 +4,17 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
-Post-`1.0.2` improvements accumulate here until the next release is cut.
+Post-`1.1.0` improvements accumulate here until the next release is cut.
+
+## [1.1.0]
+
+A minor dependency refresh release that resolves the current AngleSharp vulnerability warning and consolidates the open Dependabot runtime, test-tooling, and CI action updates.
+
+### Changed
+- Updated HTML/CSS parsing dependencies to **AngleSharp** 1.6.0 and the stable **AngleSharp.Css** 1.0.0.
+- Updated bundled native/runtime dependencies to **SkiaSharp** 4.150.1 and **HarfBuzzSharp** 14.2.1.1.
+- Updated build and test tooling, including **Microsoft.NET.Test.Sdk** 18.8.1, **xunit.runner.visualstudio** 3.1.5, **coverlet.collector** 10.0.1, **BenchmarkDotNet** 0.15.8, and **Microsoft.SourceLink.GitHub** 10.0.301.
+- Updated CI actions to **actions/setup-dotnet** v6 and **github/codeql-action** v4.
 
 ## [1.0.2]
 
@@ -72,7 +82,8 @@ The first stable release. `HtmlPdf.Convert(html)` runs the full HTML → CSS →
 - Single `NetPdf` NuGet package bundling the whole engine; optional `NetPdf.Languages.*` hyphenation add-ons.
 - Source Link + symbol packages for source-stepping.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/raroche/NetPdf/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/raroche/NetPdf/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/raroche/NetPdf/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/raroche/NetPdf/compare/0.9.0-rc1...v1.0.0

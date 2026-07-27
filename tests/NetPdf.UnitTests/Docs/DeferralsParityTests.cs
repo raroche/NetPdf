@@ -66,7 +66,10 @@ public sealed class DeferralsParityTests
         "fixed-cycle-1",
         "layout-to-pdf-pipeline",
         "visual-regression-cross-engine-tolerance",
-        "ci-nonblocking-platform-native-deps",
+        // `ci-nonblocking-platform-native-deps` was picked up in PR #357: its removal condition
+        // ("both non-blocking legs pass the Test step in CI") is met, so linux-arm64 +
+        // alpine-musl-x64 are now enforcing. macos-x64 stays deferred — a runner-availability
+        // gap nothing in this repo can fix.
         "ci-nonblocking-macos-x64-runner-availability",
     };
 
@@ -154,7 +157,6 @@ public sealed class DeferralsParityTests
     private static readonly System.Collections.Generic.Dictionary<string, string> ExpectedPriorities = new()
     {
         ["visual-regression-cross-engine-tolerance"] = "P2",
-        ["ci-nonblocking-platform-native-deps"] = "P3",
         ["ci-nonblocking-macos-x64-runner-availability"] = "P3",
     };
 

@@ -3977,37 +3977,6 @@ grepping the ID).
 
 
 
-## ci-nonblocking-platform-native-deps
-
-- **ID** — `ci-nonblocking-platform-native-deps`
-- **Status** — `not-started`. The two NATIVE-DEPENDENCY legs (`linux-arm64` +
-  `alpine-musl-x64`) are `continue-on-error: true` (non-blocking) and currently fail
-  at the Test step. (The third non-blocking leg, `macos-x64`, is a distinct
-  runner-availability issue tracked separately as
-  [`ci-nonblocking-macos-x64-runner-availability`](#ci-nonblocking-macos-x64-runner-availability).)
-- **Priority** — **P3 (low).** These are the two NON-enforcing native-dep RIDs; the
-  enforcing matrix (`linux-x64`, `windows-x64`, `macos-arm64`) already covers the
-  shipping platforms, so this is platform-coverage confidence, not a correctness
-  gate. Bump if a customer targets Alpine/arm64.
-- **Behavior** — the `build+test (linux-arm64, non-blocking)` and
-  `build+test (alpine-musl-x64, non-blocking)` CI legs run but don't gate merge.
-  They fail at the Test step on SkiaSharp/HarfBuzz native-dependency gaps in those
-  runner images (fontconfig + font packs were added; the next gap surfaces after
-  each fix).
-- **Missing** — the remaining native deps for the SkiaSharp text stack on those
-  platforms. **arm64** (ubuntu-24.04-arm): `libSkiaSharp.so: undefined symbol:
-  uuid_generate_random` → install `libuuid1` (and whatever the next symbol needs).
-  **alpine** (musl): the raster-fallback native (`libSkiaSharp`) load + any font
-  deps beyond the added `ttf-dejavu`/`freetype`/`fontconfig`. Iterative: each fix
-  tends to reveal the next missing lib.
-- **Trigger** — a decision to make the two extra RIDs green (or enforcing), OR a
-  customer running on Alpine / Linux-arm64 hits a native-load failure.
-- **Owner files** — `.github/workflows/ci.yml` (the `build-test` arm64-scoped
-  install step + the `build-test-alpine` `apk add` step).
-- **Removal condition** — both non-blocking legs pass the Test step in CI (green).
-
-
-
 ## ci-nonblocking-macos-x64-runner-availability
 
 - **ID** — `ci-nonblocking-macos-x64-runner-availability`
@@ -4016,9 +3985,10 @@ grepping the ID).
   stays queued for the whole timeout rather than failing on a test.
 - **Priority** — **P3 (low).** `macos-arm64` provides the enforcing macOS coverage;
   Intel-mac is best-effort. This is a hosted-runner-availability gap, not a
-  NetPdf correctness or native-dependency issue — distinct from
-  [`ci-nonblocking-platform-native-deps`](#ci-nonblocking-platform-native-deps)
-  (which is about missing SkiaSharp/HarfBuzz native libs on arm64/alpine).
+  NetPdf correctness or native-dependency issue — nothing in the repo can fix it,
+  which is why it is the ONLY non-blocking leg left after `linux-arm64` and
+  `alpine-musl-x64` became enforcing (PR #357, which closed the former
+  `ci-nonblocking-platform-native-deps` deferral).
 - **Behavior** — the `build+test (macos-x64, non-blocking)` CI leg runs but doesn't
   gate merge. GitHub is deprecating the Intel-mac hosted runners, so the leg is
   routinely unschedulable and stays queued until the workflow timeout.

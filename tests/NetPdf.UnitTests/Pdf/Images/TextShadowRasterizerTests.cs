@@ -16,7 +16,8 @@ public sealed class TextShadowRasterizerTests
     private static byte[] FontBytes(out ushort glyphA)
     {
         using var tf = SKTypeface.Default;
-        glyphA = tf.GetGlyph('A');
+        using var font = new SKFont(tf);
+        glyphA = font.GetGlyph('A');
         using var stream = tf.OpenStream(out _);
         var buffer = new byte[stream.Length];
         stream.Read(buffer, buffer.Length);

@@ -12,37 +12,41 @@
        review before being added here (see docs/clean-room-policy.md). -->
   <ItemGroup>
     <!--
-      HELD at 1.1.2 / beta.144. The Dependabot bump (AngleSharp 1.5.2 / AngleSharp.Css beta.216) REGRESSES
-      background-image rendering: `background-image: url(...)` stops painting entirely (29 background-paint
-      tests drop to zero image output, plus one cascade edge case). Verified by isolation — reverting only
-      these two, with SkiaSharp/HarfBuzz kept at their new versions, makes the suite green. Do not bump until
-      the background-image parsing regression is diagnosed against a newer AngleSharp.Css.
+      AngleSharp.Css is HELD at beta.144. The stable 1.0.0 release regresses background-image rendering:
+      `background-image: url(...)` stops painting (the background-paint and multi-layer image tests drop to
+      zero image output) and several pre-pass recovery tests no longer observe the dropped opaque-rule slots.
+      AngleSharp itself is bumped for GHSA-pgww-w46g-26qg; keep AngleSharp.Css pinned until the parser
+      regression is diagnosed.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.1.2" />
+    <PackageVersion Include="AngleSharp" Version="1.6.0" />
     <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="8.3.1.5" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="8.3.1.5" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="8.3.1.5" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="8.3.1.5" />
-    <PackageVersion Include="SkiaSharp" Version="3.119.4" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="3.119.4" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="3.119.4" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.1" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.1" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.1" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.1" />
+    <PackageVersion Include="SkiaSharp" Version="4.150.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.150.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.150.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.150.1" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
   <ItemGroup>
     <PackageVersion Include="xunit" Version="2.9.3" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
-    <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
     <PackageVersion Include="Microsoft.Playwright" Version="1.61.0" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
-         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. Its SkiaSharp floor is
-         3.119.2 — the repo-wide SkiaSharp pin above matches it, so the harness measures the same renderer
-         dependency set as production. -->
+         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. PDFtoImage 5.2.1
+         declares a SkiaSharp FLOOR of 3.119.2; production intentionally pins 4.150.1 above (PR #355), and
+         NuGet unifies the graph to that single higher version — so the harness still rasterizes against the
+         SAME SkiaSharp the shipped package uses. The tradeoff of the gap: PDFtoImage runs against a SkiaSharp
+         newer than it compiled against, so a removed 3.x API would surface as a runtime MissingMethodException
+         rather than a build break. The RenderingCorpus suite is what proves that hasn't happened — if it ever
+         fails after a SkiaSharp major bump, suspect this gap first. -->
     <PackageVersion Include="PDFtoImage" Version="5.2.1" />
   </ItemGroup>
 
@@ -62,7 +66,7 @@
 
   <!-- Build infrastructure. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.300" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.301" />
   </ItemGroup>
 
 </Project>

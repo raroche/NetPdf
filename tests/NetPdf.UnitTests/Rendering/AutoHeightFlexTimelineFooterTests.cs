@@ -26,11 +26,22 @@ public sealed class AutoHeightFlexTimelineFooterTests
     private static string Doc(int days)
     {
         var sb = new StringBuilder();
+        // The font is PINNED (like the sibling rendering tests) and the note is `nowrap` because this
+        // document's identification trick — "the note is the run with the MOST glyphs" — silently assumes
+        // the note renders as ONE line. It doesn't on every platform: CI provisions fonts asymmetrically
+        // (linux-arm64 gets only fonts-dejavu-core, alpine only ttf-dejavu, while the enforcing linux-x64
+        // runner has the full Ubuntu set), so under DejaVu metrics the note wrapped and its tail
+        // "departure zulu" — 14 glyphs — became a separate run BELOW the detected "note", tripping the
+        // "nothing sits below the note" assertion. That was a false positive: wrapping a long line is
+        // correct engine behaviour, the TEST's single-line assumption was the bug, and it kept the
+        // alpine + linux-arm64 legs red. `nowrap` makes the premise true everywhere without weakening
+        // what is under test (vertical placement, not line breaking).
         sb.Append("<!DOCTYPE html><html><head><style>@page{size:A4;margin:16mm}*{margin:0}");
+        sb.Append("body{font-family:Arial;font-size:12px}");
         sb.Append(".day{display:flex;gap:16px;padding:12px 0;border-left:3px solid #ccc;margin-left:18px;padding-left:22px;position:relative}");
         sb.Append(".badge{position:absolute;left:-20px;top:12px;width:34px;height:34px}");
         sb.Append(".body{flex:1}.acts{margin:6px 0 0;padding:0;list-style:none}.acts li{display:flex;gap:10px;padding:2px 0}");
-        sb.Append(".note{margin-top:22px;border-top:1px solid #ccc;padding-top:10px}");
+        sb.Append(".note{margin-top:22px;border-top:1px solid #ccc;padding-top:10px;white-space:nowrap}");
         sb.Append("</style></head><body><div class=\"timeline\">");
         for (var d = 0; d < days; d++)
         {

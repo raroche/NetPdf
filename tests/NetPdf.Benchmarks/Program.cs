@@ -66,8 +66,8 @@ internal static class Program
             return 2;
         }
 
-        var baseline = LoadBenchmarkMeansFromDirectory(baselineDir);
-        var current = LoadBenchmarkMeansFromDirectory(currentDir);
+        var baseline = BaselineComparison.LoadBenchmarkMeansFromDirectory(baselineDir);
+        var current = BaselineComparison.LoadBenchmarkMeansFromDirectory(currentDir);
 
         if (baseline.Count == 0)
         {
@@ -87,47 +87,31 @@ internal static class Program
         Console.WriteLine($"{"Benchmark",-90} {"Baseline",12} {"Current",12} {"Ratio",10}");
         Console.WriteLine(new string('-', 128));
 
-        var failures = 0;
-        var compared = 0;
-        foreach (var (key, baselineMeanNs) in baseline.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        var report = BaselineComparison.Compare(baseline, current, tolerance, (key, baseNs, curNs, ratio) =>
         {
-            if (!current.TryGetValue(key, out var currentMeanNs))
+            if (curNs is null || ratio is null)
             {
-                Console.WriteLine($"{key,-90} {FormatNanos(baselineMeanNs),12} {"missing",12} {"-",10}");
-                continue;
+                Console.WriteLine($"{key,-90} {FormatNanos(baseNs),12} {"missing",12} {"-",10}");
+                return;
             }
-            compared++;
-            var ratio = currentMeanNs / baselineMeanNs;
             var status = ratio > tolerance ? "FAIL" : ratio > 1.10 ? "warn" : "ok";
-            Console.WriteLine($"{key,-90} {FormatNanos(baselineMeanNs),12} {FormatNanos(currentMeanNs),12} {ratio,9:F2}× {status}");
-            if (ratio > tolerance) failures++;
-        }
-        Console.WriteLine();
-        Console.WriteLine($"Compared {compared} benchmarks. Failures (ratio > {tolerance:F2}): {failures}");
-        return failures > 0 ? 1 : 0;
-    }
+            Console.WriteLine($"{key,-90} {FormatNanos(baseNs),12} {FormatNanos(curNs.Value),12} {ratio.Value,9:F2}× {status}");
+        });
 
-    private static IReadOnlyDictionary<string, double> LoadBenchmarkMeansFromDirectory(string dir)
-    {
-        var result = new Dictionary<string, double>(StringComparer.Ordinal);
-        foreach (var path in Directory.EnumerateFiles(dir, "*-report-full-compressed.json", SearchOption.AllDirectories))
+        Console.WriteLine();
+        Console.WriteLine(
+            $"Compared {report.Compared} of {report.BaselineCount} baseline benchmarks. " +
+            $"Missing: {report.Missing.Count}. Failures (ratio > {tolerance:F2}): {report.Regressed.Count}");
+
+        if (report.Outcome == ComparisonOutcome.Incomplete)
         {
-            using var stream = File.OpenRead(path);
-            using var doc = JsonDocument.Parse(stream);
-            if (!doc.RootElement.TryGetProperty("Benchmarks", out var benchmarks)) continue;
-            foreach (var bench in benchmarks.EnumerateArray())
-            {
-                if (!bench.TryGetProperty("FullName", out var fullName)) continue;
-                if (!bench.TryGetProperty("Parameters", out var parameters)) continue;
-                if (!bench.TryGetProperty("Statistics", out var stats)) continue;
-                if (!stats.TryGetProperty("Mean", out var mean)) continue;
-                var fullNameStr = fullName.GetString() ?? "";
-                var paramsStr = parameters.GetString() ?? "";
-                var key = string.IsNullOrEmpty(paramsStr) ? fullNameStr : $"{fullNameStr}[{paramsStr}]";
-                result[key] = mean.GetDouble();
-            }
+            Console.Error.WriteLine(
+                $"error: {report.Missing.Count} baseline benchmark(s) had no current measurement — the suite " +
+                "is INCOMPLETE, so the gate cannot certify performance. Re-run the full suite; if a benchmark " +
+                "was removed on purpose, re-capture the baseline (./scripts/benchmark-gate.sh capture).");
+            foreach (var key in report.Missing) Console.Error.WriteLine($"       missing: {key}");
         }
-        return result;
+        return (int)report.Outcome;
     }
 
     private static string FormatNanos(double ns)

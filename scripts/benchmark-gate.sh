@@ -36,14 +36,55 @@ esac
 PLATFORM_KEY="${OS}-${ARCH}"
 BASELINE_DIR="$BASELINE_ROOT/phase-1-${PLATFORM_KEY}"
 
+# Run the full suite and refuse to let a PARTIAL run through. BenchmarkDotNet exits 0 even when a
+# generated per-job project fails to build: it prints "has failed to build the auto-generated
+# boilerplate code", skips those benchmarks, and still exports whatever else ran. That is how the gate
+# came to compare a partial result set and die inside System.Text.Json ("target element has type
+# 'Null'", exit 134) — a crash that read as an infrastructure flake while hiding that NO performance
+# number was being checked. Every failure mode below becomes an explicit, diagnosable exit 2.
+#
+# BOTH entry points use this. `capture` must validate just as strictly as the gate: seeding a baseline
+# from a truncated run would bake the gap in permanently, and every later run would then "pass" against
+# a baseline that is missing the benchmarks nobody is measuring any more.
+run_suite_validated() {
+  local context="$1"
+  rm -rf "$ARTIFACTS_DIR"
+  RUN_LOG="$(mktemp)"
+  trap 'rm -f "$RUN_LOG"' EXIT
+  set +e
+  dotnet run --project "$BENCH_PROJ" -c Release -- --filter "*" --exporters JSON 2>&1 | tee "$RUN_LOG"
+  local run_exit=${PIPESTATUS[0]}
+  set -e
+
+  if [ "$run_exit" -ne 0 ]; then
+    echo "error [$context]: the benchmark run itself failed (exit $run_exit) — see the log above." >&2
+    exit 2
+  fi
+  if grep -q 'failed to build the auto-generated boilerplate' "$RUN_LOG"; then
+    echo "error [$context]: BenchmarkDotNet could not build one or more generated job projects, so the" >&2
+    echo "       suite is INCOMPLETE and the results cannot be trusted." >&2
+    echo "       The generated project restores standalone under the benchmark project's" >&2
+    echo "       output dir; if it started inheriting the repo's Central Package Management" >&2
+    echo "       again, check the sentinel files written by the benchmarks csproj." >&2
+    exit 2
+  fi
+
+  shopt -s nullglob
+  local produced=("$ARTIFACTS_DIR"/*-report-full-compressed.json)
+  shopt -u nullglob
+  if [ ${#produced[@]} -eq 0 ]; then
+    echo "error [$context]: the benchmark run produced no JSON results in $ARTIFACTS_DIR." >&2
+    exit 2
+  fi
+}
+
 # 'capture' subcommand: run + (re)write the baseline (used during deliberate
 # re-baselining; never run by CI). Handled BEFORE the "baseline missing" guard so the
 # FIRST baseline for a platform CAN be captured — otherwise the guard's `exit 2` fires
 # first and a brand-new platform (e.g. linux-x64 on the CI runner) can never be seeded.
 if [ "${1:-}" = "capture" ]; then
   echo "==> Capturing new baseline for $PLATFORM_KEY"
-  rm -rf "$ARTIFACTS_DIR"
-  dotnet run --project "$BENCH_PROJ" -c Release -- --filter "*" --exporters JSON
+  run_suite_validated "capture"
   rm -rf "$BASELINE_DIR"
   mkdir -p "$BASELINE_DIR"
   cp "$ARTIFACTS_DIR"/*-report-full-compressed.json "$BASELINE_DIR/"
@@ -59,42 +100,12 @@ if [ ! -d "$BASELINE_DIR" ]; then
 fi
 
 echo "==> Running benchmark suite ($PLATFORM_KEY)"
-rm -rf "$ARTIFACTS_DIR"
-RUN_LOG="$(mktemp)"
-trap 'rm -f "$RUN_LOG"' EXIT
-set +e
-dotnet run --project "$BENCH_PROJ" -c Release -- --filter "*" --exporters JSON 2>&1 | tee "$RUN_LOG"
-RUN_EXIT=${PIPESTATUS[0]}
-set -e
-
-# A PARTIAL run must not reach `--compare`. BenchmarkDotNet exits 0 even when a generated
-# per-job project fails to build: it prints "has failed to build the auto-generated
-# boilerplate code", skips those benchmarks, and still exports whatever else ran. The gate
-# then compared a partial (or empty) result set against a full baseline and died inside
-# System.Text.Json with "target element has type 'Null'" (exit 134) — a crash that read as
-# an infrastructure flake and hid the fact that NO performance number was being checked at
-# all. Everything below turns those cases into an explicit, diagnosable exit 2.
-if [ "$RUN_EXIT" -ne 0 ]; then
-  echo "error: the benchmark run itself failed (exit $RUN_EXIT) — see the log above." >&2
-  exit 2
-fi
-if grep -q 'failed to build the auto-generated boilerplate' "$RUN_LOG"; then
-  echo "error: BenchmarkDotNet could not build one or more generated job projects, so the" >&2
-  echo "       suite is INCOMPLETE and the gate cannot certify performance." >&2
-  echo "       The generated project restores standalone under the benchmark project's" >&2
-  echo "       output dir; if it started inheriting the repo's Central Package Management" >&2
-  echo "       again, check the sentinel files written by the benchmarks csproj." >&2
-  exit 2
-fi
+run_suite_validated "gate"
 
 shopt -s nullglob
 PRODUCED=("$ARTIFACTS_DIR"/*-report-full-compressed.json)
 EXPECTED=("$BASELINE_DIR"/*-report-full-compressed.json)
 shopt -u nullglob
-if [ ${#PRODUCED[@]} -eq 0 ]; then
-  echo "error: the benchmark run produced no JSON results in $ARTIFACTS_DIR." >&2
-  exit 2
-fi
 if [ ${#PRODUCED[@]} -lt ${#EXPECTED[@]} ]; then
   echo "error: only ${#PRODUCED[@]} of ${#EXPECTED[@]} benchmark result files were produced —" >&2
   echo "       the suite is incomplete, so the comparison would silently skip benchmarks." >&2

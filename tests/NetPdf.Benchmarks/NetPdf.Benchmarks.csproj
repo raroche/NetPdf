@@ -71,11 +71,12 @@
     the perf gate had effectively stopped measuring anything (it did NOT reproduce on a dev box — the
     failure is specific to the CI restore environment).
 
-    Dropping inert sentinels in `$(OutDir)` stops the upward search BELOW the repo root, so the generated
-    project restores standalone with CPM off. These live in `bin/` (gitignored) and are rewritten on every
-    build, so there is nothing to keep in sync. They cannot affect this project or any other: MSBuild only
-    searches upward from a project's OWN directory, and nothing but BDN's generated code builds under
-    `bin/`. `scripts/benchmark-gate.sh` fails loudly if the generated project ever breaks again.
+    Dropping inert sentinels in `$(TargetDir)` stops the upward search BELOW the repo root, so the
+    generated project restores standalone with CPM off. These live in `bin/` (gitignored) and are
+    rewritten on every build, so there is nothing to keep in sync. They cannot affect this project or any
+    other: MSBuild only searches upward from a project's OWN directory, and nothing but BDN's generated
+    code builds under `bin/`. `scripts/benchmark-gate.sh` fails loudly if the generated project ever
+    breaks again.
   -->
   <Target Name="IsolateBenchmarkDotNetGeneratedProjects" AfterTargets="Build"
           Condition="'$(TargetFramework)' != ''">

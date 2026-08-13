@@ -18,16 +18,16 @@
       AngleSharp itself is bumped for GHSA-pgww-w46g-26qg; keep AngleSharp.Css pinned until the parser
       regression is diagnosed.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.6.0" />
-    <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.1" />
-    <PackageVersion Include="SkiaSharp" Version="4.150.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.150.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.150.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.150.1" />
+    <PackageVersion Include="AngleSharp" Version="1.7.1" />
+    <PackageVersion Include="AngleSharp.Css" Version="1.0.1" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.2" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.2" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.2" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.2" />
+    <PackageVersion Include="SkiaSharp" Version="4.151.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.151.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.151.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.151.1" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
@@ -38,7 +38,7 @@
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
-    <PackageVersion Include="Microsoft.Playwright" Version="1.61.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.62.0" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
          macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. PDFtoImage 5.2.1
          declares a SkiaSharp FLOOR of 3.119.2; production intentionally pins 4.150.1 above (PR #355), and
@@ -47,7 +47,7 @@
          newer than it compiled against, so a removed 3.x API would surface as a runtime MissingMethodException
          rather than a build break. The RenderingCorpus suite is what proves that hasn't happened — if it ever
          fails after a SkiaSharp major bump, suspect this gap first. -->
-    <PackageVersion Include="PDFtoImage" Version="5.2.1" />
+    <PackageVersion Include="PDFtoImage" Version="5.3.0" />
   </ItemGroup>
 
   <!-- Roslyn / source generator infrastructure. -->
@@ -66,7 +66,7 @@
 
   <!-- Build infrastructure. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.301" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
   </ItemGroup>
 
 </Project>

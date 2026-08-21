@@ -20,14 +20,14 @@
     -->
     <PackageVersion Include="AngleSharp" Version="1.6.0" />
     <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.1" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.1" />
-    <PackageVersion Include="SkiaSharp" Version="4.150.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.150.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.150.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.150.1" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.2" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.2" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.2" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.2" />
+    <PackageVersion Include="SkiaSharp" Version="4.151.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.151.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.151.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.151.1" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
@@ -38,16 +38,17 @@
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
-    <PackageVersion Include="Microsoft.Playwright" Version="1.61.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.62.0" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
-         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF. PDFtoImage 5.2.1
-         declares a SkiaSharp FLOOR of 3.119.2; production intentionally pins 4.150.1 above (PR #355), and
-         NuGet unifies the graph to that single higher version — so the harness still rasterizes against the
-         SAME SkiaSharp the shipped package uses. The tradeoff of the gap: PDFtoImage runs against a SkiaSharp
-         newer than it compiled against, so a removed 3.x API would surface as a runtime MissingMethodException
-         rather than a build break. The RenderingCorpus suite is what proves that hasn't happened — if it ever
-         fails after a SkiaSharp major bump, suspect this gap first. -->
-    <PackageVersion Include="PDFtoImage" Version="5.2.1" />
+         macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF.
+         PDFtoImage 5.4.0 declares SkiaSharp 4.150.1, and production pins 4.151.1 just above it, so NuGet
+         unifies the graph on 4.151.1 and the harness rasterizes against the SAME SkiaSharp the shipped
+         package uses. This CLOSES the gap the 5.2.1 entry warned about: that release still declared a
+         3.119.2 floor, so PDFium ran against a SkiaSharp a whole major version newer than it compiled
+         against, where a removed 3.x API would only surface as a runtime MissingMethodException. The
+         remaining skew is a single patch. RenderingCorpus is still the suite that proves it — if it fails
+         after a SkiaSharp bump, suspect this pairing first. -->
+    <PackageVersion Include="PDFtoImage" Version="5.4.0" />
   </ItemGroup>
 
   <!-- Roslyn / source generator infrastructure. -->
@@ -66,7 +67,7 @@
 
   <!-- Build infrastructure. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.301" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
   </ItemGroup>
 
 </Project>

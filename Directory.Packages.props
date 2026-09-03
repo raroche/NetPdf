@@ -18,23 +18,23 @@
       AngleSharp itself is bumped for GHSA-pgww-w46g-26qg; keep AngleSharp.Css pinned until the parser
       regression is diagnosed.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.6.0" />
-    <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.2" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.2" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.2" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.2" />
-    <PackageVersion Include="SkiaSharp" Version="4.151.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.151.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.151.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.151.1" />
+    <PackageVersion Include="AngleSharp" Version="1.7.3" />
+    <PackageVersion Include="AngleSharp.Css" Version="1.0.2" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.102" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.102" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.102" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.102" />
+    <PackageVersion Include="SkiaSharp" Version="4.151.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.151.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.151.2" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.151.2" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
   <ItemGroup>
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.9.0" />
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />

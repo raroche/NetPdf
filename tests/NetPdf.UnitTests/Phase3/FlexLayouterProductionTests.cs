@@ -1619,6 +1619,273 @@ public sealed class FlexLayouterProductionTests
     }
 
     // ====================================================================
+    //  2026-09-30 corpus visual review — column fit-content, % width item
+    //  text, and the §4.5 automatic minimum size. The synthetic font draws
+    //  'A' at 6px (500/1000 em at 12px) and a space at 7.2px, so widths
+    //  below are exact.
+    // ====================================================================
+
+    /// <summary>The geometry (non-inline) fragment of the first element whose class list contains
+    /// <paramref name="cls"/>.</summary>
+    private static BoxFragment GeometryFragment(RecordingFragmentSink sink, string cls)
+    {
+        foreach (var f in sink.Fragments)
+        {
+            var c = f.Box.SourceElement?.GetAttribute("class");
+            if (c is not null && f.InlineLayout is null
+                && Array.IndexOf(c.Split(' '), cls) >= 0)
+                return f;
+        }
+        throw new Xunit.Sdk.XunitException($"no geometry fragment for class '{cls}'");
+    }
+
+    /// <summary>The number of line boxes laid out for the element whose class list contains
+    /// <paramref name="cls"/>.</summary>
+    private static int LineCount(RecordingFragmentSink sink, string cls)
+    {
+        foreach (var f in sink.Fragments)
+        {
+            var c = f.Box.SourceElement?.GetAttribute("class");
+            if (c is not null && f.InlineLayout is { } layout
+                && Array.IndexOf(c.Split(' '), cls) >= 0)
+                return layout.Lines.Length;
+        }
+        throw new Xunit.Sdk.XunitException($"no inline fragment for class '{cls}'");
+    }
+
+    [Theory]
+    [InlineData("center", 48.0)]    // (120 - 24) / 2
+    [InlineData("flex-end", 96.0)]  // 120 - 24
+    [InlineData("flex-start", 0.0)]
+    public async Task Column_flex_auto_width_item_is_fit_content_and_aligned(string align, double expectedOffset)
+    {
+        // CSS Flexbox §9.4 / Box Alignment §6.1 — a non-stretched auto-width item in a COLUMN flex is
+        // fit-content wide ("AAAA" = 24px), so align-items places the real box. Pre-fix it was placed as
+        // 0 wide (its left edge landed on the center line) while its text used the full 120px.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; align-items: {{align}}; width: 120px; }
+                .id { margin: 0; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var seal = GeometryFragment(sink, "seal");
+        var id = GeometryFragment(sink, "id");
+        Assert.Equal(24.0, id.InlineSize, precision: 2);
+        Assert.Equal(seal.InlineOffset + expectedOffset, id.InlineOffset, precision: 2);
+    }
+
+    [Fact]
+    public async Task Column_flex_auto_width_item_wider_than_the_container_is_clamped_to_it()
+    {
+        // fit-content = min(max-content, max(min-content, available)): three 60px words (194.4px
+        // max-content) in a 120px column clamp to 120 and wrap; min-content (60) is below the available
+        // width so it does not widen the box.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; align-items: center; width: 120px; }
+                .id { margin: 0; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var seal = GeometryFragment(sink, "seal");
+        var id = GeometryFragment(sink, "id");
+        Assert.Equal(120.0, id.InlineSize, precision: 2);
+        Assert.Equal(seal.InlineOffset, id.InlineOffset, precision: 2);
+        Assert.True(LineCount(sink, "id") >= 2);
+    }
+
+    [Theory]
+    [InlineData("min-width: 80px", 80.0, 20.0)]   // floor: (120 - 80) / 2
+    [InlineData("max-width: 10px", 10.0, 55.0)]   // cap:   (120 - 10) / 2
+    public async Task Column_flex_fit_content_honors_min_and_max_width(string css, double width, double offset)
+    {
+        // PR #382 review — the fit-content width (24px for "AAAA") is still clamped by the item's own
+        // min-width / max-width (CSS 2.2 §10.4) before it is aligned.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; align-items: center; width: 120px; }
+                .id { margin: 0; {{css}}; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var seal = GeometryFragment(sink, "seal");
+        var id = GeometryFragment(sink, "id");
+        Assert.Equal(width, id.InlineSize, precision: 2);
+        Assert.Equal(seal.InlineOffset + offset, id.InlineOffset, precision: 2);
+    }
+
+    [Fact]
+    public async Task Column_flex_fit_content_item_with_padding_keeps_its_text_on_one_line()
+    {
+        // PR #382 review — "AAAA AAAA" is 55.2px; with 20px side padding the fit-content border box is 95.2.
+        // The item's own text must be laid out in its 55.2px content box, not with the padding subtracted a
+        // second time (which wrapped it onto two lines).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; align-items: center; width: 120px; }
+                .id { margin: 0; padding: 0 20px; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAA AAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(95.2, GeometryFragment(sink, "id").InlineSize, precision: 2);
+        Assert.Equal(1, LineCount(sink, "id"));
+    }
+
+    [Theory]
+    [InlineData("padding: 0 20px")]
+    [InlineData("padding: 0 10px; border-left: 10px solid; border-right: 10px solid")]
+    [InlineData("padding: 0 20px; box-sizing: border-box; width: 240px")]
+    public async Task Row_flex_item_padding_is_not_subtracted_twice_from_its_text(string css)
+    {
+        // PR #382 review — a padded inline-only item's text was laid out at (border box − 2 × chrome). A
+        // 200px content box holds "AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA" (194.4px) on one line.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .row { display: flex; width: 600px; }
+                .b { width: 200px; {{css}}; }
+            </style></head><body>
+            <div class="row"><div class="b">AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA</div></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(240.0, GeometryFragment(sink, "b").InlineSize, precision: 2);
+        Assert.Equal(1, LineCount(sink, "b"));
+    }
+
+    [Fact]
+    public async Task Column_flex_stretched_item_keeps_the_full_width()
+    {
+        // Control: the default `align-items: stretch` still fills the column (byte-identical path).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; width: 120px; }
+                .id { margin: 0; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(120.0, GeometryFragment(sink, "id").InlineSize, precision: 2);
+    }
+
+    [Theory]
+    [InlineData("width: 50%")]
+    [InlineData("width: 50%; box-sizing: border-box")]
+    [InlineData("width: 200px")]
+    public async Task Row_flex_item_text_fills_its_percentage_width_once(string widthCss)
+    {
+        // 06-travel-voucher — the item's own inline content was laid out by the nested item pass, which
+        // re-applied `width: 50%` against the 200px it was already given, so the text wrapped at 100px.
+        // "AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA" is 194.4px: one line at 200px, three at 100px.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                ul { display: flex; flex-wrap: wrap; width: 400px; margin: 0; padding: 0; list-style: none; }
+                li { {{widthCss}}; }
+            </style></head><body>
+            <ul><li class="a">AAAA</li><li class="b">AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA</li></ul>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(200.0, GeometryFragment(sink, "b").InlineSize, precision: 2);
+        Assert.Equal(1, LineCount(sink, "b"));
+    }
+
+    [Fact]
+    public async Task Row_flex_items_do_not_shrink_below_their_min_content()
+    {
+        // CSS Flexbox §4.5 — `min-width: auto` is the automatic minimum size (min-content), not 0.
+        // "AAAAAAAAAA" (60) + 28 A's (168) = 228 in a 200px row: neither item can shrink below its
+        // longest word, so the row overflows (label keeps 60, value keeps 168 and starts at 60).
+        // Pre-fix both shrank proportionally and the value's text overlapped the label.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .kv { display: flex; justify-content: space-between; width: 200px; }
+            </style></head><body>
+            <div class="kv"><span class="k">AAAAAAAAAA</span><span class="v">AAAAAAAAAAAAAAAAAAAAAAAAAAAA</span></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var kv = GeometryFragment(sink, "kv");
+        var k = GeometryFragment(sink, "k");
+        var v = GeometryFragment(sink, "v");
+        Assert.Equal(60.0, k.InlineSize, precision: 2);
+        Assert.Equal(168.0, v.InlineSize, precision: 2);
+        Assert.Equal(k.InlineOffset + 60.0, v.InlineOffset, precision: 2);
+        Assert.True(v.InlineOffset + v.InlineSize > kv.InlineOffset + 200.0 + 1.0,
+            "the value should overflow the row, not overlap the label");
+    }
+
+    [Theory]
+    [InlineData("overflow: clip")]
+    [InlineData("overflow-x: clip")]
+    public async Task Row_flex_item_with_overflow_clip_keeps_its_automatic_minimum(string css)
+    {
+        // PR #382 review — `clip` is not a scroll container (CSS Overflow 3 §3.1), so §4.5 still applies:
+        // the value keeps its 168px min-content and the row overflows, exactly like `visible`.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .kv { display: flex; justify-content: space-between; width: 200px; }
+                .v { {{css}}; }
+            </style></head><body>
+            <div class="kv"><span class="k">AAAAAAAAAA</span><span class="v">AAAAAAAAAAAAAAAAAAAAAAAAAAAA</span></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(60.0, GeometryFragment(sink, "k").InlineSize, precision: 2);
+        Assert.Equal(168.0, GeometryFragment(sink, "v").InlineSize, precision: 2);
+    }
+
+    [Theory]
+    [InlineData("min-width: 0")]
+    [InlineData("overflow: hidden")]
+    [InlineData("overflow-x: hidden")]
+    public async Task Row_flex_item_without_an_automatic_minimum_still_shrinks(string css)
+    {
+        // An explicit min-width or a scroll container (overflow != visible) opts out of §4.5, so the value
+        // shrinks: the label is still floored at its own automatic minimum (60), the value takes 140.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .kv { display: flex; justify-content: space-between; width: 200px; }
+                .v { {{css}}; }
+            </style></head><body>
+            <div class="kv"><span class="k">AAAAAAAAAA</span><span class="v">AAAAAAAAAAAAAAAAAAAAAAAAAAAA</span></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(60.0, GeometryFragment(sink, "k").InlineSize, precision: 2);
+        Assert.Equal(140.0, GeometryFragment(sink, "v").InlineSize, precision: 2);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors MulticolLayouterProductionTests.
     // ====================================================================
 

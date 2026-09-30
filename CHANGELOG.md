@@ -7,7 +7,16 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 Post-`1.1.0` improvements accumulate here until the next release is cut.
 
 ### Added
+- **Page-break guide** ([docs-site/page-breaks.md](docs-site/page-breaks.md), linked from the README): how NetPdf chooses each page break, forced and avoided breaks and their limits, recipes, and troubleshooting.
 - **`SecurityPolicy.RenderTimeout`** — a default hard cap on conversion time for renders that use the policy. `SecurityPolicy.UntrustedHtml` now defaults to **30 seconds**, so a hostile document cannot hold a worker indefinitely when the caller sets no timeout. `SafeDefault` and `TrustedTemplate` stay uncapped. An explicit `HtmlPdfOptions.Timeout` always wins, and `Timeout.InfiniteTimeSpan` removes the cap. The `TimeoutException` message names which setting fired.
+
+### Fixed
+- **`break-after: avoid` / `break-before: avoid` now keep a heading with its content.** A heading that fitted at the page bottom while the block after it did not was left alone on the page; it now moves to the next page with its section (also inside wrapper elements, and across up to three consecutive avoided boundaries). A keep never moves the first block on a page, is dropped when the two blocks cannot share even a fresh page, and gives way to a forced break at the same boundary.
+- **Column flexbox items are sized fit-content.** An auto-width item in a `flex-direction: column` container that is not stretched (`align-items: center`, `flex-end`, …) was placed as if 0 wide, so centered text started at the center line and the item's background was missing.
+- **A flex item's own text uses its percentage width once.** `li { width: 50% }` in a row flexbox wrapped its text at a quarter of the container, because the percentage was applied again when the item's text was laid out.
+- **A padded flex item's text uses its whole content box.** The item's border and padding were subtracted twice from the width its own text was laid out at, so the text wrapped early.
+- **Flex items no longer shrink below their longest word.** `min-width: auto` on a row flex item is now the automatic minimum size (CSS Flexbox §4.5), so a long value in a `justify-content: space-between` row overflows the row instead of overlapping its label. `min-width: 0` or a scroll container (`overflow: hidden` / `scroll` / `auto`) opts out, as in browsers; `overflow: clip` does not.
+- **The `overflow` shorthand is applied.** `overflow: hidden` (one or two values) now sets `overflow-x` / `overflow-y`; before, only the longhands took effect.
 
 ### Security
 - **SSRF: IPv6 forms that embed an IPv4 address are now blocked.** NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), IPv4-compatible (`::a.b.c.d`) and IPv4-translated (`::ffff:0:a.b.c.d`) addresses are checked against the IPv4 blocklist, so `64:ff9b::a9fe:a9fe` can no longer reach `169.254.169.254`. Local-use NAT64, Teredo, site-local (`fec0::/10`) and discard-only (`100::/64`) ranges are blocked outright. Public addresses reached through NAT64 or 6to4 keep working. Only affects deployments that enable `http`/`https` fetching; the default policies do not.

@@ -186,6 +186,10 @@ internal static class CssPreprocessor
         // declaration so the adapter's source-order merge decides each longhand correctly.
         "gap",
         "grid-gap",
+        // `overflow` (CSS Overflow L3 §3.1). AngleSharp.Css keeps it as one unexpanded declaration and the
+        // engine registers only overflow-x / overflow-y, so it never reached the cascade.
+        // <see cref="OverflowShorthandExpander"/> emits the two longhands.
+        "overflow",
         // Per Phase 3 Task 15 L16 — `flex-flow` shorthand. Mirrors the
         // L13 pattern for the `<flex-direction> || <flex-wrap>`
         // shorthand per CSS Flexbox L1 §6.1.
@@ -911,6 +915,19 @@ internal static class CssPreprocessor
                         SourceOrdinal: ordinal));
                     output.Add(new CssDeclarationRecovery(
                         "column-gap", gCol, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                }
+                // `overflow` — two longhand records sharing the shorthand's ordinal.
+                else if (normalizedName == "overflow"
+                    && OverflowShorthandExpander.TryExpand(cleanValue, out var ovX, out var ovY))
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        "overflow-x", ovX, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "overflow-y", ovY, isImportant,
                         IsFromShorthandExpansion: true,
                         SourceOrdinal: ordinal));
                 }

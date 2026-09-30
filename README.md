@@ -217,10 +217,19 @@ foreach (var (name, html) in invoices)
 ### Keep things from breaking awkwardly
 
 ```css
-h2 { break-after: avoid; }    /* keep a heading with the content that follows it */
-tr { break-inside: avoid; }   /* never split a line-item row across a page boundary */
+h1, h2, h3, h4, h5, h6 { break-after: avoid; }  /* keep a heading with the content that follows it */
+tr { break-inside: avoid; }                      /* never split a line-item row across a page boundary */
 figure, .keep-together { break-inside: avoid; }
 ```
+
+Headings are **not** kept with their content automatically (browsers don't do it either), so add
+`break-after: avoid` to every element you use as a heading — including a `<div class="section-title">`.
+NetPdf then moves a heading to the next page when the start of the content after it doesn't fit. A
+paragraph that doesn't fit in the space left moves to the next page whole; only a paragraph taller than a
+page is split between lines (honoring `orphans` / `widows`).
+
+**Full guide:** [Controlling page breaks](https://github.com/raroche/NetPdf/blob/main/docs-site/page-breaks.md) —
+how NetPdf picks each break, forced / avoided breaks and their limits, recipes, and troubleshooting.
 
 ### A complete invoice stylesheet
 

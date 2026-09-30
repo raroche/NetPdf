@@ -1135,7 +1135,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var contentMeasureBudget = isRowNowrapContentPagination
             ? NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx
             : fragmentainer.BlockSize;
-        var (itemContentBuffers, itemDiagnosticBuffers) = MeasureFlexItemContents(
+        var (itemContentBuffers, itemDiagnosticBuffers, columnFitCrossSizes) = MeasureFlexItemContents(
             lines, resolvedItemMainSizes, flexDirection, isColumn,
             mainSizeProperty, crossSizeProperty, containerCrossSize,
             containerDefiniteCrossSize, containerDefiniteMainSize, isWrapping,
@@ -1623,6 +1623,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                         && !double.IsNaN(itemBaselineCrossSizes[itemIdx]))
                     {
                         alignCrossSize = itemBaselineCrossSizes[itemIdx];
+                    }
+                    // COLUMN analogue: the auto-width item's fit-content inline size (measured with its
+                    // content in MeasureFlexItemContents), so center / end place the real box.
+                    else if (itemIsCrossSizeAuto && columnFitCrossSizes is not null
+                        && !double.IsNaN(columnFitCrossSizes[itemIdx]))
+                    {
+                        alignCrossSize = columnFitCrossSizes[itemIdx];
                     }
                     (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                         ComputeAlignItemsPlacement(
@@ -2321,11 +2328,88 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var lineItems = new Box[count];
         for (var i = 0; i < count; i++)
             lineItems[i] = _rootBox.Children[_sortedFlexChildIndices[line.FirstItemIndex + i]];
+        // CSS Flexbox L1 §4.5 — the automatic minimum size applies to the ROW main axis (inline); the
+        // provider measures lazily, only when a line actually has to shrink.
+        var automaticMinimum = mainSizeProperty == PropertyId.Width
+            ? _rowAutomaticMinimumProvider ??= CreateRowAutomaticMinimumProvider(_shaperResolver, cancellationToken)
+            : null;
         var lineResolved = ResolveFlexLineMainSizes(
             lineItems, mainSizeProperty, minSizeProperty, maxSizeProperty,
-            containerMainSize, containerDefiniteMainSize, mainGap, cancellationToken, precomputedIntrinsicBaseSizes);
+            containerMainSize, containerDefiniteMainSize, mainGap, cancellationToken, precomputedIntrinsicBaseSizes,
+            automaticMinimum);
         for (var i = 0; i < count; i++)
             resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
+    }
+
+    /// <summary>Whether an <c>overflow-x</c> / <c>overflow-y</c> keyword index (visible 0, hidden 1, clip 2,
+    /// scroll 3, auto 4 — <c>KeywordResolver</c>) makes the box a scroll container. <c>clip</c> does not.</summary>
+    private static bool IsScrollContainerOverflow(int keywordIndex) => keywordIndex is 1 or 3 or 4;
+
+    /// <summary>Lazily-created, per-layout cache of <see cref="CreateRowAutomaticMinimumProvider"/>.</summary>
+    private Func<Box, double>? _rowAutomaticMinimumProvider;
+
+    /// <summary>CSS Flexbox L1 §4.5 — a provider of each ROW flex item's min-content BORDER-box inline size
+    /// (its content size suggestion), measured once per item and cached. <see langword="null"/> without a
+    /// shaper (no text measure), which leaves the automatic minimum at 0 — byte-identical to before.</summary>
+    internal static Func<Box, double>? CreateRowAutomaticMinimumProvider(
+        IShaperResolver? shaperResolver, CancellationToken cancellationToken)
+    {
+        if (shaperResolver is null)
+        {
+            return null;
+        }
+        var cache = new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
+        return item =>
+        {
+            if (!cache.TryGetValue(item, out var minContent))
+            {
+                minContent = NestedContentMeasurer.Measure(
+                        item, 1.0,
+                        blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                        shaperResolver: shaperResolver,
+                        writingMode: WritingMode.HorizontalTb, isRtl: false,
+                        cancellationToken: cancellationToken,
+                        intrinsicSizingMode: true).ContentInlineExtent
+                    + item.Style.AxisBorderPaddingPx(PropertyId.Width);
+                cache[item] = minContent;
+            }
+            return minContent;
+        };
+    }
+
+    /// <summary>CSS Flexbox L1 §4.5 — the item's automatic minimum main size: its content size suggestion
+    /// (min-content), capped by its specified main size when that is definite and by its max main size.
+    /// Applies only when the min main size is <c>auto</c> and the item is not a scroll container — any
+    /// axis <c>hidden</c> / <c>scroll</c> / <c>auto</c> makes it one; <c>visible</c> and <c>clip</c> do not
+    /// (CSS Overflow 3 §3.1, PR #382 review). Otherwise returns 0.</summary>
+    private static double AutomaticMinimumMainSize(
+        Box item, PropertyId mainSizeProperty, PropertyId minSizeProperty, double maxMainSize,
+        double containerDefiniteMainSize, Func<Box, double> contentSizeSuggestion)
+    {
+        var minSlot = item.Style.Get(minSizeProperty);
+        if (minSlot.Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage)
+        {
+            return 0;
+        }
+        if (IsScrollContainerOverflow(item.Style.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0))
+            || IsScrollContainerOverflow(item.Style.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0)))
+        {
+            return 0;
+        }
+        var suggestion = contentSizeSuggestion(item);
+        var chrome = item.Style.AxisBorderPaddingPx(mainSizeProperty);
+        var mainSlot = item.Style.Get(mainSizeProperty);
+        if (mainSlot.Tag == ComputedSlotTag.LengthPx)
+        {
+            suggestion = Math.Min(suggestion,
+                BoxSizingHelper.DeclaredToBorderBox(item.Style, Math.Max(0, mainSlot.AsLengthPx()), chrome));
+        }
+        else if (mainSlot.Tag == ComputedSlotTag.Percentage && double.IsFinite(containerDefiniteMainSize))
+        {
+            suggestion = Math.Min(suggestion, BoxSizingHelper.DeclaredToBorderBox(
+                item.Style, Math.Max(0, mainSlot.AsPercentage() / 100.0 * containerDefiniteMainSize), chrome));
+        }
+        return Math.Max(0, Math.Min(suggestion, maxMainSize));
     }
 
     /// <summary>Box-sizing / pre-measure share (PR #189 review P1) — the CSS
@@ -2352,7 +2436,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         double containerDefiniteMainSize,
         double mainGap,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null)
+        IReadOnlyDictionary<Box, double>? precomputedIntrinsicBaseSizes = null,
+        // CSS Flexbox L1 §4.5 — the content size suggestion (min-content border box) for the automatic
+        // minimum size; null = no automatic minimum (0), the pre-§4.5 behavior.
+        Func<Box, double>? automaticMinimumContentSize = null)
     {
         var itemCount = lineItems.Count;
         var resolved = new double[itemCount];
@@ -2398,6 +2485,27 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 minSizeProperty, maxSizeProperty, containerDefiniteMainSize);
             mins[i] = min;
             maxs[i] = max;
+        }
+
+        // CSS Flexbox L1 §4.5 — `min-width: auto` on a flex item is its AUTOMATIC minimum size, not 0: a
+        // shrinking item stops at its min-content (longest word), so `justify-content: space-between`
+        // label/value rows overflow the container instead of squeezing the label under the value (the
+        // 01-cruise "Email" row). It only matters when the line must SHRINK, so it is measured only then.
+        if (automaticMinimumContentSize is not null && double.IsFinite(containerDefiniteMainSize))
+        {
+            var sumHypothetical = 0.0;
+            for (var i = 0; i < itemCount; i++) sumHypothetical += hypotheticals[i];
+            if (containerMainSize - mainGutterTotal - sumHypothetical < 0)
+            {
+                for (var i = 0; i < itemCount; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var automatic = AutomaticMinimumMainSize(
+                        lineItems[i], mainSizeProperty, minSizeProperty, maxs[i],
+                        containerDefiniteMainSize, automaticMinimumContentSize);
+                    if (automatic > mins[i]) mins[i] = automatic;
+                }
+            }
         }
 
         // §9.7 iteration cap: each iteration freezes at least one item
@@ -3404,7 +3512,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// <returns>Per-DOM-child-index arrays: the content buffers (null for a
     /// childless item) + the parallel diagnostic buffers (null when no item
     /// content was measured or no effective sink was supplied).</returns>
-    private (BufferingMeasureSink?[] Content, BufferingDiagnosticsSink?[] Diagnostics)
+    private (BufferingMeasureSink?[] Content, BufferingDiagnosticsSink?[] Diagnostics, double[]? ColumnFitCrossSizes)
         MeasureFlexItemContents(
         List<FlexLine> lines,
         double[] resolvedItemMainSizes,
@@ -3425,6 +3533,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     {
         var buffers = new BufferingMeasureSink?[_rootBox.Children.Count];
         var diagBuffers = new BufferingDiagnosticsSink?[_rootBox.Children.Count];
+        // Column fit-content cross sizes (BORDER box; NaN = not applicable) — see the column branch below.
+        double[]? columnFitCrossSizes = null;
+        var containerAlignItems = isColumn ? _rootBox.Style.ReadAlignItems() : default;
         foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3456,12 +3567,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     borderBoxInline = IsCrossSizeAuto(item, flexDirection)
                         ? lineCrossExtent
                         : item.Style.CrossBorderBoxSizePx(crossSizeProperty);
+                    // CSS Flexbox L1 §9.4 step 7 / CSS Box Alignment §6.1 — an auto-width item in a COLUMN
+                    // container that is NOT stretched (align-self center / start / end / baseline …) is
+                    // sized fit-content: min(max-content, max(min-content, available)). Pre-fix it kept
+                    // the line's full width for its text but was PLACED as if 0 wide, so `align-items:
+                    // center` put its left edge at the center line (the certificate "ID" under the seal)
+                    // and its background was culled. Lay the content out at the fit-content width and
+                    // hand that width to the placement (ColumnFitCrossSizes).
+                    if (IsColumnItemFitContent(item, containerAlignItems)
+                        && ColumnItemFitContentBorderBox(item, lineCrossExtent, _shaperResolver, cancellationToken) is { } fit)
+                    {
+                        borderBoxInline = fit;
+                        columnFitCrossSizes ??= CreateNaNArray(_rootBox.Children.Count);
+                        columnFitCrossSizes[itemIdx] = fit;
+                    }
                 }
                 else
                 {
                     borderBoxInline = resolvedItemMainSizes[itemIdx];
                 }
-                var usedInline = borderBoxInline - inlineChrome;
+                var usedInline = ItemContentLayoutInlineSize(item, borderBoxInline);
                 if (!(usedInline > 0)) usedInline = _contentInlineSize;
 
                 // PR-#182 review P2 — buffer this item's content diagnostics
@@ -3555,7 +3680,72 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 }
             }
         }
-        return (buffers, diagBuffers);
+        return (buffers, diagBuffers, columnFitCrossSizes);
+    }
+
+    private static double[] CreateNaNArray(int length)
+    {
+        var array = new double[length];
+        Array.Fill(array, double.NaN);
+        return array;
+    }
+
+    /// <summary>The inline size to lay a flex item's CONTENT out at, given the item's BORDER-box inline size.
+    /// Block-child content is laid at the item's content box, so it gets the border box minus the item's
+    /// inline border + padding. An INLINE-ONLY item (its own text laid out by the nested pass's root-inline
+    /// dispatch) gets the BORDER box: that dispatch subtracts the item's border + padding itself — the same
+    /// contract grid cells and abspos boxes use — so passing the content width subtracted them twice and a
+    /// padded item's text wrapped early (PR #382 review). Shared by emission and the BlockLayouter
+    /// pre-measures so measured and emitted heights agree.</summary>
+    internal static double ItemContentLayoutInlineSize(Box item, double borderBoxInline) =>
+        BlockLayouter.IsInlineOnlyRootContainer(item)
+            ? borderBoxInline
+            : borderBoxInline - item.Style.InlineBorderPaddingPx();
+
+    /// <summary>Whether a COLUMN flex item is sized fit-content on the cross (inline) axis: an auto width
+    /// and a used <c>align-self</c> other than <c>stretch</c> (CSS Flexbox §9.4 step 7 / Box Alignment §6.1).</summary>
+    internal static bool IsColumnItemFitContent(Box item, ResolvedAlignItems containerAlignItems) =>
+        item.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword
+        && item.Style.ReadAlignSelf().ResolveAgainstContainerAlignItems(containerAlignItems).Value
+            != AlignItemsValue.Stretch;
+
+    /// <summary>The fit-content BORDER-box inline size of an auto-width COLUMN flex item (CSS Sizing 3 §5.2):
+    /// <c>min(max-content, max(min-content, available))</c>, then clamped by the item's own
+    /// <c>min-width</c> / <c>max-width</c> (CSS 2.2 §10.4 — PR #382 review). Measured with the same nested
+    /// measure the row intrinsic basis uses. <see langword="null"/> when there is no shaper (no text
+    /// measure) — the caller then keeps the available width, byte-identical to before.</summary>
+    internal static double? ColumnItemFitContentBorderBox(
+        Box item, double availableBorderBox, IShaperResolver? shaperResolver, CancellationToken cancellationToken)
+    {
+        if (shaperResolver is null)
+        {
+            return null;
+        }
+        var chrome = item.Style.AxisBorderPaddingPx(PropertyId.Width);
+        var maxContent = NestedContentMeasurer.Measure(
+            item, MaxContentMeasureInlinePx,
+            blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+            shaperResolver: shaperResolver,
+            writingMode: WritingMode.HorizontalTb, isRtl: false,
+            cancellationToken: cancellationToken,
+            intrinsicSizingMode: false).ContentInlineExtent + chrome;
+        double fit;
+        if (maxContent <= availableBorderBox)
+        {
+            fit = maxContent;
+        }
+        else
+        {
+            var minContent = NestedContentMeasurer.Measure(
+                item, 1.0,
+                blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                shaperResolver: shaperResolver,
+                writingMode: WritingMode.HorizontalTb, isRtl: false,
+                cancellationToken: cancellationToken,
+                intrinsicSizingMode: true).ContentInlineExtent + chrome;
+            fit = Math.Max(minContent, availableBorderBox);
+        }
+        return item.ClampBorderBoxToMinMax(fit, PropertyId.MinWidth, PropertyId.MaxWidth, availableBorderBox);
     }
 
     /// <summary>Lay out one flex item's inner content into a fresh

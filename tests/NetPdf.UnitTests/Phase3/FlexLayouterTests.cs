@@ -6042,10 +6042,34 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void ResolveFlexLineMainSizes_floors_a_growing_zero_basis_item_at_its_automatic_minimum()
+    {
+        // 2026-10 corpus review (01-cruise cards) — `flex: 1` items (basis 0%) GROW, so the line never
+        // shrinks, yet an item whose content is wider than its equal share must still not go below its
+        // min-content: the first card takes 250 and the others split the rest (175 each), like a browser.
+        var items = new Box[3];
+        for (var i = 0; i < 3; i++)
+        {
+            var st = MakeStyle();
+            st.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            st.Set(PropertyId.FlexBasis, ComputedSlot.FromPercentage(0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, st, MakeElement());
+        }
+        var resolved = FlexLayouter.ResolveFlexLineMainSizes(
+            items, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 600, containerDefiniteMainSize: 600,
+            mainGap: 0, cancellationToken: default,
+            automaticMinimumContentSize: box => ReferenceEquals(box, items[0]) ? 250 : 20);
+        Assert.Equal(250.0, resolved[0], precision: 3);
+        Assert.Equal(175.0, resolved[1], precision: 3);
+        Assert.Equal(175.0, resolved[2], precision: 3);
+    }
+
+    [Fact]
     public void ResolveFlexLineMainSizes_measures_the_automatic_minimum_only_when_the_line_shrinks()
     {
-        // The min-content measure is a real layout pass, so it runs only when a line has negative free
-        // space. Two 100px items in 300px fit → the provider is never called.
+        // The min-content measure is a real layout pass, so it runs only where the floor can bind: a line
+        // with negative free space, or an item with a definite (length / %) flex basis. Two content-sized
+        // 100px items in 300px fit → the provider is never called.
         var a = MakeStyle();
         SetLengthPx(a, PropertyId.Width, 100);
         var b = MakeStyle();

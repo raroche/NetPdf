@@ -4391,7 +4391,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return;
         }
 
-        placement = RemeasureAutoHeightPlacement(child, containingBlock.Value, placement, ref layout, cancellationToken);
+        var shrinkToFitWidth = MeasureAbsoluteShrinkToFitWidth(child, containingBlock.Value, placement, cancellationToken);
+        if (!double.IsNaN(shrinkToFitWidth))
+            placement = AbsoluteLayouter.ResolvePlacement(child, containingBlock.Value, measuredInlineContentSize: shrinkToFitWidth);
+        placement = RemeasureAutoHeightPlacement(
+            child, containingBlock.Value, placement, ref layout, cancellationToken, shrinkToFitWidth);
 
         // Emit the border-box fragment at the resolved position.
         _sink.Emit(new BoxFragment(
@@ -4547,7 +4551,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken)
     {
         var placement = AbsoluteLayouter.ResolvePlacement(child, pageCb);
-        placement = RemeasureAutoHeightPlacement(child, pageCb, placement, ref layout, cancellationToken);
+        var shrinkToFitWidth = MeasureAbsoluteShrinkToFitWidth(child, pageCb, placement, cancellationToken);
+        if (!double.IsNaN(shrinkToFitWidth))
+            placement = AbsoluteLayouter.ResolvePlacement(child, pageCb, measuredInlineContentSize: shrinkToFitWidth);
+        placement = RemeasureAutoHeightPlacement(child, pageCb, placement, ref layout, cancellationToken, shrinkToFitWidth);
         _sink.Emit(new BoxFragment(
             Box: child,
             InlineOffset: placement.InlineOffset,
@@ -4610,7 +4617,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// top+bottom-pinned (fill) box, or a box with no content / no inline extent.</summary>
     private AbsolutePlacement RemeasureAutoHeightPlacement(
         Box box, AbsoluteContainingBlock cb, AbsolutePlacement placement,
-        ref LayoutContext layout, CancellationToken cancellationToken)
+        ref LayoutContext layout, CancellationToken cancellationToken,
+        // The shrink-to-fit content width already applied to `placement` (NaN = none), re-passed so the
+        // re-solve below keeps it.
+        double measuredInlineContentSize = double.NaN)
     {
         if (!AbsoluteLayouter.NeedsAutoBlockContentMeasure(box)
             || box.Children.Count == 0 || placement.InlineSize <= 0)
@@ -4635,8 +4645,43 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             measured = System.Math.Max(0, measured - AbsoluteLayouter.BlockAxisChrome(box, cb.InlineSize));
         }
-        return AbsoluteLayouter.ResolvePlacement(box, cb, measuredBlockContentSize: measured);
+        return AbsoluteLayouter.ResolvePlacement(
+            box, cb, measuredBlockContentSize: measured, measuredInlineContentSize: measuredInlineContentSize);
     }
+
+    /// <summary>CSS 2.1 §10.3.7 — the shrink-to-fit CONTENT width of an auto-width abspos / fixed box that is
+    /// not pinned by both <c>left</c> and <c>right</c>: <c>min(max-content, max(min-content, available))</c>,
+    /// where "available" is the content width of the legacy available-extent placement. NaN when it does not
+    /// apply (definite width, both insets set, no content, no shaper) or would not narrow the box — the caller
+    /// then keeps the placement unchanged.</summary>
+    private double MeasureAbsoluteShrinkToFitWidth(
+        Box box, AbsoluteContainingBlock cb, AbsolutePlacement placement, CancellationToken cancellationToken)
+    {
+        if (_shaperResolver is null || box.Children.Count == 0
+            || !AbsoluteLayouter.NeedsAutoInlineShrinkToFit(box))
+        {
+            return double.NaN;
+        }
+        var available = AbsoluteLayouter.ContentInlineSize(box, placement.InlineSize, cb.InlineSize);
+        var maxContent = NestedContentMeasurer.Measure(
+            box, AbsoluteMaxContentProbeInlinePx, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+            _shaperResolver, WritingMode.HorizontalTb, isRtl: false, cancellationToken,
+            intrinsicSizingMode: false).ContentInlineExtent;
+        if (double.IsNaN(maxContent) || maxContent < 0) return double.NaN;
+        var fit = maxContent;
+        if (maxContent > available)
+        {
+            var minContent = NestedContentMeasurer.Measure(
+                box, 1.0, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                _shaperResolver, WritingMode.HorizontalTb, isRtl: false, cancellationToken,
+                intrinsicSizingMode: true).ContentInlineExtent;
+            fit = Math.Max(minContent, available);
+        }
+        return fit < available - 0.01 ? fit : double.NaN;
+    }
+
+    /// <summary>The unconstrained inline size a max-content probe lays content out at (text never wraps).</summary>
+    private const double AbsoluteMaxContentProbeInlinePx = 1_000_000.0;
 
     private void DispatchAbsoluteChildContents(
         Box box,
@@ -8299,8 +8344,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // inline-block (baseline/sub/super) OR ANY baseline-relative SHIFTED atomic — including
                     // an IMG-ish atomic with super/sub/numeric/middle/text-* (post-PR-#193 review P1: those
                     // were placed but NOT sized into the line, so a raised box spilled above the line top).
-                    // A plain baseline/img + top/bottom keep the centred fallback model (byte-identical).
-                    if ((a.BaselineFromBorderTopPx is not null && IsBaselineValign(valign))
+                    // A BASELINE-aligned replaced atomic (an inline <img> / <svg>) uses it too (2026-10 corpus
+                    // review, the 05-payment-receipt check badge): its margin-box bottom sits ON the baseline, so
+                    // under the centred model a replaced box taller than the text was drawn ABOVE its own line
+                    // (the line reserved the height, but the baseline stayed mid-line). §10.8.1 puts the baseline
+                    // at the tallest ascent instead. Only top/bottom keep the centred fallback model.
+                    if (IsBaselineValign(valign)
                         || IsBaselineRelativeShifted(valign, numericRaisePx))
                     {
                         lineNeedsMaxAscent = true;

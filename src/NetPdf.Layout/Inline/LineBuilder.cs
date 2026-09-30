@@ -2377,6 +2377,9 @@ internal static class LineBuilder
             {
                 Text = CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
             };   // RC-1: preserve leading/trailing chrome + Atomic
+            // A forced break at the start of this run ends the previous line: its trailing collapsible
+            // space (collapsed in the PREVIOUS run) is removed too (CSS Text L3 §4.1.2).
+            TrimSpaceBeforeForcedBreak(output, r);
         }
 
         if (output.Length > 0)
@@ -2613,6 +2616,11 @@ internal static class LineBuilder
                 {
                     Text = CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
                 };   // RC-1: preserve chrome + Atomic
+                // A forced break at the start of this run ends the previous line: its trailing collapsible
+                // space (collapsed in the PREVIOUS run) is removed too (CSS Text L3 §4.1.2). A preserved
+                // (pre / pre-wrap) previous run keeps its spaces.
+                if (modes[r - (r > 0 ? 1 : 0)] is WhiteSpace.Normal or WhiteSpace.NoWrap or WhiteSpace.PreLine)
+                    TrimSpaceBeforeForcedBreak(output, r);
             }
         }
 
@@ -2633,6 +2641,22 @@ internal static class LineBuilder
         }
 
         return output;
+    }
+
+    /// <summary>When <paramref name="output"/>[<paramref name="r"/>] starts with a forced line break
+    /// (U+2028, how <c>&lt;br&gt;</c> is injected), drop one trailing collapsed space from the previous
+    /// non-atomic run — the space at the END of the broken line (CSS Text L3 §4.1.2). Without it a
+    /// right-aligned / centred line before a <c>&lt;br&gt;</c> was offset by one space.</summary>
+    private static void TrimSpaceBeforeForcedBreak(TextRun[] output, int r)
+    {
+        if (r == 0 || output[r].Text.Length == 0 || output[r].Text[0] != '\u2028'
+            || output[r - 1].Atomic is not null)
+        {
+            return;
+        }
+        var prev = output[r - 1].Text;
+        if (prev.Length > 0 && prev[prev.Length - 1] == ' ')
+            output[r - 1] = output[r - 1] with { Text = prev.Substring(0, prev.Length - 1) };
     }
 
     /// <summary>Stateful collapse helper for
@@ -2659,6 +2683,17 @@ internal static class LineBuilder
                 sb.Append('\u000A');
                 inWs = true;
                 if (i + 1 < text.Length && text[i + 1] == '\u000A') i++;
+            }
+            else if (c == '\u2028')
+            {
+                // A forced line break (`<br>` is injected as U+2028). CSS Text L3 §4.1.2 removes collapsible
+                // spaces at the END of a line and at the START of the next one, so drop the space before it
+                // and treat what follows as line-leading. Pre-fix the source newline + indentation after a
+                // `<br>` survived as a leading space (" Apt 7C"), shifting the line and widening it enough to
+                // wrap early.
+                if (sb.Length > 0 && sb[sb.Length - 1] == ' ') sb.Length--;
+                sb.Append(c);
+                inWs = true;
             }
             else if (preserveBreaks
                 ? (c == ' ' || c == '\u0009' || c == '\u000C')

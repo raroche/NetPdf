@@ -2403,13 +2403,12 @@ grepping the ID).
     clause and still centers even when the margins go negative.
   - ~~**Percentage** `top`/`left`/`width`/`height`~~ — SHIPPED in
      (resolve against the CB inline / block extent).
-  - **`auto` width/height (true shrink-to-fit / content height)**
-     approximates an `auto` size NOT pinned by both insets as
-    the AVAILABLE extent (CB minus resolved insets + margins + chrome).
-    The pinned-both-insets case (fill) is EXACT. True shrink-to-fit
-    (inline) + content height (block) need intrinsic-size measurement
-    (the speculative-measure machinery TableLayouter uses) — a later
-    refinement. Per : when the end inset
+  - ~~**`auto` width/height (true shrink-to-fit / content height)**~~ — SHIPPED. An `auto` size NOT
+    pinned by both insets is content-based: the block axis uses the measured content height (RC-4) and
+    the inline axis the CSS 2.1 §10.3.7 shrink-to-fit width, `min(max-content, max(min-content,
+    available))`, measured by `BlockLayouter.MeasureAbsoluteShrinkToFitWidth` and passed to
+    `AbsoluteLayouter.ResolvePlacement(measuredInlineContentSize:)` (1.1.1 — the 05-payment-receipt
+    "PAID" stamp). The pinned-both-insets case (fill) is EXACT. Per : when the end inset
     (`right`/`bottom`) exceeds the CB and the available size goes
     negative, the size clamps to 0 but the END anchor is PRESERVED
     the box's start offset is recomputed from the end inset (a negative

@@ -1054,10 +1054,12 @@ public sealed class BlockInlineIntegrationTests
     public void Inline_block_with_non_visible_overflow_uses_the_bottom_margin_edge_baseline()
     {
         // CSS 2.2 §10.8.1 exception — an inline-block whose computed `overflow` is NOT `visible` takes
-        // its baseline from the BOTTOM MARGIN EDGE (the img-ish placement), not its last line box. So a
-        // visible-overflow inline-block is baseline-aligned (its outer line gets a per-line baseline),
-        // but a hidden-overflow one is img-ish (no per-line baseline on the outer line).
-        static bool OuterIsBaselineAligned(int overflowKeyword)
+        // its baseline from the BOTTOM MARGIN EDGE (the img-ish placement), not its last line box. So its
+        // bottom edge sits ON the outer line's baseline, while a visible-overflow inline-block aligns its
+        // own text baseline there and hangs below it. (Asserted on geometry: since the 2026-10 corpus
+        // review every baseline-aligned atomic — img-ish ones included — uses the max-ascent model, so
+        // "has a per-line baseline" no longer distinguishes the two.)
+        static double BottomBelowBaseline(int overflowKeyword)
         {
             var sink = new RecordingFragmentSink();
             using var resolver = new SyntheticShaperResolver();
@@ -1076,14 +1078,23 @@ public sealed class BlockInlineIntegrationTests
             var layoutCtx = new LayoutContext(ctx);
             using var br = new BreakResolver();
             layouter.AttemptLayout(ctx, ref layoutCtx, br, LayoutAttemptStrategy.Strict);
+            BoxFragment? outer = null, ib = null;
             foreach (var f in sink.Fragments)
-                if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null)
-                    return f.PerLineBaselineTopPx is { Count: > 0 } b && !double.IsNaN(b[0]);
-            throw new Xunit.Sdk.XunitException("no outer line fragment");
+            {
+                if (ReferenceEquals(f.Box, block) && f.InlineLayout is not null) outer = f;
+                if (ReferenceEquals(f.Box, inlineBlock) && f.InlineLayout is null) ib ??= f;
+            }
+            Assert.NotNull(outer);
+            Assert.NotNull(ib);
+            var baselines = outer!.Value.PerLineBaselineTopPx;
+            Assert.True(baselines is { Count: > 0 } && !double.IsNaN(baselines[0]), "expected a line baseline");
+            var baselineAbs = outer.Value.BlockOffset + baselines![0];
+            return ib!.Value.BlockOffset + ib.Value.BlockSize - baselineAbs;
         }
 
-        Assert.True(OuterIsBaselineAligned(0), "overflow:visible inline-block should align by its last line baseline");
-        Assert.False(OuterIsBaselineAligned(1), "overflow:hidden inline-block should use the bottom margin edge");
+        Assert.True(BottomBelowBaseline(0) > 0.5,
+            "overflow:visible inline-block aligns its LAST LINE baseline, so its bottom hangs below the outer baseline");
+        Assert.Equal(0.0, BottomBelowBaseline(1), precision: 2);   // overflow:hidden → bottom margin edge
     }
 
     [Fact]

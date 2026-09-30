@@ -1576,4 +1576,46 @@ public sealed class InlineLayouterCycle3dTests
         public HbShaper Resolve(ComputedStyle style) => _shaper;
         public void Dispose() => _shaper.Dispose();
     }
+
+    // ── CSS Text L3 §4.1.2 — spaces around a forced line break (`<br>` is injected as U+2028) ──
+
+    [Theory]
+    [InlineData(false)]   // white-space: normal
+    [InlineData(true)]    // white-space: nowrap
+    public void Forced_break_drops_the_spaces_around_it_across_runs(bool noWrap)
+    {
+        var mode = noWrap ? WhiteSpace.NoWrap : WhiteSpace.Normal;
+        // "1420 Marina Boulevard<br>\n        Apt 7C" — pre-fix the source newline + indentation after the
+        // <br> survived as a leading space (" Apt 7C"), and the space before it stayed at the line end.
+        var runs = new List<TextRun>
+        {
+            new("Line one \n  ", MakeStyle()),
+            new("\u2028", MakeStyle()),
+            new("\n      Line two", MakeStyle()),
+        };
+        var perRun = LineBuilder.PreprocessTextRunsPerRun(runs, new[] { mode, mode, mode });
+        var uniform = LineBuilder.PreprocessTextRuns(runs, mode);
+        foreach (var output in new[] { perRun, uniform })
+        {
+            Assert.Equal("Line one", output[0].Text);
+            Assert.Equal("\u2028", output[1].Text);
+            Assert.Equal("Line two", output[2].Text);
+        }
+    }
+
+    [Fact]
+    public void Forced_break_drops_the_spaces_around_it_within_one_run()
+    {
+        var runs = new List<TextRun> { new("A \u2028   B", MakeStyle()) };
+        Assert.Equal("A\u2028B", LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal)[0].Text);
+    }
+
+    [Fact]
+    public void Preserved_spaces_before_a_forced_break_are_kept()
+    {
+        // white-space: pre keeps its spaces; only collapsible spaces are removed at a line end.
+        var runs = new List<TextRun> { new("A  ", MakeStyle()), new("\u2028", MakeStyle()) };
+        var output = LineBuilder.PreprocessTextRunsPerRun(runs, new[] { WhiteSpace.Pre, WhiteSpace.Normal });
+        Assert.Equal("A  ", output[0].Text);
+    }
 }

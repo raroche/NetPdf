@@ -2487,24 +2487,29 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             maxs[i] = max;
         }
 
-        // CSS Flexbox L1 §4.5 — `min-width: auto` on a flex item is its AUTOMATIC minimum size, not 0: a
-        // shrinking item stops at its min-content (longest word), so `justify-content: space-between`
-        // label/value rows overflow the container instead of squeezing the label under the value (the
-        // 01-cruise "Email" row). It only matters when the line must SHRINK, so it is measured only then.
+        // CSS Flexbox L1 §4.5 — `min-width: auto` on a flex item is its AUTOMATIC minimum size, not 0: an
+        // item stops at its min-content (longest word), so `justify-content: space-between` label/value
+        // rows overflow the container instead of squeezing the label under the value, and `flex: 1`
+        // columns are not made narrower than their content (the 01-cruise "Email" card widens, like a
+        // browser, so the address fits). The min-content measure is a nested layout, so it runs only where
+        // the floor can bind: every item when the line SHRINKS, else only items whose flex base size is a
+        // definite length / percentage (e.g. `flex: 1` = `0%`) — a content-based base size is already at
+        // least its min-content and only grows.
         if (automaticMinimumContentSize is not null && double.IsFinite(containerDefiniteMainSize))
         {
             var sumHypothetical = 0.0;
             for (var i = 0; i < itemCount; i++) sumHypothetical += hypotheticals[i];
-            if (containerMainSize - mainGutterTotal - sumHypothetical < 0)
+            var lineShrinks = containerMainSize - mainGutterTotal - sumHypothetical < 0;
+            for (var i = 0; i < itemCount; i++)
             {
-                for (var i = 0; i < itemCount; i++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var automatic = AutomaticMinimumMainSize(
-                        lineItems[i], mainSizeProperty, minSizeProperty, maxs[i],
-                        containerDefiniteMainSize, automaticMinimumContentSize);
-                    if (automatic > mins[i]) mins[i] = automatic;
-                }
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!lineShrinks && lineItems[i].Style.ReadFlexBasis().Kind
+                        is not (FlexBasisKind.LengthPx or FlexBasisKind.Percentage))
+                    continue;
+                var automatic = AutomaticMinimumMainSize(
+                    lineItems[i], mainSizeProperty, minSizeProperty, maxs[i],
+                    containerDefiniteMainSize, automaticMinimumContentSize);
+                if (automatic > mins[i]) mins[i] = automatic;
             }
         }
 

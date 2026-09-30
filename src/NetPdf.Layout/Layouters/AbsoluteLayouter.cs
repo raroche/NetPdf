@@ -22,16 +22,14 @@ namespace NetPdf.Layout.Layouters;
 /// end inset" rule (LTR / top-to-bottom), and auto-margin centering.
 /// Border + padding are folded into the box-model chrome.</para>
 ///
-/// <para><b>Two documented approximations</b> (need machinery beyond
-/// this pure solver):</para>
+/// <para><b>Content-based sizes are measured by the caller.</b> When a size is <c>auto</c> and NOT
+/// pinned by both insets, the spec uses shrink-to-fit (inline, CSS 2.1 §10.3.7) / content height
+/// (block, §10.6.4). This pure solver takes both as caller-measured inputs
+/// (<c>measuredInlineContentSize</c> / <c>measuredBlockContentSize</c>, measured by the BlockLayouter);
+/// without them it falls back to the AVAILABLE extent. For the pinned-both-insets case the result is
+/// fill, which is exact.</para>
+/// <para><b>One documented approximation:</b></para>
 /// <list type="bullet">
-///   <item><b>Shrink-to-fit / content height</b> — when a size is
-///   <c>auto</c> and NOT pinned by both insets, the spec uses
-///   shrink-to-fit (inline) / content height (block), which need
-///   intrinsic-size measurement. Cycle 2b approximates as the
-///   AVAILABLE extent (CB minus the resolved inset(s) + margins +
-///   chrome). For the common pinned-both-insets case the result is
-///   EXACT (= fill).</item>
 ///   <item><b>Static position</b> — when both insets on an axis are
 ///   <c>auto</c>, the spec uses the box's normal-flow static position.
 ///   Cycle 2b approximates as the CB content origin (offset 0), which
@@ -55,7 +53,11 @@ internal static class AbsoluteLayouter
         Box box, AbsoluteContainingBlock cb,
         // RC-4 — the CONTENT block extent for an auto-height box, pre-measured by the caller at the
         // resolved content-inline size. NaN = not supplied → the legacy available-extent approximation.
-        double measuredBlockContentSize = double.NaN)
+        double measuredBlockContentSize = double.NaN,
+        // CSS 2.1 §10.3.7 shrink-to-fit — the CONTENT inline size of an auto-width box that is not pinned
+        // by both left + right, measured by the caller (min(max-content, max(min-content, available))).
+        // NaN = not supplied → the available-extent approximation.
+        double measuredInlineContentSize = double.NaN)
     {
         var style = box.Style;
 
@@ -73,7 +75,8 @@ internal static class AbsoluteLayouter
             paddingEnd: ReadPxOrPct(style, PropertyId.PaddingRight, cb.InlineSize),
             borderEnd: style.ReadLengthPxOrZero(PropertyId.BorderRightWidth),
             cbExtent: cb.InlineSize,
-            isInlineAxis: true);
+            isInlineAxis: true,
+            measuredContentSize: measuredInlineContentSize);
 
         // Block axis: top = inset-start, bottom = inset-end, height =
         // size. Per CSS 2.1 percentage top/bottom/height resolve against
@@ -194,13 +197,14 @@ internal static class AbsoluteLayouter
 
         if (sizeAuto)
         {
-            // Size auto → shrink-to-fit (inline) / content height (block). RC-4 — for the BLOCK axis a
-            // caller-supplied `measuredContentSize` (the box's pre-measured content height) is the CSS
-            // 2.1 §10.6.4 used height for a SINGLE-anchored box; without it the legacy approximation used
-            // the AVAILABLE extent, so a `position:fixed; bottom:0; height:auto` footer's height (and its
-            // background) exploded to the FULL page and painted over everything. The `fill` case (both
-            // insets) genuinely fills, so it never uses the measured size.
-            var useMeasured = !isInlineAxis && !double.IsNaN(measuredContentSize);
+            // Size auto → shrink-to-fit (inline) / content height (block). A caller-supplied
+            // `measuredContentSize` is the used size for a box that is NOT pinned by both insets: the
+            // pre-measured content height on the block axis (RC-4, CSS 2.1 §10.6.4 — without it a
+            // `position:fixed; bottom:0; height:auto` footer exploded to the full page) and the
+            // shrink-to-fit content width on the inline axis (CSS 2.1 §10.3.7 — without it a
+            // `right: 22px` badge stretched across its whole containing block, the 05-payment-receipt
+            // PAID stamp). The `fill` case (both insets) genuinely fills, so it never uses it.
+            var useMeasured = !double.IsNaN(measuredContentSize);
             if (!startAuto && !endAuto)
             {
                 // Fill: both insets given → size = remaining space.
@@ -330,6 +334,14 @@ internal static class AbsoluteLayouter
 
     /// <summary>RC-4 — true when the box has an AUTO block size NOT pinned by BOTH top and bottom
     /// (single-anchored or all-auto). Only these need a content-height pre-measure.</summary>
+    /// <summary>CSS 2.1 §10.3.7 — whether an abspos / fixed box's WIDTH is shrink-to-fit: <c>width</c> is
+    /// auto and the box is not pinned by BOTH <c>left</c> and <c>right</c> (that case fills).</summary>
+    public static bool NeedsAutoInlineShrinkToFit(Box box)
+    {
+        if (IsDefinite(box.Style, PropertyId.Width)) return false;
+        return !(IsDefinite(box.Style, PropertyId.Left) && IsDefinite(box.Style, PropertyId.Right));
+    }
+
     public static bool NeedsAutoBlockContentMeasure(Box box)
     {
         if (IsDefinite(box.Style, PropertyId.Height)) return false;

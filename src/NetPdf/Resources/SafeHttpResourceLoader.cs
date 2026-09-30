@@ -116,7 +116,16 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
         ArgumentNullException.ThrowIfNull(resolveHost);
         _policy = policy ?? SecurityPolicy.SafeDefault;
         _resolveHost = resolveHost;
-        var handler = new SocketsHttpHandler
+        _httpClient = new HttpClient(CreateHandler());
+    }
+
+
+    /// <summary>The hardened handler every fetch goes through. <see langword="internal"/> so the
+    /// security invariants on it (no auto-redirect, pinned connect, no ambient proxy) can be asserted
+    /// directly rather than inferred.</summary>
+    internal static SocketsHttpHandler CreateHandler()
+    {
+        return new SocketsHttpHandler
         {
             // Per PR #18 review #1 — disable auto-redirect; we walk
             // the chain manually + validate each hop.
@@ -124,12 +133,19 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
             // ConnectCallback intercepts the TCP connect so we can
             // validate the resolved IP before any bytes hit the wire.
             ConnectCallback = ValidatedConnect,
+            // Never route through an ambient proxy. SocketsHttpHandler honors HTTP_PROXY / HTTPS_PROXY /
+            // ALL_PROXY by default, and the IP pin below only holds if every connect goes straight to the
+            // address validated above. Through a proxy the handler would ask the callback to connect to the
+            // PROXY endpoint (so the pin would target the wrong port), and for https the proxy resolves the
+            // target hostname itself in its CONNECT tunnel — outside the blocklist entirely, re-opening the
+            // DNS-rebinding window the pin exists to close. A deployment that genuinely needs an egress
+            // proxy should plug in its own IResourceLoader.
+            UseProxy = false,
             // Tighter limits than HttpClient's defaults to keep adversarial
             // servers from holding connections open.
             ConnectTimeout = TimeSpan.FromSeconds(5),
             ResponseDrainTimeout = TimeSpan.FromSeconds(5),
         };
-        _httpClient = new HttpClient(handler);
     }
 
     /// <summary>Per Phase 5 contract — fetch a resource with full

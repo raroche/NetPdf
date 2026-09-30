@@ -334,10 +334,106 @@ public static class UriSafetyValidator
         if ((bytes[0] & 0xFE) == 0xFC) { reason = "unique-local"; return true; }
         // fe80::/10 — link-local.
         if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80) { reason = "link-local"; return true; }
+        // fec0::/10 — site-local (deprecated by RFC 3879, but still routed by some stacks). Same
+        // "internal network" meaning as fc00::/7, so it gets the same treatment.
+        if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0xC0) { reason = "site-local"; return true; }
         // ff00::/8 — multicast.
         if (bytes[0] == 0xFF) { reason = "multicast"; return true; }
 
+        // --- IPv6 forms that CARRY an IPv4 address -------------------------------------------------
+        //
+        // Every range below lets an attacker write an internal IPv4 target (10.x, 169.254.169.254, …) as
+        // an IPv6 literal that the IPv4 blocklist never sees. They were found by probing, not by
+        // assumption: before this block, `64:ff9b::a9fe:a9fe` (NAT64 for 169.254.169.254) and
+        // `2002:a9fe:a9fe::` (6to4 for the same) both validated as SAFE. The relevant one in practice is
+        // NAT64: on an IPv6-only cloud subnet with a NAT64 gateway, `64:ff9b::0a00:0001` really does reach
+        // the private VPC address 10.0.0.1. Where the embedding is standardized we extract the IPv4 and
+        // run the normal IPv4 checks, so a PUBLIC address reached through NAT64/6to4 still works; where it
+        // is not (local-use NAT64, Teredo) the range is blocked outright.
+        if (TryGetEmbeddedV4(bytes, out var embedded, out var form))
+        {
+            if (IPAddress.IsLoopback(embedded)) { reason = form + "-loopback"; return true; }
+            if (IsBlockedV4(embedded, out var embeddedReason)) { reason = form + "-" + embeddedReason; return true; }
+        }
+        // 64:ff9b:1::/48 — local-use NAT64 (RFC 8215). The operator chooses where the IPv4 bits sit, so
+        // they cannot be extracted reliably; nothing a document legitimately loads lives here.
+        if (bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xFF && bytes[3] == 0x9B
+            && bytes[4] == 0x00 && bytes[5] == 0x01)
+        {
+            reason = "nat64-local-use"; return true;
+        }
+        // 2001::/32 — Teredo (RFC 4380). The client IPv4 is obfuscated and the server IPv4 is an
+        // arbitrary relay, so neither is a trustworthy "real destination". Block the tunnel outright.
+        if (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x00 && bytes[3] == 0x00)
+        {
+            reason = "teredo"; return true;
+        }
+        // 100::/64 — discard-only (RFC 6666). Never a real resource.
+        if (bytes[0] == 0x01 && bytes[1] == 0x00)
+        {
+            var discard = true;
+            for (var i = 2; i < 8; i++) { if (bytes[i] != 0) { discard = false; break; } }
+            if (discard) { reason = "discard-only"; return true; }
+        }
+
         reason = "";
+        return false;
+    }
+
+    /// <summary>Extract the IPv4 address from the IPv6 forms that embed one at a FIXED, standardized
+    /// position: IPv4-compatible <c>::a.b.c.d</c> (RFC 4291 §2.5.5.1, deprecated), IPv4-translated
+    /// <c>::ffff:0:a.b.c.d</c> (RFC 2765), well-known-prefix NAT64 <c>64:ff9b::a.b.c.d</c> (RFC 6052), and
+    /// 6to4 <c>2002:aabb:ccdd::</c> (RFC 3056). IPv4-mapped <c>::ffff:a.b.c.d</c> is handled separately
+    /// by the caller.</summary>
+    private static bool TryGetEmbeddedV4(byte[] b, out IPAddress v4, out string form)
+    {
+        // 6to4 — 2002::/16, IPv4 in bytes 2..5.
+        if (b[0] == 0x20 && b[1] == 0x02)
+        {
+            v4 = new IPAddress(new[] { b[2], b[3], b[4], b[5] });
+            form = "6to4";
+            return true;
+        }
+
+        // NAT64 well-known prefix — 64:ff9b::/96, IPv4 in bytes 12..15.
+        if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B)
+        {
+            var restZero = true;
+            for (var i = 4; i < 12; i++) { if (b[i] != 0) { restZero = false; break; } }
+            if (restZero)
+            {
+                v4 = new IPAddress(new[] { b[12], b[13], b[14], b[15] });
+                form = "nat64";
+                return true;
+            }
+        }
+
+        // The ::/80 family: first 10 bytes zero.
+        var first10Zero = true;
+        for (var i = 0; i < 10; i++) { if (b[i] != 0) { first10Zero = false; break; } }
+        if (first10Zero)
+        {
+            // IPv4-compatible ::a.b.c.d — bytes 10..11 also zero. (:: and ::1 were handled by the caller.)
+            if (b[10] == 0 && b[11] == 0)
+            {
+                v4 = new IPAddress(new[] { b[12], b[13], b[14], b[15] });
+                form = "v4-compatible";
+                return true;
+            }
+        }
+
+        // IPv4-translated ::ffff:0:a.b.c.d — bytes 0..7 zero, 8..9 = ffff, 10..11 zero.
+        var first8Zero = true;
+        for (var i = 0; i < 8; i++) { if (b[i] != 0) { first8Zero = false; break; } }
+        if (first8Zero && b[8] == 0xFF && b[9] == 0xFF && b[10] == 0 && b[11] == 0)
+        {
+            v4 = new IPAddress(new[] { b[12], b[13], b[14], b[15] });
+            form = "v4-translated";
+            return true;
+        }
+
+        v4 = IPAddress.None;
+        form = "";
         return false;
     }
 

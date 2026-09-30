@@ -6,6 +6,10 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 Post-`1.1.0` improvements accumulate here until the next release is cut.
 
+### Security
+- **SSRF: IPv6 forms that embed an IPv4 address are now blocked.** NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), IPv4-compatible (`::a.b.c.d`) and IPv4-translated (`::ffff:0:a.b.c.d`) addresses are checked against the IPv4 blocklist, so `64:ff9b::a9fe:a9fe` can no longer reach `169.254.169.254`. Local-use NAT64, Teredo, site-local (`fec0::/10`) and discard-only (`100::/64`) ranges are blocked outright. Public addresses reached through NAT64 or 6to4 keep working. Only affects deployments that enable `http`/`https` fetching; the default policies do not.
+- **The built-in HTTP loader ignores ambient proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`). Routing through a proxy bypassed the loader's pinned-IP connect, which is its defense against DNS rebinding. Deployments that need an egress proxy should supply their own `IResourceLoader`.
+
 ## [1.1.0]
 
 A minor dependency refresh release that resolves the current AngleSharp vulnerability warning, consolidates the compatible open Dependabot runtime/test-tooling/CI action updates, and migrates code away from SkiaSharp APIs newly obsolete in SkiaSharp 4.x.

@@ -432,7 +432,7 @@ public sealed class GridShorthandProductionTests
     // =====================================================================
 
     [Fact]
-    public async Task Important_longhand_before_shorthand_within_rule_known_gap()
+    public async Task Important_longhand_before_shorthand_within_rule_wins()
     {
         // KNOWN-GAP per PR-#91 review F3 — within-rule edge case.
         // Per CSS Cascade §5 + §7.4 an !important longhand should beat
@@ -462,9 +462,12 @@ public sealed class GridShorthandProductionTests
         var item = await FindBoxByClassAsync(html, "item");
         // Shorthand sets start=2.
         Assert.Equal(2, item.Style.ReadGridRowStart().LineNumber);
-        // Cycle-0c behavior: end=4 (= AngleSharp's dedup discarded the
-        // important 6). Spec-correct: end=6. Flip when the deferral lands.
-        Assert.Equal(4, item.Style.ReadGridRowEnd().LineNumber);
+        // Spec-correct: end=6 — the !important longhand beats the later normal shorthand (CSS
+        // Cascade §5 + §7.4). This was pinned at 4 as a KNOWN GAP because AngleSharp.Css
+        // 1.0.0-beta.144's per-rule dedup discarded the important `grid-row-end: 6` before NetPdf
+        // ever saw it. AngleSharp.Css 1.1.x keeps it, so the gap closed upstream with no engine
+        // change; the test is flipped exactly as its own note said to.
+        Assert.Equal(6, item.Style.ReadGridRowEnd().LineNumber);
     }
 
     [Fact]

@@ -1094,7 +1094,10 @@ internal static class CssParserAdapter
     private static ImmutableArray<CssDeclaration> AdaptProperties(IEnumerable<ICssProperty> properties)
     {
         var output = ImmutableArray.CreateBuilder<CssDeclaration>();
-        foreach (var property in properties)
+        // Materialized once: the single-value-gap repair below needs to look at a SIBLING declaration
+        // (row-gap) that AngleSharp may emit after the one being repaired (column-gap).
+        var list = properties as IReadOnlyList<ICssProperty> ?? new List<ICssProperty>(properties);
+        foreach (var property in list)
         {
             if (property is null || string.IsNullOrEmpty(property.Name)) continue;
             // RC-13 — skip EMPTY-valued declarations, but ONLY for standard properties. AngleSharp expands
@@ -1113,7 +1116,30 @@ internal static class CssParserAdapter
             // removing an authored custom-property declaration (whose empty token stream is valid and must
             // reach VarResolver) should that upstream behavior change.
             var isCustomProperty = property.Name.StartsWith("--", StringComparison.Ordinal);
-            if (!isCustomProperty && string.IsNullOrWhiteSpace(property.Value)) continue;
+            if (!isCustomProperty && string.IsNullOrWhiteSpace(property.Value))
+            {
+                // AngleSharp.Css 1.1.x expands a SINGLE-value `gap: 20px` (and the legacy
+                // `grid-gap: 20px`) into `row-gap: 20px` + an EMPTY `column-gap`, instead of repeating
+                // the value as CSS Box Alignment L3 §8.3 requires ("if <column-gap> is omitted, it is
+                // set to the same value as <row-gap>"). 1.0.0-beta.144 got this right. Dropping the
+                // empty longhand (the rule above) would silently lose the column gap — the main-axis
+                // gap of every row flex container and every grid using the one-value form. Repair it
+                // from the sibling row gap, carrying that declaration's importance.
+                //
+                // Safe because an empty standard longhand is never authored CSS — it only ever comes
+                // out of shorthand expansion. And a `gap: var(--g)` expansion leaves row-gap empty too,
+                // so this does not fire there; the var() recovery path handles that case as before.
+                var twin = SingleValueGapTwin(property.Name, list);
+                if (twin is not null)
+                {
+                    output.Add(new CssDeclaration(
+                        Property: property.Name,
+                        Value: new CssValue(twin.Value!),
+                        IsImportant: twin.IsImportant,
+                        Location: CssSourceLocation.Unknown));
+                }
+                continue;
+            }
             output.Add(new CssDeclaration(
                 Property: property.Name,
                 Value: new CssValue(property.Value ?? string.Empty),
@@ -1123,6 +1149,29 @@ internal static class CssParserAdapter
         return output.Count == 0
             ? ImmutableArray<CssDeclaration>.Empty
             : output.ToImmutable();
+    }
+
+    /// <summary>For an empty <c>column-gap</c> / <c>grid-column-gap</c>, returns the non-empty
+    /// <c>row-gap</c> / <c>grid-row-gap</c> declaration in the same block (the value a single-value
+    /// <c>gap</c> shorthand should have given both), or <see langword="null"/> if there is none.</summary>
+    private static ICssProperty? SingleValueGapTwin(string name, IReadOnlyList<ICssProperty> list)
+    {
+        string? rowName =
+            string.Equals(name, "column-gap", StringComparison.OrdinalIgnoreCase) ? "row-gap"
+            : string.Equals(name, "grid-column-gap", StringComparison.OrdinalIgnoreCase) ? "grid-row-gap"
+            : null;
+        if (rowName is null) return null;
+        for (var i = 0; i < list.Count; i++)
+        {
+            var candidate = list[i];
+            if (candidate is not null
+                && string.Equals(candidate.Name, rowName, StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(candidate.Value))
+            {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private static string NameFromType(ICssRule rule)

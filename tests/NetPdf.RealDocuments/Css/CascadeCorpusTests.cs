@@ -202,12 +202,46 @@ public sealed class CascadeCorpusTests
         var result = CascadeResolver.Resolve(document, sheets,
             CssMediaContext.DefaultPrint, sink);
 
-        // Outer p { color: red } applies. The @layer body's inner rule does not (v1 gap).
+        // AngleSharp.Css 1.1.x decomposes the @layer body, so the layered rule now reaches the cascade
+        // (under 1.0.0-beta.144 it arrived as an opaque RawBody and was dropped with
+        // CSS-AT-RULE-UNKNOWN-001). It must lose to the UNLAYERED rule: per CSS Cascade L5 §6.4,
+        // normal declarations in any layer rank below unlayered normal declarations — even though the
+        // layered rule comes later in source order.
         var p = document.QuerySelector("p")!;
-        Assert.NotNull(result.TryGetStylesFor(p)?.GetWinner("color"));
-        // Diagnostic emitted for the opaque @layer body.
-        Assert.Contains(sink.Diagnostics,
+        var winner = result.TryGetStylesFor(p)?.GetWinner("color");
+        Assert.NotNull(winner);
+        Assert.Equal("rgba(255, 0, 0, 1)", winner!.Declaration.Value.RawText); // red; AngleSharp normalizes to rgba()
+        // The body is no longer opaque, so the "preserved but not applied" diagnostic is gone.
+        Assert.DoesNotContain(sink.Diagnostics,
             d => d.Code == CssDiagnosticCodes.CssAtRuleUnknown001);
+    }
+
+    [Fact]
+    public async Task Container_children_are_skipped_even_when_decomposed()
+    {
+        // AngleSharp.Css 1.1.x parses @container as a grouping rule and hands the cascade REAL child
+        // rules (1.0.0-beta.144 dropped the body entirely). A naive "walk every grouping rule" would
+        // therefore start applying container-query styles UNCONDITIONALLY. v1 does not evaluate
+        // container queries, so the children must stay skipped and the diagnostic must still fire.
+        var html = """
+            <html><head><style>
+              p { color: green; }
+              @container (min-width: 1px) {
+                p { color: red; }
+              }
+            </style></head><body><p>x</p></body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var sink = new CapturingSink();
+        var result = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint, sink);
+
+        var p = document.QuerySelector("p")!;
+        Assert.Equal("rgba(0, 128, 0, 1)", result.TryGetStylesFor(p)!.GetWinner("color")!.Declaration.Value.RawText); // green; AngleSharp normalizes to rgba()
+        Assert.Contains(sink.Diagnostics,
+            d => d.Code == CssDiagnosticCodes.CssContainerQueryUnsupported001);
     }
 
     private static string LoadCorpusFile(string relativePath)

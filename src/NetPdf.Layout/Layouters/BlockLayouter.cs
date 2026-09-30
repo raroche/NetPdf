@@ -266,6 +266,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     // return when it was a resumed entry; the parent consumes it for the cursor advance. -1 = unset.
     private double _resumedContainerEmittedExtent = -1;
 
+    /// <summary>Set when the nested recursion reported <c>PAGINATION-FORCED-OVERFLOW-001</c> for an oversized
+    /// descendant, so the top-level forced-overflow path doesn't report the same overflow again for the
+    /// wrapper that contains it. Reset before each forced-overflow recursion.</summary>
+    private bool _nestedForcedOverflowReported;
+
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — optional
     /// inline shaper resolver. When non-null, <see cref="AttemptLayout"/>
     /// dispatches block containers whose children are entirely
@@ -2744,7 +2749,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // subtree-aware measure. Now reports both own
                     // border-box size + measured subtree extent so
                     // consumers can distinguish the two cases.
-                    OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
+                    var forcedOverflowDiagnostic = new PaginateDiagnostic(
                         PaginateDiagnosticCodes.PaginationForcedOverflow001,
                         $"BlockLayouter: forced overflow on fragmentainer page index "
                         + $"{fragmentainer.PageIndex}, child index {childIdx} — "
@@ -2753,7 +2758,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         + $"{subtreeBlockExtent:0.##}) is taller than the "
                         + $"fragmentainer (block-size={fragmentainer.BlockSize:0.##}). "
                         + "Committed anyway to make pagination progress.",
-                        PaginateDiagnosticSeverity.Warning));
+                        PaginateDiagnosticSeverity.Warning);
+                    // A WRAPPER whose own box fits the page but whose subtree doesn't (the ubiquitous
+                    // `<div class="page">…everything…</div>`) is committed here only to be ENTERED: the
+                    // recursion / flex dispatch below splits its children across pages normally, so nothing
+                    // is actually forced past the page edge. Reporting the diagnostic up front fired it on
+                    // EVERY page of every wrapped document. Defer it for an enterable block-flow / flex
+                    // wrapper and report only if the content really didn't paginate (no continuation came
+                    // back); a box whose OWN border box is taller than the page, a table, or a grid still
+                    // reports immediately.
+                    var deferForcedOverflowDiagnostic = borderBoxBlockSize <= fragmentainer.BlockSize
+                        && pendingTableLayouter is null
+                        && !IsGridContainer(child)
+                        && (IsFlexContainer(child) || IsBlockFlowContainerOwnedByBlockLayouter(child));
+                    if (!deferForcedOverflowDiagnostic)
+                    {
+                        OptimizingBreakResolver.SafeEmit(diagSink, forcedOverflowDiagnostic);
+                    }
                     // First block on the (possibly resumed) page →
                     // topShift = effectiveTopGap = marginStart; no
                     // collapse-arithmetic needed.
@@ -2862,6 +2883,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
                         pendingTableLayouter?.Dispose();
 
+                        var forcedFlexPaginated = forcedFlexResult.Outcome == LayoutAttemptOutcome.PageComplete
+                            && forcedFlexResult.Continuation is FlexContinuation;
+                        if (deferForcedOverflowDiagnostic && !forcedFlexPaginated)
+                        {
+                            OptimizingBreakResolver.SafeEmit(diagSink, forcedOverflowDiagnostic);
+                        }
                         if (forcedFlexResult.Outcome == LayoutAttemptOutcome.PageComplete
                             && forcedFlexResult.Continuation is FlexContinuation forcedFlexCont)
                         {
@@ -2970,6 +2997,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         forcedRecIncoming = forcedDeeperBlock;
                         _consumedIncomingBlockContinuationRecursion = true;
                     }
+                    // Reset the resumed-extent channel so the check below reads THIS wrapper's value, and the
+                    // nested-report flag so an oversized descendant reported by the recursion isn't reported
+                    // a second time for its wrapper.
+                    _resumedContainerEmittedExtent = -1;
+                    _nestedForcedOverflowReported = false;
                     var forcedNestedRet = EmitBlockSubtreeRecursive(
                         child,
                         parentBlockOffset: forcedOverflowChildBlockOffset,
@@ -2981,6 +3013,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         propagatingFragmentainer: fragmentainer,
                         incomingContinuation: forcedRecIncoming,
                         parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
+                    if (deferForcedOverflowDiagnostic && forcedNestedRet is not BlockContinuation)
+                    {
+                        // No break came back: the wrapper finished on this page. On a RESUMED page (its
+                        // earlier children went to prior pages) the recursion publishes the extent it
+                        // actually emitted here — the measured subtree extent still counts the prior pages,
+                        // so the last page of every wrapped document looked "overflowing". Report only when
+                        // what was emitted really runs past the page.
+                        var emittedExtent = _resumedContainerEmittedExtent >= 0
+                            ? _resumedContainerEmittedExtent
+                            : subtreeBlockExtent;
+                        if (!_nestedForcedOverflowReported
+                            && forcedOverflowChildBlockOffset + emittedExtent > fragmentainer.BlockSize + 0.5)
+                        {
+                            OptimizingBreakResolver.SafeEmit(diagSink, forcedOverflowDiagnostic);
+                        }
+                    }
                     if (forcedNestedRet is BlockContinuation forcedDeep)
                     {
                         return LayoutAttemptResult.PageComplete(
@@ -4417,16 +4465,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         if (child.Children.Count > 0
             && placement.InlineSize > 0 && placement.BlockSize > 0)
         {
-            // Abspos content pagination (overflow past the box block-size)
-            // is a pre-existing behavior outside this cycle's scope — the
-            // box-sized fragmentainer paginates + the result is discarded.
+            // An abspos box is not fragmented, so content taller than the box OVERFLOWS it (CSS
+            // `overflow: visible`) exactly like a fixed box — lay it out in one pass with pagination
+            // suppressed. Pre-fix the box-sized inner fragmentainer PAGINATED and the continuation was
+            // discarded: content past the first break was silently dropped, and a short box (e.g. 1px
+            // tall) reported a spurious PAGINATION-FORCED-OVERFLOW-001 from the nested pass.
             DispatchAbsoluteChildContents(
                 child,
                 placement.InlineOffset,
                 placement.BlockOffset,
                 placement.InlineSize,
                 placement.BlockSize,
-                noPaginate: false,
+                noPaginate: true,
                 ref layout,
                 cancellationToken);
         }
@@ -4609,8 +4659,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// in one pass + OVERFLOWS the box at its natural position (CSS
     /// `overflow: visible`; CSS Position L3 §6.3 — fixed boxes are not
     /// paginated) rather than being clipped. The abspos caller passes
-    /// <c>noPaginate: false</c> (it paginates + discards the result —
-    /// a separate pre-existing item).</para></summary>
+    /// <c>noPaginate: true</c> too: an abspos box is not fragmented either,
+    /// and paginating its content into the box-sized fragmentainer dropped
+    /// everything past the first break (the continuation was discarded).</para></summary>
     /// <summary>RC-4 — for an AUTO-block-size single-anchored abspos / fixed box, re-solve its placement
     /// using the box's MEASURED content height instead of the available-extent approximation, so the box
     /// (and its background) is content-sized rather than page-sized. A no-op for a definite height, a
@@ -4807,8 +4858,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // text (index.pdf's footer text was missing on every page).
             layoutRootInlineContent: true);
         // The result is intentionally not consumed: with pagination
-        // suppressed (fixed) the content fully overflows in one pass; the
-        // abspos path (noPaginate:false) discards it as before.
+        // suppressed (fixed AND abspos) the content fully lays out — and
+        // overflows the box if taller — in one pass.
         _ = innerLayouter.AttemptLayout(
             innerFragmentainer,
             ref innerLayout,
@@ -6336,6 +6387,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var emittedChildBlockSize = ResolveAutoHeightEmittedBlockSize(
                 child, childBorderBoxBlockSize, childEffectiveBlockSize,
                 childBlockOffset, _capturedFragmentainer);
+            // A nested box whose OWN border box is taller than a whole page (an explicit `height`, a tall
+            // replaced image) cannot fit any page: it really is forced past the page edge, so report it
+            // here. (The top-level loop no longer reports the wrapper that merely CONTAINS such content —
+            // that fired on every page of every wrapped document.) An auto-height container's border box
+            // is chrome-only here, so wrappers never trip it; flex / grid / table / multicol size and
+            // paginate their own content.
+            if (propagatingFragmentainer is { SuppressBlockPagination: false } overflowPf
+                && childBorderBoxBlockSize > overflowPf.BlockSize + 0.5
+                && !IsFlexContainer(child) && !IsGridContainer(child)
+                && child.Kind is not (BoxKind.Table or BoxKind.InlineTable))
+            {
+                _nestedForcedOverflowReported = true;
+                OptimizingBreakResolver.SafeEmit(_capturedDiagSink ?? _diagnostics, new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                    $"BlockLayouter: forced overflow on fragmentainer page index {overflowPf.PageIndex}, "
+                    + $"nested child index {childIdx} — block or subtree visual extent (own border-box="
+                    + $"{childBorderBoxBlockSize:0.##}, subtree extent={childEffectiveBlockSize:0.##}) is "
+                    + $"taller than the fragmentainer (block-size={overflowPf.BlockSize:0.##}). "
+                    + "Committed anyway to make pagination progress.",
+                    PaginateDiagnosticSeverity.Warning));
+            }
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: childInlineOffset,
@@ -11671,9 +11743,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // extent + the wrapper overflows + (paginatable-flex) pagination engages. Mirrors
             // grid's content-aware PreMeasureGridRowExtent. Explicit-height items keep their
             // (box-sizing-mapped) declared height. Skipped without a shaper.
+            // §4.5 — an item flexed from a length / % basis (`flex: 1`) with auto height and auto
+            // min-height can't shrink below its content either, so it measures like a content-sized item
+            // (the FlexLayouter emission grows it to the same content height).
             if (_shaperResolver is not null
                 && item.Children.Count > 0
-                && IsColumnHeightContentDetermined(item))
+                && (IsColumnHeightContentDetermined(item) || FlexLayouter.HasColumnContentAutomaticMinimum(item)))
             {
                 // Measure at the item's cross (inline) CONTENT width: a stretch (auto-width)
                 // item fills the container content inline size; an explicit-width item uses

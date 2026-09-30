@@ -1315,8 +1315,12 @@ grepping the ID).
     01-cruise "Email" row): when a line has to shrink, `ResolveFlexLineMainSizes` floors each item with
     an auto min and visible overflow at its min-content (the content size suggestion, measured lazily by
     `FlexLayouter.CreateRowAutomaticMinimumProvider`), capped by a definite `width` and by `max-width`.
-    Emission and the BlockLayouter pre-measure share the provider. Still approximated: the COLUMN main
-    axis (`min-height: auto` stays 0) and the transferred-size suggestion (aspect-ratio items).
+    Emission and the BlockLayouter pre-measure share the provider. The COLUMN main axis applies it too
+    (1.1.2): an item with auto `height` + `min-height` and visible overflow is grown to its measured
+    content height after the content pass (`HasColumnContentAutomaticMinimum`, shared with
+    `PreMeasureFlexMainExtent`), and an item's content is measured with pagination suppressed when its
+    budget is the item's own size, so content overflows instead of being dropped. Still approximated:
+    the transferred-size suggestion (aspect-ratio items).
     Percentage min/max-width resolve against the container main size.
   - **Shared `FlexItemSizing` model unification** (
     architecture recommendation): the

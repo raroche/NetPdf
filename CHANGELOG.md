@@ -6,6 +6,11 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 Post-`1.1.1` improvements accumulate here until the next release is cut.
 
+### Fixed
+- **Flex items no longer lose content when flexed below it.** A `flex: 1` item in a column flexbox (for example the feature list inside a card) could be flexed to almost no height; its content was then laid out into that tiny space and everything after the first line was silently dropped. A column item with `height: auto` and `min-height: auto` now keeps at least its content height (CSS Flexbox §4.5), and an item's content never paginates inside a fixed-size item — it overflows it, as in a browser.
+- **Absolutely positioned content taller than its box is no longer cut.** It overflows the box (CSS `overflow: visible`) instead of keeping only what fitted before the first "page break" inside the box.
+- **`PAGINATION-FORCED-OVERFLOW-001` is reported only for real overflows.** A document whose content sits in one wrapper element reported it on every page; it is now reported once per box that is actually taller than a page.
+
 ## [1.1.1]
 
 A patch release: layout fixes found in a visual review of real travel documents against a browser. No public API changes.

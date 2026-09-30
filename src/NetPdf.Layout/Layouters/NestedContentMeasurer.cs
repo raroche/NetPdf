@@ -89,7 +89,13 @@ internal static class NestedContentMeasurer
         // paint) but SKIPS its own abspos emission pass. FlexLayouter's flushed item-content buffer sets
         // it: FlexLayouter is not an abspos delegation boundary, so a flex item's abspos descendants are
         // owned by the TOP-LEVEL pass. Grid / table nested layouts leave it false (they own their abspos).
-        bool suppressOutOfFlowEmission = false)
+        bool suppressOutOfFlowEmission = false,
+        // When the block budget is the BOX'S OWN definite size (a fixed-height flex item, not a page), its
+        // content must OVERFLOW the box (CSS `overflow: visible`), never paginate: a paginated nested pass
+        // commits the first fragment and the continuation is discarded, silently DROPPING the rest (the
+        // 02-travel-quote cards showed only their first list item). Default false keeps page budgets
+        // (row-nowrap intra-item pagination) paginating.
+        bool suppressPagination = false)
     {
         // Recursion-depth budget — ONLY for speculative (non-Layout) measures: a Layout pass FLUSHES
         // its buffer into the final tree, so capping it would silently DROP real content (PR #218
@@ -114,7 +120,10 @@ internal static class NestedContentMeasurer
         var innerBlockSize = Math.Max(blockBudget, 1);
         var innerFragmentainer = new FragmentainerContext(
             contentInlineSize: innerInlineSize,
-            blockSize: innerBlockSize);
+            blockSize: innerBlockSize)
+        {
+            SuppressBlockPagination = suppressPagination,
+        };
         var innerLayout = new LayoutContext(innerFragmentainer)
         {
             WritingMode = writingMode,

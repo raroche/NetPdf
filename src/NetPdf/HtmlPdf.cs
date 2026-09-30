@@ -132,19 +132,23 @@ public static class HtmlPdf
     }
 
     /// <summary>
-    /// Run the render pipeline, applying <see cref="HtmlPdfOptions.Timeout"/> as a hard cap.
+    /// Run the render pipeline, applying the effective timeout as a hard cap: an explicit
+    /// <see cref="HtmlPdfOptions.Timeout"/> wins, else the policy's
+    /// <see cref="SecurityPolicy.RenderTimeout"/>. <see cref="Timeout.InfiniteTimeSpan"/> means no cap.
     /// A linked <see cref="CancellationTokenSource"/> combines the caller's <paramref name="ct"/>
     /// with the timeout; when the timeout fires (and the caller did not itself cancel) the
     /// resulting <see cref="OperationCanceledException"/> is surfaced as a
-    /// <see cref="TimeoutException"/>, while caller cancellation propagates as
-    /// <see cref="OperationCanceledException"/>. A non-positive timeout cancels immediately
-    /// (so <see cref="TimeSpan.Zero"/> fails fast). When the timeout is <see langword="null"/>
-    /// the caller token is used unchanged.
+    /// <see cref="TimeoutException"/>, while caller cancellation, and any cancellation the timer did not
+    /// cause, propagates as <see cref="OperationCanceledException"/>. A non-positive timeout cancels immediately
+    /// (so <see cref="TimeSpan.Zero"/> fails fast). When there is no effective timeout the caller
+    /// token is used unchanged.
     /// </summary>
     private static async ValueTask<PdfRenderPipeline.RenderOutcome> RenderWithTimeoutAsync(
         string html, HtmlPdfOptions options, CancellationToken ct)
     {
-        if (options.Timeout is not { } timeout)
+        var fromPolicy = options.Timeout is null;
+        var effective = options.Timeout ?? options.SecurityPolicy?.RenderTimeout;
+        if (effective is not { } timeout || timeout == Timeout.InfiniteTimeSpan)
             return await PdfRenderPipeline.RenderAsync(html, options, ct).ConfigureAwait(false);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -156,10 +160,14 @@ public static class HtmlPdf
             timeoutCts.Token.ThrowIfCancellationRequested();
             return await PdfRenderPipeline.RenderAsync(html, options, timeoutCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        // Translate ONLY a cancellation the render timer caused. A stage that cancels for its own
+        // reason (e.g. a custom IResourceLoader) keeps its original OperationCanceledException rather
+        // than being mislabeled as a timeout (PR #380 review).
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
+            var source = fromPolicy ? "SecurityPolicy.RenderTimeout" : "HtmlPdfOptions.Timeout";
             throw new TimeoutException(
-                $"HTML-to-PDF conversion exceeded the configured timeout of {timeout}.");
+                $"HTML-to-PDF conversion exceeded the configured timeout of {timeout} ({source}).");
         }
     }
 

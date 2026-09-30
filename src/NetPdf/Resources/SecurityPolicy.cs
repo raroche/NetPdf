@@ -83,6 +83,16 @@ public sealed class SecurityPolicy
     /// <see cref="UntrustedHtml"/> caps at 50 MiB.</summary>
     public long MaxOutputBytes { get; init; } = long.MaxValue;
 
+    /// <summary>Default hard cap on total conversion time for renders that use this policy.
+    /// Applies only when <see cref="HtmlPdfOptions.Timeout"/> is <see langword="null"/>; an explicit
+    /// <see cref="HtmlPdfOptions.Timeout"/> always wins, so a caller can raise, lower, or remove
+    /// (<see cref="System.Threading.Timeout.InfiniteTimeSpan"/>) this default per render. When the cap
+    /// is hit the conversion throws a <see cref="TimeoutException"/>.
+    /// <see langword="null"/> (the default) means no cap, so trusted rendering is unchanged;
+    /// <see cref="UntrustedHtml"/> uses 30 seconds so a hostile document cannot hold a worker
+    /// indefinitely even when the caller forgets to set a timeout.</summary>
+    public TimeSpan? RenderTimeout { get; init; }
+
     /// <summary>
     /// The default — BaseUri-sandboxed file:// reads, data URIs, no HTTP(S), 10 s timeout,
     /// 25 MB cap, 200 resources per render, 100 MiB total, 5 redirect hops. Suitable
@@ -104,6 +114,9 @@ public sealed class SecurityPolicy
     ///   <item>Tighter per-render budgets (50 fetches, 20 MiB)
     ///   so a hostile document can't amplify even within the
     ///   reduced surface.</item>
+    ///   <item>A 30-second default <see cref="RenderTimeout"/>, so a
+    ///   pathological render is bounded even when the caller sets no
+    ///   <see cref="HtmlPdfOptions.Timeout"/>.</item>
     /// </list>
     /// API services rendering customer HTML should pin this profile +
     /// document the explicit-opt-in dance for any deviation.
@@ -124,6 +137,8 @@ public sealed class SecurityPolicy
         // SEC-5 — tight output caps for attacker-controlled HTML.
         MaxPages = 500,
         MaxOutputBytes = 50L * 1024 * 1024,
+        // Bound render time by default; HtmlPdfOptions.Timeout overrides it per render.
+        RenderTimeout = TimeSpan.FromSeconds(30),
     };
 
     /// <summary>Per Phase D D-2 — trusted-template profile.

@@ -159,4 +159,149 @@ public sealed class HtmlPdfFacadeTests
         var bytes = HtmlPdf.Convert(SampleHtml, options);
         Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
     }
+
+    // ── SecurityPolicy.RenderTimeout — the policy's default render cap ───────
+
+    [Fact]
+    public void UntrustedHtml_has_a_30_second_default_render_timeout()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(30), SecurityPolicy.UntrustedHtml.RenderTimeout);
+    }
+
+    [Fact]
+    public void Trusted_policies_have_no_default_render_timeout()
+    {
+        // Trusted rendering must stay uncapped by default (a long report is legitimate).
+        Assert.Null(SecurityPolicy.SafeDefault.RenderTimeout);
+        Assert.Null(SecurityPolicy.TrustedTemplate.RenderTimeout);
+        Assert.Null(new SecurityPolicy().RenderTimeout);
+    }
+
+    [Fact]
+    public void Policy_render_timeout_applies_when_options_timeout_is_null()
+    {
+        var options = new HtmlPdfOptions { SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero } };
+        var ex = Assert.Throws<TimeoutException>(() => HtmlPdf.Convert(SampleHtml, options));
+        Assert.Contains("SecurityPolicy.RenderTimeout", ex.Message);
+    }
+
+    [Fact]
+    public async Task Policy_render_timeout_applies_to_ConvertAsync()
+    {
+        var options = new HtmlPdfOptions { SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero } };
+        await Assert.ThrowsAsync<TimeoutException>(async () => await HtmlPdf.ConvertAsync(SampleHtml, options));
+    }
+
+    [Fact]
+    public void Explicit_options_timeout_overrides_the_policy_default()
+    {
+        // The policy alone would fail immediately; the caller's explicit cap wins.
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero },
+            Timeout = TimeSpan.FromSeconds(30),
+        };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
+    public void Explicit_options_timeout_error_names_its_source()
+    {
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.FromSeconds(30) },
+            Timeout = TimeSpan.Zero,
+        };
+        var ex = Assert.Throws<TimeoutException>(() => HtmlPdf.Convert(SampleHtml, options));
+        Assert.Contains("HtmlPdfOptions.Timeout", ex.Message);
+    }
+
+    [Fact]
+    public void Infinite_options_timeout_removes_the_policy_default()
+    {
+        // Timeout.InfiniteTimeSpan is the opt-out: no cap at all, even under a capped policy.
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero },
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan,
+        };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
+    public void Infinite_policy_render_timeout_means_no_cap()
+    {
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = System.Threading.Timeout.InfiniteTimeSpan },
+        };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    private const string RemoteImageHtml =
+        "<!DOCTYPE html><html><body><img src=\"https://example.com/i.png\" style=\"display:block\"></body></html>";
+
+    /// <summary>A loader that cancels for its OWN reason, unrelated to any render timer.</summary>
+    private sealed class SelfCancellingLoader : IResourceLoader
+    {
+        public ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct) =>
+            throw new OperationCanceledException("the loader gave up on its own");
+    }
+
+    /// <summary>A loader that ignores its token and returns only after <paramref name="delay"/>.</summary>
+    private sealed class SlowLoader(TimeSpan delay) : IResourceLoader
+    {
+        public async ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct)
+        {
+            await Task.Delay(delay, CancellationToken.None);
+            return new ResourceResponse { Content = ReadOnlyMemory<byte>.Empty };
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_the_timer_did_not_cause_is_not_reported_as_a_timeout()
+    {
+        // PR #380 review: with a policy cap in force, an unrelated cancellation used to be relabeled as
+        // "SecurityPolicy.RenderTimeout" even though the timer never fired. It must propagate unchanged.
+        var options = new HtmlPdfOptions
+        {
+            ResourceLoader = new SelfCancellingLoader(),
+            SecurityPolicy = new SecurityPolicy { AllowHttpsScheme = true, RenderTimeout = TimeSpan.FromMinutes(5) },
+        };
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await HtmlPdf.ConvertAsync(RemoteImageHtml, options));
+        Assert.Equal("the loader gave up on its own", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_stage_that_ignores_the_token_past_the_deadline_still_times_out()
+    {
+        // The loader ignores cancellation and returns after the policy cap has passed. The render must
+        // not produce a PDF past the cap: the next cancellation check reports the timeout.
+        var options = new HtmlPdfOptions
+        {
+            ResourceLoader = new SlowLoader(TimeSpan.FromMilliseconds(600)),
+            SecurityPolicy = new SecurityPolicy
+            {
+                AllowHttpsScheme = true,
+                RenderTimeout = TimeSpan.FromMilliseconds(100),
+            },
+        };
+        var ex = await Assert.ThrowsAsync<TimeoutException>(
+            async () => await HtmlPdf.ConvertAsync(RemoteImageHtml, options));
+        Assert.Contains("SecurityPolicy.RenderTimeout", ex.Message);
+    }
+
+    [Fact]
+    public void UntrustedHtml_with_no_options_timeout_renders_a_normal_document()
+    {
+        // Integration: the 30 s default must not affect an ordinary render.
+        var options = new HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml };
+        var result = HtmlPdf.ConvertDetailed(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(result.Pdf, 0, 5));
+        Assert.Equal(1, result.PageCount);
+    }
 }

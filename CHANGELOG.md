@@ -11,10 +11,10 @@ Post-`1.1.1` improvements accumulate here until the next release is cut.
 A patch release: layout fixes found in a visual review of real travel documents against a browser. No public API changes.
 
 ### Fixed
-- **Absolutely positioned boxes with `width: auto` shrink to fit their content** (CSS 2.1 §10.3.7). A box such as a `position: absolute; top: 18px; right: 22px` "PAID" stamp stretched across its whole containing block and hid its text; it now hugs its content and keeps its inset from the edge. Boxes pinned by both `left` and `right` still fill the space between them.
+- **Absolutely positioned boxes with `width: auto` shrink to fit their content** (CSS 2.1 §10.3.7). A box such as a `position: absolute; top: 18px; right: 22px` "PAID" stamp stretched across its whole containing block and hid its text; it now hugs its content (clamped by `min-width` / `max-width`, and wider than the space when a word is longer than it) and keeps its inset from the edge. An empty box is only its padding and border. Boxes pinned by both `left` and `right` still fill the space between them.
 - **Inline images and SVGs taller than the text stay inside their line.** A baseline-aligned inline `<img>` / `<svg>` was drawn above its own line box, over the parent's padding and border (for example a check badge overlapping the top edge of its card). The line baseline now follows the CSS 2.2 §10.8.1 rule, as it already did for `inline-block`.
 - **`flex: 1` items are not made narrower than their content.** The automatic minimum size (CSS Flexbox §4.5) now also applies when items grow from a `0` / percentage basis, so a card holding a long e-mail address widens (and its siblings share the rest) instead of letting the address overflow it — the same as a browser.
-- **No leading space after `<br>`.** The source line break and indentation after a `<br>` became a space at the start of the next line, and the space before it stayed at the end of the previous one. Both are now removed (CSS Text §4.1.2), so lines after a `<br>` start flush and right-aligned lines end flush.
+- **No leading space after `<br>`.** The source line break and indentation after a `<br>` became a space at the start of the next line, and the space before it stayed at the end of the previous one. Both are now removed (CSS Text §4.1.2), also for a `<br>` inside `white-space: pre` content, so lines after a `<br>` start flush and right-aligned lines end flush.
 
 ## [1.1.0]
 

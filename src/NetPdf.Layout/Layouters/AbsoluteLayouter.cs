@@ -332,8 +332,6 @@ internal static class AbsoluteLayouter
     private static bool IsDefinite(ComputedStyle style, PropertyId id) =>
         style.Get(id).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
 
-    /// <summary>RC-4 — true when the box has an AUTO block size NOT pinned by BOTH top and bottom
-    /// (single-anchored or all-auto). Only these need a content-height pre-measure.</summary>
     /// <summary>CSS 2.1 §10.3.7 — whether an abspos / fixed box's WIDTH is shrink-to-fit: <c>width</c> is
     /// auto and the box is not pinned by BOTH <c>left</c> and <c>right</c> (that case fills).</summary>
     public static bool NeedsAutoInlineShrinkToFit(Box box)
@@ -342,6 +340,8 @@ internal static class AbsoluteLayouter
         return !(IsDefinite(box.Style, PropertyId.Left) && IsDefinite(box.Style, PropertyId.Right));
     }
 
+    /// <summary>RC-4 — true when the box has an AUTO block size NOT pinned by BOTH top and bottom
+    /// (single-anchored or all-auto). Only these need a content-height pre-measure.</summary>
     public static bool NeedsAutoBlockContentMeasure(Box box)
     {
         if (IsDefinite(box.Style, PropertyId.Height)) return false;

@@ -2408,11 +2408,12 @@ grepping the ID).
     the inline axis the CSS 2.1 §10.3.7 shrink-to-fit width, `min(max-content, max(min-content,
     available))`, measured by `BlockLayouter.MeasureAbsoluteShrinkToFitWidth` and passed to
     `AbsoluteLayouter.ResolvePlacement(measuredInlineContentSize:)` (1.1.1 — the 05-payment-receipt
-    "PAID" stamp). The pinned-both-insets case (fill) is EXACT. Per : when the end inset
-    (`right`/`bottom`) exceeds the CB and the available size goes
-    negative, the size clamps to 0 but the END anchor is PRESERVED
-    the box's start offset is recomputed from the end inset (a negative
-    offset) instead of being re-pinned to the static position 0.
+    "PAID" stamp); it is clamped by `min-width` / `max-width` and may exceed the available width (an
+    unbreakable word), overflowing toward the start while keeping its anchored edge. An empty
+    non-replaced box is 0 wide (border + padding only). The pinned-both-insets case (fill) is EXACT.
+    When the end inset (`right`/`bottom`) exceeds the CB and the available size goes negative, the size
+    clamps to 0 but the END anchor is PRESERVED: the box's start offset is recomputed from the end
+    inset (a negative offset) instead of being re-pinned to the static position 0.
   - **Padding-box CB** — uses the recorded border box inset by border
     widths = the padding box (correct). [Resolved.]
   - **z-index paint ordering** — paints in source order; no z-index.

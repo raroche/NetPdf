@@ -4651,33 +4651,49 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
     /// <summary>CSS 2.1 §10.3.7 — the shrink-to-fit CONTENT width of an auto-width abspos / fixed box that is
     /// not pinned by both <c>left</c> and <c>right</c>: <c>min(max-content, max(min-content, available))</c>,
-    /// where "available" is the content width of the legacy available-extent placement. NaN when it does not
-    /// apply (definite width, both insets set, no content, no shaper) or would not narrow the box — the caller
-    /// then keeps the placement unchanged.</summary>
+    /// where "available" is the content width of the legacy available-extent placement, then clamped by the
+    /// box's <c>min-width</c> / <c>max-width</c> (§10.4, box-sizing + percentages via
+    /// <c>ClampBorderBoxToMinMax</c>). The result may be WIDER than the available width (an unbreakable word
+    /// longer than the space): the box then overflows, keeping its anchored edge (PR #383 review). An EMPTY
+    /// non-replaced box is 0 wide (only its border + padding). NaN when it does not apply (definite width, both
+    /// insets set, a replaced element — it has its own intrinsic sizing — or no shaper for non-empty content)
+    /// or would not change the width — the caller then keeps the placement unchanged.</summary>
     private double MeasureAbsoluteShrinkToFitWidth(
         Box box, AbsoluteContainingBlock cb, AbsolutePlacement placement, CancellationToken cancellationToken)
     {
-        if (_shaperResolver is null || box.Children.Count == 0
-            || !AbsoluteLayouter.NeedsAutoInlineShrinkToFit(box))
+        if (box.IsReplaced || !AbsoluteLayouter.NeedsAutoInlineShrinkToFit(box))
         {
             return double.NaN;
         }
         var available = AbsoluteLayouter.ContentInlineSize(box, placement.InlineSize, cb.InlineSize);
-        var maxContent = NestedContentMeasurer.Measure(
-            box, AbsoluteMaxContentProbeInlinePx, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
-            _shaperResolver, WritingMode.HorizontalTb, isRtl: false, cancellationToken,
-            intrinsicSizingMode: false).ContentInlineExtent;
-        if (double.IsNaN(maxContent) || maxContent < 0) return double.NaN;
-        var fit = maxContent;
-        if (maxContent > available)
+        double fit;
+        if (box.Children.Count == 0)
         {
-            var minContent = NestedContentMeasurer.Measure(
-                box, 1.0, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
-                _shaperResolver, WritingMode.HorizontalTb, isRtl: false, cancellationToken,
-                intrinsicSizingMode: true).ContentInlineExtent;
-            fit = Math.Max(minContent, available);
+            fit = 0.0;
         }
-        return fit < available - 0.01 ? fit : double.NaN;
+        else
+        {
+            if (_shaperResolver is null) return double.NaN;
+            var maxContent = NestedContentMeasurer.Measure(
+                box, AbsoluteMaxContentProbeInlinePx, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                _shaperResolver, WritingMode.HorizontalTb, isRtl: false, cancellationToken,
+                intrinsicSizingMode: false).ContentInlineExtent;
+            if (double.IsNaN(maxContent) || maxContent < 0) return double.NaN;
+            fit = maxContent;
+            if (maxContent > available)
+            {
+                var minContent = NestedContentMeasurer.Measure(
+                    box, 1.0, NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                    _shaperResolver, WritingMode.HorizontalTb, isRtl: false, cancellationToken,
+                    intrinsicSizingMode: true).ContentInlineExtent;
+                fit = Math.Max(minContent, available);
+            }
+        }
+        var chrome = Math.Max(0.0, placement.InlineSize - available);
+        var clampedBorderBox = box.ClampBorderBoxToMinMax(
+            fit + chrome, PropertyId.MinWidth, PropertyId.MaxWidth, cb.InlineSize);
+        fit = Math.Max(0.0, clampedBorderBox - chrome);
+        return Math.Abs(fit - available) > 0.01 ? fit : double.NaN;
     }
 
     /// <summary>The unconstrained inline size a max-content probe lays content out at (text never wraps).</summary>

@@ -2341,6 +2341,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
     }
 
+    /// <summary>Whether the §4.5 automatic minimum can bind on a GROWING line: only when the flex base size
+    /// comes from a length / percentage <c>flex-basis</c> (e.g. <c>flex: 1</c> = <c>0%</c>), which can sit
+    /// below the item's min-content. A content-based base is already ≥ min-content; a <c>flex-basis: auto</c>
+    /// base delegating to a definite <c>width</c> is that width, and the automatic minimum is capped by the
+    /// same width (the specified size suggestion), so growing from it can never fall below the floor.</summary>
+    private static bool HasDefiniteFlexBaseSize(Box item, PropertyId mainSizeProperty) =>
+        item.Style.ReadFlexBasis().Kind is FlexBasisKind.LengthPx or FlexBasisKind.Percentage;
+
     /// <summary>Whether an <c>overflow-x</c> / <c>overflow-y</c> keyword index (visible 0, hidden 1, clip 2,
     /// scroll 3, auto 4 — <c>KeywordResolver</c>) makes the box a scroll container. <c>clip</c> does not.</summary>
     private static bool IsScrollContainerOverflow(int keywordIndex) => keywordIndex is 1 or 3 or 4;
@@ -2503,8 +2511,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             for (var i = 0; i < itemCount; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!lineShrinks && lineItems[i].Style.ReadFlexBasis().Kind
-                        is not (FlexBasisKind.LengthPx or FlexBasisKind.Percentage))
+                if (!lineShrinks && !HasDefiniteFlexBaseSize(lineItems[i], mainSizeProperty))
                     continue;
                 var automatic = AutomaticMinimumMainSize(
                     lineItems[i], mainSizeProperty, minSizeProperty, maxs[i],

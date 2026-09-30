@@ -1611,6 +1611,16 @@ public sealed class InlineLayouterCycle3dTests
     }
 
     [Fact]
+    public void Collapsible_space_before_a_br_in_a_pre_parent_is_removed()
+    {
+        // PR #383 review — the <br> run can carry a `pre` parent's mode while the run before it (a span with
+        // white-space: normal) is collapsible: its trailing space is still removed.
+        var runs = new List<TextRun> { new("A  ", MakeStyle()), new("\u2028", MakeStyle()) };
+        var output = LineBuilder.PreprocessTextRunsPerRun(runs, new[] { WhiteSpace.Normal, WhiteSpace.Pre });
+        Assert.Equal("A", output[0].Text);
+    }
+
+    [Fact]
     public void Preserved_spaces_before_a_forced_break_are_kept()
     {
         // white-space: pre keeps its spaces; only collapsible spaces are removed at a line end.

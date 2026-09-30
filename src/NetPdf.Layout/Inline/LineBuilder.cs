@@ -2616,12 +2616,14 @@ internal static class LineBuilder
                 {
                     Text = CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
                 };   // RC-1: preserve chrome + Atomic
-                // A forced break at the start of this run ends the previous line: its trailing collapsible
-                // space (collapsed in the PREVIOUS run) is removed too (CSS Text L3 §4.1.2). A preserved
-                // (pre / pre-wrap) previous run keeps its spaces.
-                if (modes[r - (r > 0 ? 1 : 0)] is WhiteSpace.Normal or WhiteSpace.NoWrap or WhiteSpace.PreLine)
-                    TrimSpaceBeforeForcedBreak(output, r);
             }
+
+            // A forced break at the start of this run ends the previous line: its trailing collapsible space
+            // (collapsed in the PREVIOUS run) is removed too (CSS Text L3 §4.1.2). It depends on the PREVIOUS
+            // run's mode only — the break run itself may be `pre` (a `<br>` inside a `white-space: pre`
+            // parent, PR #383 review). A preserved (pre / pre-wrap) previous run keeps its spaces.
+            if (r > 0 && modes[r - 1] is WhiteSpace.Normal or WhiteSpace.NoWrap or WhiteSpace.PreLine)
+                TrimSpaceBeforeForcedBreak(output, r);
         }
 
         // Document-trailing SP strip — only when the LAST run is a

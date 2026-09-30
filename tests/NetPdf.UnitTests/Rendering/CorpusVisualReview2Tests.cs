@@ -97,6 +97,46 @@ public sealed class CorpusVisualReview2Tests
             Assert.Equal(top.X + 22 * PxToPt, stamp.X, precision: 0);
     }
 
+    [Fact]
+    public void Shrink_to_fit_width_honors_min_width()
+    {
+        // PR #383 review — the content ("x") is narrower than min-width:200px, so the box is 200px + chrome.
+        var page = Page(Render(
+            "<div class='top'><div class='stamp'>x</div></div>",
+            ".top{position:relative;height:120px;background:#ff0000}"
+            + ".stamp{position:absolute;top:0;right:0;min-width:200px;background:#0000ff}"));
+        var stamp = Assert.Single(Rects(page, 0, 0, 1));
+        Assert.Equal(200 * PxToPt, stamp.W, precision: 0);
+    }
+
+    [Fact]
+    public void Shrink_to_fit_width_can_exceed_the_space_and_keeps_its_right_anchor()
+    {
+        // PR #383 review — an unbreakable token wider than the containing block: shrink-to-fit is its
+        // min-content, so the box is WIDER than the space and overflows toward the start, its right edge
+        // still pinned (0px from the right). Pre-fix it stayed as wide as the space and the text spilled out.
+        var page = Page(Render(
+            "<div class='top'><div class='stamp'>Unbreakabletokenthatiswiderthanitsbox</div></div>",
+            ".top{position:relative;width:100px;height:60px;margin-left:300px;background:#ff0000}"
+            + ".stamp{position:absolute;top:0;right:0;background:#0000ff}"));
+        var top = Assert.Single(Rects(page, 1, 0, 0));
+        var stamp = Assert.Single(Rects(page, 0, 0, 1));
+        Assert.True(stamp.W > top.W + 1, $"the box should grow to its min-content: {stamp.W:0.#}pt vs {top.W:0.#}pt");
+        Assert.Equal(top.X + top.W, stamp.X + stamp.W, precision: 0);
+    }
+
+    [Fact]
+    public void Empty_absolute_auto_width_box_is_only_its_padding_and_border()
+    {
+        // PR #383 review — shrink-to-fit of no content is 0, so the border box is the 2 × 10px padding.
+        var page = Page(Render(
+            "<div class='top'><div class='dot'></div></div>",
+            ".top{position:relative;height:60px;background:#ff0000}"
+            + ".dot{position:absolute;top:5px;right:5px;height:10px;padding:0 10px;background:#0000ff}"));
+        var dot = Assert.Single(Rects(page, 0, 0, 1));
+        Assert.Equal(20 * PxToPt, dot.W, precision: 0);
+    }
+
     // ── 05: an inline svg taller than the text stays inside its line ───────────────────────────
 
     [Fact]

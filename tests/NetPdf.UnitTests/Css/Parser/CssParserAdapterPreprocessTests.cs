@@ -673,7 +673,7 @@ public sealed class CssParserAdapterPreprocessTests
     // conformance gates caught it (`flex-gap-main-axis`, `grid-gap-shorthand-columns`).
     [InlineData(".a { gap: 20px }", "row-gap", "column-gap", "20px", false)]
     [InlineData(".a { gap: 20px !important }", "row-gap", "column-gap", "20px", true)]
-    [InlineData(".a { grid-gap: 4px }", "grid-row-gap", "grid-column-gap", "4px", false)]
+    [InlineData(".a { grid-gap: 4px }", "row-gap", "column-gap", "4px", false)] // legacy alias → modern names
     public async Task Single_value_gap_sets_both_axes(
         string css, string rowName, string colName, string expected, bool important)
     {
@@ -700,5 +700,46 @@ public sealed class CssParserAdapterPreprocessTests
 
         Assert.Equal("3px", Assert.Single(rule.Declarations, d => d.Property == "row-gap").Value.RawText);
         Assert.Equal("9px", Assert.Single(rule.Declarations, d => d.Property == "column-gap").Value.RawText);
+    }
+
+    [Theory]
+    // The cases a single-value repair from AngleSharp's output CANNOT get right, because AngleSharp has
+    // already thrown the shorthand's value away. The preprocessor re-expands `gap` from the raw text and
+    // the adapter's source-order + !important merge picks each longhand. Raised in review of PR #378:
+    // the first version copied the LATER explicit row-gap into column-gap.
+    [InlineData(".a { gap: 20px; row-gap: 30px }", "30px", "20px")]              // explicit row after
+    [InlineData(".a { row-gap: 30px; gap: 20px }", "20px", "20px")]              // shorthand after
+    [InlineData(".a { gap: 20px !important; row-gap: 30px }", "20px", "20px")]   // important shorthand wins
+    [InlineData(".a { gap: 20px; column-gap: 5px }", "20px", "5px")]             // explicit column after
+    [InlineData(".a { column-gap: 5px; gap: 20px }", "20px", "20px")]            // shorthand after column
+    [InlineData(".a { gap: calc(1px + 2px) 7px }", "calc(1px + 2px)", "7px")]    // paren-aware split
+    public async Task Gap_longhands_follow_source_order_and_importance(
+        string css, string expectedRow, string expectedColumn)
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+
+        Assert.Equal(expectedRow, Assert.Single(rule.Declarations, d => d.Property == "row-gap").Value.RawText);
+        Assert.Equal(expectedColumn, Assert.Single(rule.Declarations, d => d.Property == "column-gap").Value.RawText);
+    }
+
+    [Fact]
+    public async Task Layer_body_declarations_get_the_recovery_pass()
+    {
+        // @layer bodies now APPLY (AngleSharp.Css 1.1.x decomposes them), so they need the same
+        // preprocessor recovery as a @media body. Before `layer` joined the grouping set, a layer's
+        // child rules were adapted WITHOUT recovery — this exact rule came out as column-gap: 30px.
+        var (sheet, preprocess) = await ParseAndPreprocess(
+            "@layer base { .a { gap: 20px; row-gap: 30px } }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var layer = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("layer", layer.Name);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(layer.ChildRules));
+        Assert.Equal("30px", Assert.Single(rule.Declarations, d => d.Property == "row-gap").Value.RawText);
+        Assert.Equal("20px", Assert.Single(rule.Declarations, d => d.Property == "column-gap").Value.RawText);
     }
 }

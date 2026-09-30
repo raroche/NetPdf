@@ -271,14 +271,19 @@ public sealed class CssPreprocessorTests
     }
 
     [Fact]
-    public void Process_layer_block_form_at_rule_emits_at_rule_slot_with_raw_body()
+    public void Process_layer_block_form_at_rule_is_walked_like_a_grouping_rule()
     {
+        // @layer is a GROUPING rule for the preprocessor (like @media): its body is walked into nested
+        // slots so each child style rule gets the recovery pass, rather than being captured as one opaque
+        // RawBody. Needed since AngleSharp.Css 1.1.x decomposes layer bodies and the cascade applies them.
         var result = CssPreprocessor.Process("@layer framework { .x { color: blue } }");
         var slot = Assert.Single(result.RuleSlots);
         Assert.Equal(CssRuleSlotKind.AtRule, slot.Kind);
         Assert.Equal("layer", slot.AtKeyword);
         Assert.Equal("framework", slot.Prelude);
-        Assert.Contains(".x", slot.RawBody);
+        Assert.Empty(slot.RawBody);
+        var child = Assert.Single(slot.NestedSlots);
+        Assert.Equal(CssRuleSlotKind.StyleRule, child.Kind);
     }
 
     [Fact]

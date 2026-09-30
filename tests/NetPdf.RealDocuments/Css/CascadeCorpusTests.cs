@@ -182,10 +182,10 @@ public sealed class CascadeCorpusTests
     [Fact]
     public async Task Corpus_synthetic_atLayer_block_form_through_preprocessor_path()
     {
-        // Synthetic HTML with @layer block-form. The preprocessor preserves the body as
-        // RawBody (AngleSharp.Css doesn't decompose @layer); the cascade emits
-        // CSS-AT-RULE-UNKNOWN-001 since the body wasn't reparsed. v1 limitation
-        // documented in the compatibility matrix.
+        // Synthetic HTML with @layer block-form. AngleSharp.Css 1.1.x decomposes the layer body into
+        // real child rules, and the preprocessor walks it as a grouping rule so those children get the
+        // same recovery pass as a @media body. The cascade therefore APPLIES the layered rule — in layer
+        // order — instead of dropping it with CSS-AT-RULE-UNKNOWN-001 as it did under 1.0.0-beta.144.
         var html = """
             <html><head><style>
               p { color: red; }

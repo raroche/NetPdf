@@ -1129,13 +1129,22 @@ internal static class CssParserAdapter
                 // Safe because an empty standard longhand is never authored CSS — it only ever comes
                 // out of shorthand expansion. And a `gap: var(--g)` expansion leaves row-gap empty too,
                 // so this does not fire there; the var() recovery path handles that case as before.
+                //
+                // This is only a FALLBACK. It cannot be exact: for `gap: 20px; row-gap: 30px`
+                // AngleSharp has already discarded the 20px, so the only row value left is the later
+                // 30px. The exact answer comes from the preprocessor, which re-expands `gap` from the
+                // raw declaration (GapShorthandExpander) and lets the source-order merge in
+                // AdaptDeclarationsWithRecovery override this value. The fallback only stands on the
+                // paths that have no recovery data (AdaptInlineStyle without the raw style text).
                 var twin = SingleValueGapTwin(property.Name, list);
                 if (twin is not null)
                 {
                     output.Add(new CssDeclaration(
                         Property: property.Name,
                         Value: new CssValue(twin.Value!),
-                        IsImportant: twin.IsImportant,
+                        // The empty entry carries the SHORTHAND's importance; the row twin may be a
+                        // different declaration with a different flag.
+                        IsImportant: property.IsImportant,
                         Location: CssSourceLocation.Unknown));
                 }
                 continue;

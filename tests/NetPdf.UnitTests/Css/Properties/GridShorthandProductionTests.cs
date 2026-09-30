@@ -434,19 +434,11 @@ public sealed class GridShorthandProductionTests
     [Fact]
     public async Task Important_longhand_before_shorthand_within_rule_wins()
     {
-        // KNOWN-GAP per PR-#91 review F3 — within-rule edge case.
-        // Per CSS Cascade §5 + §7.4 an !important longhand should beat
-        // a later normal shorthand regardless of source order. My F3 fix
-        // (unconditional explicit-longhand tracking) correctly identifies
-        // that the explicit longhand wins the cascade comparison — BUT
-        // AngleSharp.Css's per-rule dedup has already discarded the
-        // important `grid-row-end: 6` from its emit (= replaced by the
-        // later normal value 4). The merge layer correctly detects
-        // "explicit wins" but has no way to recover the explicit's
-        // value (= ExplicitLonghandRef stores only ordinal+importance,
-        // not the value). Extending ExplicitLonghandRef to carry values
-        // + rewriting the merge to use them when the explicit wins
-        // would fix this; tracked as a cycle-0c+ deferral.
+        // Per CSS Cascade §5 + §7.4 an !important longhand beats a later normal shorthand regardless of
+        // source order (PR-#91 review F3). The merge layer has always known the explicit longhand should
+        // win; what it lacked was the VALUE — AngleSharp.Css 1.0.0-beta.144's per-rule dedup replaced the
+        // important `grid-row-end: 6` with the later normal 4 before NetPdf saw it. AngleSharp.Css 1.1.x
+        // keeps the important value, so the correct answer now reaches the cascade.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid { display: grid; }

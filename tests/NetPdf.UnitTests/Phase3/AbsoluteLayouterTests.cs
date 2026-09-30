@@ -335,4 +335,45 @@ public sealed class AbsoluteLayouterTests
         Assert.Equal(0.0, p.BlockSize, precision: 3);
         Assert.Equal(-100.0, p.BlockOffset, precision: 3);
     }
+
+    // ── CSS 2.1 §10.3.7 shrink-to-fit width (2026-10 corpus review, the 05-payment-receipt PAID stamp) ──
+
+    [Fact]
+    public void Right_anchored_auto_width_box_uses_the_measured_shrink_to_fit_width()
+    {
+        // `top: 18px; right: 22px; width: auto` — pre-fix the width was the whole available extent (578px),
+        // so the badge stretched across its containing block. With the caller's measured content width
+        // the box is 50px wide and its right edge stays 22px from the containing block's right edge.
+        var box = BuildAbsoluteBox(top: 18, right: 22, widthAuto: true);
+        var placement = AbsoluteLayouter.ResolvePlacement(box, OriginCb, measuredInlineContentSize: 50);
+        Assert.Equal(50.0, placement.InlineSize, precision: 3);
+        Assert.Equal(600.0 - 22.0 - 50.0, placement.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Left_anchored_auto_width_box_uses_the_measured_shrink_to_fit_width()
+    {
+        var box = BuildAbsoluteBox(top: 0, left: 10, widthAuto: true);
+        var placement = AbsoluteLayouter.ResolvePlacement(box, OriginCb, measuredInlineContentSize: 80);
+        Assert.Equal(80.0, placement.InlineSize, precision: 3);
+        Assert.Equal(10.0, placement.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Box_pinned_by_left_and_right_fills_and_ignores_the_measured_width()
+    {
+        // Both insets set → the width is the remainder (fill), never shrink-to-fit.
+        var box = BuildAbsoluteBox(top: 0, left: 10, right: 20, widthAuto: true);
+        var placement = AbsoluteLayouter.ResolvePlacement(box, OriginCb, measuredInlineContentSize: 80);
+        Assert.Equal(570.0, placement.InlineSize, precision: 3);
+        Assert.False(AbsoluteLayouter.NeedsAutoInlineShrinkToFit(box));
+    }
+
+    [Fact]
+    public void Shrink_to_fit_applies_only_to_auto_width_boxes_not_pinned_on_both_sides()
+    {
+        Assert.True(AbsoluteLayouter.NeedsAutoInlineShrinkToFit(BuildAbsoluteBox(top: 0, right: 22, widthAuto: true)));
+        Assert.True(AbsoluteLayouter.NeedsAutoInlineShrinkToFit(BuildAbsoluteBox(top: 0, widthAuto: true)));
+        Assert.False(AbsoluteLayouter.NeedsAutoInlineShrinkToFit(BuildAbsoluteBox(top: 0, right: 22, width: 100)));
+    }
 }

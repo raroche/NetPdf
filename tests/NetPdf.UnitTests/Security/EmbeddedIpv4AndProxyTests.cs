@@ -32,6 +32,10 @@ public sealed class EmbeddedIpv4AndProxyTests
         { "::127.0.0.1", "v4-compatible-loopback" },
         { "::a9fe:a9fe", "v4-compatible-link-local-or-metadata" },
         { "::ffff:0:7f00:1", "v4-translated-loopback" },
+        // ISATAP (RFC 5214): ANY /64 prefix + interface id 0:5efe (private) or 200:5efe (global).
+        { "2606:4700:4700:1:0:5efe:a00:1", "isatap-private" },           // → 10.0.0.1
+        { "2606:4700:4700:1:200:5efe:a9fe:a9fe", "isatap-link-local-or-metadata" },
+        { "2001:db8::5efe:7f00:1", "isatap-loopback" },
         // Ranges blocked outright: no trustworthy real destination.
         { "64:ff9b:1::a00:1", "nat64-local-use" },
         { "2001:0:4136:e378:8000:63bf:80ff:fffe", "teredo" },
@@ -66,6 +70,7 @@ public sealed class EmbeddedIpv4AndProxyTests
     // through NAT64 or 6to4 is a legitimate path on an IPv6-only network and must keep working.
     [InlineData("64:ff9b::808:808")]          // NAT64 → 8.8.8.8
     [InlineData("2002:808:808::1")]           // 6to4 → 8.8.8.8
+    [InlineData("2606:4700:4700:1:200:5efe:808:808")] // ISATAP → 8.8.8.8
     // Ordinary global IPv6 that merely STARTS like one of the special prefixes must not be caught.
     [InlineData("2001:4860:4860::8888")]      // 2001::/16 but not Teredo's 2001:0::/32
     [InlineData("2606:4700:4700::1111")]

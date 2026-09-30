@@ -382,8 +382,8 @@ public static class UriSafetyValidator
 
     /// <summary>Extract the IPv4 address from the IPv6 forms that embed one at a FIXED, standardized
     /// position: IPv4-compatible <c>::a.b.c.d</c> (RFC 4291 §2.5.5.1, deprecated), IPv4-translated
-    /// <c>::ffff:0:a.b.c.d</c> (RFC 2765), well-known-prefix NAT64 <c>64:ff9b::a.b.c.d</c> (RFC 6052), and
-    /// 6to4 <c>2002:aabb:ccdd::</c> (RFC 3056). IPv4-mapped <c>::ffff:a.b.c.d</c> is handled separately
+    /// <c>::ffff:0:a.b.c.d</c> (RFC 2765), well-known-prefix NAT64 <c>64:ff9b::a.b.c.d</c> (RFC 6052),
+    /// 6to4 <c>2002:aabb:ccdd::</c> (RFC 3056), and ISATAP <c>&lt;prefix&gt;:0:5efe:a.b.c.d</c> (RFC 5214). IPv4-mapped <c>::ffff:a.b.c.d</c> is handled separately
     /// by the caller.</summary>
     private static bool TryGetEmbeddedV4(byte[] b, out IPAddress v4, out string form)
     {
@@ -420,6 +420,18 @@ public static class UriSafetyValidator
                 form = "v4-compatible";
                 return true;
             }
+        }
+
+        // ISATAP (RFC 5214) — ANY /64 prefix with interface identifier 0000:5efe:a.b.c.d (private IPv4)
+        // or 0200:5efe:a.b.c.d (global IPv4). Unlike the forms above it is not tied to a special prefix,
+        // so an ordinary-looking global address such as 2606:4700:4700:1:0:5efe:a00:1 tunnels to
+        // 10.0.0.1 on a host with an ISATAP interface. Match only the exact marker in bytes 8..11 so no
+        // other global address is affected; the embedded IPv4 then gets the normal IPv4 checks.
+        if ((b[8] == 0x00 || b[8] == 0x02) && b[9] == 0x00 && b[10] == 0x5E && b[11] == 0xFE)
+        {
+            v4 = new IPAddress(new[] { b[12], b[13], b[14], b[15] });
+            form = "isatap";
+            return true;
         }
 
         // IPv4-translated ::ffff:0:a.b.c.d — bytes 0..7 zero, 8..9 = ffff, 10..11 zero.

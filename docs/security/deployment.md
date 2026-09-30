@@ -19,13 +19,15 @@ var pdf = HtmlPdf.Convert(untrustedHtml, new HtmlPdfOptions
 {
     SecurityPolicy = SecurityPolicy.UntrustedHtml, // http/https/file/data all OFF; tight budgets
     ResourceLoader = null,                         // no ambient network / filesystem fetch at all
-    Timeout = TimeSpan.FromSeconds(10),            // bound render time (also honors a CancellationToken)
+    Timeout = TimeSpan.FromSeconds(10),            // optional: UntrustedHtml defaults to 30 s (also honors a CancellationToken)
     // BaseUri: leave null — nothing to resolve relative refs against.
 });
 ```
 
-`SecurityPolicy.UntrustedHtml` also caps pages (500) and output size (50 MiB). Tune these
-for your workload; keep them as low as your legitimate documents allow.
+`SecurityPolicy.UntrustedHtml` also caps pages (500), output size (50 MiB), and render time
+(`RenderTimeout`, 30 s). An explicit `HtmlPdfOptions.Timeout` overrides the render-time default per
+render (`Timeout.InfiniteTimeSpan` removes it). Tune these for your workload; keep them as low as your
+legitimate documents allow.
 
 ## 2. OS-level isolation (required for untrusted HTML)
 
@@ -64,7 +66,7 @@ These are known, low-severity residuals accepted for v1; the isolation above is 
 
 ## 4. Checklist
 
-- [ ] `SecurityPolicy.UntrustedHtml` + `ResourceLoader = null` + a `Timeout`.
+- [ ] `SecurityPolicy.UntrustedHtml` + `ResourceLoader = null` + a render time cap (30 s by default; tune with `Timeout`).
 - [ ] Container: `--network none`, `--read-only` (+ `tmpfs`), `--memory` / `--cpus` / `--pids-limit`.
 - [ ] Non-root, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, seccomp profile.
 - [ ] One-shot / reset-between-tenants execution.

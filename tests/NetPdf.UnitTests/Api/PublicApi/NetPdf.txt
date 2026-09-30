@@ -270,6 +270,7 @@ class NetPdf.SecurityPolicy
     property System.Int64 MaxOutputBytes { get;set; }
     property System.Int64 MaxResourceBytes { get;set; }
     property System.Int64 MaxTotalResourceBytes { get;set; }
+    property System.Nullable<System.TimeSpan> RenderTimeout { get;set; }
     property System.TimeSpan ResourceTimeout { get;set; }
 struct NetPdf.SourceLocation : System.IEquatable<NetPdf.SourceLocation>
     .ctor(System.String? File, System.Int32 Line, System.Int32 Column)

@@ -374,7 +374,7 @@ var options = new HtmlPdfOptions
 {
     SecurityPolicy = SecurityPolicy.UntrustedHtml, // no file/http/data, tight budgets
     ResourceLoader = null,                         // no ambient network/file fetch at all
-    Timeout = TimeSpan.FromSeconds(10),            // bound a pathological render
+    Timeout = TimeSpan.FromSeconds(10),            // optional: UntrustedHtml already caps at 30 s
     Diagnostics = sink,
     // BaseUri: leave null — nothing to resolve relative refs against
 };
@@ -383,7 +383,7 @@ var pdf = HtmlPdf.Convert(untrustedHtml, options);
 //   await HtmlPdf.ConvertAsync(untrustedHtml, options, cancellationToken);
 ```
 
-`UntrustedHtml` disables every URL-fetching surface (file://, http(s), data:) and tightens per-render fetch budgets. Leaving `ResourceLoader` null means no loader is even available, and `Timeout` bounds a pathological render (the synchronous `Convert` takes no token — external cancellation is available on the `ConvertAsync` overloads). Use `TrustedTemplate` only for HTML you authored; the default `SafeDefault` is a middle-ground for desktop / batch use cases.
+`UntrustedHtml` disables every URL-fetching surface (file://, http(s), data:) and tightens per-render fetch budgets. Leaving `ResourceLoader` null means no loader is even available, and a pathological render is bounded by a **30-second default** (`SecurityPolicy.RenderTimeout`). Set `HtmlPdfOptions.Timeout` to change it per render, or to `Timeout.InfiniteTimeSpan` to remove it; a render that hits the cap throws `TimeoutException`. The synchronous `Convert` takes no token — external cancellation is available on the `ConvertAsync` overloads. Use `TrustedTemplate` only for HTML you authored; the default `SafeDefault` is a middle-ground for desktop / batch use cases.
 
 ### 2. Process / container isolation
 

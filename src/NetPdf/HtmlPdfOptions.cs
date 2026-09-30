@@ -122,7 +122,18 @@ public sealed class HtmlPdfOptions
     /// default) omits it. Same determinism rule as <see cref="CreationDate"/>.</summary>
     public DateTimeOffset? ModDate { get; init; }
 
-    /// <summary>Hard cap on conversion time. <c>null</c> = no cap.</summary>
+    /// <summary>Hard cap on conversion time. When the cap is hit the conversion throws a
+    /// <see cref="TimeoutException"/>.
+    /// <list type="bullet">
+    ///   <item><see langword="null"/> (the default) — use <see cref="SecurityPolicy.RenderTimeout"/>
+    ///   from <see cref="SecurityPolicy"/>. That is no cap for <see cref="SecurityPolicy.SafeDefault"/>
+    ///   and <see cref="SecurityPolicy.TrustedTemplate"/>, and 30 seconds for
+    ///   <see cref="SecurityPolicy.UntrustedHtml"/>.</item>
+    ///   <item>A positive value — use this cap instead of the policy's default.</item>
+    ///   <item><see cref="System.Threading.Timeout.InfiniteTimeSpan"/> — no cap, even when the policy
+    ///   has a default.</item>
+    ///   <item><see cref="TimeSpan.Zero"/> or any other negative value — fail immediately.</item>
+    /// </list></summary>
     public TimeSpan? Timeout { get; init; }
 
     /// <summary>The page layout a reader uses when it first opens the document (catalog <c>/PageLayout</c>).

@@ -159,4 +159,95 @@ public sealed class HtmlPdfFacadeTests
         var bytes = HtmlPdf.Convert(SampleHtml, options);
         Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
     }
+
+    // ── SecurityPolicy.RenderTimeout — the policy's default render cap ───────
+
+    [Fact]
+    public void UntrustedHtml_has_a_30_second_default_render_timeout()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(30), SecurityPolicy.UntrustedHtml.RenderTimeout);
+    }
+
+    [Fact]
+    public void Trusted_policies_have_no_default_render_timeout()
+    {
+        // Trusted rendering must stay uncapped by default (a long report is legitimate).
+        Assert.Null(SecurityPolicy.SafeDefault.RenderTimeout);
+        Assert.Null(SecurityPolicy.TrustedTemplate.RenderTimeout);
+        Assert.Null(new SecurityPolicy().RenderTimeout);
+    }
+
+    [Fact]
+    public void Policy_render_timeout_applies_when_options_timeout_is_null()
+    {
+        var options = new HtmlPdfOptions { SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero } };
+        var ex = Assert.Throws<TimeoutException>(() => HtmlPdf.Convert(SampleHtml, options));
+        Assert.Contains("SecurityPolicy.RenderTimeout", ex.Message);
+    }
+
+    [Fact]
+    public async Task Policy_render_timeout_applies_to_ConvertAsync()
+    {
+        var options = new HtmlPdfOptions { SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero } };
+        await Assert.ThrowsAsync<TimeoutException>(async () => await HtmlPdf.ConvertAsync(SampleHtml, options));
+    }
+
+    [Fact]
+    public void Explicit_options_timeout_overrides_the_policy_default()
+    {
+        // The policy alone would fail immediately; the caller's explicit cap wins.
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero },
+            Timeout = TimeSpan.FromSeconds(30),
+        };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
+    public void Explicit_options_timeout_error_names_its_source()
+    {
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.FromSeconds(30) },
+            Timeout = TimeSpan.Zero,
+        };
+        var ex = Assert.Throws<TimeoutException>(() => HtmlPdf.Convert(SampleHtml, options));
+        Assert.Contains("HtmlPdfOptions.Timeout", ex.Message);
+    }
+
+    [Fact]
+    public void Infinite_options_timeout_removes_the_policy_default()
+    {
+        // Timeout.InfiniteTimeSpan is the opt-out: no cap at all, even under a capped policy.
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = TimeSpan.Zero },
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan,
+        };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
+    public void Infinite_policy_render_timeout_means_no_cap()
+    {
+        var options = new HtmlPdfOptions
+        {
+            SecurityPolicy = new SecurityPolicy { RenderTimeout = System.Threading.Timeout.InfiniteTimeSpan },
+        };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
+    public void UntrustedHtml_with_no_options_timeout_renders_a_normal_document()
+    {
+        // Integration: the 30 s default must not affect an ordinary render.
+        var options = new HtmlPdfOptions { SecurityPolicy = SecurityPolicy.UntrustedHtml };
+        var result = HtmlPdf.ConvertDetailed(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(result.Pdf, 0, 5));
+        Assert.Equal(1, result.PageCount);
+    }
 }

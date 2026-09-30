@@ -83,14 +83,16 @@ public sealed class SecurityPolicy
     /// <see cref="UntrustedHtml"/> caps at 50 MiB.</summary>
     public long MaxOutputBytes { get; init; } = long.MaxValue;
 
-    /// <summary>Default hard cap on total conversion time for renders that use this policy.
+    /// <summary>Default time limit on total conversion time for renders that use this policy.
     /// Applies only when <see cref="HtmlPdfOptions.Timeout"/> is <see langword="null"/>; an explicit
     /// <see cref="HtmlPdfOptions.Timeout"/> always wins, so a caller can raise, lower, or remove
-    /// (<see cref="System.Threading.Timeout.InfiniteTimeSpan"/>) this default per render. When the cap
-    /// is hit the conversion throws a <see cref="TimeoutException"/>.
-    /// <see langword="null"/> (the default) means no cap, so trusted rendering is unchanged;
-    /// <see cref="UntrustedHtml"/> uses 30 seconds so a hostile document cannot hold a worker
-    /// indefinitely even when the caller forgets to set a timeout.</summary>
+    /// (<see cref="System.Threading.Timeout.InfiniteTimeSpan"/>) this default per render. When the limit
+    /// passes, the conversion throws a <see cref="TimeoutException"/> at the pipeline's next cancellation
+    /// check, so one long step can run past it — the limit is cooperative, not a hard kill. Pair it with
+    /// process isolation for untrusted input.
+    /// <see langword="null"/> (the default) means no limit, so trusted rendering is unchanged;
+    /// <see cref="UntrustedHtml"/> uses 30 seconds so a pathological document is stopped even when the
+    /// caller forgets to set a timeout.</summary>
     public TimeSpan? RenderTimeout { get; init; }
 
     /// <summary>

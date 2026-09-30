@@ -1703,6 +1703,74 @@ public sealed class FlexLayouterProductionTests
         Assert.True(LineCount(sink, "id") >= 2);
     }
 
+    [Theory]
+    [InlineData("min-width: 80px", 80.0, 20.0)]   // floor: (120 - 80) / 2
+    [InlineData("max-width: 10px", 10.0, 55.0)]   // cap:   (120 - 10) / 2
+    public async Task Column_flex_fit_content_honors_min_and_max_width(string css, double width, double offset)
+    {
+        // PR #382 review — the fit-content width (24px for "AAAA") is still clamped by the item's own
+        // min-width / max-width (CSS 2.2 §10.4) before it is aligned.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; align-items: center; width: 120px; }
+                .id { margin: 0; {{css}}; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var seal = GeometryFragment(sink, "seal");
+        var id = GeometryFragment(sink, "id");
+        Assert.Equal(width, id.InlineSize, precision: 2);
+        Assert.Equal(seal.InlineOffset + offset, id.InlineOffset, precision: 2);
+    }
+
+    [Fact]
+    public async Task Column_flex_fit_content_item_with_padding_keeps_its_text_on_one_line()
+    {
+        // PR #382 review — "AAAA AAAA" is 55.2px; with 20px side padding the fit-content border box is 95.2.
+        // The item's own text must be laid out in its 55.2px content box, not with the padding subtracted a
+        // second time (which wrapped it onto two lines).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .seal { display: flex; flex-direction: column; align-items: center; width: 120px; }
+                .id { margin: 0; padding: 0 20px; }
+            </style></head><body>
+            <div class="seal"><p class="id">AAAA AAAA</p></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(95.2, GeometryFragment(sink, "id").InlineSize, precision: 2);
+        Assert.Equal(1, LineCount(sink, "id"));
+    }
+
+    [Theory]
+    [InlineData("padding: 0 20px")]
+    [InlineData("padding: 0 10px; border-left: 10px solid; border-right: 10px solid")]
+    [InlineData("padding: 0 20px; box-sizing: border-box; width: 240px")]
+    public async Task Row_flex_item_padding_is_not_subtracted_twice_from_its_text(string css)
+    {
+        // PR #382 review — a padded inline-only item's text was laid out at (border box − 2 × chrome). A
+        // 200px content box holds "AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA" (194.4px) on one line.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .row { display: flex; width: 600px; }
+                .b { width: 200px; {{css}}; }
+            </style></head><body>
+            <div class="row"><div class="b">AAAAAAAAAA AAAAAAAAAA AAAAAAAAAA</div></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(240.0, GeometryFragment(sink, "b").InlineSize, precision: 2);
+        Assert.Equal(1, LineCount(sink, "b"));
+    }
+
     [Fact]
     public async Task Column_flex_stretched_item_keeps_the_full_width()
     {
@@ -1770,6 +1838,28 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(k.InlineOffset + 60.0, v.InlineOffset, precision: 2);
         Assert.True(v.InlineOffset + v.InlineSize > kv.InlineOffset + 200.0 + 1.0,
             "the value should overflow the row, not overlap the label");
+    }
+
+    [Theory]
+    [InlineData("overflow: clip")]
+    [InlineData("overflow-x: clip")]
+    public async Task Row_flex_item_with_overflow_clip_keeps_its_automatic_minimum(string css)
+    {
+        // PR #382 review — `clip` is not a scroll container (CSS Overflow 3 §3.1), so §4.5 still applies:
+        // the value keeps its 168px min-content and the row overflows, exactly like `visible`.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .kv { display: flex; justify-content: space-between; width: 200px; }
+                .v { {{css}}; }
+            </style></head><body>
+            <div class="kv"><span class="k">AAAAAAAAAA</span><span class="v">AAAAAAAAAAAAAAAAAAAAAAAAAAAA</span></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Equal(60.0, GeometryFragment(sink, "k").InlineSize, precision: 2);
+        Assert.Equal(168.0, GeometryFragment(sink, "v").InlineSize, precision: 2);
     }
 
     [Theory]

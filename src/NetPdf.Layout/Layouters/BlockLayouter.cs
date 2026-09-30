@@ -7656,7 +7656,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <c>_layoutRootInlineContent</c> root gate — the child-loop / outer-pipeline paths keep
     /// the strict predicate, so an inline-block CHILD stays an ATOMIC in its parent's line
     /// (it is never block-level-dispatched).</summary>
-    private static bool IsInlineOnlyRootContainer(Box box)
+    internal static bool IsInlineOnlyRootContainer(Box box)
     {
         if (box.Kind == BoxKind.InlineBlockContainer)
         {
@@ -8810,6 +8810,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var avoidAfter = child.Kind != BoxKind.AnonymousBlock && child.Style.AvoidsPageBreakAfter();
         var avoidBefore = next.Kind != BoxKind.AnonymousBlock && next.Style.AvoidsPageBreakBefore();
         if (!avoidAfter && !avoidBefore)
+        {
+            return 0;
+        }
+        // A FORCED break at the same boundary wins over the avoid (CSS Fragmentation §3.1: forced breaks
+        // are honored; avoid only chooses among unforced ones). The next sibling starts a new page anyway,
+        // so keeping with it would only push this child off a page it fits on (PR #382 review).
+        if ((child.Kind != BoxKind.AnonymousBlock && child.Style.ForcesPageBreakAfter())
+            || (next.Kind != BoxKind.AnonymousBlock && next.Style.ForcesPageBreakBefore()))
         {
             return 0;
         }
@@ -11460,7 +11468,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // the item's inline chrome); a non-positive resolution falls back to the
                 // container content inline size.
                 var itemInline = resolvedItemMain > inlineChrome
-                    ? resolvedItemMain - inlineChrome
+                    ? FlexLayouter.ItemContentLayoutInlineSize(item, resolvedItemMain)
                     : flexContentInlineSize;
                 measureCache ??= new Dictionary<Box, BufferingMeasureSink>(ReferenceEqualityComparer.Instance);
                 if (!measureCache.TryGetValue(item, out buffer))
@@ -11611,7 +11619,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     ? flexContentInlineSize
                     : BoxSizingHelper.DeclaredToBorderBox(
                         item.Style, item.Style.ReadLengthPxOrZero(PropertyId.Width), inlineChrome);
-                var itemInline = borderBoxCross - inlineChrome;
+                // A non-stretched auto-width item is fit-content wide at emission (PR #382) — measure its
+                // height at that SAME width, or a narrower box that wraps more is under-measured.
+                if (crossAuto
+                    && FlexLayouter.IsColumnItemFitContent(item, flexContainer.Style.ReadAlignItems())
+                    && FlexLayouter.ColumnItemFitContentBorderBox(
+                        item, flexContentInlineSize, _shaperResolver, cancellationToken) is { } fitCross)
+                {
+                    borderBoxCross = fitCross;
+                }
+                var itemInline = FlexLayouter.ItemContentLayoutInlineSize(item, borderBoxCross);
                 if (!(itemInline > 0)) itemInline = flexContentInlineSize;
                 measureCache ??= new Dictionary<Box, double>(ReferenceEqualityComparer.Instance);
                 if (!measureCache.TryGetValue(item, out var measuredBorderBox))

@@ -14,9 +14,10 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// scroll container (the flex automatic minimum size, the inline-block baseline exception).
 /// </para>
 /// <para>
-/// Each component must be one of the <c>overflow-x</c> keywords or a CSS-wide keyword; anything else
-/// returns <see langword="false"/> and the declaration is left alone. The value is split with the same
-/// top-level whitespace rule as <see cref="GapShorthandExpander"/>.
+/// Each component must be one of the <c>overflow-x</c> keywords. A CSS-wide keyword (<c>inherit</c>,
+/// <c>initial</c>, …) is valid only as the WHOLE value (CSS Values 4 §7.3), so <c>overflow: inherit hidden</c>
+/// is rejected. Anything else returns <see langword="false"/> and the declaration is left alone. The value
+/// is split with the same top-level whitespace rule as <see cref="GapShorthandExpander"/>.
 /// </para>
 /// </summary>
 internal static class OverflowShorthandExpander
@@ -29,7 +30,15 @@ internal static class OverflowShorthandExpander
         {
             return false;
         }
-        if (!IsOverflowKeyword(first) || !IsOverflowKeyword(second))
+        if (IsCssWideKeyword(first) || IsCssWideKeyword(second))
+        {
+            // Valid only alone: one component (GapShorthandExpander repeats it as the second value).
+            if (!rawValue.Trim().Equals(first, System.StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        else if (!IsOverflowKeyword(first) || !IsOverflowKeyword(second))
         {
             return false;
         }
@@ -43,8 +52,10 @@ internal static class OverflowShorthandExpander
         || value.Equals("hidden", System.StringComparison.OrdinalIgnoreCase)
         || value.Equals("clip", System.StringComparison.OrdinalIgnoreCase)
         || value.Equals("scroll", System.StringComparison.OrdinalIgnoreCase)
-        || value.Equals("auto", System.StringComparison.OrdinalIgnoreCase)
-        || value.Equals("inherit", System.StringComparison.OrdinalIgnoreCase)
+        || value.Equals("auto", System.StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsCssWideKeyword(string value) =>
+        value.Equals("inherit", System.StringComparison.OrdinalIgnoreCase)
         || value.Equals("initial", System.StringComparison.OrdinalIgnoreCase)
         || value.Equals("unset", System.StringComparison.OrdinalIgnoreCase)
         || value.Equals("revert", System.StringComparison.OrdinalIgnoreCase)

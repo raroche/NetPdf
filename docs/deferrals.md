@@ -145,12 +145,14 @@ grepping the ID).
   cost model (inert under the production greedy resolver, as above).
 - **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
   is weighed by cost (the keep-with-next lookahead covers the sibling-boundary case; its "next piece"
-  for a table / grid / flex is an estimate of two lines, not the real first row); (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+  for a table / grid / flex is an estimate of two lines, not the real first row); (2) the resolver's
+  body-level `orphans` / `widows` still feed only the (inert) cost model — per-paragraph values ARE
+  honored where a paragraph's lines are split (see Behavior above), so nothing is missing for authors.
   (left/right/recto/verso PARITY blank-page insertion — INCLUDING RTL, where the PHYSICAL `left`/
   `right` swap their page-number parity while `recto`/`verso` stay (page 1 is a recto) — the
   first-page starting side, + `recto`/`verso`/`all` parsing all SHIPPED.)
-- **Trigger** — `break-before:left/right` expecting a specific page side; `break-inside:avoid`
-  on a multi-page container under the greedy driver; `orphans`/`widows` once paragraphs split.
+- **Trigger** — `break-inside:avoid` on a multi-page container under the greedy driver; a kept
+  heading followed by a table / grid / flex whose first row is taller than two lines.
 - **Owner files** — `src/NetPdf.Css/properties.json` + `KeywordResolver.cs` (registration)
   `src/NetPdf.Css/Parser/Preprocessing/CssPreprocessor.cs` (`IsRectoVersoAllBreakValue`
   recovery for the dropped values)
@@ -160,8 +162,9 @@ grepping the ID).
   `EmitBlockSubtreeRecursive` + `DispatchInlineOnlyBlock`); `src/NetPdf/Rendering/PdfRenderPipeline.cs`
   (the blank-page parity insertion `PageNumberHasParity` + orphans/widows → resolver). The
   optimizing-resolver-in-production + line-splitting are the deeper follow-ups.
-- **Removal condition** — the optimizing resolver drives production (so `*:avoid` bites), and
-  per-paragraph orphans/widows resolve at line-break time. (RTL page-side parity SHIPPED.)
+- **Removal condition** — the optimizing resolver drives production (so every `*:avoid` is weighed
+  by cost, not only the sibling keep-with-next). (RTL page-side parity and per-paragraph orphans/widows
+  at line splits SHIPPED.)
 
 
 

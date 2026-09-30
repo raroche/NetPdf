@@ -710,6 +710,10 @@ public sealed class CssParserAdapterPreprocessTests
     [Theory]
     [InlineData(".a { overflow: bogus }")]
     [InlineData(".a { overflow: hidden auto scroll }")]
+    // PR #382 review — a CSS-wide keyword is valid only as the whole value.
+    [InlineData(".a { overflow: inherit hidden }")]
+    [InlineData(".a { overflow: auto revert }")]
+    [InlineData(".a { overflow: inherit inherit }")]
     public async Task Invalid_overflow_shorthand_emits_no_longhands(string css)
     {
         var (sheet, preprocess) = await ParseAndPreprocess(css);

@@ -276,5 +276,18 @@ internal static class FragmentationCases
                 new BoxExpectation("d", Page: 1, Y: 0),
             },
             PageHeightPx: 400),
+
+        // §3.1 over §3.2 — a FORCED break at the same boundary wins over the avoid: c starts a new page
+        // anyway, so b (which fits under a) must not be pushed along with it.
+        new ConformanceCase("frag-forced-break-overrides-keep-with-next", "CSS Fragmentation L3 §3.1",
+            Doc(Block("a", 250) + "<div id='b' style='height:100px;break-after:avoid'></div>"
+                + "<div id='c' style='height:100px;break-before:page'></div>"),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 0, Y: 250),
+                new BoxExpectation("c", Page: 1, Y: 0),
+            },
+            PageHeightPx: 400),
     };
 }

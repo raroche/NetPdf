@@ -2341,6 +2341,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             resolved[_sortedFlexChildIndices[line.FirstItemIndex + i]] = lineResolved[i];
     }
 
+    /// <summary>Whether an <c>overflow-x</c> / <c>overflow-y</c> keyword index (visible 0, hidden 1, clip 2,
+    /// scroll 3, auto 4 — <c>KeywordResolver</c>) makes the box a scroll container. <c>clip</c> does not.</summary>
+    private static bool IsScrollContainerOverflow(int keywordIndex) => keywordIndex is 1 or 3 or 4;
+
     /// <summary>Lazily-created, per-layout cache of <see cref="CreateRowAutomaticMinimumProvider"/>.</summary>
     private Func<Box, double>? _rowAutomaticMinimumProvider;
 
@@ -2375,8 +2379,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
 
     /// <summary>CSS Flexbox L1 §4.5 — the item's automatic minimum main size: its content size suggestion
     /// (min-content), capped by its specified main size when that is definite and by its max main size.
-    /// Applies only when the min main size is <c>auto</c> and the item is not a scroll container
-    /// (<c>overflow: visible</c>); otherwise returns 0.</summary>
+    /// Applies only when the min main size is <c>auto</c> and the item is not a scroll container — any
+    /// axis <c>hidden</c> / <c>scroll</c> / <c>auto</c> makes it one; <c>visible</c> and <c>clip</c> do not
+    /// (CSS Overflow 3 §3.1, PR #382 review). Otherwise returns 0.</summary>
     private static double AutomaticMinimumMainSize(
         Box item, PropertyId mainSizeProperty, PropertyId minSizeProperty, double maxMainSize,
         double containerDefiniteMainSize, Func<Box, double> contentSizeSuggestion)
@@ -2386,8 +2391,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         {
             return 0;
         }
-        if (item.Style.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0) != 0
-            || item.Style.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0) != 0)
+        if (IsScrollContainerOverflow(item.Style.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0))
+            || IsScrollContainerOverflow(item.Style.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0)))
         {
             return 0;
         }
@@ -3569,10 +3574,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     // center` put its left edge at the center line (the certificate "ID" under the seal)
                     // and its background was culled. Lay the content out at the fit-content width and
                     // hand that width to the placement (ColumnFitCrossSizes).
-                    if (IsCrossSizeAuto(item, flexDirection)
-                        && item.Style.ReadAlignSelf().ResolveAgainstContainerAlignItems(containerAlignItems)
-                            .Value != AlignItemsValue.Stretch
-                        && ColumnItemFitContentBorderBox(item, lineCrossExtent, cancellationToken) is { } fit)
+                    if (IsColumnItemFitContent(item, containerAlignItems)
+                        && ColumnItemFitContentBorderBox(item, lineCrossExtent, _shaperResolver, cancellationToken) is { } fit)
                     {
                         borderBoxInline = fit;
                         columnFitCrossSizes ??= CreateNaNArray(_rootBox.Children.Count);
@@ -3583,7 +3586,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 {
                     borderBoxInline = resolvedItemMainSizes[itemIdx];
                 }
-                var usedInline = borderBoxInline - inlineChrome;
+                var usedInline = ItemContentLayoutInlineSize(item, borderBoxInline);
                 if (!(usedInline > 0)) usedInline = _contentInlineSize;
 
                 // PR-#182 review P2 — buffer this item's content diagnostics
@@ -3687,13 +3690,34 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return array;
     }
 
+    /// <summary>The inline size to lay a flex item's CONTENT out at, given the item's BORDER-box inline size.
+    /// Block-child content is laid at the item's content box, so it gets the border box minus the item's
+    /// inline border + padding. An INLINE-ONLY item (its own text laid out by the nested pass's root-inline
+    /// dispatch) gets the BORDER box: that dispatch subtracts the item's border + padding itself — the same
+    /// contract grid cells and abspos boxes use — so passing the content width subtracted them twice and a
+    /// padded item's text wrapped early (PR #382 review). Shared by emission and the BlockLayouter
+    /// pre-measures so measured and emitted heights agree.</summary>
+    internal static double ItemContentLayoutInlineSize(Box item, double borderBoxInline) =>
+        BlockLayouter.IsInlineOnlyRootContainer(item)
+            ? borderBoxInline
+            : borderBoxInline - item.Style.InlineBorderPaddingPx();
+
+    /// <summary>Whether a COLUMN flex item is sized fit-content on the cross (inline) axis: an auto width
+    /// and a used <c>align-self</c> other than <c>stretch</c> (CSS Flexbox §9.4 step 7 / Box Alignment §6.1).</summary>
+    internal static bool IsColumnItemFitContent(Box item, ResolvedAlignItems containerAlignItems) =>
+        item.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword
+        && item.Style.ReadAlignSelf().ResolveAgainstContainerAlignItems(containerAlignItems).Value
+            != AlignItemsValue.Stretch;
+
     /// <summary>The fit-content BORDER-box inline size of an auto-width COLUMN flex item (CSS Sizing 3 §5.2):
-    /// <c>min(max-content, max(min-content, available))</c>, measured with the same nested measure the row
-    /// intrinsic basis uses. <see langword="null"/> when there is no shaper (no text measure) — the caller
-    /// then keeps the available width, byte-identical to before.</summary>
-    private double? ColumnItemFitContentBorderBox(Box item, double availableBorderBox, CancellationToken cancellationToken)
+    /// <c>min(max-content, max(min-content, available))</c>, then clamped by the item's own
+    /// <c>min-width</c> / <c>max-width</c> (CSS 2.2 §10.4 — PR #382 review). Measured with the same nested
+    /// measure the row intrinsic basis uses. <see langword="null"/> when there is no shaper (no text
+    /// measure) — the caller then keeps the available width, byte-identical to before.</summary>
+    internal static double? ColumnItemFitContentBorderBox(
+        Box item, double availableBorderBox, IShaperResolver? shaperResolver, CancellationToken cancellationToken)
     {
-        if (_shaperResolver is null)
+        if (shaperResolver is null)
         {
             return null;
         }
@@ -3701,22 +3725,27 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var maxContent = NestedContentMeasurer.Measure(
             item, MaxContentMeasureInlinePx,
             blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
-            shaperResolver: _shaperResolver,
+            shaperResolver: shaperResolver,
             writingMode: WritingMode.HorizontalTb, isRtl: false,
             cancellationToken: cancellationToken,
             intrinsicSizingMode: false).ContentInlineExtent + chrome;
+        double fit;
         if (maxContent <= availableBorderBox)
         {
-            return maxContent;
+            fit = maxContent;
         }
-        var minContent = NestedContentMeasurer.Measure(
-            item, 1.0,
-            blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
-            shaperResolver: _shaperResolver,
-            writingMode: WritingMode.HorizontalTb, isRtl: false,
-            cancellationToken: cancellationToken,
-            intrinsicSizingMode: true).ContentInlineExtent + chrome;
-        return Math.Max(minContent, availableBorderBox);
+        else
+        {
+            var minContent = NestedContentMeasurer.Measure(
+                item, 1.0,
+                blockBudget: NestedContentMeasurer.EffectivelyUnboundedBlockBudgetPx,
+                shaperResolver: shaperResolver,
+                writingMode: WritingMode.HorizontalTb, isRtl: false,
+                cancellationToken: cancellationToken,
+                intrinsicSizingMode: true).ContentInlineExtent + chrome;
+            fit = Math.Max(minContent, availableBorderBox);
+        }
+        return item.ClampBorderBoxToMinMax(fit, PropertyId.MinWidth, PropertyId.MaxWidth, availableBorderBox);
     }
 
     /// <summary>Lay out one flex item's inner content into a fresh

@@ -138,8 +138,8 @@ public static class HtmlPdf
     /// A linked <see cref="CancellationTokenSource"/> combines the caller's <paramref name="ct"/>
     /// with the timeout; when the timeout fires (and the caller did not itself cancel) the
     /// resulting <see cref="OperationCanceledException"/> is surfaced as a
-    /// <see cref="TimeoutException"/>, while caller cancellation propagates as
-    /// <see cref="OperationCanceledException"/>. A non-positive timeout cancels immediately
+    /// <see cref="TimeoutException"/>, while caller cancellation, and any cancellation the timer did not
+    /// cause, propagates as <see cref="OperationCanceledException"/>. A non-positive timeout cancels immediately
     /// (so <see cref="TimeSpan.Zero"/> fails fast). When there is no effective timeout the caller
     /// token is used unchanged.
     /// </summary>
@@ -160,7 +160,10 @@ public static class HtmlPdf
             timeoutCts.Token.ThrowIfCancellationRequested();
             return await PdfRenderPipeline.RenderAsync(html, options, timeoutCts.Token).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        // Translate ONLY a cancellation the render timer caused. A stage that cancels for its own
+        // reason (e.g. a custom IResourceLoader) keeps its original OperationCanceledException rather
+        // than being mislabeled as a timeout (PR #380 review).
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             var source = fromPolicy ? "SecurityPolicy.RenderTimeout" : "HtmlPdfOptions.Timeout";
             throw new TimeoutException(

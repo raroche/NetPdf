@@ -241,6 +241,60 @@ public sealed class HtmlPdfFacadeTests
         Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
     }
 
+    private const string RemoteImageHtml =
+        "<!DOCTYPE html><html><body><img src=\"https://example.com/i.png\" style=\"display:block\"></body></html>";
+
+    /// <summary>A loader that cancels for its OWN reason, unrelated to any render timer.</summary>
+    private sealed class SelfCancellingLoader : IResourceLoader
+    {
+        public ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct) =>
+            throw new OperationCanceledException("the loader gave up on its own");
+    }
+
+    /// <summary>A loader that ignores its token and returns only after <paramref name="delay"/>.</summary>
+    private sealed class SlowLoader(TimeSpan delay) : IResourceLoader
+    {
+        public async ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct)
+        {
+            await Task.Delay(delay, CancellationToken.None);
+            return new ResourceResponse { Content = ReadOnlyMemory<byte>.Empty };
+        }
+    }
+
+    [Fact]
+    public async Task Cancellation_the_timer_did_not_cause_is_not_reported_as_a_timeout()
+    {
+        // PR #380 review: with a policy cap in force, an unrelated cancellation used to be relabeled as
+        // "SecurityPolicy.RenderTimeout" even though the timer never fired. It must propagate unchanged.
+        var options = new HtmlPdfOptions
+        {
+            ResourceLoader = new SelfCancellingLoader(),
+            SecurityPolicy = new SecurityPolicy { AllowHttpsScheme = true, RenderTimeout = TimeSpan.FromMinutes(5) },
+        };
+        var ex = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            async () => await HtmlPdf.ConvertAsync(RemoteImageHtml, options));
+        Assert.Equal("the loader gave up on its own", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_stage_that_ignores_the_token_past_the_deadline_still_times_out()
+    {
+        // The loader ignores cancellation and returns after the policy cap has passed. The render must
+        // not produce a PDF past the cap: the next cancellation check reports the timeout.
+        var options = new HtmlPdfOptions
+        {
+            ResourceLoader = new SlowLoader(TimeSpan.FromMilliseconds(600)),
+            SecurityPolicy = new SecurityPolicy
+            {
+                AllowHttpsScheme = true,
+                RenderTimeout = TimeSpan.FromMilliseconds(100),
+            },
+        };
+        var ex = await Assert.ThrowsAsync<TimeoutException>(
+            async () => await HtmlPdf.ConvertAsync(RemoteImageHtml, options));
+        Assert.Contains("SecurityPolicy.RenderTimeout", ex.Message);
+    }
+
     [Fact]
     public void UntrustedHtml_with_no_options_timeout_renders_a_normal_document()
     {

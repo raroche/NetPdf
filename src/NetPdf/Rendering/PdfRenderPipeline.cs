@@ -692,6 +692,10 @@ internal static class PdfRenderPipeline
                 "or reduce the input.");
         }
 
+        // Serialization takes no token, so re-check once it is done: a deadline that passed during
+        // Save() must still fail the render instead of returning a PDF past the cap (PR #380 review).
+        cancellationToken.ThrowIfCancellationRequested();
+
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
     }
 

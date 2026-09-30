@@ -178,12 +178,17 @@ public sealed class CssParserAdapterPreprocessTests
         var stylesheet = CssParserAdapter.Adapt(
             sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
 
-        var opaque = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
-        Assert.Equal("container", opaque.Name);
-        Assert.Contains("min-width", opaque.Prelude);
-        // Body isn't decomposed in v1 — the at-rule is opaque from the cascade's perspective.
-        Assert.Empty(opaque.ChildRules);
-        Assert.Empty(opaque.Declarations);
+        var container = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("container", container.Name);
+        Assert.Contains("min-width", container.Prelude);
+        // AngleSharp.Css 1.1.x parses @container as a grouping rule, so the body now arrives
+        // DECOMPOSED as child rules (1.0.0-beta.144 dropped it, leaving only the preprocessor's opaque
+        // RawBody). Either way the rule is NOT applied: CascadeResolver skips every @container body and
+        // emits CSS-CONTAINER-QUERY-UNSUPPORTED-001 — pinned end to end by
+        // CascadeCorpusTests.Container_children_are_skipped_even_when_decomposed.
+        var child = Assert.IsType<CssStyleRule>(Assert.Single(container.ChildRules));
+        Assert.Equal(".a", child.Selector.RawText);
+        Assert.Empty(container.Declarations);
     }
 
     [Fact]
@@ -451,9 +456,9 @@ public sealed class CssParserAdapterPreprocessTests
 
         var container = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
         Assert.Equal("container", container.Name);
-        Assert.NotEmpty(container.RawBody);
-        Assert.Contains(".a", container.RawBody);
-        Assert.Contains(".b", container.RawBody);
+        // The body must survive in SOME form for downstream consumers: decomposed ChildRules
+        // (AngleSharp.Css 1.1.x) or the preprocessor's opaque RawBody (1.0.0-beta.144, which dropped it).
+        Assert.Equal(new[] { ".a", ".b" }, BodySelectors(container));
     }
 
     [Fact]
@@ -466,8 +471,7 @@ public sealed class CssParserAdapterPreprocessTests
 
         var layer = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
         Assert.Equal("layer", layer.Name);
-        Assert.NotEmpty(layer.RawBody);
-        Assert.Contains(".x", layer.RawBody);
+        Assert.Equal(new[] { ".x" }, BodySelectors(layer));
     }
 
     [Fact]
@@ -507,7 +511,7 @@ public sealed class CssParserAdapterPreprocessTests
         Assert.IsType<CssStyleRule>(media.ChildRules[0]);
         var nestedContainer = Assert.IsType<CssAtRule>(media.ChildRules[1]);
         Assert.Equal("container", nestedContainer.Name);
-        Assert.NotEmpty(nestedContainer.RawBody);
+        Assert.Equal(new[] { ".x" }, BodySelectors(nestedContainer));
         Assert.IsType<CssStyleRule>(media.ChildRules[2]);
     }
 
@@ -640,5 +644,102 @@ public sealed class CssParserAdapterPreprocessTests
         Assert.Contains("content(before)", decl.Value.RawText);
         var second = Assert.IsType<CssStyleRule>(adapted.Rules[1]);
         Assert.Single(second.Declarations);   // the p rule adapted normally after the synthesis
+    }
+
+    /// <summary>The selectors in an at-rule's body, whichever form the body arrived in: decomposed
+    /// <see cref="CssAtRule.ChildRules"/> (AngleSharp.Css 1.1.x) or the preprocessor's opaque
+    /// <see cref="CssAtRule.RawBody"/> (1.0.0-beta.144, which dropped @container / @layer).</summary>
+    private static string[] BodySelectors(CssAtRule rule)
+    {
+        if (!rule.ChildRules.IsEmpty)
+        {
+            var list = new System.Collections.Generic.List<string>();
+            foreach (var r in rule.ChildRules)
+                if (r is CssStyleRule sr) list.Add(sr.Selector.RawText);
+            return list.ToArray();
+        }
+        var found = new System.Collections.Generic.List<string>();
+        foreach (System.Text.RegularExpressions.Match m in
+                 System.Text.RegularExpressions.Regex.Matches(rule.RawBody, @"(\.[A-Za-z][\w-]*)\s*\{"))
+            found.Add(m.Groups[1].Value);
+        return found.ToArray();
+    }
+
+
+    [Theory]
+    // AngleSharp.Css 1.1.x expands a SINGLE-value gap into row-gap + an EMPTY column-gap, instead of
+    // repeating the value (CSS Box Alignment L3 §8.3). Unrepaired, every row flex container and every
+    // grid written with the one-value form silently lost its column gap — the W3C Flexbox and Grid
+    // conformance gates caught it (`flex-gap-main-axis`, `grid-gap-shorthand-columns`).
+    [InlineData(".a { gap: 20px }", "row-gap", "column-gap", "20px", false)]
+    [InlineData(".a { gap: 20px !important }", "row-gap", "column-gap", "20px", true)]
+    [InlineData(".a { grid-gap: 4px }", "row-gap", "column-gap", "4px", false)] // legacy alias → modern names
+    public async Task Single_value_gap_sets_both_axes(
+        string css, string rowName, string colName, string expected, bool important)
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+
+        var row = Assert.Single(rule.Declarations, d => d.Property == rowName);
+        var col = Assert.Single(rule.Declarations, d => d.Property == colName);
+        Assert.Equal(expected, row.Value.RawText);
+        Assert.Equal(expected, col.Value.RawText);
+        Assert.Equal(important, col.IsImportant);
+    }
+
+    [Fact]
+    public async Task Two_value_gap_is_left_alone()
+    {
+        // The repair only fills an EMPTY column gap; a real second value must win untouched.
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { gap: 3px 9px }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+
+        Assert.Equal("3px", Assert.Single(rule.Declarations, d => d.Property == "row-gap").Value.RawText);
+        Assert.Equal("9px", Assert.Single(rule.Declarations, d => d.Property == "column-gap").Value.RawText);
+    }
+
+    [Theory]
+    // The cases a single-value repair from AngleSharp's output CANNOT get right, because AngleSharp has
+    // already thrown the shorthand's value away. The preprocessor re-expands `gap` from the raw text and
+    // the adapter's source-order + !important merge picks each longhand. Raised in review of PR #378:
+    // the first version copied the LATER explicit row-gap into column-gap.
+    [InlineData(".a { gap: 20px; row-gap: 30px }", "30px", "20px")]              // explicit row after
+    [InlineData(".a { row-gap: 30px; gap: 20px }", "20px", "20px")]              // shorthand after
+    [InlineData(".a { gap: 20px !important; row-gap: 30px }", "20px", "20px")]   // important shorthand wins
+    [InlineData(".a { gap: 20px; column-gap: 5px }", "20px", "5px")]             // explicit column after
+    [InlineData(".a { column-gap: 5px; gap: 20px }", "20px", "20px")]            // shorthand after column
+    [InlineData(".a { gap: calc(1px + 2px) 7px }", "calc(1px + 2px)", "7px")]    // paren-aware split
+    public async Task Gap_longhands_follow_source_order_and_importance(
+        string css, string expectedRow, string expectedColumn)
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+
+        Assert.Equal(expectedRow, Assert.Single(rule.Declarations, d => d.Property == "row-gap").Value.RawText);
+        Assert.Equal(expectedColumn, Assert.Single(rule.Declarations, d => d.Property == "column-gap").Value.RawText);
+    }
+
+    [Fact]
+    public async Task Layer_body_declarations_get_the_recovery_pass()
+    {
+        // @layer bodies now APPLY (AngleSharp.Css 1.1.x decomposes them), so they need the same
+        // preprocessor recovery as a @media body. Before `layer` joined the grouping set, a layer's
+        // child rules were adapted WITHOUT recovery — this exact rule came out as column-gap: 30px.
+        var (sheet, preprocess) = await ParseAndPreprocess(
+            "@layer base { .a { gap: 20px; row-gap: 30px } }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var layer = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("layer", layer.Name);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(layer.ChildRules));
+        Assert.Equal("30px", Assert.Single(rule.Declarations, d => d.Property == "row-gap").Value.RawText);
+        Assert.Equal("20px", Assert.Single(rule.Declarations, d => d.Property == "column-gap").Value.RawText);
     }
 }

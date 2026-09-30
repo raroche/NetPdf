@@ -180,6 +180,12 @@ internal static class CssPreprocessor
         // shape would extend to `font` / `border` / `background` /
         // etc. when they land.
         "flex",
+        // `gap` / `grid-gap` (CSS Box Alignment L3 §8.3). AngleSharp.Css 1.1.x expands a single-value
+        // `gap: 20px` into row-gap + an EMPTY column-gap, and loses the shorthand's value entirely when an
+        // explicit row-gap follows it. <see cref="GapShorthandExpander"/> re-expands from the raw
+        // declaration so the adapter's source-order merge decides each longhand correctly.
+        "gap",
+        "grid-gap",
         // Per Phase 3 Task 15 L16 — `flex-flow` shorthand. Mirrors the
         // L13 pattern for the `<flex-direction> || <flex-wrap>`
         // shorthand per CSS Flexbox L1 §6.1.
@@ -272,6 +278,13 @@ internal static class CssPreprocessor
     private static readonly FrozenSet<string> GroupingAtRules = new[]
     {
         "media", "supports", "keyframes", "-webkit-keyframes",
+        // Block-form @layer. AngleSharp.Css 1.1.x decomposes layer bodies and the cascade now APPLIES
+        // them (1.0.0-beta.144 dropped them), so their declarations need the same recovery pass as a
+        // @media body — otherwise modern colors, var()-bearing shorthands, `gap`, etc. inside a layer
+        // would reach the cascade with only AngleSharp's lossy parse. Statement-form `@layer a, b;`
+        // has no body and takes the ';' branch unchanged. (@container stays opaque on purpose: the
+        // cascade skips its body regardless.)
+        "layer",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -433,9 +446,9 @@ internal static class CssPreprocessor
 
         if (tok.PeekChar() == '{')
         {
-            // For grouping at-rules (@media/@supports/@keyframes), recurse into the body to
-            // catch nested modern at-rules. For everything else (@font-face, @container,
-            // @layer, unknown), capture the body as opaque raw text.
+            // For grouping at-rules (@media/@supports/@keyframes/@layer), recurse into the body to
+            // catch nested modern at-rules. For everything else (@font-face, @container, unknown),
+            // capture the body as opaque raw text.
             if (GroupingAtRules.Contains(keywordLower))
             {
                 tok.ReadChar(); // consume '{'
@@ -883,6 +896,21 @@ internal static class CssPreprocessor
                         SourceOrdinal: ordinal));
                     output.Add(new CssDeclarationRecovery(
                         "flex-wrap", ffWrap, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                }
+                // `gap` / `grid-gap` — two longhand records sharing the shorthand's ordinal. Both emit
+                // the MODERN names: `grid-gap` is a legacy alias of `gap` (CSS Box Alignment L3 §8.3), and
+                // the engine registers only `row-gap` / `column-gap`.
+                else if ((normalizedName == "gap" || normalizedName == "grid-gap")
+                    && GapShorthandExpander.TryExpand(cleanValue, out var gRow, out var gCol))
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        "row-gap", gRow, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "column-gap", gCol, isImportant,
                         IsFromShorthandExpansion: true,
                         SourceOrdinal: ordinal));
                 }

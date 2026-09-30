@@ -12,41 +12,48 @@
        review before being added here (see docs/clean-room-policy.md). -->
   <ItemGroup>
     <!--
-      AngleSharp.Css is HELD at beta.144. The stable 1.0.0 release regresses background-image rendering:
-      `background-image: url(...)` stops painting (the background-paint and multi-layer image tests drop to
-      zero image output) and several pre-pass recovery tests no longer observe the dropped opaque-rule slots.
-      AngleSharp itself is bumped for GHSA-pgww-w46g-26qg; keep AngleSharp.Css pinned until the parser
-      regression is diagnosed.
+      AngleSharp.Css 1.1.2 — the first STABLE release NetPdf can take. 1.0.0 and 1.0.1 were held back because
+      they broke background-image painting; 1.1.x fixes that (all background tests and every rendering golden
+      are unchanged). What 1.1.x changes, and what NetPdf does about it:
+        * It parses @container and @layer as real grouping rules instead of dropping them. The cascade still
+          SKIPS @container bodies (container queries are unsupported) and now APPLIES @layer bodies in layer
+          order — previously those were dropped. Pinned by CascadeCorpusTests.
+        * It expands a single-value `gap: 20px` / `grid-gap: 20px` into row-gap + an EMPTY column-gap
+          (a 1.1.x bug; CSS Box Alignment §8.3 says both get the value). CssParserAdapter repairs the empty
+          column gap from row-gap — see SingleValueGapTwin. Without it every one-value flex/grid gap is lost.
+        * Its per-rule dedup no longer discards an !important longhand before a later shorthand, so the
+          grid-row-end known gap closed upstream.
+      Before bumping it again: run the W3cConformance gates and CssParserAdapterPreprocessTests locally.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.6.0" />
-    <PackageVersion Include="AngleSharp.Css" Version="1.0.0-beta.144" />
-    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.2" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.2" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.2" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.2" />
-    <PackageVersion Include="SkiaSharp" Version="4.151.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.151.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.151.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.151.1" />
+    <PackageVersion Include="AngleSharp" Version="1.8.2" />
+    <PackageVersion Include="AngleSharp.Css" Version="1.1.2" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.301" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.301" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.301" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.301" />
+    <PackageVersion Include="SkiaSharp" Version="4.153.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.153.1" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
   <ItemGroup>
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
-    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageVersion Include="coverlet.collector" Version="10.1.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
-    <PackageVersion Include="Microsoft.Playwright" Version="1.62.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.63.0" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
          macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF.
-         PDFtoImage 5.4.0 declares SkiaSharp 4.150.1, and production pins 4.151.1 just above it, so NuGet
-         unifies the graph on 4.151.1 and the harness rasterizes against the SAME SkiaSharp the shipped
-         package uses. This CLOSES the gap the 5.2.1 entry warned about: that release still declared a
-         3.119.2 floor, so PDFium ran against a SkiaSharp a whole major version newer than it compiled
-         against, where a removed 3.x API would only surface as a runtime MissingMethodException. The
-         remaining skew is a single patch. RenderingCorpus is still the suite that proves it — if it fails
+         PDFtoImage 5.4.0 declares a SkiaSharp FLOOR of 4.150.1; production pins a newer 4.x above (see the
+         SkiaSharp entries), and NuGet unifies the graph on that single version, so the harness rasterizes
+         against the SAME SkiaSharp the shipped package uses. The 5.2.1 release this replaced declared a
+         3.119.2 floor — PDFium then ran a whole MAJOR version newer than it compiled against, where a removed
+         3.x API would only surface as a runtime MissingMethodException. Same major now, so that risk is
+         gone; the gap is only within 4.x. RenderingCorpus is still the suite that proves it — if it fails
          after a SkiaSharp bump, suspect this pairing first. -->
     <PackageVersion Include="PDFtoImage" Version="5.4.0" />
   </ItemGroup>
@@ -67,7 +74,7 @@
 
   <!-- Build infrastructure. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
   </ItemGroup>
 
 </Project>

@@ -3,14 +3,17 @@
 # Pin the Playwright version (which pins a specific Chromium revision) — NEVER use a floating tag — so the
 # committed reference PNGs are reproducible and CI (Linux) does not drift against a developer's macOS fonts.
 # Bump this tag deliberately as part of a reference-regeneration, never implicitly.
-FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.63.0-jammy
 
 # pypdfium2 rasterizes the Chrome print-to-PDF at the harness DPI (PDFium — SkiaSharp cannot read PDF).
 # Install playwright into the SAME python that runs the generator too: the base image ships Playwright but
 # in a location the plain `python3 generate-references.py` invocation didn't import ("No module named
 # 'playwright'"); reinstalling via pip puts it on the invoked interpreter's path alongside pypdfium2. Chromium
-# itself is already bundled in the base image, so no `playwright install` is needed.
-RUN pip install --no-cache-dir playwright==1.49.0 pypdfium2==4.30.0 Pillow
+# itself is already bundled in the base image, so no `playwright install` is needed — BUT ONLY if the pip
+# client is the SAME version as the image tag above. The client picks the Chromium revision it expects; a
+# 1.49 client in a 1.63 image looks for a browser the image does not contain and `chromium.launch()` fails.
+# The two versions below and in the FROM line must always move together.
+RUN pip install --no-cache-dir playwright==1.63.0 pypdfium2==4.30.0 Pillow
 
 # A PINNED font pack used by BOTH Chrome and NetPdf keeps the diff stable across machines. Copy the repo's
 # committed DejaVu Sans pack in and alias the corpus families + generic sans-serif to it (00-netpdf-pin.conf),

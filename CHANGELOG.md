@@ -11,9 +11,14 @@ Post-`1.1.0` improvements accumulate here until the next release is cut.
 A minor dependency refresh release that resolves the current AngleSharp vulnerability warning, consolidates the compatible open Dependabot runtime/test-tooling/CI action updates, and migrates code away from SkiaSharp APIs newly obsolete in SkiaSharp 4.x.
 
 ### Changed
-- Updated **AngleSharp** to 1.6.0 to resolve GHSA-pgww-w46g-26qg; **AngleSharp.Css** remains pinned to 1.0.0-beta.144 because stable 1.0.0 regresses background-image parsing/painting.
-- Updated bundled native/runtime dependencies to **SkiaSharp** 4.150.1 and **HarfBuzzSharp** 14.2.1.1.
-- Updated build and test tooling, including **Microsoft.NET.Test.Sdk** 18.8.1, **xunit.runner.visualstudio** 3.1.5, **coverlet.collector** 10.0.1, **BenchmarkDotNet** 0.15.8, and **Microsoft.SourceLink.GitHub** 10.0.301.
+- Updated **AngleSharp** to 1.8.2 (resolves GHSA-pgww-w46g-26qg).
+- Updated **AngleSharp.Css** from the 1.0.0-beta.144 prerelease to the stable **1.1.2**. Every runtime dependency is now a stable release, so the `NU5104` prerelease-dependency exception is gone.
+- Updated bundled native/runtime dependencies to **SkiaSharp** 4.153.1 and **HarfBuzzSharp** 14.2.1.301.
+- Updated build and test tooling, including **Microsoft.NET.Test.Sdk** 18.10.1, **xunit.runner.visualstudio** 4.0.0, **coverlet.collector** 10.1.0, **BenchmarkDotNet** 0.15.8, **Microsoft.Playwright** 1.63.0, **PDFtoImage** 5.4.0, **docfx** 2.81.0, and **Microsoft.SourceLink.GitHub** 10.0.401.
+
+### Fixed
+- `@layer` blocks now apply, in layer order. Previously their rules were dropped with `CSS-AT-RULE-UNKNOWN-001`.
+- An `!important` grid longhand now correctly beats a later normal shorthand in the same rule (for example `grid-row-end: 6 !important; grid-row: 2 / 4` now ends at line 6).
 - Updated CI actions to **actions/setup-dotnet** v6 and **github/codeql-action** v4.
 
 ## [1.0.2]

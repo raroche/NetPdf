@@ -28,12 +28,11 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn> <!-- CS1591: missing XML doc on internals. -->
 
     <!--
-      NU5104 (a stable package has a prerelease dependency) is DELIBERATELY demoted from an error to
-      a VISIBLE warning rather than suppressed. NetPdf still depends on AngleSharp.Css 1.0.0-beta.144
-      because AngleSharp.Css 1.0.0 regresses background-image parsing/painting in the current test suite.
-      We do NOT hide it: pack emits NU5104 so the exception is auditable at release time.
+      NU5104 (a stable package has a prerelease dependency) is an ERROR again. It was demoted to a warning
+      while NetPdf depended on AngleSharp.Css 1.0.0-beta.144; AngleSharp.Css 1.1.2 is stable, so every
+      runtime dependency is now a stable release and the exception is removed. Do not re-add the demotion
+      without a written reason here.
     -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU5104</WarningsNotAsErrors>
   </PropertyGroup>
 
   <!-- NuGet package authoring best practices. -->

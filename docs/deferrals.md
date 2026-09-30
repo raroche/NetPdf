@@ -129,15 +129,23 @@ grepping the ID).
   three values before the cascade, so a `CssPreprocessor` value-gated recovery
   (`IsRectoVersoAllBreakValue`) now emits them verbatim so they reach the cascade. The
   `*:avoid` values set `AvoidBreak`, honored by the OPTIMIZING resolver's cost; the
-  production greedy `BreakResolver` is cost-insensitive, so avoid is currently inert there
-  (block-flow children are already emitted atomically, so this is not visibly wrong today).
+  production greedy `BreakResolver` is cost-insensitive. `break-after: avoid` / `break-before:
+  avoid` BETWEEN SIBLINGS now bite anyway through a keep-with-next LOOKAHEAD in `BlockLayouter`
+  (`KeepWithNextExtentPx` / `ApplyKeepWithNext`, all four block break sites + the mid-split entry):
+  the child's break-check chunk includes the part of the next sibling that must share its page
+  (a text block whole, a split-able block container its chrome + first child, a table / grid /
+  flex ~two lines), chained through up to three consecutive avoids, and applied only when both fit a
+  fresh page and the child is not first on its page (so a keep never strands content or loops) —
+  the 12-terms-and-conditions heading fix. `break-inside: avoid` on a box that doesn't fit is still
+  moved wholly by the block-flow path.
   `orphans` / `widows` flow to the resolver (read once off the document BODY box
   , NOT the synthetic root, which holds the initial default). Line-level paragraph
   splitting has since landed, and it honors per-paragraph `orphans` / `widows` at the cut (read
   off the paragraph's OWN computed value); the resolver-level body value still drives only the
   cost model (inert under the production greedy resolver, as above).
 - **Missing** — (1) the production driver using the optimizing (cost-aware) resolver so `*:avoid`
-  bites; (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
+  is weighed by cost (the keep-with-next lookahead covers the sibling-boundary case; its "next piece"
+  for a table / grid / flex is an estimate of two lines, not the real first row); (2) per-paragraph `orphans` / `widows` at line-break opportunities (needs line splitting).
   (left/right/recto/verso PARITY blank-page insertion — INCLUDING RTL, where the PHYSICAL `left`/
   `right` swap their page-number parity while `recto`/`verso` stay (page 1 is a recto) — the
   first-page starting side, + `recto`/`verso`/`all` parsing all SHIPPED.)
@@ -1299,14 +1307,14 @@ grepping the ID).
     iterations. The known-gap test
     `L8_known_gap_min_width_does_not_clamp_resolved_size_yet` is
     flipped to `L12_min_width_clamps_resolved_shrink_per_spec_step_4`
-    + asserts the spec-correct clamped sizes. Known gap:
-    `min-width: auto` (the cascade default for flex items) per CSS
-    Sizing L3 §5.5 resolves to the item's intrinsic content size
-    `ResolveFlexItemMinMaxMainSize` returns 0 for non-LengthPx
-    min slots (= a conservative floor pending intrinsic-sizing
-    integration). Percentage min/max-width also defers to
-    (needs per-item container main-size resolution at the resolver
-    site).
+    + asserts the spec-correct clamped sizes. `min-width: auto` (the cascade default for flex
+    items) is now the §4.5 AUTOMATIC MINIMUM on the ROW main axis (2026-09-30 corpus review, the
+    01-cruise "Email" row): when a line has to shrink, `ResolveFlexLineMainSizes` floors each item with
+    an auto min and visible overflow at its min-content (the content size suggestion, measured lazily by
+    `FlexLayouter.CreateRowAutomaticMinimumProvider`), capped by a definite `width` and by `max-width`.
+    Emission and the BlockLayouter pre-measure share the provider. Still approximated: the COLUMN main
+    axis (`min-height: auto` stays 0) and the transferred-size suggestion (aspect-ratio items).
+    Percentage min/max-width resolve against the container main size.
   - **Shared `FlexItemSizing` model unification** (
     architecture recommendation): the
     extracted `ResolveFlexItemHypotheticalMainSize` to a shared
@@ -1327,7 +1335,9 @@ grepping the ID).
     extent); e.g. `width: 200; flex-basis: content` produces the intrinsic
     content size (NOT 200). The old pin flipped to
     `Flex_basis_content_uses_intrinsic_content_size_ignoring_declared_width`.
-    **Still deferred**: the WRAP row main axis + `fit-content`.
+    **Still deferred**: the WRAP row main axis + `fit-content` as a `flex-basis`. (A non-stretched
+    auto-width item in a COLUMN flex IS now sized fit-content on the cross axis — the
+    11-course-completion-certificate seal ID — via `FlexLayouter.ColumnItemFitContentBorderBox`.)
   - ~~Anonymous flex-item wrapping for inline-level / text children~~
     ✅ shipped. The
     skip was replaced by `BoxBuilder.FixupFlexAnonymousItems`

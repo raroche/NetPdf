@@ -689,6 +689,53 @@ public sealed class CssParserAdapterPreprocessTests
         Assert.Equal(important, col.IsImportant);
     }
 
+    [Theory]
+    // CSS Overflow L3 §3.1 — AngleSharp.Css keeps `overflow` unexpanded and the engine registers only the
+    // longhands, so the preprocessor expands it: one value → both axes, two values → x then y.
+    [InlineData(".a { overflow: hidden }", "hidden", "hidden")]
+    [InlineData(".a { overflow: hidden auto }", "hidden", "auto")]
+    [InlineData(".a { overflow: CLIP }", "CLIP", "CLIP")]
+    [InlineData(".a { overflow: inherit }", "inherit", "inherit")]
+    public async Task Overflow_shorthand_sets_both_longhands(string css, string expectedX, string expectedY)
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+
+        Assert.Equal(expectedX, Assert.Single(rule.Declarations, d => d.Property == "overflow-x").Value.RawText);
+        Assert.Equal(expectedY, Assert.Single(rule.Declarations, d => d.Property == "overflow-y").Value.RawText);
+    }
+
+    [Theory]
+    [InlineData(".a { overflow: bogus }")]
+    [InlineData(".a { overflow: hidden auto scroll }")]
+    public async Task Invalid_overflow_shorthand_emits_no_longhands(string css)
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(css);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        foreach (var rule in stylesheet.Rules)
+        {
+            if (rule is not CssStyleRule styleRule) continue;
+            Assert.DoesNotContain(styleRule.Declarations, d => d.Property is "overflow-x" or "overflow-y");
+        }
+    }
+
+    [Fact]
+    public async Task Overflow_longhands_follow_source_order()
+    {
+        // The shorthand records share the preprocessor's source-order merge: a later explicit longhand
+        // overrides the shorthand's value for its axis only.
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { overflow: hidden; overflow-y: auto }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+
+        Assert.Equal("hidden", Assert.Single(rule.Declarations, d => d.Property == "overflow-x").Value.RawText);
+        Assert.Equal("auto", Assert.Single(rule.Declarations, d => d.Property == "overflow-y").Value.RawText);
+    }
+
     [Fact]
     public async Task Two_value_gap_is_left_alone()
     {

@@ -2,6 +2,8 @@
   href: index.md
 - name: Getting started
   href: getting-started.md
+- name: Page breaks
+  href: page-breaks.md
 - name: Compatibility
   href: compatibility.md
 - name: Diagnostics

@@ -5984,6 +5984,86 @@ public sealed class FlexLayouterTests
         Assert.Equal(150.0, minResolved[0], precision: 3);
     }
 
+    /// <summary>Two `width: 200` items (default flex-shrink 1) in a 300px row — a 100px deficit.</summary>
+    private static Box[] TwoShrinkingItems(System.Action<ComputedStyle>? tweakFirst = null)
+    {
+        var a = MakeStyle();
+        SetLengthPx(a, PropertyId.Width, 200);
+        tweakFirst?.Invoke(a);
+        var b = MakeStyle();
+        SetLengthPx(b, PropertyId.Width, 200);
+        return new[]
+        {
+            Box.ForElement(BoxKind.BlockContainer, a, MakeElement()),
+            Box.ForElement(BoxKind.BlockContainer, b, MakeElement()),
+        };
+    }
+
+    [Fact]
+    public void ResolveFlexLineMainSizes_floors_a_shrinking_item_at_its_automatic_minimum()
+    {
+        // CSS Flexbox L1 §4.5 — `min-width: auto` resolves to the content size suggestion (here a stub
+        // min-content of 180 for the first item, 20 for the second). The even 150/150 shrink violates the
+        // first item's floor, so it freezes at 180 and the second absorbs the rest (120).
+        var items = TwoShrinkingItems();
+        var resolved = FlexLayouter.ResolveFlexLineMainSizes(
+            items, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
+            mainGap: 0, cancellationToken: default,
+            automaticMinimumContentSize: box => ReferenceEquals(box, items[0]) ? 180 : 20);
+        Assert.Equal(180.0, resolved[0], precision: 3);
+        Assert.Equal(120.0, resolved[1], precision: 3);
+    }
+
+    [Fact]
+    public void ResolveFlexLineMainSizes_automatic_minimum_is_capped_by_max_width()
+    {
+        // The content size suggestion is clamped by the max main size: min-content 180 with max-width 160
+        // floors the item at 160, not 180 (the even 150 shrink violates it; the other item takes 140).
+        var items = TwoShrinkingItems(a => SetLengthPx(a, PropertyId.MaxWidth, 160));
+        var resolved = FlexLayouter.ResolveFlexLineMainSizes(
+            items, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
+            mainGap: 0, cancellationToken: default,
+            automaticMinimumContentSize: box => ReferenceEquals(box, items[0]) ? 180 : 20);
+        Assert.Equal(160.0, resolved[0], precision: 3);
+        Assert.Equal(140.0, resolved[1], precision: 3);
+    }
+
+    [Fact]
+    public void ResolveFlexLineMainSizes_explicit_min_width_replaces_the_automatic_minimum()
+    {
+        // An explicit `min-width: 0` opts out of §4.5 — the even shrink stands.
+        var items = TwoShrinkingItems(a => SetLengthPx(a, PropertyId.MinWidth, 0));
+        var resolved = FlexLayouter.ResolveFlexLineMainSizes(
+            items, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
+            mainGap: 0, cancellationToken: default,
+            automaticMinimumContentSize: box => ReferenceEquals(box, items[0]) ? 180 : 20);
+        Assert.Equal(150.0, resolved[0], precision: 3);
+        Assert.Equal(150.0, resolved[1], precision: 3);
+    }
+
+    [Fact]
+    public void ResolveFlexLineMainSizes_measures_the_automatic_minimum_only_when_the_line_shrinks()
+    {
+        // The min-content measure is a real layout pass, so it runs only when a line has negative free
+        // space. Two 100px items in 300px fit → the provider is never called.
+        var a = MakeStyle();
+        SetLengthPx(a, PropertyId.Width, 100);
+        var b = MakeStyle();
+        SetLengthPx(b, PropertyId.Width, 100);
+        var items = new[]
+        {
+            Box.ForElement(BoxKind.BlockContainer, a, MakeElement()),
+            Box.ForElement(BoxKind.BlockContainer, b, MakeElement()),
+        };
+        var calls = 0;
+        var resolved = FlexLayouter.ResolveFlexLineMainSizes(
+            items, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth, 300, containerDefiniteMainSize: 300,
+            mainGap: 0, cancellationToken: default,
+            automaticMinimumContentSize: _ => { calls++; return 250; });
+        Assert.Equal(0, calls);
+        Assert.Equal(100.0, resolved[0], precision: 3);
+    }
+
     [Fact]
     public void L8_flex_grow_distributes_positive_free_space_proportionally()
     {

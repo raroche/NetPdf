@@ -16,7 +16,7 @@ a **pass-rate**.
 | Category | Pass-rate | Roadmap target | Status |
 |---|---|---|---|
 | CSS 2.2 layout | **100%** (30/30) | ≥ 90% | ✅ met |
-| Fragmentation | **100%** (12/12) | ≥ 80% | ✅ met |
+| Fragmentation | **100%** (21/21) | ≥ 80% | ✅ met |
 | Flexbox L1 | **100%** (19/19) | ≥ 85% | ✅ met |
 | Grid L1 | **100%** (15/15) | ≥ 70% | ✅ met |
 | Backgrounds & Borders † | **100%** (6/6) | ≥ 90% | ✅ met |
@@ -110,7 +110,10 @@ becomes expressible as a `BoxFragment` geometry assertion.
 an auto-height block's painted border box now spans its in-flow children, capped to the
 page fragment (CSS 2.2 → **100%**; `auto-height-emit-vs-pagination`). **Closed by the
 CSS Fragmentation control PR:** `break-before` / `break-after` (+ legacy `page-break-*`)
-forced breaks propagate through fitting ancestors (Fragmentation → 100%). **Closed by the
+forced breaks propagate through fitting ancestors (Fragmentation → 100%). The 2026-09-30 corpus
+review added nine `break-*: avoid` keep-with-next cases (top-level, nested, chained, the legacy alias,
+a kept first child of a section, a split-able next section, the fresh-page fallback and the page-start
+guard) — all passing. **Closed by the
 sizing-residuals PR:** grid `fr` tracks subtract the gutters from their distributed free
 space (Grid → 100%); percentage min/max-width/height resolve against the containing block;
 percentage `column-gap`/`row-gap` resolve against the container content box. **Closed by

@@ -2631,6 +2631,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // record its parity now for the driver's blank-page (`@page :blank`) insertion.
             if (forceBreakBefore && forceParityBefore != PageParity.Any)
                 _forcedBreakParityForNextPage = forceParityBefore;
+            // CSS Fragmentation §3.2 — keep this child with the next one across a `break-after: avoid`
+            // boundary: if both don't fit, break BEFORE this child. Never at the page start (forward progress).
+            if (!atFragmentainerStart && !forceBreakBefore)
+            {
+                chunkForBreakCheck = ApplyKeepWithNext(
+                    chunkForBreakCheck, _rootBox, childIdx, fragmentainer.ContentInlineSize,
+                    parentContentBlockSize: 0, allowEnterAndSplit: false,
+                    freshPageCapacityPx: fragmentainer.BlockSize - initialUsed, cancellationToken);
+            }
             var opportunity = BreakOpportunity.Block(
                 usedBlockSize: fragmentainer.UsedBlockSize,
                 chunkBlockSize: chunkForBreakCheck,
@@ -5194,11 +5203,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (inlineVisualChunk > InlineOnlyBreakMinExtentPx)
                     {
                         var inlineChildStart = Math.Max(0, contentTop + childCursor + inlineOnlyMarginStart);
+                        // CSS Fragmentation §3.2 — keep with the next sibling across a `break-after: avoid`
+                        // boundary (a heading followed by its section). The forward-progress guard above
+                        // already ensures this is not the first thing on the page.
+                        var inlineKeepChunk = ApplyKeepWithNext(
+                            inlineVisualChunk, parent, childIdx, contentInlineSize, parentContentBlockSize,
+                            allowEnterAndSplit: true, freshPageCapacityPx: pfInline.BlockSize, cancellationToken);
                         var savedUsedBlockSizeInline = pfInline.UsedBlockSize;
                         pfInline.UsedBlockSize = inlineChildStart;
                         var inlineDecision = propagatingResolver.ConsiderBreakAt(
                             BreakOpportunity.Block(
-                                usedBlockSize: inlineChildStart, chunkBlockSize: inlineVisualChunk,
+                                usedBlockSize: inlineChildStart, chunkBlockSize: inlineKeepChunk,
                                 avoidBreak: childAvoidBreak),
                             pfInline);
                         pfInline.UsedBlockSize = savedUsedBlockSizeInline;
@@ -5484,6 +5499,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     {
                         breakChunk = firstChildExtent;
                     }
+                }
+                // CSS Fragmentation §3.2 — a child placed WHOLE keeps with its next sibling across a
+                // `break-after: avoid` boundary (not when it is being entered-and-split above).
+                if (breakChunk == childEffectiveBlockSize)
+                {
+                    breakChunk = ApplyKeepWithNext(
+                        breakChunk, parent, childIdx, contentInlineSize, parentContentBlockSize,
+                        allowEnterAndSplit: true, freshPageCapacityPx: pf.BlockSize, cancellationToken);
                 }
                 var savedUsedBlockSize = pf.UsedBlockSize;
                 pf.UsedBlockSize = childStart;
@@ -8032,10 +8055,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // AnonymousBlock SHARES its parent's style object (Display L3 §3.1 — anonymous boxes
         // take the initial `width: auto`), and a TableCell's width is a table-grid input
         // floored at min-content, so both keep the `> 0` legacy read.
-        var explicitWidth = inlineOnlyBlock.Kind is BoxKind.BlockContainer or BoxKind.ListItem
+        // A flex / grid item's OWN inline content laid out by the nested item-content pass
+        // (`_layoutRootInlineContent`, root == the item): the OUTER layouter already resolved the item's
+        // `width` / `min-width` / `max-width` and hands us the result as the available size. Re-applying
+        // them here resolved a percentage TWICE — `li { width: 50% }` wrapped its text at 25% of the list
+        // (the 06-travel-voucher "What's Included" lines) — so the item's text fills what it was given.
+        var sizedByOuterLayouter = _layoutRootInlineContent && ReferenceEquals(inlineOnlyBlock, _rootBox);
+        var explicitWidth = !sizedByOuterLayouter
+            && inlineOnlyBlock.Kind is BoxKind.BlockContainer or BoxKind.ListItem
             && HasExplicitWidth(inlineOnlyBlock);
         double borderBoxInlineSize;
-        if (metrics.DeclaredWidthPx > 0 || explicitWidth)
+        if (sizedByOuterLayouter)
+        {
+            borderBoxInlineSize = Math.Max(0,
+                containingInlineSize - metrics.MarginInlineStart - metrics.MarginInlineEnd);
+        }
+        else if (metrics.DeclaredWidthPx > 0 || explicitWidth)
         {
             // Body `box-sizing` (box-sizing cycle): border-box → the declared width IS the
             // border box (floored at the insets); content-box (initial) adds them — the
@@ -8725,6 +8760,123 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return (force, avoid, parity);
     }
 
+    /// <summary>How many consecutive <c>break-after: avoid</c> boundaries <see cref="KeepWithNextExtentPx"/>
+    /// follows (e.g. an <c>h2</c> then an <c>h3</c> then a paragraph). Bounds the lookahead cost.</summary>
+    private const int KeepWithNextMaxChain = 3;
+
+    /// <summary>CSS Fragmentation L3 §3.2 / §4.4 — "keep with next". When the boundary AFTER the child at
+    /// <paramref name="childIdx"/> is <c>break-after: avoid</c> (or the next sibling is <c>break-before:
+    /// avoid</c>), returns the block extent of the next in-flow sibling that must share this page with the
+    /// child for that boundary not to become the break. The greedy resolver does not weigh the avoid cost,
+    /// so without this lookahead a heading fits, the block after it does not, and the break lands exactly
+    /// on the avoided boundary — leaving the heading alone at the page bottom.
+    /// <para>The extent mirrors how the next sibling actually paginates: a text block moves to the next
+    /// page WHOLE when it doesn't fit (so its whole extent is needed); a block-flow container entered by
+    /// the mid-split (<paramref name="allowEnterAndSplit"/>, the nested recursion) needs only its chrome +
+    /// its first child; a table / grid / multicol / flex that paginates internally needs roughly its first
+    /// two lines. When the next sibling rides along wholly and ITSELF keeps with its next, the chain is
+    /// followed (bounded by <see cref="KeepWithNextMaxChain"/>). Returns 0 when there is no such
+    /// boundary.</para></summary>
+    private double KeepWithNextExtentPx(
+        Box parent, int childIdx, double contentInlineSize, double parentContentBlockSize,
+        bool allowEnterAndSplit, CancellationToken cancellationToken, int chain = 0)
+    {
+        if (chain >= KeepWithNextMaxChain)
+        {
+            return 0;
+        }
+        var child = parent.Children[childIdx];
+        var nextIdx = -1;
+        for (var i = childIdx + 1; i < parent.Children.Count; i++)
+        {
+            var candidate = parent.Children[i];
+            if (candidate.Style.IsOutOfFlow() || candidate.Style.ReadFloatSide().HasValue)
+            {
+                continue;
+            }
+            if (candidate.IsBlockLevel)
+            {
+                nextIdx = i;
+            }
+            break;
+        }
+        if (nextIdx < 0)
+        {
+            return 0;
+        }
+        var next = parent.Children[nextIdx];
+        // An AnonymousBlock shares its PARENT's style object (CSS 2.2 §9.2.1.1), so its break-* values are
+        // the parent's, not its own — never read them as this boundary's.
+        var avoidAfter = child.Kind != BoxKind.AnonymousBlock && child.Style.AvoidsPageBreakAfter();
+        var avoidBefore = next.Kind != BoxKind.AnonymousBlock && next.Style.AvoidsPageBreakBefore();
+        if (!avoidAfter && !avoidBefore)
+        {
+            return 0;
+        }
+
+        double piece;
+        bool ridesWhole;
+        if (IsInlineOnlyBlockContainer(next))
+        {
+            // A text block that doesn't fit the remaining space moves to the next page whole.
+            piece = MeasureInlineOnlyBlockExtent(next, contentInlineSize, out _, cancellationToken);
+            ridesWhole = true;
+        }
+        else
+        {
+            var full = MeasureSubtreeVisualBlockExtent(next, cancellationToken, parentContentBlockSize);
+            var chromeStart = next.Style.ReadLengthPxOrZero(PropertyId.MarginTop)
+                + next.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
+                + next.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+            if (IsBlockFlowContainerOwnedByBlockLayouter(next))
+            {
+                piece = full;
+                ridesWhole = true;
+                if (allowEnterAndSplit && MidSplitEnabled && IsEnterAndSplitEligible(next))
+                {
+                    var first = EstimateFirstInFlowChildExtent(next, cancellationToken, parentContentBlockSize);
+                    if (first > 0 && chromeStart + first < full)
+                    {
+                        piece = chromeStart + first;
+                        ridesWhole = false;
+                    }
+                }
+            }
+            else
+            {
+                // Table / grid / multicol / flex / replaced: paginates internally (or its extent is opaque
+                // to the cheap measure) — ask for its first ~two lines so the heading is not stranded.
+                var fontSizePx = next.Style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+                var lineHeightPx = next.Style.ReadLineHeightPx(fontSizePx) ?? fontSizePx * 1.2;
+                var twoLines = chromeStart + 2 * lineHeightPx;
+                piece = full > 1.0 ? Math.Min(full, twoLines) : twoLines;
+                ridesWhole = full > 1.0 && full <= twoLines;
+            }
+        }
+
+        if (ridesWhole)
+        {
+            piece += KeepWithNextExtentPx(
+                parent, nextIdx, contentInlineSize, parentContentBlockSize,
+                allowEnterAndSplit, cancellationToken, chain + 1);
+        }
+        return Math.Max(0, piece);
+    }
+
+    /// <summary>Grow a break-check chunk by the "keep with next" extent (see
+    /// <see cref="KeepWithNextExtentPx"/>) — but only when the child plus that extent fits a FRESH page
+    /// (<paramref name="freshPageCapacityPx"/>). If even a fresh page can't hold both, moving the child
+    /// would not keep them together, so the chunk is left as-is (no wasted page). Byte-identical when
+    /// no avoid boundary follows the child.</summary>
+    private double ApplyKeepWithNext(
+        double chunk, Box parent, int childIdx, double contentInlineSize, double parentContentBlockSize,
+        bool allowEnterAndSplit, double freshPageCapacityPx, CancellationToken cancellationToken)
+    {
+        var extra = KeepWithNextExtentPx(
+            parent, childIdx, contentInlineSize, parentContentBlockSize, allowEnterAndSplit, cancellationToken);
+        return extra > 0 && chunk + extra <= freshPageCapacityPx ? chunk + extra : chunk;
+    }
+
     /// <summary>Extra clearance (px) inserted ABOVE an inline-only (text-bearing) block's margin-top so its
     /// border-box top clears the relevant float(s). CSS 2.2 §9.5.2: the border-box top is
     /// <c>max(hypothetical-top, cleared-float-bottom)</c> — NOT marginTop STACKED on the float bottom — so
@@ -8932,6 +9084,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the page; record its parity for the driver's blank-page insertion.
         if (inlineForceBreak && inlineForceParity != PageParity.Any)
             _forcedBreakParityForNextPage = inlineForceParity;
+        // CSS Fragmentation §3.2 — keep a heading (etc.) with the block after it across a
+        // `break-after: avoid` boundary. Never at the page start (forward progress).
+        if (!inlineAtFragmentainerStart && !inlineForceBreak)
+        {
+            chunkForBreakCheck = ApplyKeepWithNext(
+                chunkForBreakCheck, _rootBox, childIdx, fragmentainer.ContentInlineSize,
+                parentContentBlockSize: 0, allowEnterAndSplit: false,
+                freshPageCapacityPx: fragmentainer.BlockSize - initialUsed, cancellationToken);
+        }
         var opportunity = BreakOpportunity.Block(
             usedBlockSize: fragmentainer.UsedBlockSize,
             chunkBlockSize: chunkForBreakCheck,
@@ -10289,13 +10450,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         Box container, CancellationToken cancellationToken, double parentContentBlockSize)
     {
         Box? first = null;
-        foreach (var c in container.Children)
+        var firstIdx = -1;
+        for (var i = 0; i < container.Children.Count; i++)
         {
+            var c = container.Children[i];
             if (c.Style.IsOutOfFlow() || c.Style.ReadFloatSide().HasValue || !c.IsBlockLevel)
             {
                 continue;
             }
             first = c;
+            firstIdx = i;
             break;
         }
         if (first is null)
@@ -10305,7 +10469,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var direct = MeasureSubtreeVisualBlockExtent(first, cancellationToken, parentContentBlockSize);
         if (direct > 1.0)
         {
-            return direct;
+            // CSS Fragmentation §3.2 — a first child with `break-after: avoid` (a section heading) can't
+            // be left alone at the page bottom, so the unit that must fit to enter here is the heading
+            // PLUS what it keeps with. Without this the container is entered, the heading emitted, and
+            // the break lands on the avoided boundary right after it.
+            var containerContentInline = Math.Max(0.0, _bfcContentInlineSize
+                - container.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
+                - container.Style.ReadLengthPxOrZero(PropertyId.MarginRight)
+                - container.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                - container.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+                - container.Style.ReadLengthPxOrZero(PropertyId.PaddingRight)
+                - container.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth));
+            return direct + KeepWithNextExtentPx(
+                container, firstIdx, containerContentInline, parentContentBlockSize,
+                allowEnterAndSplit: true, cancellationToken);
         }
         // The standalone measure came back opaque (~0) — the first child is a non-block-flow box whose
         // content the measure doesn't fold (e.g. an auto-height flex that isn't paginatable). Measure
@@ -11229,7 +11406,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // block-level flex container — so the definite main size equals flexContentInlineSize.
             ? FlexLayouter.ResolveFlexLineMainSizes(
                 lineItems, PropertyId.Width, PropertyId.MinWidth, PropertyId.MaxWidth,
-                flexContentInlineSize, flexContentInlineSize, mainGap, cancellationToken, intrinsicBaseSizes)
+                flexContentInlineSize, flexContentInlineSize, mainGap, cancellationToken, intrinsicBaseSizes,
+                // CSS Flexbox L1 §4.5 automatic minimum — the SAME provider the emission uses, so the
+                // pre-measured widths (and wrapped heights) match the emitted ones.
+                FlexLayouter.CreateRowAutomaticMinimumProvider(_shaperResolver, cancellationToken))
             : System.Array.Empty<double>();
 
         // Flex baseline-alignment cycle [P1] — when the container uses align-items /

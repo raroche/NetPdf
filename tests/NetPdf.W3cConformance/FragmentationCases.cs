@@ -156,5 +156,125 @@ internal static class FragmentationCases
                 new BoxExpectation("b", Page: 1, Y: 0),
             },
             PageHeightPx: 400),
+
+        // §3.2 — `break-after: avoid` keeps a block with its next sibling: b fits under a, but c does
+        // not, so breaking between b and c would violate the avoid. The break moves up to a|b instead
+        // (b + c start page 1). The greedy resolver ignores the avoid cost, so this is the keep-with-next
+        // lookahead.
+        new ConformanceCase("frag-break-after-avoid-keeps-with-next", "CSS Fragmentation L3 §3.2",
+            Doc(Block("a", 250) + "<div id='b' style='height:100px;break-after:avoid'></div>" + Block("c", 100)),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 100),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 — the same boundary marked from the other side: `break-before: avoid` on c.
+        new ConformanceCase("frag-break-before-avoid-keeps-with-previous", "CSS Fragmentation L3 §3.2",
+            Doc(Block("a", 250) + Block("b", 100) + "<div id='c' style='height:100px;break-before:avoid'></div>"),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 100),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 — the keep also holds inside a wrapper (the nested recursion path), where real documents put
+        // their headings (the 12-terms-and-conditions corpus case).
+        new ConformanceCase("frag-break-after-avoid-nested", "CSS Fragmentation L3 §3.2",
+            Doc("<div id='w'>" + Block("a", 250)
+                + "<div id='b' style='height:100px;break-after:avoid'></div>" + Block("c", 100)
+                + Block("d", 100) + "</div>"),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 100),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 — consecutive avoids chain: b keeps with c, c keeps with d, so all three move together.
+        new ConformanceCase("frag-break-after-avoid-chain", "CSS Fragmentation L3 §3.2",
+            Doc(Block("a", 200)
+                + "<div id='b' style='height:60px;break-after:avoid'></div>"
+                + "<div id='c' style='height:60px;break-after:avoid'></div>"
+                + Block("d", 100)),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 60),
+                new BoxExpectation("d", Page: 1, Y: 120),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 / §4.4 — avoid is a preference: when b + c can't share even a FRESH page, moving b would
+        // not keep them together, so b stays and the break lands on the avoided boundary.
+        new ConformanceCase("frag-break-after-avoid-yields-when-unkeepable", "CSS Fragmentation L3 §3.2",
+            Doc(Block("a", 100) + "<div id='b' style='height:100px;break-after:avoid'></div>" + Block("c", 350)),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 0, Y: 100),
+                new BoxExpectation("c", Page: 1, Y: 0),
+            },
+            PageHeightPx: 400),
+
+        // §4.4 forward progress — the first block on a page keeps its place even under a keep (moving it
+        // could only produce an empty page): b starts page 0 and stays, c goes to page 1.
+        new ConformanceCase("frag-break-after-avoid-at-page-start", "CSS Fragmentation L3 §4.4",
+            Doc("<div id='b' style='height:300px;break-after:avoid'></div>" + Block("c", 200)),
+            new[]
+            {
+                new BoxExpectation("b", Page: 0, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 0),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 + CSS 2.1 §13.3.1 — the legacy `page-break-after: avoid` alias keeps with next exactly like
+        // `break-after: avoid`.
+        new ConformanceCase("frag-page-break-after-avoid-legacy-alias", "CSS 2.1 §13.3.1 / Fragmentation L3 §3.2",
+            Doc(Block("a", 250) + "<div id='b' style='height:100px;page-break-after:avoid'></div>" + Block("c", 100)),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 100),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 — a section whose FIRST child is a kept heading is not entered when heading + the block
+        // after it don't fit: the whole section starts the next page (the heading is not stranded at the
+        // bottom as the section's only content on this page).
+        new ConformanceCase("frag-break-after-avoid-first-child-of-section", "CSS Fragmentation L3 §3.2",
+            Doc("<div id='w'>" + Block("a", 250)
+                + "<div id='s'><div id='b' style='height:100px;break-after:avoid'></div>"
+                + Block("c", 100) + Block("d", 100) + "</div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 1, Y: 0),
+                new BoxExpectation("c", Page: 1, Y: 100),
+            },
+            PageHeightPx: 400),
+
+        // §3.2 — when the block after the kept one can itself be split (a section with several children),
+        // only its FIRST child has to fit: b stays, the section starts under it with c, and the rest (d)
+        // continues on the next page. The keep does not move more than it must.
+        new ConformanceCase("frag-break-after-avoid-next-section-splits", "CSS Fragmentation L3 §3.2",
+            Doc("<div id='w'>" + Block("a", 200)
+                + "<div id='b' style='height:50px;break-after:avoid'></div>"
+                + "<div id='s'>" + Block("c", 100) + Block("d", 300) + "</div></div>"),
+            new[]
+            {
+                new BoxExpectation("a", Page: 0, Y: 0),
+                new BoxExpectation("b", Page: 0, Y: 200),
+                new BoxExpectation("c", Page: 0, Y: 250),
+                new BoxExpectation("d", Page: 1, Y: 0),
+            },
+            PageHeightPx: 400),
     };
 }

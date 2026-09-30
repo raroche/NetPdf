@@ -35,7 +35,8 @@ surprising.
 - **Layout** — block, inline, flex, grid (Level 1), tables, and multi-column, all fragmentation-aware
   across pages.
 - **Paged media** — `@page`, the 16 margin boxes, running headers/footers via `string()` / `element()`,
-  `counter(page)`, orphans / widows, and `break-before` / `break-after` / `break-inside`.
+  `counter(page)`, orphans / widows, and `break-before` / `break-after` / `break-inside` (see
+  [Controlling page breaks](page-breaks.md)).
 - **Visual** — gradients (linear / radial / conic), box- and text-shadows, 2-D transforms, borders +
   `border-radius` + `border-image`, `clip-path`, multi-layer backgrounds, `opacity`, and CSS filters on
   images.

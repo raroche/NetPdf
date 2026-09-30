@@ -6,13 +6,28 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 Post-`1.1.0` improvements accumulate here until the next release is cut.
 
+## [1.1.0]
+
+A minor release: stable dependencies, page-break and flexbox layout fixes, security hardening for untrusted HTML, and a default render time limit. Every runtime dependency is now a stable release, and the current AngleSharp vulnerability warning is resolved.
+
 ### Added
 - **Page-break guide** ([docs-site/page-breaks.md](docs-site/page-breaks.md), linked from the README): how NetPdf chooses each page break, forced and avoided breaks and their limits, recipes, and troubleshooting.
-- **`SecurityPolicy.RenderTimeout`** — a default hard cap on conversion time for renders that use the policy. `SecurityPolicy.UntrustedHtml` now defaults to **30 seconds**, so a hostile document cannot hold a worker indefinitely when the caller sets no timeout. `SafeDefault` and `TrustedTemplate` stay uncapped. An explicit `HtmlPdfOptions.Timeout` always wins, and `Timeout.InfiniteTimeSpan` removes the cap. The `TimeoutException` message names which setting fired.
+- **`SecurityPolicy.RenderTimeout`** — a default time limit on conversion for renders that use the policy. `SecurityPolicy.UntrustedHtml` now defaults to **30 seconds**, so a pathological document is stopped even when the caller sets no timeout. The limit is cooperative: the render ends with a `TimeoutException` at the pipeline's next cancellation check after the deadline (checks run between layout pages, in resource loading, and after PDF serialization), so a single long step can overrun it — run untrusted input in an isolated process as well (see `docs/security/deployment.md`). `SafeDefault` and `TrustedTemplate` stay uncapped. An explicit `HtmlPdfOptions.Timeout` always wins, and `Timeout.InfiniteTimeSpan` removes the cap. The `TimeoutException` message names which setting fired, and a cancellation the timer did not cause is no longer reported as a timeout.
+
+### Changed
+- Updated **AngleSharp** to 1.8.2 (resolves GHSA-pgww-w46g-26qg).
+- Updated **AngleSharp.Css** from the 1.0.0-beta.144 prerelease to the stable **1.1.2**. Every runtime dependency is now a stable release, so the `NU5104` prerelease-dependency exception is gone.
+- Updated bundled native/runtime dependencies to **SkiaSharp** 4.153.1 and **HarfBuzzSharp** 14.2.1.301, and migrated call sites away from APIs newly obsolete in SkiaSharp 4.x.
+- Updated build and test tooling, including **Microsoft.NET.Test.Sdk** 18.10.1, **xunit.runner.visualstudio** 4.0.0, **coverlet.collector** 10.1.0, **BenchmarkDotNet** 0.15.8, **Microsoft.Playwright** 1.63.0, **PDFtoImage** 5.4.0, **docfx** 2.81.0, and **Microsoft.SourceLink.GitHub** 10.0.401.
+- Updated CI actions to **actions/setup-dotnet** v6 and **github/codeql-action** v4.
+- `Timeout = Timeout.InfiniteTimeSpan` now means "no limit". It previously cancelled immediately, like any negative value.
 
 ### Fixed
+- `@layer` blocks now apply, in layer order. Previously their rules were dropped with `CSS-AT-RULE-UNKNOWN-001`.
+- An `!important` grid longhand now correctly beats a later normal shorthand in the same rule (for example `grid-row-end: 6 !important; grid-row: 2 / 4` now ends at line 6).
+- A single-value `gap` / `grid-gap` sets both the row and the column gap again (AngleSharp.Css 1.1.x left the column gap empty).
 - **`break-after: avoid` / `break-before: avoid` now keep a heading with its content.** A heading that fitted at the page bottom while the block after it did not was left alone on the page; it now moves to the next page with its section (also inside wrapper elements, and across up to three consecutive avoided boundaries). A keep never moves the first block on a page, is dropped when the two blocks cannot share even a fresh page, and gives way to a forced break at the same boundary.
-- **Column flexbox items are sized fit-content.** An auto-width item in a `flex-direction: column` container that is not stretched (`align-items: center`, `flex-end`, …) was placed as if 0 wide, so centered text started at the center line and the item's background was missing.
+- **Column flexbox items are sized fit-content.** An auto-width item in a `flex-direction: column` container that is not stretched (`align-items: center`, `flex-end`, …) is now fit-content wide (clamped by its `min-width` / `max-width`); it was placed as if 0 wide, so centered text started at the center line and the item's background was missing.
 - **A flex item's own text uses its percentage width once.** `li { width: 50% }` in a row flexbox wrapped its text at a quarter of the container, because the percentage was applied again when the item's text was laid out.
 - **A padded flex item's text uses its whole content box.** The item's border and padding were subtracted twice from the width its own text was laid out at, so the text wrapped early.
 - **Flex items no longer shrink below their longest word.** `min-width: auto` on a row flex item is now the automatic minimum size (CSS Flexbox §4.5), so a long value in a `justify-content: space-between` row overflows the row instead of overlapping its label. `min-width: 0` or a scroll container (`overflow: hidden` / `scroll` / `auto`) opts out, as in browsers; `overflow: clip` does not.
@@ -21,21 +36,6 @@ Post-`1.1.0` improvements accumulate here until the next release is cut.
 ### Security
 - **SSRF: IPv6 forms that embed an IPv4 address are now blocked.** NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), IPv4-compatible (`::a.b.c.d`) and IPv4-translated (`::ffff:0:a.b.c.d`) addresses are checked against the IPv4 blocklist, so `64:ff9b::a9fe:a9fe` can no longer reach `169.254.169.254`. Local-use NAT64, Teredo, site-local (`fec0::/10`) and discard-only (`100::/64`) ranges are blocked outright. Public addresses reached through NAT64 or 6to4 keep working. Only affects deployments that enable `http`/`https` fetching; the default policies do not.
 - **The built-in HTTP loader ignores ambient proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`). Routing through a proxy bypassed the loader's pinned-IP connect, which is its defense against DNS rebinding. Deployments that need an egress proxy should supply their own `IResourceLoader`.
-
-## [1.1.0]
-
-A minor dependency refresh release that resolves the current AngleSharp vulnerability warning, consolidates the compatible open Dependabot runtime/test-tooling/CI action updates, and migrates code away from SkiaSharp APIs newly obsolete in SkiaSharp 4.x.
-
-### Changed
-- Updated **AngleSharp** to 1.8.2 (resolves GHSA-pgww-w46g-26qg).
-- Updated **AngleSharp.Css** from the 1.0.0-beta.144 prerelease to the stable **1.1.2**. Every runtime dependency is now a stable release, so the `NU5104` prerelease-dependency exception is gone.
-- Updated bundled native/runtime dependencies to **SkiaSharp** 4.153.1 and **HarfBuzzSharp** 14.2.1.301.
-- Updated build and test tooling, including **Microsoft.NET.Test.Sdk** 18.10.1, **xunit.runner.visualstudio** 4.0.0, **coverlet.collector** 10.1.0, **BenchmarkDotNet** 0.15.8, **Microsoft.Playwright** 1.63.0, **PDFtoImage** 5.4.0, **docfx** 2.81.0, and **Microsoft.SourceLink.GitHub** 10.0.401.
-
-### Fixed
-- `@layer` blocks now apply, in layer order. Previously their rules were dropped with `CSS-AT-RULE-UNKNOWN-001`.
-- An `!important` grid longhand now correctly beats a later normal shorthand in the same rule (for example `grid-row-end: 6 !important; grid-row: 2 / 4` now ends at line 6).
-- Updated CI actions to **actions/setup-dotnet** v6 and **github/codeql-action** v4.
 
 ## [1.0.2]
 

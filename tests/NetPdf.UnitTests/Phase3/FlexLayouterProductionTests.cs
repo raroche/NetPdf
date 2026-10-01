@@ -1832,6 +1832,34 @@ public sealed class FlexLayouterProductionTests
             $"card ends at {card.BlockOffset + card.BlockSize:0.#}, row ends at {kv.BlockOffset + kv.BlockSize:0.#}");
     }
 
+    [Theory]
+    [InlineData("padding: 0 0 10% 0", 0)]       // block-axis % padding: 10% of the 600px root = 60px, inside the box
+    [InlineData("padding: 10% 0 0 0", 0)]
+    [InlineData("padding: 0 0 60px 0", 0)]       // bottom padding taller than the content
+    [InlineData("padding: 24px", 0)]
+    [InlineData("margin-bottom: 10%", 60)]      // a % margin resolves against the containing width, outside the box
+    public async Task Percentage_block_insets_are_measured_so_the_next_box_starts_after_them(
+        string insetCss, double gapAfterBox)
+    {
+        // PR #385 review — the measure pass read nested boxes' % padding / margins as 0 (they are rewritten to
+        // used px only when the box is emitted), so the box after them was placed inside them.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .card { {{insetCss}}; }
+            </style></head><body>
+            <div class="wrap"><div class="card"><div>AAAA</div></div><div class="next"><div>BBBB</div></div></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var card = GeometryFragment(sink, "card");
+        var next = GeometryFragment(sink, "next");
+        Assert.True(card.BlockSize + gapAfterBox >= 19.2 + 24 - 0.5, $"card {card.BlockOffset:0.#}+{card.BlockSize:0.#}, next {next.BlockOffset:0.#}+{next.BlockSize:0.#}");
+        Assert.True(next.BlockOffset >= card.BlockOffset + card.BlockSize + gapAfterBox - 0.5,
+            $"next starts at {next.BlockOffset:0.#}, card ends at {card.BlockOffset + card.BlockSize:0.#}");
+    }
+
     [Fact]
     public async Task Column_flex_stretched_item_keeps_the_full_width()
     {

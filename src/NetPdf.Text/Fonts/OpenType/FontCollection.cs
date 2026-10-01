@@ -16,7 +16,8 @@ namespace NetPdf.Text.Fonts.OpenType;
 /// <b>Extraction model.</b> The rest of NetPdf (the safety validator, <see cref="OpenTypeFont.Parse"/>,
 /// HarfBuzz, the PDF subsetter) works on one standalone sfnt. <see cref="ExtractFace(string, int)"/>
 /// copies the chosen face's tables into a new single-font sfnt (sorted directory, 4-byte-aligned tables,
-/// recomputed <c>head.checkSumAdjustment</c>), so those paths need no collection awareness.
+/// recomputed <c>head.checkSumAdjustment</c>, Apple <c>'true'</c> written as <c>0x00010000</c>), so those
+/// paths need no collection awareness.
 /// </para>
 /// <para>
 /// <b>Bounded reads.</b> System collections can be large (CJK and emoji collections pass 50 MB), so the
@@ -216,7 +217,10 @@ internal static class FontCollection
         // searchRange / entrySelector / rangeShift (OpenType §"Table directory").
         var entrySelector = (ushort)Math.Floor(Math.Log2(numTables));
         var searchRange = (ushort)((1 << entrySelector) * 16);
-        BinaryPrimitives.WriteUInt32BigEndian(span, face.SfntVersion);
+        // Apple's 'true' signature marks TrueType outlines; write the standard 0x00010000 so the safety
+        // validator, which recognizes only the OpenType signatures, accepts the extracted face.
+        BinaryPrimitives.WriteUInt32BigEndian(span,
+            face.SfntVersion == OpenTypeTags.SfntVersionAppleTrue ? OpenTypeTags.SfntVersionTtf : face.SfntVersion);
         BinaryPrimitives.WriteUInt16BigEndian(span[4..], numTables);
         BinaryPrimitives.WriteUInt16BigEndian(span[6..], searchRange);
         BinaryPrimitives.WriteUInt16BigEndian(span[8..], entrySelector);

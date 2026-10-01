@@ -334,6 +334,51 @@ public sealed class FontCollectionTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task An_apple_true_signature_face_resolves_as_a_standard_truetype_font()
+    {
+        // PR #386 review — a face whose directory uses Apple's 'true' sfnt signature was indexed, but the
+        // safety validator (which knows only 0x00010000 / OTTO) rejected the extracted bytes, so it never
+        // resolved. Extraction now writes the standard TrueType signature.
+        var collection = StandardCollection();
+        var dir0 = (int)BinaryPrimitives.ReadUInt32BigEndian(collection.AsSpan(12));
+        BinaryPrimitives.WriteUInt32BigEndian(collection.AsSpan(dir0), OpenTypeTags.SfntVersionAppleTrue);
+
+        var face = FontCollection.ExtractFace(collection, 0);
+        Assert.Equal(OpenTypeTags.SfntVersionTtf, BinaryPrimitives.ReadUInt32BigEndian(face));
+        Assert.True(FontSafetyValidator.Validate(face).IsSafe);
+
+        var data = await ResolverOver(collection).ResolveAsync(
+            new FontQuery { Family = Family, WeightCss = 400 }, CancellationToken.None);
+        Assert.NotNull(data);
+    }
+
+    [Fact]
+    public async Task A_broken_face_does_not_hide_the_next_generic_fallback_family()
+    {
+        // PR #386 review — for a CSS generic, the resolver picked the first installed family of the chain;
+        // when that family's collection face failed its full parse, it returned null instead of trying the
+        // next family. "sans-serif" walks Arial → Helvetica → …: here Arial's face is broken, Helvetica's works.
+        var good = StandardCollection();
+        var broken = (byte[])good.Clone();
+        var maxp = FontCollection.ReadFaceDirectory(
+            FontCollection.Source.FromMemory(broken), BinaryPrimitives.ReadUInt32BigEndian(broken.AsSpan(12)));
+        Assert.True(maxp.TryGet(OpenTypeTags.Maxp, out var record));
+        BinaryPrimitives.WriteUInt32BigEndian(broken.AsSpan((int)record.Offset), 0x7FFF0000u);
+        var brokenPath = WriteCollection(broken, "broken.ttc");
+        var goodPath = WriteCollection(good, "good.ttc");
+
+        SystemFontEntry Entry(string path, string family) =>
+            SystemFontEnumerator.IndexCollection(path)[0] with { FamilyName = family };
+        var resolver = new SystemFontResolver(SystemFontIndex.BuildFromEntries(
+            [Entry(brokenPath, "Arial"), Entry(goodPath, "Helvetica")]));
+
+        var data = await resolver.ResolveAsync(new FontQuery { Family = "sans-serif", WeightCss = 400 }, CancellationToken.None);
+
+        Assert.NotNull(data);
+        Assert.Equal("Helvetica", data!.Family);
+    }
+
     [Theory]
     [InlineData("400", "SynthColl-Regular")]
     [InlineData("700", "SynthColl-Bold")]

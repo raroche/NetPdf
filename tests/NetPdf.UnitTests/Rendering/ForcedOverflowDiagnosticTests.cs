@@ -63,6 +63,20 @@ public sealed class ForcedOverflowDiagnosticTests
     }
 
     [Fact]
+    public void Break_inside_avoid_region_taller_than_a_page_splits_between_its_children()
+    {
+        // PR #384 review — an avoid region taller than a page can't be kept whole, so it splits between its
+        // children like normal content (docs-site/page-breaks.md). Nothing is forced past a page edge, so no
+        // forced-overflow diagnostic — and every paragraph is still rendered.
+        var result = Render("<div style='break-inside:avoid'>" + Paragraphs(160) + "</div>");
+        Assert.True(result.PageCount >= 3, $"expected a multi-page document, got {result.PageCount}");
+        Assert.Equal(0, ForcedOverflowCount(result));
+        var pdf = Encoding.Latin1.GetString(result.Pdf);
+        // Each paragraph wraps to two lines (two text runs); none is dropped.
+        Assert.True(Regex.Matches(pdf, @"<[0-9A-Fa-f]+> *Tj").Count >= 160);
+    }
+
+    [Fact]
     public void Flex_one_list_in_a_stretched_column_card_keeps_every_item()
     {
         // 02-travel-quote — cards in a stretched row, each a column flex whose <ul> is `flex: 1`. The list

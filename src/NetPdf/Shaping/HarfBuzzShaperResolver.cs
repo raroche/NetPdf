@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -12,6 +13,7 @@ using NetPdf.Css.Properties;
 using NetPdf.Layout.Inline;
 using NetPdf.Layout.Layouters;
 using NetPdf.Text.Fonts;
+using NetPdf.Text.Fonts.OpenType;
 using NetPdf.Text.Shaping;
 
 namespace NetPdf.Shaping;
@@ -204,30 +206,54 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     /// <inheritdoc />
     /// <remarks>The chain after the primary font is: the rest of the author <c>font-family</c> stack,
     /// the default family, then <see cref="SystemFallbackFamilies"/> — each resolved through the same
-    /// <see cref="IFontResolver"/> with the style's weight and style, validated like the primary, and
-    /// de-duplicated by content. A caller's resolver that knows none of those families (for example one
-    /// serving only bundled fonts) therefore gets no fallback fonts it did not supply.</remarks>
-    public int FindFallbackFont(ComputedStyle style, int codepoint)
+    /// <see cref="IFontResolver"/> with the style's weight and style, validated and parsed like the
+    /// primary, and de-duplicated by content. Candidates are resolved LAZILY, in that fixed order, only
+    /// until one covers the cluster (PR #387 review), so a check mark doesn't load every installed CJK
+    /// font; a font's index is its position among the candidates that resolved, so indexes are stable.
+    /// A caller's resolver that knows none of those families (for example one serving only bundled fonts)
+    /// gets no fallback fonts it did not supply.</remarks>
+    public int FindFallbackFont(ComputedStyle style, ReadOnlySpan<int> codepoints)
     {
         ArgumentNullException.ThrowIfNull(style);
+        if (codepoints.IsEmpty) return 0;
         var (families, weight, fontStyle) = ReadFontQuery(style);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             var chain = FallbackChainLocked(families, weight, fontStyle);
-            if (chain.ByCodepoint.TryGetValue(codepoint, out var found)) return found;
+            var key = CoverageKey(codepoints);
+            if (chain.ByCluster.TryGetValue(key, out var found)) return found;
             found = 0;
-            for (var i = 1; i < chain.Programs.Count; i++)
+            for (var i = 1; ; i++)
             {
-                if (CoverageShaperLocked(chain.Programs[i]).HasGlyph(codepoint))
+                if (i >= chain.Programs.Count && !TryAddNextFallbackLocked(chain, weight, fontStyle)) break;
+                var coverage = _coverageShapers[chain.Programs[i].Identity];
+                var coversAll = true;
+                foreach (var cp in codepoints)
+                {
+                    if (!coverage.HasGlyph(cp))
+                    {
+                        coversAll = false;
+                        break;
+                    }
+                }
+                if (coversAll)
                 {
                     found = i;
                     break;
                 }
             }
-            chain.ByCodepoint[codepoint] = found;
+            chain.ByCluster[key] = found;
             return found;
         }
+    }
+
+    private static string CoverageKey(ReadOnlySpan<int> codepoints)
+    {
+        if (codepoints.Length == 1) return codepoints[0].ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var sb = new StringBuilder(codepoints.Length * 6);
+        foreach (var cp in codepoints) sb.Append(cp).Append(',');
+        return sb.ToString();
     }
 
     /// <summary>The font program of fallback-chain entry <paramref name="fontIndex"/> for a style — the
@@ -281,37 +307,47 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         return chain.Programs[fontIndex];
     }
 
-    /// <summary>Get-or-build the fallback chain for a query. MUST be called holding <see cref="_gate"/>.</summary>
+    /// <summary>Get-or-create the fallback chain for a query: the primary program plus the ordered candidate
+    /// families, resolved lazily by <see cref="TryAddNextFallbackLocked"/>. MUST be called holding
+    /// <see cref="_gate"/>.</summary>
     private FallbackChain FallbackChainLocked(ImmutableArray<string> families, int weight, FontStyle style)
     {
         var key = new ProgramKey(FamilyStackKey(families), weight, style);
         if (_fallbackChains.TryGetValue(key, out var chain)) return chain;
 
         var primary = ResolveProgramCachedLocked(families, weight, style);
-        var programs = new List<ResolvedFontProgram> { primary };
-        var seen = new HashSet<string>(StringComparer.Ordinal) { primary.Identity };
-        if (!families.IsDefaultOrEmpty)
-        {
-            foreach (var family in families) AddCandidate(family);
-        }
-        AddCandidate(_defaultFamily);
-        foreach (var family in SystemFallbackFamilies) AddCandidate(family);
-
-        chain = new FallbackChain(programs);
+        var candidates = new List<string>();
+        if (!families.IsDefaultOrEmpty) candidates.AddRange(families);
+        candidates.Add(_defaultFamily);
+        candidates.AddRange(SystemFallbackFamilies);
+        chain = new FallbackChain(primary, candidates.ToArray());
         _fallbackChains[key] = chain;
         return chain;
-
-        void AddCandidate(string family)
-        {
-            if (TryResolveFallbackProgram(family, weight, style) is { } program && seen.Add(program.Identity))
-                programs.Add(program);
-        }
     }
 
-    /// <summary>Resolve one fallback family to a validated program, or <see langword="null"/> when it
-    /// doesn't resolve, resolves asynchronously, or its bytes are unsafe / wrapped. A fallback candidate
-    /// that can't be used is skipped — it never fails the render the way an unusable primary font does.</summary>
-    private ResolvedFontProgram? TryResolveFallbackProgram(string family, int weight, FontStyle style)
+    /// <summary>Resolve candidates from the chain's cursor until one yields a NEW usable program, and append
+    /// it. Returns <see langword="false"/> when the candidates are exhausted. MUST hold <see cref="_gate"/>.</summary>
+    private bool TryAddNextFallbackLocked(FallbackChain chain, int weight, FontStyle style)
+    {
+        while (chain.NextCandidate < chain.Candidates.Length)
+        {
+            var family = chain.Candidates[chain.NextCandidate++];
+            if (TryResolveFallbackProgramLocked(family, weight, style, chain.Seen) is { } program)
+            {
+                chain.Programs.Add(program);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Resolve one fallback family to a usable program, or <see langword="null"/> when it doesn't
+    /// resolve, resolves asynchronously, repeats a program already in the chain, or its bytes are unsafe,
+    /// wrapped, or don't load (HarfBuzz) / parse (the painter's OpenType parser) — the safety validator only
+    /// bounds the sfnt directory (PR #387 review). An unusable candidate is skipped; it never fails the
+    /// render the way an unusable primary font does. On success its coverage shaper is cached.</summary>
+    private ResolvedFontProgram? TryResolveFallbackProgramLocked(
+        string family, int weight, FontStyle style, HashSet<string> seen)
     {
         FontFaceData? face;
         try
@@ -327,19 +363,25 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         if (!verdict.IsSafe
             || verdict.DetectedFormat is FontSafetyValidator.FontFormat.Woff or FontSafetyValidator.FontFormat.Woff2)
             return null;
-        return new ResolvedFontProgram(Convert.ToHexString(SHA256.HashData(face.Bytes.Span)), face.Bytes);
-    }
-
-    /// <summary>A shaper used only for <see cref="HbShaper.HasGlyph"/> (coverage does not depend on
-    /// size), one per program. MUST be called holding <see cref="_gate"/>.</summary>
-    private HbShaper CoverageShaperLocked(ResolvedFontProgram program)
-    {
-        if (!_coverageShapers.TryGetValue(program.Identity, out var shaper))
+        var program = new ResolvedFontProgram(Convert.ToHexString(SHA256.HashData(face.Bytes.Span)), face.Bytes);
+        if (!seen.Add(program.Identity)) return null;
+        if (!_coverageShapers.ContainsKey(program.Identity))
         {
-            shaper = new HbShaper(program.Bytes, _defaultFontSizePx);
-            _coverageShapers[program.Identity] = shaper;
+            HbShaper? coverage = null;
+            try
+            {
+                _ = OpenTypeFont.Parse(program.Bytes);
+                coverage = new HbShaper(program.Bytes, _defaultFontSizePx);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or ArgumentException or InvalidOperationException
+                                          or NotSupportedException or FormatException or IndexOutOfRangeException)
+            {
+                coverage?.Dispose();
+                return null;
+            }
+            _coverageShapers[program.Identity] = coverage;
         }
-        return shaper;
+        return program;
     }
 
     /// <summary>
@@ -554,12 +596,16 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     private readonly record struct ShaperKey(
         string Family, int WeightCss, FontStyle Style, double FontSizePx, int FontIndex = 0);
 
-    /// <summary>The ordered fallback programs for one query (index 0 = primary) and the memoized
-    /// codepoint → index answers of <see cref="FindFallbackFont"/>.</summary>
-    private sealed class FallbackChain(List<ResolvedFontProgram> programs)
+    /// <summary>The fallback programs resolved so far for one query (index 0 = primary), the candidate
+    /// families still to try (from <see cref="NextCandidate"/>), and the memoized cluster → index answers of
+    /// <see cref="FindFallbackFont"/>.</summary>
+    private sealed class FallbackChain(ResolvedFontProgram primary, string[] candidates)
     {
-        public List<ResolvedFontProgram> Programs { get; } = programs;
-        public Dictionary<int, int> ByCodepoint { get; } = new();
+        public List<ResolvedFontProgram> Programs { get; } = [primary];
+        public string[] Candidates { get; } = candidates;
+        public int NextCandidate { get; set; }
+        public HashSet<string> Seen { get; } = new(StringComparer.Ordinal) { primary.Identity };
+        public Dictionary<string, int> ByCluster { get; } = new(StringComparer.Ordinal);
     }
 
     /// <summary>Size-independent key for the resolved-program cache: the family stack

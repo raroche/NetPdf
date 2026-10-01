@@ -63,8 +63,9 @@ internal interface IShaperResolver : System.IDisposable
             : throw new System.ArgumentOutOfRangeException(nameof(fontIndex), fontIndex, "This resolver has no fallback fonts.");
 
     /// <summary>Per-character font fallback (CSS Fonts 4 §5, "system font fallback") — the index of the
-    /// first font in the style's fallback chain, AFTER the primary font, whose character map covers
-    /// <paramref name="codepoint"/>; <c>0</c> when no fallback font covers it (the primary then draws
-    /// its <c>.notdef</c>). The chain is stable per style, so equal indexes mean the same font.</summary>
-    int FindFallbackFont(ComputedStyle style, int codepoint) => 0;
+    /// first font in the style's fallback chain, AFTER the primary font, whose character map covers EVERY
+    /// codepoint in <paramref name="codepoints"/> (one grapheme cluster: a base and its marks, or an emoji
+    /// sequence, so the cluster is drawn by one font); <c>0</c> when no fallback font covers them all. The
+    /// chain is stable per style, so equal indexes mean the same font.</summary>
+    int FindFallbackFont(ComputedStyle style, System.ReadOnlySpan<int> codepoints) => 0;
 }

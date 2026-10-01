@@ -495,13 +495,16 @@ internal static class LineBuilder
     }
 
     /// <summary>
-    /// Per-character font fallback — split <paramref name="run"/> into pieces that each use ONE font of
-    /// the style's fallback chain: a character the primary font covers stays on it (index 0); one it
-    /// doesn't goes to <see cref="IShaperResolver.FindFallbackFont"/>'s pick (0 again when nothing covers
-    /// it, so it stays tofu). Characters that must share their neighbour's font — combining marks,
-    /// variation selectors, joiners and other format characters — take the font of the character before
-    /// them (or after them at the run start), so a base and its marks are never split across fonts.
-    /// Returns <see langword="null"/> when every character stays on the primary font.
+    /// Per-character font fallback — split <paramref name="run"/> into pieces that each use ONE font of the
+    /// style's fallback chain. The unit is the extended grapheme cluster (UAX #29: a base and its combining
+    /// marks, an emoji ZWJ sequence), so a cluster is never divided between fonts (PR #387 review): a
+    /// cluster the primary font fully covers stays on it (index 0); otherwise it goes to the first fallback
+    /// font covering ALL of it, else — when no font covers it all — to the primary if that covers the base,
+    /// else to the first fallback covering the base, else it stays on the primary as tofu. Whitespace and
+    /// control clusters, and malformed UTF-16 (a lone surrogate, which HarfBuzz shapes as its replacement
+    /// glyph), stay on the primary. Variation selectors and format characters (ZWJ, ZWNJ) are not required
+    /// to be in a font's character map. Returns <see langword="null"/> when every cluster stays on the
+    /// primary font.
     /// </summary>
     private static List<ItemizedRun>? SplitByFontCoverage(
         string concatText, ItemizedRun run, ComputedStyle style, HbShaper primary, IShaperResolver resolver)
@@ -510,33 +513,17 @@ internal static class LineBuilder
         var end = start + run.Utf16Length;
         var fontOf = new int[run.Utf16Length];
         var anyFallback = false;
-        for (var i = start; i < end;)
+        var required = new List<int>(4);
+        for (var pos = start; pos < end;)
         {
-            var width = char.IsHighSurrogate(concatText[i]) && i + 1 < end && char.IsLowSurrogate(concatText[i + 1]) ? 2 : 1;
-            var cp = width == 2 ? char.ConvertToUtf32(concatText[i], concatText[i + 1]) : concatText[i];
-            int font;
-            if (FollowsNeighbourFont(cp)) font = -1;
-            else if (primary.HasGlyph(cp) || char.IsWhiteSpace(concatText[i]) || char.IsControl(concatText[i])) font = 0;
-            else font = resolver.FindFallbackFont(style, cp);
+            var span = concatText.AsSpan(pos, end - pos);
+            var clusterLength = Math.Max(1, StringInfo.GetNextTextElementLength(span));
+            var font = ClusterFont(span[..clusterLength], style, primary, resolver, required);
             if (font > 0) anyFallback = true;
-            for (var k = 0; k < width; k++) fontOf[i - start + k] = font;
-            i += width;
+            Array.Fill(fontOf, font, pos - start, clusterLength);
+            pos += clusterLength;
         }
         if (!anyFallback) return null;
-
-        // Resolve the "same font as my neighbour" characters: previous concrete font, else the next one.
-        var previous = -1;
-        for (var i = 0; i < fontOf.Length; i++)
-        {
-            if (fontOf[i] >= 0) previous = fontOf[i];
-            else if (previous >= 0) fontOf[i] = previous;
-        }
-        var next = 0;
-        for (var i = fontOf.Length - 1; i >= 0; i--)
-        {
-            if (fontOf[i] >= 0) next = fontOf[i];
-            else fontOf[i] = next;
-        }
 
         var segments = new List<ItemizedRun>();
         var segStart = 0;
@@ -554,14 +541,50 @@ internal static class LineBuilder
         return segments;
     }
 
-    /// <summary>Characters that never pick a font of their own: combining marks (they render on their
-    /// base), variation selectors, and format characters such as ZWJ / ZWNJ / soft hyphen.</summary>
-    private static bool FollowsNeighbourFont(int codepoint)
+    /// <summary>The fallback-chain index for one grapheme cluster (see <see cref="SplitByFontCoverage"/>).</summary>
+    private static int ClusterFont(
+        ReadOnlySpan<char> cluster, ComputedStyle style, HbShaper primary, IShaperResolver resolver,
+        List<int> required)
     {
-        if (codepoint is >= 0xFE00 and <= 0xFE0F or >= 0xE0100 and <= 0xE01EF) return true; // variation selectors
-        var category = CharUnicodeInfo.GetUnicodeCategory(codepoint);
-        return category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark
-            or UnicodeCategory.EnclosingMark or UnicodeCategory.Format;
+        required.Clear();
+        var visible = false;
+        for (var i = 0; i < cluster.Length;)
+        {
+            if (Rune.DecodeFromUtf16(cluster[i..], out var rune, out var consumed) != System.Buffers.OperationStatus.Done)
+                return 0;   // malformed UTF-16: leave it to the primary (HarfBuzz's replacement policy)
+            i += consumed;
+            if (!Rune.IsWhiteSpace(rune) && !Rune.IsControl(rune)) visible = true;
+            if (IsOptionalForCoverage(rune)) continue;
+            required.Add(rune.Value);
+        }
+        if (!visible || required.Count == 0) return 0;
+
+        var primaryCoversAll = true;
+        foreach (var cp in required)
+        {
+            if (!primary.HasGlyph(cp))
+            {
+                primaryCoversAll = false;
+                break;
+            }
+        }
+        if (primaryCoversAll) return 0;
+
+        var codepoints = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(required);
+        var all = resolver.FindFallbackFont(style, codepoints);
+        if (all > 0) return all;
+        // No font draws the whole cluster: keep its base where it renders, so only the rest is tofu.
+        if (primary.HasGlyph(required[0])) return 0;
+        return resolver.FindFallbackFont(style, codepoints[..1]);
+    }
+
+    /// <summary>Codepoints a font need not map for a cluster to count as covered: variation selectors and
+    /// format characters (ZWJ, ZWNJ, …) — shapers handle them without a glyph of their own.</summary>
+    private static bool IsOptionalForCoverage(Rune rune)
+    {
+        var v = rune.Value;
+        if (v is >= 0xFE00 and <= 0xFE0F or >= 0xE0100 and <= 0xE01EF) return true; // variation selectors
+        return Rune.GetUnicodeCategory(rune) == UnicodeCategory.Format;
     }
 
     /// <summary>RC-1 — fold an enclosing non-replaced <c>InlineBox</c>'s horizontal box-model chrome into

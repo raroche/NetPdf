@@ -25,7 +25,7 @@
           grid-row-end known gap closed upstream.
       Before bumping it again: run the W3cConformance gates and CssParserAdapterPreprocessTests locally.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.8.2" />
+    <PackageVersion Include="AngleSharp" Version="1.8.3" />
     <PackageVersion Include="AngleSharp.Css" Version="1.1.2" />
     <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.301" />
     <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.301" />

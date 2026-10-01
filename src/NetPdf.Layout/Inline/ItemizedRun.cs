@@ -55,12 +55,17 @@ namespace NetPdf.Layout.Inline;
 /// table doesn't cover it, in which case the shaper falls back to the caller's
 /// uniform script. Even-handed with <see cref="BidiLevel"/> + style: a script
 /// change opens a new run so each shaping pass uses one OpenType feature set.</param>
+/// <param name="FontIndex">Per-character font fallback — which font of the style's fallback chain
+/// shapes and paints this run (<see cref="IShaperResolver.Resolve(NetPdf.Css.ComputedValues.ComputedStyle, int)"/>).
+/// <c>0</c> (the default) is the primary font. <see cref="LineBuilder.Shape"/> sets a positive index when
+/// it splits off text the primary font has no glyphs for.</param>
 internal readonly record struct ItemizedRun(
     int Utf16Start,
     int Utf16Length,
     byte BidiLevel,
     int SourceTextRunIndex,
-    string? ScriptIso15924 = null)
+    string? ScriptIso15924 = null,
+    int FontIndex = 0)
 {
     /// <summary><see langword="true"/> when the run's bidi level is
     /// odd — i.e., the run is right-to-left.</summary>

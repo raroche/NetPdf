@@ -58,7 +58,7 @@ namespace NetPdf.Text.Shaping;
 /// <list type="bullet">
 ///   <item>Custom features (small-caps, fractions, contextual alternates) — wait for Phase 2 CSS <c>font-feature-settings</c>.</item>
 ///   <item>Context-aware shaping (<c>item_offset</c> / <c>item_length</c> within a larger buffer) — required for Arabic joining and combining-mark behavior across run boundaries; Phase 3 itemizer adds the API.</item>
-///   <item>Script itemization, bidi run segmentation, and fallback-font shaping — all Tasks 12+.</item>
+///   <item>Script itemization, bidi run segmentation, and per-character font fallback live in the layout line builder (<c>LineBuilder.Shape</c>); this wrapper shapes one run with one font.</item>
 /// </list>
 /// </remarks>
 internal sealed class HbShaper : IDisposable
@@ -137,6 +137,16 @@ internal sealed class HbShaper : IDisposable
             }
             throw;
         }
+    }
+
+    /// <summary>
+    /// True when the font's character map has a glyph for <paramref name="codepoint"/> (a nominal
+    /// cmap lookup, no shaping). Used by per-character font fallback to find text the font can't draw.
+    /// </summary>
+    public bool HasGlyph(int codepoint)
+    {
+        ThrowIfDisposed();
+        return codepoint >= 0 && _font.TryGetNominalGlyph((uint)codepoint, out var glyph) && glyph != 0;
     }
 
     /// <summary>

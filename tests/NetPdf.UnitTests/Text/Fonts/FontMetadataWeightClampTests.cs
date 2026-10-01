@@ -11,7 +11,7 @@ namespace NetPdf.UnitTests.Text.Fonts;
 
 /// <summary>
 /// Weight-clamping trust-boundary tests for <see cref="FontMetadata.Extract"/>. Builds a
-/// minimal valid TTF via <see cref="SyntheticFont.Build"/> and rewrites the
+/// minimal valid TTF via <see cref="SyntheticFont.Build()"/> and rewrites the
 /// <c>OS/2.usWeightClass</c> bytes in place to exercise malformed values without needing
 /// a real font on disk.
 /// </summary>

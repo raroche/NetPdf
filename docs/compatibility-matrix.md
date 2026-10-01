@@ -72,7 +72,7 @@ NetPdf does **not** aim to render identically to a web browser, and deliberately
 | `font-family`, `font-size`, `font-weight`, `font-style`, `font-stretch` | ✅ | System fonts are matched from TTF / OTF files and from every face of TTC / OTC collections. |
 | `@font-face` with TTF, OTF, WOFF, **WOFF2** | 🧪 | All four formats are **parsed**; WOFF2 decompressed via `System.IO.Compression.BrotliStream` (built into .NET, no extra dep). **Embedding scope:** TTF only. OTF/CFF embedding (`FontFile3` / `CIDFontType0C`) is deferred — `EmbeddedTtfFont.Build` throws explicitly on CFF-flavored fonts rather than producing malformed PDF. |
 | Web font fetching via `IResourceLoader` | ✅ | |
-| Font fallback chain | ✅ | |
+| Font fallback chain | ✅ | Per character: text the first font can't draw uses the next `font-family` entry that has it, then the default family, then installed symbol / broad-coverage fonts. |
 | OpenType ligatures, kerning | ✅ | Via HarfBuzz. |
 | Bidi (RTL/LTR mixed text) | ✅ | UAX #9. |
 | Complex scripts (Indic, Arabic, Hebrew, CJK, Thai) | ✅ | Via HarfBuzz; quality varies by script — known limitations documented. |

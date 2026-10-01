@@ -31,7 +31,7 @@ namespace NetPdf.Layout.Inline;
 /// all at scope exit.</para>
 ///
 /// <para><b>Cycle 2 contract.</b> A resolver SHOULD return shapers
-/// stably — calling <see cref="Resolve"/> with the same
+/// stably — calling <see cref="Resolve(ComputedStyle)"/> with the same
 /// <see cref="ComputedStyle"/> twice should produce the same shaper
 /// instance (identity preserved). Cycle 3's wrapping pass relies on
 /// this for cache locality.</para>
@@ -51,4 +51,20 @@ internal interface IShaperResolver : System.IDisposable
     /// <para>The returned shaper is OWNED by the resolver. Callers
     /// MUST NOT call <see cref="HbShaper.Dispose"/> on it.</para></summary>
     HbShaper Resolve(ComputedStyle style);
+
+    /// <summary>Per-character font fallback — the shaper for font <paramref name="fontIndex"/> of the
+    /// style's fallback chain, at the style's size. Index <c>0</c> is the primary font
+    /// (<see cref="Resolve(ComputedStyle)"/>); a positive index is a value
+    /// <see cref="FindFallbackFont"/> returned for the same style. A resolver without a fallback chain
+    /// only has index 0.</summary>
+    HbShaper Resolve(ComputedStyle style, int fontIndex) =>
+        fontIndex == 0
+            ? Resolve(style)
+            : throw new System.ArgumentOutOfRangeException(nameof(fontIndex), fontIndex, "This resolver has no fallback fonts.");
+
+    /// <summary>Per-character font fallback (CSS Fonts 4 §5, "system font fallback") — the index of the
+    /// first font in the style's fallback chain, AFTER the primary font, whose character map covers
+    /// <paramref name="codepoint"/>; <c>0</c> when no fallback font covers it (the primary then draws
+    /// its <c>.notdef</c>). The chain is stable per style, so equal indexes mean the same font.</summary>
+    int FindFallbackFont(ComputedStyle style, int codepoint) => 0;
 }

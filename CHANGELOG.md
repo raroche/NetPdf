@@ -4,7 +4,11 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 ## [Unreleased]
 
-Post-`1.1.1` improvements accumulate here until the next release is cut.
+Post-`1.2.0` improvements accumulate here until the next release is cut.
+
+## [1.2.0]
+
+A minor release: system font collections, per-character font fallback, and layout fixes found in a visual review of real travel documents against a browser. No breaking public API changes.
 
 ### Added
 - **System font collections (`.ttc` / `.otc`) are now used.** The system-font index skipped every collection file, so families that ship only as a collection could not be used and a document asking for them fell back to another font. On macOS these include Helvetica, Helvetica Neue, Avenir, Avenir Next, Menlo and Optima; on Windows and Linux, CJK families such as MS Gothic and Noto Sans CJK. Every face of a collection is now indexed, and the chosen face is embedded on its own (not the whole collection). Faces that the font safety validator rejects (bitmap or SVG glyph tables) or that lack a required table are skipped. Fonts you supply yourself through an `IFontResolver` must still be a single TTF / OTF.
@@ -124,7 +128,8 @@ The first stable release. `HtmlPdf.Convert(html)` runs the full HTML → CSS →
 - Single `NetPdf` NuGet package bundling the whole engine; optional `NetPdf.Languages.*` hyphenation add-ons.
 - Source Link + symbol packages for source-stepping.
 
-[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/raroche/NetPdf/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/raroche/NetPdf/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/raroche/NetPdf/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/raroche/NetPdf/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/raroche/NetPdf/compare/v1.0.1...v1.0.2

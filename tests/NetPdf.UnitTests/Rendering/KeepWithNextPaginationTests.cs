@@ -114,6 +114,20 @@ public sealed class KeepWithNextPaginationTests
     }
 
     [Fact]
+    public void Heading_and_first_list_item_move_together_instead_of_leaving_one_line()
+    {
+        // The list is indented (40px padding), so its items wrap narrower than the page. The measure used
+        // the page width, under-measured the first item, entered the list at the page bottom, and the item
+        // was line-split leaving ONE line behind (orphans: 2 violated). Measured at its real width, the
+        // heading + first item don't fit, so both start page 2.
+        var items = string.Concat(System.Linq.Enumerable.Repeat(
+            "<li>Requests to amend a confirmed booking must be made in writing and are subject to availability.</li>", 6));
+        var pages = PageTextSizes(Doc(Filler(900) + "<h2 style='break-after:avoid'>Heading</h2><ol>" + items + "</ol>"), out _);
+        Assert.Empty(pages[0]);
+        Assert.True(Is(pages[1][0], HeadingPt));
+    }
+
+    [Fact]
     public void Heading_moves_with_a_table()
     {
         // Room for the heading but not for the table's first rows: the heading starts page 2 with the table.

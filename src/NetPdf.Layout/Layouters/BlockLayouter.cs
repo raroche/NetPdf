@@ -141,7 +141,7 @@ namespace NetPdf.Layout.Layouters;
 /// so containers with overflowing block-level descendants silently
 /// clipped past the fragmentainer boundary + subsequent siblings
 /// visually overlapped the overflow. Cycle 2c adds
-/// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/> — a pre-measure
+/// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double, double, double)"/> — a pre-measure
 /// pass that returns the maximum block-axis extent reached by any
 /// descendant. The break-fit chunk size + cursor advance both use
 /// this measured extent (max of own border-box + descendant bottoms),
@@ -2422,7 +2422,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // subtree (below preceding content / wrapper padding) reserves the correct remaining page
                 // space in its dry-run, instead of over-committing and tripping a false forced-overflow
                 // that clips the table (offset-table clip fix).
-                blockOffsetOnPage: fragmentainer.UsedBlockSize + topShift);
+                blockOffsetOnPage: fragmentainer.UsedBlockSize + topShift,
+                // An auto-width child beside a float fills the float-adjusted range, as it is emitted.
+                availableInlineSize: availInlineSize);
             // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — for
             // Table / InlineTable wrappers in the OUTER dispatch path,
             // the subtree extent must reflect the SINGLE-PAGE-COMMITTED
@@ -4954,7 +4956,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///
     /// <para><b>Cycle 2c subtree-aware cursor advance (this revision).</b>
     /// Per cycle 2c post-PR-29 review #2 — the recursion now also calls
-    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double, double, double)"/>
     /// for each child + advances the inner cursor by
     /// <c>max(childBorderBox, childSubtreeExtent)</c>, mirroring the
     /// outer loop's behavior. Pre-cycle-2c-fix the recursion advanced
@@ -5464,7 +5466,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // between measure + emit (avoiding the duplicate walk).
             var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
                 child, cancellationToken, depth + 1,
-                parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
+                parentContentBlockSize: contentBlock,   // % height base (percent-height cycle).
+                containingInlineSize: contentInlineSize);
             // Per Phase 3 Task 15 L6 post-PR-#66 review F#1 — mirror
             // the outer-dispatch column-wrap clamp at the recursion
             // site. The unconditional clamp later in the flex grow
@@ -5606,7 +5609,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     && IsEnterAndSplitEligible(child))
                 {
                     var firstChildExtent = EstimateFirstInFlowChildExtent(
-                        child, cancellationToken, contentBlock);
+                        child, cancellationToken, contentBlock, containerContainingInlineSize: contentInlineSize);
                     if (firstChildExtent > 0 && firstChildExtent <= pageRemaining)
                     {
                         breakChunk = firstChildExtent;
@@ -8969,7 +8972,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
         else
         {
-            var full = MeasureSubtreeVisualBlockExtent(next, cancellationToken, parentContentBlockSize);
+            var full = MeasureSubtreeVisualBlockExtent(
+                next, cancellationToken, parentContentBlockSize, containingInlineSize: contentInlineSize);
             var chromeStart = next.Style.ReadLengthPxOrZero(PropertyId.MarginTop)
                 + next.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
                 + next.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
@@ -8979,7 +8983,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 ridesWhole = true;
                 if (allowEnterAndSplit && MidSplitEnabled && IsEnterAndSplitEligible(next))
                 {
-                    var first = EstimateFirstInFlowChildExtent(next, cancellationToken, parentContentBlockSize);
+                    var first = EstimateFirstInFlowChildExtent(
+                        next, cancellationToken, parentContentBlockSize, containerContainingInlineSize: contentInlineSize);
                     if (first > 0 && chromeStart + first < full)
                     {
                         piece = chromeStart + first;
@@ -10552,9 +10557,52 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// cancellation between children.</para></summary>
     private double MeasureSubtreeVisualBlockExtent(
         Box parent, CancellationToken cancellationToken, double parentContentBlockSize = 0,
-        double blockOffsetOnPage = 0)
+        double blockOffsetOnPage = 0, double containingInlineSize = double.NaN,
+        double availableInlineSize = double.NaN)
         => MeasureSubtreeVisualBlockExtentRecursive(
-            parent, cancellationToken, depth: 0, parentContentBlockSize, blockOffsetOnPage);
+            parent, cancellationToken, depth: 0, parentContentBlockSize, blockOffsetOnPage,
+            containingInlineSize, availableInlineSize);
+
+    /// <summary>The border-box and content inline sizes of an in-flow block-level box whose containing
+    /// block is <paramref name="containingInlineSize"/> wide — the same resolution the emit path uses
+    /// (<see cref="ResolveInFlowBorderBoxInlineSize"/>: explicit / % width, box-sizing, min/max, else fill
+    /// minus margins). An anonymous box has no own chrome and spans its containing block. Used by the
+    /// measure pass so nested content is measured at the width it is emitted at.</summary>
+    private (double BorderBox, double Content) MeasureInlineGeometry(
+        Box box, double containingInlineSize, double availableInlineSize = double.NaN)
+    {
+        if (box.Kind == BoxKind.AnonymousBlock)
+        {
+            return (containingInlineSize, containingInlineSize);
+        }
+        var probe = _measurePurpose.ZeroesCyclicPercentInsets();
+        var pctBase = MeasurePercentInsetBase(containingInlineSize);
+        // An auto width fills the AVAILABLE range — beside a float that is narrower than the containing
+        // block, exactly as the emit path's outer dispatch passes its float-adjusted range (PR #385 review).
+        var available = double.IsNaN(availableInlineSize) ? containingInlineSize : availableInlineSize;
+        var borderBox = ResolveInFlowBorderBoxInlineSize(
+            box, available, containingInlineSize,
+            box.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, pctBase),
+            box.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, pctBase),
+            isIntrinsicProbe: probe);
+        // Subtract the padding at the SAME base the border box was built with: an explicit width's own %
+        // padding is resolved against the containing width even in an intrinsic probe (PR #385 review), a
+        // filled auto width carries the probe's zeroed insets.
+        var insetBase = HasExplicitWidth(box) ? containingInlineSize : pctBase;
+        var content = Math.Max(0, borderBox
+            - box.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+            - box.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+            - box.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, insetBase)
+            - box.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, insetBase));
+        return (borderBox, content);
+    }
+
+    /// <summary>The base the measure pass resolves a box's own <c>%</c> padding / margins against: its
+    /// containing block's inline size, or 0 in an intrinsic probe (cyclic percentages, CSS Sizing §5.2.1) —
+    /// the same base the emit path uses (<c>pctInsetBase</c>). Measured boxes have not had their %
+    /// padding rewritten to used pixels yet, so plain px reads would treat it as 0.</summary>
+    private double MeasurePercentInsetBase(double containingInlineSize) =>
+        _measurePurpose.ZeroesCyclicPercentInsets() ? 0.0 : containingInlineSize;
 
     /// <summary>Phase 3 cycle-2d ("mid-split") — whether <paramref name="container"/> is eligible to
     /// be ENTERED and split between its children instead of moved wholly to the next page. Requires
@@ -10592,8 +10640,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// (the container moves wholly) rather than entering on an under-estimate. Accurate for a skewed
     /// first child (much taller than its siblings). Returns 0 when there is no in-flow block child.</summary>
     private double EstimateFirstInFlowChildExtent(
-        Box container, CancellationToken cancellationToken, double parentContentBlockSize)
+        Box container, CancellationToken cancellationToken, double parentContentBlockSize,
+        // The container's CONTAINING-block content width (NaN = the BFC content width), so its first child
+        // is measured at the width it will be emitted at.
+        double containerContainingInlineSize = double.NaN)
     {
+        var containerContentInline = MeasureInlineGeometry(container,
+            double.IsNaN(containerContainingInlineSize) ? _bfcContentInlineSize : containerContainingInlineSize).Content;
         Box? first = null;
         var firstIdx = -1;
         for (var i = 0; i < container.Children.Count; i++)
@@ -10611,20 +10664,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             return 0;
         }
-        var direct = MeasureSubtreeVisualBlockExtent(first, cancellationToken, parentContentBlockSize);
+        var direct = MeasureSubtreeVisualBlockExtent(
+            first, cancellationToken, parentContentBlockSize, containingInlineSize: containerContentInline);
         if (direct > 1.0)
         {
             // CSS Fragmentation §3.2 — a first child with `break-after: avoid` (a section heading) can't
             // be left alone at the page bottom, so the unit that must fit to enter here is the heading
             // PLUS what it keeps with. Without this the container is entered, the heading emitted, and
             // the break lands on the avoided boundary right after it.
-            var containerContentInline = Math.Max(0.0, _bfcContentInlineSize
-                - container.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
-                - container.Style.ReadLengthPxOrZero(PropertyId.MarginRight)
-                - container.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
-                - container.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
-                - container.Style.ReadLengthPxOrZero(PropertyId.PaddingRight)
-                - container.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth));
             return direct + KeepWithNextExtentPx(
                 container, firstIdx, containerContentInline, parentContentBlockSize,
                 allowEnterAndSplit: true, cancellationToken);
@@ -10637,14 +10684,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // off the page) when it should move wholly.
         if (IsFlexContainer(first) && IsHeightAuto(first))
         {
+            var flexPctBase = MeasurePercentInsetBase(containerContentInline);
             var flexChrome =
                 first.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
-                + first.Style.ReadLengthPxOrZero(PropertyId.PaddingTop)
-                + first.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom)
+                + first.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, flexPctBase)
+                + first.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, flexPctBase)
                 + first.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-            var flexInline = Math.Max(0.0, _bfcContentInlineSize
-                - first.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
-                - first.Style.ReadLengthPxOrZero(PropertyId.MarginRight));
+            var flexInline = MeasureInlineGeometry(first, containerContentInline).BorderBox;
             var flexContent = first.Style.ReadFlexDirection().IsFlexColumnDirection()
                 ? PreMeasureFlexMainExtent(first, flexInline, cancellationToken)
                 : PreMeasureFlexCrossExtent(first, flexInline, cancellationToken);
@@ -10663,7 +10709,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <summary>Per cycle 2c post-PR-29 review #1 (P0) + #3 (P1) —
-    /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>.
+    /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double, double, double)"/>.
     /// Renamed from the same-name overload to fix CS0419 ambiguous cref
     /// errors in class-level XML docs. CT plumbing matches
     /// <see cref="EmitBlockSubtreeRecursive"/> so an oversized broad
@@ -10680,7 +10726,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // nested TABLE's dry-run reserves only the remaining page space when the table starts below the
         // page top — otherwise the subtree extent overshoots the page and a false forced-overflow clips
         // the table (offset-table clip fix). 0 = top of page (byte-identical to the pre-fix behavior).
-        double blockOffsetOnPage = 0)
+        double blockOffsetOnPage = 0,
+        // The CONTENT inline size of the measured box's containing block. NaN = the BFC content width
+        // (a direct child of this layouter's root). Threaded down the recursion so nested text, flex rows,
+        // tables and multicol are measured at the width they are EMITTED at — pre-fix every nested measure
+        // used the BFC/page width, so text that wraps in a narrow box measured as one line (a 200px card
+        // drew its border too short; a list item under-measured and was line-split at the page bottom).
+        double containingInlineSize = double.NaN,
+        // The float-adjusted range the measured box's auto width fills (the outer dispatch's available
+        // range). NaN = its containing block. Applies to the measured box only; its children fill their
+        // parent's content box, as the recursive emit does.
+        double availableInlineSize = double.NaN)
     {
         if (depth > MaxRecursionDepth)
         {
@@ -10700,11 +10756,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // by pretty-print whitespace inflated by ~padding per whitespace gap (05 receipt box, 06
         // code-band).
         var isAnonymous = parent.Kind == BoxKind.AnonymousBlock;
-        // Parent's own border-box block size from style.
+        // The measured box's own inline geometry at its REAL containing width (mirrors the emit path's
+        // ResolveInFlowBorderBoxInlineSize): its border box, and the content width its children see. An
+        // anonymous box has no own chrome or width — it spans its containing block.
+        var containing = double.IsNaN(containingInlineSize) ? _bfcContentInlineSize : containingInlineSize;
+        var (parentBorderBoxInline, parentContentInline) =
+            MeasureInlineGeometry(parent, containing, availableInlineSize);
+        // Parent's own border-box block size from style. Block-axis % padding resolves against the
+        // containing INLINE size (CSS 2.2 §8.4), like the emit path (PR #385 review).
+        var pctInsetBase = MeasurePercentInsetBase(containing);
         var pBorderStart = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-        var pPaddingStart = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var pPaddingStart = isAnonymous ? 0 : parent.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctInsetBase);
         var pBorderEnd = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-        var pPaddingEnd = isAnonymous ? 0 : parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+        var pPaddingEnd = isAnonymous ? 0 : parent.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, pctInsetBase);
         var pHeight = isAnonymous ? 0 : parent.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
         // Box-sizing + min/max-height MUST mirror the EMIT paths (the recursive
         // emit ~line 4784 + the main dispatch ~line 1372), else this measure
@@ -10747,7 +10811,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             var inlineMargined = MeasureInlineOnlyBlockExtent(
                 parent,
-                parentContentInlineSize: _bfcContentInlineSize,
+                parentContentInlineSize: containing,
                 out _,
                 cancellationToken);
             return Math.Max(parentBorderBoxBlockSize, inlineMargined);
@@ -10771,24 +10835,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // its own PreMeasureTableIfNeeded call. Cache by Box so
             // the recursion doesn't re-measure on revisits within the
             // same outer walk.
-            var tBorderInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-            var tPaddingInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-            var tBorderInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-            var tPaddingInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-            // The wrapper's border-box inline size isn't directly
-            // known to this recursion either; treat the BFC content-
-            // inline-size as the available inline space. The emit pass
-            // will use the actual wrapper-derived size; an over-
-            // estimate of the column width here may yield a slight
-            // under-estimate of row height (cells lay out wider than
-            // they actually will, so wraps land later) which is a
-            // safe-side error for the pagination break decision
-            // (rounds toward NOT breaking — the emit pass then ships
-            // the exact geometry).
-            var wrapperInlineSize = _bfcContentInlineSize;
-            var contentInlineSize = Math.Max(0,
-                wrapperInlineSize - tBorderInlineStart - tPaddingInlineStart
-                - tBorderInlineEnd - tPaddingInlineEnd);
+            // The wrapper's content inline size, resolved by MeasureInlineGeometry at its real containing
+            // width — including % padding, which plain px reads would treat as 0 here (PR #385 review).
+            var contentInlineSize = parentContentInline;
             // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — use
             // dry-run committed height. The lifted recursion-continuation
             // propagation now splits the table across pages cleanly; the
@@ -10882,10 +10931,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             if (IsHeightAuto(parent))
             {
                 var flexChrome = pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd;
-                var flexBorderBoxInline = Math.Max(0.0,
-                    _bfcContentInlineSize
-                    - parent.Style.ReadLengthPxOrZero(PropertyId.MarginLeft)
-                    - parent.Style.ReadLengthPxOrZero(PropertyId.MarginRight));
+                var flexBorderBoxInline = parentBorderBoxInline;
                 var flexContentExtent = parent.Style.ReadFlexDirection().IsFlexColumnDirection()
                     ? PreMeasureFlexMainExtent(parent, flexBorderBoxInline, cancellationToken)
                     : PreMeasureFlexCrossExtent(parent, flexBorderBoxInline, cancellationToken);
@@ -10921,14 +10967,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // visual block extent.
         if (IsMulticolContainer(parent) && _capturedFragmentainer is not null)
         {
-            var mBorderInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-            var mPaddingInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-            var mBorderInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-            var mPaddingInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-            var multicolWrapperInlineSize = _bfcContentInlineSize;
-            var multicolContentInlineSize = Math.Max(1.0,
-                multicolWrapperInlineSize - mBorderInlineStart - mPaddingInlineStart
-                - mBorderInlineEnd - mPaddingInlineEnd);
+            // The wrapper's content inline size (% padding included — PR #385 review).
+            var multicolContentInlineSize = Math.Max(1.0, parentContentInline);
             // For the measure pass we don't know the wrapper's actual
             // CSS height vs. fragmentainer-remaining; use the CSS
             // height when explicit, else the captured fragmentainer's
@@ -10964,6 +11004,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // from parent's border-box top.
         var contentAreaTop = pBorderStart + pPaddingStart;
         var maxExtent = parentBorderBoxBlockSize;  // baseline = own size
+        var deepestChildBottom = double.NegativeInfinity;
 
         // Stack children with adjacent-margin collapse (mirrors
         // EmitBlockSubtreeRecursive's stacking logic).
@@ -10996,8 +11037,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
-            var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
-            var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
+            // A child's % margins resolve against its containing (this box's content) inline size.
+            var childPctBase = MeasurePercentInsetBase(parentContentInline);
+            var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, childPctBase);
+            var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, childPctBase);
 
             double topShift;
             if (!hasPrior)
@@ -11019,8 +11062,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
                 child, cancellationToken, depth + 1,
                 parentContentBlockSize: pHeight,   // % height base chains (percent-height cycle).
-                blockOffsetOnPage: blockOffsetOnPage + childTopInParent);
+                blockOffsetOnPage: blockOffsetOnPage + childTopInParent,
+                containingInlineSize: parentContentInline);
             var childBottomInParent = childTopInParent + childSubtreeExtent;
+            if (childBottomInParent > deepestChildBottom) deepestChildBottom = childBottomInParent;
             if (childBottomInParent > maxExtent)
             {
                 maxExtent = childBottomInParent;
@@ -11058,17 +11103,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // (zero padding/border) cycle 3 will refine.
         if (hadAnyBlockChild)
         {
-            var deepestBottom = maxExtent;
-            // The current maxExtent might be parentBorderBoxBlockSize
-            // (no descendant overflow) — in that case the parent's tail
-            // extents are already included. Only append when descendants
-            // dominate.
-            if (deepestBottom > parentBorderBoxBlockSize)
+            var deepestBottom = deepestChildBottom;
+            // Parent's tail (padding-bottom + border-bottom) lies BELOW the deepest descendant in CSS
+            // box-model terms. Descendants DOMINATE when they reach past the parent's CONTENT-area bottom
+            // (its border box minus that tail) — not past its whole border box: an auto-height parent's
+            // border box is only its chrome, so with one short child (a 19px line in a `padding: 24px`
+            // card) the child ends at 43px, below the 48px border box, and the old border-box test dropped
+            // the 24px bottom padding — the card painted 48px tall with its text in the padding and the
+            // next box drawn over it.
+            var parentTail = pPaddingEnd + pBorderEnd;
+            if (deepestBottom > parentBorderBoxBlockSize - parentTail)
             {
-                // Parent's tail (padding-bottom + border-bottom) lies
-                // BELOW the deepest descendant in CSS box-model terms.
-                // Add them to get the true total visual extent.
-                var parentTail = pPaddingEnd + pBorderEnd;
                 // Last-child margin-bottom contributes too — it lies
                 // BELOW the last child's border-box bottom + ABOVE the
                 // parent's padding-bottom. (For BFC roots it would
@@ -11462,7 +11507,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 —
     /// compute the flex wrapper's auto cross-extent WITHOUT stacking
     /// its children vertically. The default
-    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double)"/>
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double, double, double, double)"/>
     /// path (used by every non-flex wrapper) sums the children's
     /// block-axis extents as if they were laid out in block-flow — for
     /// a flex container with <c>height: auto</c> + items 50/100/75 it

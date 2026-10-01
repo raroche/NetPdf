@@ -251,12 +251,17 @@ public sealed class HtmlPdfFacadeTests
             throw new OperationCanceledException("the loader gave up on its own");
     }
 
-    /// <summary>A loader that ignores its token and returns only after <paramref name="delay"/>.</summary>
-    private sealed class SlowLoader(TimeSpan delay) : IResourceLoader
+    /// <summary>A loader that ignores its token for cancellation purposes: it never throws, and returns
+    /// normally only once the deadline has PASSED (it waits until the token is cancelled, up to
+    /// <paramref name="maxWait"/>). Waiting on the token rather than a fixed delay keeps the test
+    /// deterministic when a busy test host fires the render timer late.</summary>
+    private sealed class SlowLoader(TimeSpan maxWait) : IResourceLoader
     {
         public async ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct)
         {
-            await Task.Delay(delay, CancellationToken.None);
+            var waited = System.Diagnostics.Stopwatch.StartNew();
+            while (!ct.IsCancellationRequested && waited.Elapsed < maxWait)
+                await Task.Delay(10, CancellationToken.None);
             return new ResourceResponse { Content = ReadOnlyMemory<byte>.Empty };
         }
     }
@@ -283,7 +288,7 @@ public sealed class HtmlPdfFacadeTests
         // not produce a PDF past the cap: the next cancellation check reports the timeout.
         var options = new HtmlPdfOptions
         {
-            ResourceLoader = new SlowLoader(TimeSpan.FromMilliseconds(600)),
+            ResourceLoader = new SlowLoader(TimeSpan.FromSeconds(10)),
             SecurityPolicy = new SecurityPolicy
             {
                 AllowHttpsScheme = true,

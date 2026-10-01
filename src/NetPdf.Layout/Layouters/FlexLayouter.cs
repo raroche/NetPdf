@@ -2349,6 +2349,34 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private static bool HasDefiniteFlexBaseSize(Box item, PropertyId mainSizeProperty) =>
         item.Style.ReadFlexBasis().Kind is FlexBasisKind.LengthPx or FlexBasisKind.Percentage;
 
+    /// <summary>CSS Flexbox §4.5 — whether a COLUMN item's automatic minimum height is its content height:
+    /// <c>height</c> and <c>min-height</c> are auto and the item is not a scroll container. (With a definite
+    /// <c>height</c> the floor is min(content, height) instead — see <see cref="ColumnSpecifiedSizeSuggestion"/>.)
+    /// Shared with the BlockLayouter column pre-measure so measured and emitted heights agree.</summary>
+    internal static bool HasColumnContentAutomaticMinimum(Box item)
+    {
+        var st = item.Style;
+        if (st.Get(PropertyId.Height).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage) return false;
+        if (st.Get(PropertyId.MinHeight).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage) return false;
+        return !IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0))
+            && !IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0));
+    }
+
+    /// <summary>CSS Flexbox §4.5 — a COLUMN item with a definite length <c>height</c>, <c>min-height: auto</c>,
+    /// and no scroll container: its specified size suggestion (the height as a border box), which caps its
+    /// content-based automatic minimum. <see langword="null"/> otherwise.</summary>
+    private static double? ColumnSpecifiedSizeSuggestion(Box item)
+    {
+        var st = item.Style;
+        var height = st.Get(PropertyId.Height);
+        if (height.Tag != ComputedSlotTag.LengthPx) return null;
+        if (st.Get(PropertyId.MinHeight).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage) return null;
+        if (IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0))
+            || IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0)))
+            return null;
+        return BoxSizingHelper.DeclaredToBorderBox(st, Math.Max(0, height.AsLengthPx()), st.BlockBorderPaddingPx());
+    }
+
     /// <summary>Whether an <c>overflow-x</c> / <c>overflow-y</c> keyword index (visible 0, hidden 1, clip 2,
     /// scroll 3, auto 4 — <c>KeywordResolver</c>) makes the box a scroll container. <c>clip</c> does not.</summary>
     private static bool IsScrollContainerOverflow(int keywordIndex) => keywordIndex is 1 or 3 or 4;
@@ -3628,11 +3656,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 var definiteCross = crossSlot.Tag == ComputedSlotTag.LengthPx
                     || (crossSlot.Tag == ComputedSlotTag.Percentage
                         && double.IsFinite(containerDefiniteCrossSize));
+                // True when the budget below becomes the item's OWN size (not a page): its content then
+                // overflows the item instead of paginating (and losing everything past the first break).
+                var budgetIsItemSize = false;
                 if (!isColumn && definiteCross)
                 {
                     var crossBorderBox = item.Style.CrossBorderBoxSizePx(
                         crossSizeProperty, containerDefiniteCrossSize);
                     itemBlockBudget = Math.Max(0, crossBorderBox - item.Style.BlockBorderPaddingPx());
+                    budgetIsItemSize = true;
                 }
                 // F4 (10-event-ticket barcode) — the COLUMN analogue of the row fix above: a column
                 // item's BLOCK axis IS its MAIN axis. When the main size is DEFINITE the item's used
@@ -3667,11 +3699,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 {
                     itemBlockBudget = Math.Max(
                         0, resolvedItemMainSizes[itemIdx] - item.Style.BlockBorderPaddingPx());
+                    budgetIsItemSize = true;
                 }
 
                 var buffer = LayoutItemContentIntoBuffer(
                     item, usedInline, itemBlockBudget, writingMode, isRtl,
-                    itemDiag, cancellationToken);
+                    itemDiag, cancellationToken, suppressPagination: budgetIsItemSize);
                 buffers[itemIdx] = buffer;
 
                 // Column content-sizing: grow an auto-height item to its content BORDER
@@ -3682,13 +3715,38 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // glyphs), so adding chrome again would double-count. Math.Max keeps any
                 // flex-grown size; explicit-height items (not content-determined) are
                 // untouched (their §9.7 size already box-sizing-mapped).
-                if (isColumn && IsMainSizeContentDetermined(item, mainSizeProperty))
+                // CSS Flexbox §4.5 — the same growth applies to an item whose base size is NOT content-based
+                // (e.g. `flex: 1` = `0%`) but whose `min-height` is auto and whose `height` is auto: its
+                // automatic minimum is its content height, so it can't be flexed below it (the
+                // 02-travel-quote card lists were squeezed to ~0 and lost every item but the first).
+                // A definite `height` doesn't switch the automatic minimum off — it caps it (the specified
+                // size suggestion), so an item can't be shrunk below min(content, height) (PR #384 review).
+                // Every content-based floor is capped by `max-height` too (PR #384 review).
+                if (isColumn)
                 {
                     var contentMainBorderBox = buffer.ContainsDecorationOwnerFragment
                         ? buffer.ContentBlockExtent
                         : buffer.ContentBlockExtent + item.Style.BlockBorderPaddingPx();
-                    if (contentMainBorderBox > resolvedItemMainSizes[itemIdx])
-                        resolvedItemMainSizes[itemIdx] = contentMainBorderBox;
+                    var floor = double.NaN;
+                    if (IsMainSizeContentDetermined(item, mainSizeProperty) || HasColumnContentAutomaticMinimum(item))
+                    {
+                        floor = contentMainBorderBox;
+                    }
+                    else if (!buffer.ContainsDecorationOwnerFragment
+                        && ColumnSpecifiedSizeSuggestion(item) is { } specified)
+                    {
+                        // Block-child content only: there ContentBlockExtent is the children's real extent
+                        // (an inline-only root folds the item's own declared box into it).
+                        floor = Math.Min(contentMainBorderBox, specified);
+                    }
+                    if (!double.IsNaN(floor))
+                    {
+                        var (_, maxMain) = item.ResolveFlexItemMinMaxMainSize(
+                            PropertyId.MinHeight, PropertyId.MaxHeight, containerDefiniteMainSize);
+                        floor = Math.Min(floor, maxMain);
+                        if (floor > resolvedItemMainSizes[itemIdx])
+                            resolvedItemMainSizes[itemIdx] = floor;
+                    }
                 }
             }
         }
@@ -3775,7 +3833,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         WritingMode writingMode,
         bool isRtl,
         IPaginateDiagnosticsSink? itemDiagnostics,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool suppressPagination = false)
         => NestedContentMeasurer.Measure(
             item, availInlineContentSize,
             blockBudget: blockBudget,
@@ -3793,7 +3852,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // TOP-LEVEL pass (which resolves them against the positioned-CB geometry the buffer flush
             // records). Letting the nested pass also run it only ever drops the descendant (unrecorded CB
             // in the transient nested map) + leaks a spurious LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001.
-            suppressOutOfFlowEmission: true);
+            suppressOutOfFlowEmission: true,
+            suppressPagination: suppressPagination);
 
     /// <summary>Non-block-pagination arc — whether a flex item's MAIN-axis size
     /// is content-determined (so content measurement should size it). True iff

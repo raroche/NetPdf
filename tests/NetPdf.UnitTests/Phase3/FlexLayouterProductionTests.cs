@@ -1771,6 +1771,37 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(1, LineCount(sink, "b"));
     }
 
+    [Theory]
+    [InlineData("")]                 // auto-height column container
+    [InlineData("height:40px;")]     // definite, too short for the content
+    public async Task Column_flex_zero_basis_item_is_not_shorter_than_its_content(string containerCss)
+    {
+        // CSS Flexbox §4.5 — `flex: 1` (basis 0%) on a column item with auto height / min-height: its
+        // automatic minimum is its content height, so it is never flexed below it. Pre-fix it resolved to
+        // ~0, and its content was laid out into that budget + paginated, keeping only the first line.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .col { display: flex; flex-direction: column; width: 200px; {{containerCss}} }
+                .grow { flex: 1; }
+            </style></head><body>
+            <div class="col"><div class="grow"><p class="a">AAAA</p><p class="b">AAAA</p><p class="c">AAAA</p></div></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var grow = GeometryFragment(sink, "grow");
+        // A text-only <p> is emitted as ONE inline fragment (its InlineLayout set), not a geometry fragment.
+        BoxFragment? lastParagraph = null;
+        foreach (var f in sink.Fragments)
+            if (f.Box.SourceElement?.GetAttribute("class") == "c") lastParagraph = f;
+        Assert.NotNull(lastParagraph);   // pre-fix: dropped — only the first paragraph survived
+        var last = lastParagraph!.Value;
+        // All three paragraphs laid out, and the item spans down to the last one.
+        Assert.True(grow.BlockOffset + grow.BlockSize >= last.BlockOffset + last.BlockSize - 0.5,
+            $"item ends at {grow.BlockOffset + grow.BlockSize:0.#}, last paragraph at {last.BlockOffset + last.BlockSize:0.#}");
+    }
+
     [Fact]
     public async Task Column_flex_stretched_item_keeps_the_full_width()
     {

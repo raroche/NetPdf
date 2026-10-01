@@ -128,7 +128,7 @@ Severity levels:
 | Code | Severity | Meaning |
 |---|---|---|
 | `PAGINATION-OPTIMIZER-FALLBACK-001` | Info | The bounded DP optimizer exceeded its time / candidate-set budget on a long document; greedy pagination (no lookahead) used. PDF still emits cleanly; layout quality is the same as a non-optimizing renderer. |
-| `PAGINATION-FORCED-OVERFLOW-001` | Warning | A region marked `break-inside: avoid` (or otherwise un-splittable per the cost model) was taller than a single fragmentainer; forced to split anyway. The first piece occupies the remainder of the current page; the rest cascades onto subsequent pages. PDF renders correctly but the author's break constraint was violated. Per CSS Fragmentation L3 §3.2 last-resort fallback. |
+| `PAGINATION-FORCED-OVERFLOW-001` | Warning | Content was forced past a page edge because it cannot fit any page: a box whose own height is taller than a page (an explicit `height`, a tall image), or an unbreakable box such as a table row or grid taller than a page. It is committed at the top of a page and overflows it (see also `PDF-CONTENT-OVERFLOW-TRUNCATED-001`). Reported once per such box — a wrapper element that merely CONTAINS paginating content (`<div class="page">…</div>`) does not report it (1.1.2+; earlier versions reported it on every page of every wrapped document). A `break-inside: avoid` element taller than a page is not forced past the edge: it splits between its children like normal content, so it does not report it either. Per CSS Fragmentation L3 §4.4 forward progress. |
 
 ---
 

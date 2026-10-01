@@ -2350,10 +2350,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         item.Style.ReadFlexBasis().Kind is FlexBasisKind.LengthPx or FlexBasisKind.Percentage;
 
     /// <summary>CSS Flexbox §4.5 — whether a COLUMN item's automatic minimum height is its content height:
-    /// <c>height</c> and <c>min-height</c> are auto and the item is not a scroll container. (A definite
-    /// <c>height</c> caps the floor at that height — the specified size suggestion — which the item's
-    /// hypothetical size already honors, so those items are left alone.) Shared with the BlockLayouter
-    /// column pre-measure so measured and emitted heights agree.</summary>
+    /// <c>height</c> and <c>min-height</c> are auto and the item is not a scroll container. (With a definite
+    /// <c>height</c> the floor is min(content, height) instead — see <see cref="ColumnSpecifiedSizeSuggestion"/>.)
+    /// Shared with the BlockLayouter column pre-measure so measured and emitted heights agree.</summary>
     internal static bool HasColumnContentAutomaticMinimum(Box item)
     {
         var st = item.Style;
@@ -2361,6 +2360,21 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         if (st.Get(PropertyId.MinHeight).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage) return false;
         return !IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0))
             && !IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0));
+    }
+
+    /// <summary>CSS Flexbox §4.5 — a COLUMN item with a definite length <c>height</c>, <c>min-height: auto</c>,
+    /// and no scroll container: its specified size suggestion (the height as a border box), which caps its
+    /// content-based automatic minimum. <see langword="null"/> otherwise.</summary>
+    private static double? ColumnSpecifiedSizeSuggestion(Box item)
+    {
+        var st = item.Style;
+        var height = st.Get(PropertyId.Height);
+        if (height.Tag != ComputedSlotTag.LengthPx) return null;
+        if (st.Get(PropertyId.MinHeight).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage) return null;
+        if (IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowX, defaultIndex: 0))
+            || IsScrollContainerOverflow(st.ReadKeywordOrDefault(PropertyId.OverflowY, defaultIndex: 0)))
+            return null;
+        return BoxSizingHelper.DeclaredToBorderBox(st, Math.Max(0, height.AsLengthPx()), st.BlockBorderPaddingPx());
     }
 
     /// <summary>Whether an <c>overflow-x</c> / <c>overflow-y</c> keyword index (visible 0, hidden 1, clip 2,
@@ -3705,14 +3719,34 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // (e.g. `flex: 1` = `0%`) but whose `min-height` is auto and whose `height` is auto: its
                 // automatic minimum is its content height, so it can't be flexed below it (the
                 // 02-travel-quote card lists were squeezed to ~0 and lost every item but the first).
-                if (isColumn && (IsMainSizeContentDetermined(item, mainSizeProperty)
-                    || HasColumnContentAutomaticMinimum(item)))
+                // A definite `height` doesn't switch the automatic minimum off — it caps it (the specified
+                // size suggestion), so an item can't be shrunk below min(content, height) (PR #384 review).
+                // Every content-based floor is capped by `max-height` too (PR #384 review).
+                if (isColumn)
                 {
                     var contentMainBorderBox = buffer.ContainsDecorationOwnerFragment
                         ? buffer.ContentBlockExtent
                         : buffer.ContentBlockExtent + item.Style.BlockBorderPaddingPx();
-                    if (contentMainBorderBox > resolvedItemMainSizes[itemIdx])
-                        resolvedItemMainSizes[itemIdx] = contentMainBorderBox;
+                    var floor = double.NaN;
+                    if (IsMainSizeContentDetermined(item, mainSizeProperty) || HasColumnContentAutomaticMinimum(item))
+                    {
+                        floor = contentMainBorderBox;
+                    }
+                    else if (!buffer.ContainsDecorationOwnerFragment
+                        && ColumnSpecifiedSizeSuggestion(item) is { } specified)
+                    {
+                        // Block-child content only: there ContentBlockExtent is the children's real extent
+                        // (an inline-only root folds the item's own declared box into it).
+                        floor = Math.Min(contentMainBorderBox, specified);
+                    }
+                    if (!double.IsNaN(floor))
+                    {
+                        var (_, maxMain) = item.ResolveFlexItemMinMaxMainSize(
+                            PropertyId.MinHeight, PropertyId.MaxHeight, containerDefiniteMainSize);
+                        floor = Math.Min(floor, maxMain);
+                        if (floor > resolvedItemMainSizes[itemIdx])
+                            resolvedItemMainSizes[itemIdx] = floor;
+                    }
                 }
             }
         }

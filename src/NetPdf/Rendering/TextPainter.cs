@@ -529,8 +529,16 @@ internal static class TextPainter
                     argb = DefaultColorArgb;
                 if (FragmentPainter.Alpha(argb) == 0) continue; // fully transparent text paints nothing.
 
-                if (!TryGetFontCollect(shaper, runStyle, collects, fontOrder, failed, diagnosed, diagnostics,
+                // Per-character font fallback — the glyphs come from the run's own font (its fallback-chain
+                // index); the baseline metrics stay the PRIMARY font's, so fallback glyphs share the line's
+                // baseline with the text around them.
+                if (!TryGetFontCollect(shaper, runStyle, 0, collects, fontOrder, failed, diagnosed, diagnostics,
                         out var key, out var fc))
+                    continue;
+                var metricsFont = fc.Font;
+                if (run.Source.FontIndex != 0
+                    && !TryGetFontCollect(shaper, runStyle, run.Source.FontIndex, collects, fontOrder, failed,
+                        diagnosed, diagnostics, out key, out fc))
                     continue;
 
                 // Gather this slice's ORIGINAL glyph ids; seed the font's used set.
@@ -559,9 +567,9 @@ internal static class TextPainter
                 // drop to the baseline by the ascent. Metrics from the run's parsed font. When the line
                 // carries a baseline-aligned inline-block, the layout pins the baseline instead (so text
                 // and box share it — CSS 2.2 §10.8.1); otherwise the real-metric centred baseline holds.
-                var unitsPerEm = fc.Font.Head.UnitsPerEm;
-                var ascentPx = fc.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
-                var descentPx = fc.Font.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
+                var unitsPerEm = metricsFont.Head.UnitsPerEm;
+                var ascentPx = metricsFont.Hhea.Ascender * fontSizePx / unitsPerEm;
+                var descentPx = metricsFont.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
                 var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
                 var lineBaselineTopPx = explicitBaselineTopPx ?? lineTopPx + halfLeadingPx + ascentPx;
                 // text vertical-align cycle (CSS 2.2 §10.8.1) — a run's own vertical-align positions its
@@ -646,11 +654,15 @@ internal static class TextPainter
             FontCollect? fc = null;
             var baselineTopPx = 0.0;
             if (fontSizePx > 0 && FragmentPainter.Alpha(argb) != 0
-                && TryGetFontCollect(shaper, runStyle, collects, fontOrder, failed, diagnosed, diagnostics,
-                    out var k, out var f))
+                && TryGetFontCollect(shaper, runStyle, 0, collects, fontOrder, failed, diagnosed, diagnostics,
+                    out var k, out var f)
+                // Fallback-font run: glyphs from its own font, baseline metrics from the primary (above).
+                && (run.Source.FontIndex == 0
+                    || TryGetFontCollect(shaper, runStyle, run.Source.FontIndex, collects, fontOrder, failed,
+                        diagnosed, diagnostics, out k, out _)))
             {
                 key = k;
-                fc = f;
+                fc = collects[k];
                 var unitsPerEm = f.Font.Head.UnitsPerEm;
                 var ascentPx = f.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = f.Font.Hhea.Descender * fontSizePx / unitsPerEm;
@@ -1014,7 +1026,7 @@ internal static class TextPainter
     /// key. Returns <see langword="false"/> (and diagnoses once) when the font can't be
     /// resolved or parsed — the caller skips that run.</summary>
     private static bool TryGetFontCollect(
-        HarfBuzzShaperResolver shaper, ComputedStyle runStyle,
+        HarfBuzzShaperResolver shaper, ComputedStyle runStyle, int fontIndex,
         Dictionary<string, FontCollect> collects, List<string> fontOrder,
         HashSet<string> failed, HashSet<string> diagnosed, IDiagnosticsSink? diagnostics,
         out string key, out FontCollect collect)
@@ -1024,7 +1036,7 @@ internal static class TextPainter
         HarfBuzzShaperResolver.ResolvedFontProgram program;
         try
         {
-            program = shaper.ResolveFontProgram(runStyle);
+            program = shaper.ResolveFontProgram(runStyle, fontIndex);
         }
         catch (InvalidOperationException ex)
         {

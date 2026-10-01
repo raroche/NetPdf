@@ -8,7 +8,7 @@ namespace NetPdf.UnitTests.Text.Fonts.OpenType;
 
 /// <summary>
 /// Builds a minimal-but-valid TTF byte stream for parser tests. Tests that need a "real"
-/// font feed the bytes from <see cref="Build"/> through <c>OpenTypeFont.Parse</c>; tests
+/// font feed the bytes from <see cref="Build()"/> through <c>OpenTypeFont.Parse</c>; tests
 /// that exercise individual parsers can grab single tables via <see cref="HeadBytes"/> /
 /// <see cref="CmapBytes"/> etc.
 /// </summary>
@@ -24,7 +24,15 @@ internal static class SyntheticFont
     public const ushort NumberOfHMetrics = 3;
 
     /// <summary>Builds the full SFNT byte stream — header + table directory + 10 tables.</summary>
-    public static byte[] Build()
+    public static byte[] Build() => Build('A');
+
+    /// <summary>Same font, but its cmap maps <paramref name="firstMapped"/> and the next character
+    /// (instead of 'A' / 'B') to glyphs 1 and 2 — a second, distinct font for font-fallback tests.</summary>
+    public static byte[] Build(char firstMapped) => Build(firstMapped, (char)(firstMapped + 1));
+
+    /// <summary>Same font, but its cmap maps exactly <paramref name="glyph1"/> → glyph 1 and
+    /// <paramref name="glyph2"/> → glyph 2 (two independent characters, e.g. a letter and a combining mark).</summary>
+    public static byte[] Build(char glyph1, char glyph2)
     {
         var head = HeadBytes();
         var hhea = HheaBytes();
@@ -33,7 +41,7 @@ internal static class SyntheticFont
         var post = PostBytes();
         var name = NameBytes();
         var hmtx = HmtxBytes();
-        var cmap = CmapBytes();
+        var cmap = CmapBytes(glyph1, glyph2);
         var loca = LocaBytes();
         var glyf = GlyfBytes();
 
@@ -230,13 +238,13 @@ internal static class SyntheticFont
         return bytes;
     }
 
-    public static byte[] CmapBytes()
+    public static byte[] CmapBytes(char glyph1 = 'A', char glyph2 = 'B')
     {
         // Format 4 with two segments:
         //   segment 1: [0x0041, 0x0042] → glyphs 1, 2 (idDelta = -0x40, idRangeOffset = 0)
         //   segment 2 (terminator): [0xFFFF, 0xFFFF] → glyph 0 (idDelta = 1)
         // Encoding records: one entry pointing to format-4 subtable.
-        var subtable = BuildFormat4Subtable();
+        var subtable = BuildFormat4Subtable(glyph1, glyph2);
         var bytes = new byte[4 + 8 + subtable.Length];
         var span = bytes.AsSpan();
         BinaryPrimitives.WriteUInt16BigEndian(span[0..2], 0);         // version
@@ -248,9 +256,13 @@ internal static class SyntheticFont
         return bytes;
     }
 
-    private static byte[] BuildFormat4Subtable()
+    private static byte[] BuildFormat4Subtable(char glyph1, char glyph2)
     {
-        const int segCount = 2; // [A..B], [terminator]
+        // One single-character segment per mapped char (sorted by code), then the 0xFFFF terminator.
+        var mapped = glyph1 < glyph2
+            ? new (char Code, ushort Glyph)[] { (glyph1, 1), (glyph2, 2) }
+            : new (char Code, ushort Glyph)[] { (glyph2, 2), (glyph1, 1) };
+        var segCount = mapped.Length + 1;
         var bytes = new byte[14 + 2 + (segCount * 8)]; // header (14) + reservedPad (2) + 4 arrays × segCount × 2
         var span = bytes.AsSpan();
         BinaryPrimitives.WriteUInt16BigEndian(span[0..2], 4);         // format
@@ -266,18 +278,15 @@ internal static class SyntheticFont
         var deltaStart = startStart + (segCount * 2);
         var rangeOffsetStart = deltaStart + (segCount * 2);
 
-        // segment 0
-        BinaryPrimitives.WriteUInt16BigEndian(span[endStart..(endStart + 2)], 0x0042);
-        BinaryPrimitives.WriteUInt16BigEndian(span[startStart..(startStart + 2)], 0x0041);
-        BinaryPrimitives.WriteInt16BigEndian(span[deltaStart..(deltaStart + 2)], unchecked((short)(1 - 0x0041))); // glyph 1 for 'A'
-        BinaryPrimitives.WriteUInt16BigEndian(span[rangeOffsetStart..(rangeOffsetStart + 2)], 0);
-
-        // segment 1 (terminator)
-        BinaryPrimitives.WriteUInt16BigEndian(span[(endStart + 2)..(endStart + 4)], 0xFFFF);
-        BinaryPrimitives.WriteUInt16BigEndian(span[(startStart + 2)..(startStart + 4)], 0xFFFF);
-        BinaryPrimitives.WriteInt16BigEndian(span[(deltaStart + 2)..(deltaStart + 4)], 1);
-        BinaryPrimitives.WriteUInt16BigEndian(span[(rangeOffsetStart + 2)..(rangeOffsetStart + 4)], 0);
-
+        for (var i = 0; i < segCount; i++)
+        {
+            var (code, glyph) = i < mapped.Length ? (mapped[i].Code, mapped[i].Glyph) : ('\uFFFF', (ushort)0);
+            var delta = i < mapped.Length ? unchecked((short)(glyph - code)) : (short)1;
+            BinaryPrimitives.WriteUInt16BigEndian(span[(endStart + i * 2)..], code);
+            BinaryPrimitives.WriteUInt16BigEndian(span[(startStart + i * 2)..], code);
+            BinaryPrimitives.WriteInt16BigEndian(span[(deltaStart + i * 2)..], delta);
+            BinaryPrimitives.WriteUInt16BigEndian(span[(rangeOffsetStart + i * 2)..], 0);
+        }
         // reservedPad already zero
         return bytes;
     }

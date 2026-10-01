@@ -3,8 +3,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using System.Threading;
+using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Layouters;
 using NetPdf.Text.Bidi;
@@ -362,7 +364,7 @@ internal static class LineBuilder
         }
         var concatText = concatBuf.ToString();
 
-        var output = new ShapedRun[itemizedRuns.Count];
+        var output = new List<ShapedRun>(itemizedRuns.Count);
         for (var runIdx = 0; runIdx < itemizedRuns.Count; runIdx++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -394,7 +396,7 @@ internal static class LineBuilder
             if (sourceTextRuns[run.SourceTextRunIndex].Atomic is { } atomic)
             {
                 var atomicAdvance = (float)Math.Max(0, atomic.AdvancePx);
-                output[runIdx] = new ShapedRun(
+                output.Add(new ShapedRun(
                     run,
                     new[]
                     {
@@ -403,7 +405,7 @@ internal static class LineBuilder
                             XOffset: 0, YOffset: 0, Cluster: run.Utf16Start),
                     },
                     atomic.AdvancePx,
-                    atomic);
+                    atomic));
                 continue;
             }
 
@@ -412,60 +414,177 @@ internal static class LineBuilder
                 ? ShapingDirection.RightToLeft
                 : ShapingDirection.LeftToRight;
 
-            // Pass the FULL concat buffer + (Utf16Start, Utf16Length)
-            // so HarfBuzz sees left/right context for cross-source-
-            // boundary contextual shaping (Arabic joining across
-            // TextRuns, complex-script reordering, etc.) + cluster
-            // indices stay concat-buffer relative.
             // UAX #24 (cycle 3) — shape with the run's OWN detected script when itemization tagged one,
             // so a mixed-script paragraph (e.g. Arabic embedded in Latin) gets the correct OpenType
             // feature set instead of the caller's uniform script. An all-Common run keeps the uniform
             // script. Single-script paragraphs whose content matches the uniform script are unchanged.
             var runScript = run.ScriptIso15924 ?? scriptIso15924;
             var shaper = resolver.Resolve(style);
-            var glyphs = shaper.Shape(
-                concatText.AsSpan(),
-                run.Utf16Start, run.Utf16Length,
-                direction, runScript, language,
-                cancellationToken);
+            var shaped = ShapeSegment(
+                concatText, run, shaper, direction, runScript, language,
+                sourceTextRuns[run.SourceTextRunIndex], sourceStart, cancellationToken);
 
-            // RC-1 — fold an enclosing non-replaced InlineBox's open/close-edge chrome
-            // (margin/border/padding-left/right, set by BlockLayouter.CollectInlineTextRuns) into this
-            // run's boundary glyphs BEFORE the advance sum, so the wrap/paint pen already carries it.
-            ApplyInlineChromeAdvance(glyphs, run, sourceTextRuns[run.SourceTextRunIndex], sourceStart);
-
-            // Cycle 2 — sum XAdvance for fast wrap-pass measurement.
-            // HarfBuzz XAdvance is in CSS px (HbShaper handles font-
-            // units → pixels conversion at construction time).
-            double totalAdvance = 0;
-            var hasVisibleMissingGlyph = false;
-            for (var g = 0; g < glyphs.Length; g++)
+            // Per-character font fallback (CSS Fonts 4 §5) — text the primary font can't draw is split into
+            // its own runs, each shaped and painted with the first font of the style's fallback chain that
+            // covers it. Only runs that actually showed tofu pay for the per-character coverage scan.
+            if (shaped.HasVisibleMissingGlyph
+                && SplitByFontCoverage(concatText, run, style, shaper, resolver) is { } segments)
             {
-                totalAdvance += glyphs[g].XAdvance;
-                // WP-9 (rule 7) — a .notdef (glyph 0) whose SOURCE character is a real (non-whitespace,
-                // non-format) codepoint is visible "tofu": the font couldn't map it. The glyph's Cluster
-                // is the offset into the concat buffer (HbShaper's hb_buffer_add_utf16 contract), so read
-                // the source char there. Whitespace / control chars that shape to .notdef paint nothing,
-                // so they are NOT flagged (avoids a false "missing glyph" for an unmapped space).
-                if (glyphs[g].GlyphId == 0)
+                foreach (var segment in segments)
                 {
-                    var cluster = glyphs[g].Cluster;
-                    if ((uint)cluster < (uint)concatText.Length)
+                    output.Add(ShapeSegment(
+                        concatText, segment, resolver.Resolve(style, segment.FontIndex), direction, runScript,
+                        language, sourceTextRuns[run.SourceTextRunIndex], sourceStart, cancellationToken));
+                }
+                continue;
+            }
+            output.Add(shaped);
+        }
+        return output.ToArray();
+    }
+
+    /// <summary>Shape one itemized run (or a font-fallback piece of one) and measure it: applies the
+    /// enclosing inline boxes' edge chrome, sums the advances, and flags visible <c>.notdef</c> glyphs.</summary>
+    private static ShapedRun ShapeSegment(
+        string concatText, ItemizedRun run, HbShaper shaper, ShapingDirection direction,
+        string runScript, string language, TextRun source, int[] sourceStart,
+        CancellationToken cancellationToken)
+    {
+        // Pass the FULL concat buffer + (Utf16Start, Utf16Length) so HarfBuzz sees left/right context for
+        // cross-source-boundary contextual shaping (Arabic joining across TextRuns, complex-script
+        // reordering, etc.) + cluster indices stay concat-buffer relative.
+        var glyphs = shaper.Shape(
+            concatText.AsSpan(),
+            run.Utf16Start, run.Utf16Length,
+            direction, runScript, language,
+            cancellationToken);
+
+        // RC-1 — fold an enclosing non-replaced InlineBox's open/close-edge chrome
+        // (margin/border/padding-left/right, set by BlockLayouter.CollectInlineTextRuns) into this
+        // run's boundary glyphs BEFORE the advance sum, so the wrap/paint pen already carries it.
+        ApplyInlineChromeAdvance(glyphs, run, source, sourceStart);
+
+        // Cycle 2 — sum XAdvance for fast wrap-pass measurement.
+        // HarfBuzz XAdvance is in CSS px (HbShaper handles font-
+        // units → pixels conversion at construction time).
+        double totalAdvance = 0;
+        var hasVisibleMissingGlyph = false;
+        for (var g = 0; g < glyphs.Length; g++)
+        {
+            totalAdvance += glyphs[g].XAdvance;
+            // WP-9 (rule 7) — a .notdef (glyph 0) whose SOURCE character is a real (non-whitespace,
+            // non-format) codepoint is visible "tofu": the font couldn't map it. The glyph's Cluster
+            // is the offset into the concat buffer (HbShaper's hb_buffer_add_utf16 contract), so read
+            // the source char there. Whitespace / control chars that shape to .notdef paint nothing,
+            // so they are NOT flagged (avoids a false "missing glyph" for an unmapped space).
+            if (glyphs[g].GlyphId == 0)
+            {
+                var cluster = glyphs[g].Cluster;
+                if ((uint)cluster < (uint)concatText.Length)
+                {
+                    var srcChar = concatText[cluster];
+                    if (!char.IsWhiteSpace(srcChar) && !char.IsControl(srcChar)
+                        && srcChar is not ('\u00AD' or '\uFFFC'))   // soft hyphen / object-replacement
                     {
-                        var srcChar = concatText[cluster];
-                        if (!char.IsWhiteSpace(srcChar) && !char.IsControl(srcChar)
-                            && srcChar is not ('\u00AD' or '\uFFFC'))   // soft hyphen / object-replacement
-                        {
-                            hasVisibleMissingGlyph = true;
-                        }
+                        hasVisibleMissingGlyph = true;
                     }
                 }
             }
-
-            output[runIdx] = new ShapedRun(
-                run, glyphs, totalAdvance, HasVisibleMissingGlyph: hasVisibleMissingGlyph);
         }
-        return output;
+        return new ShapedRun(run, glyphs, totalAdvance, HasVisibleMissingGlyph: hasVisibleMissingGlyph);
+    }
+
+    /// <summary>
+    /// Per-character font fallback — split <paramref name="run"/> into pieces that each use ONE font of the
+    /// style's fallback chain. The unit is the extended grapheme cluster (UAX #29: a base and its combining
+    /// marks, an emoji ZWJ sequence), so a cluster is never divided between fonts (PR #387 review): a
+    /// cluster the primary font fully covers stays on it (index 0); otherwise it goes to the first fallback
+    /// font covering ALL of it, else — when no font covers it all — to the primary if that covers the base,
+    /// else to the first fallback covering the base, else it stays on the primary as tofu. Whitespace and
+    /// control clusters, and malformed UTF-16 (a lone surrogate, which HarfBuzz shapes as its replacement
+    /// glyph), stay on the primary. Variation selectors and format characters (ZWJ, ZWNJ) are not required
+    /// to be in a font's character map. Returns <see langword="null"/> when every cluster stays on the
+    /// primary font.
+    /// </summary>
+    private static List<ItemizedRun>? SplitByFontCoverage(
+        string concatText, ItemizedRun run, ComputedStyle style, HbShaper primary, IShaperResolver resolver)
+    {
+        var start = run.Utf16Start;
+        var end = start + run.Utf16Length;
+        var fontOf = new int[run.Utf16Length];
+        var anyFallback = false;
+        var required = new List<int>(4);
+        for (var pos = start; pos < end;)
+        {
+            var span = concatText.AsSpan(pos, end - pos);
+            var clusterLength = Math.Max(1, StringInfo.GetNextTextElementLength(span));
+            var font = ClusterFont(span[..clusterLength], style, primary, resolver, required);
+            if (font > 0) anyFallback = true;
+            Array.Fill(fontOf, font, pos - start, clusterLength);
+            pos += clusterLength;
+        }
+        if (!anyFallback) return null;
+
+        var segments = new List<ItemizedRun>();
+        var segStart = 0;
+        for (var i = 1; i <= fontOf.Length; i++)
+        {
+            if (i < fontOf.Length && fontOf[i] == fontOf[segStart]) continue;
+            segments.Add(run with
+            {
+                Utf16Start = start + segStart,
+                Utf16Length = i - segStart,
+                FontIndex = fontOf[segStart],
+            });
+            segStart = i;
+        }
+        return segments;
+    }
+
+    /// <summary>The fallback-chain index for one grapheme cluster (see <see cref="SplitByFontCoverage"/>).</summary>
+    private static int ClusterFont(
+        ReadOnlySpan<char> cluster, ComputedStyle style, HbShaper primary, IShaperResolver resolver,
+        List<int> required)
+    {
+        required.Clear();
+        var visible = false;
+        for (var i = 0; i < cluster.Length;)
+        {
+            if (Rune.DecodeFromUtf16(cluster[i..], out var rune, out var consumed) != System.Buffers.OperationStatus.Done)
+                return 0;   // malformed UTF-16: leave it to the primary (HarfBuzz's replacement policy)
+            i += consumed;
+            if (!Rune.IsWhiteSpace(rune) && !Rune.IsControl(rune)) visible = true;
+            if (IsOptionalForCoverage(rune)) continue;
+            required.Add(rune.Value);
+        }
+        if (!visible || required.Count == 0) return 0;
+
+        var primaryCoversAll = true;
+        foreach (var cp in required)
+        {
+            if (!primary.HasGlyph(cp))
+            {
+                primaryCoversAll = false;
+                break;
+            }
+        }
+        if (primaryCoversAll) return 0;
+
+        var codepoints = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(required);
+        var all = resolver.FindFallbackFont(style, codepoints);
+        if (all > 0) return all;
+        // No font draws the whole cluster: keep its base where it renders, so only the rest is tofu.
+        if (primary.HasGlyph(required[0])) return 0;
+        return resolver.FindFallbackFont(style, codepoints[..1]);
+    }
+
+    /// <summary>Codepoints a font need not map for a cluster to count as covered: variation selectors and
+    /// format characters (ZWJ, ZWNJ, …) — shapers handle them without a glyph of their own.</summary>
+    private static bool IsOptionalForCoverage(Rune rune)
+    {
+        var v = rune.Value;
+        if (v is >= 0xFE00 and <= 0xFE0F or >= 0xE0100 and <= 0xE01EF) return true; // variation selectors
+        return Rune.GetUnicodeCategory(rune) == UnicodeCategory.Format;
     }
 
     /// <summary>RC-1 — fold an enclosing non-replaced <c>InlineBox</c>'s horizontal box-model chrome into

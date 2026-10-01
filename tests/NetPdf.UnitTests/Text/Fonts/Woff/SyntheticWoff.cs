@@ -33,7 +33,7 @@ internal static class SyntheticWoff
     private const int SfntHeaderSize = 12;
     private const int SfntDirectoryRecordSize = 16;
 
-    /// <summary>Wraps the synthetic TTF from <see cref="SyntheticFont.Build"/> as a WOFF byte stream.</summary>
+    /// <summary>Wraps the synthetic TTF from <see cref="SyntheticFont.Build()"/> as a WOFF byte stream.</summary>
     public static byte[] Build()
     {
         return Build(SyntheticFont.Build());

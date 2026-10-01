@@ -9,6 +9,7 @@ Post-`1.1.1` improvements accumulate here until the next release is cut.
 ### Fixed
 - **Flex items no longer lose content when flexed below it.** A `flex: 1` item in a column flexbox (for example the feature list inside a card) could be flexed to almost no height; its content was then laid out into that tiny space and everything after the first line was silently dropped. A column item with `height: auto` and `min-height: auto` now keeps at least its content height (CSS Flexbox §4.5), and an item's content never paginates inside a fixed-size item — it overflows it, as in a browser.
 - **Absolutely positioned content taller than its box is no longer cut.** It overflows the box (CSS `overflow: visible`) instead of keeping only what fitted before the first "page break" inside the box.
+- **Content in narrow boxes is measured at its real width.** The pre-measure that sizes boxes and decides page breaks laid nested text, flex rows, tables and multi-column content out at the full page width. Text that wraps in a narrow box was measured as one line, so the box's border was drawn too short (losing its bottom padding), spacing after such content was squeezed, and a list item could be split leaving a single line at the page bottom.
 - **`PAGINATION-FORCED-OVERFLOW-001` is reported only for real overflows.** A document whose content sits in one wrapper element reported it on every page; it is now reported once per box that is actually taller than a page.
 
 ## [1.1.1]

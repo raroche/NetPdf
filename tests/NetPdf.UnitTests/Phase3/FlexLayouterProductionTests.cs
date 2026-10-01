@@ -1802,6 +1802,36 @@ public sealed class FlexLayouterProductionTests
             $"item ends at {grow.BlockOffset + grow.BlockSize:0.#}, last paragraph at {last.BlockOffset + last.BlockSize:0.#}");
     }
 
+    [Theory]
+    [InlineData("width: 110px")]                                // content-box: 110px of content
+    [InlineData("width: 150px; box-sizing: border-box")]        // 150 − 40px padding = 110px
+    [InlineData("width: 25%; box-sizing: border-box")]          // 25% of the 600px root = 150px
+    [InlineData("margin-right: 450px")]                         // auto width, 150px left after the margin
+    public async Task Narrow_block_is_measured_at_its_own_width_so_wrapped_content_fits_inside(string widthCss)
+    {
+        // The measure pass laid nested content out at the BFC (page) width, so a flex row whose value wraps
+        // inside a narrow box measured as ONE line and the box's border was drawn too short (its bottom
+        // padding under the text was lost). Each row's value "AAAAAAAAAA AAAAAAAAAA" (127.2px) wraps in the
+        // 150 − 40 = 110px content box.
+        var html = $$"""
+            <!DOCTYPE html><html><head><style>
+                .card { {{widthCss}}; padding: 0 20px 20px 20px; }
+                .kv { display: flex; }
+            </style></head><body>
+            <div class="card"><div class="kv"><span class="v">AAAAAAAAAA AAAAAAAAAA</span></div></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var card = GeometryFragment(sink, "card");
+        var kv = GeometryFragment(sink, "kv");
+        Assert.True(LineCount(sink, "v") >= 2, "the value should wrap in the narrow box");
+        // The card's painted box must hold the row AND its 20px bottom padding.
+        Assert.True(card.BlockOffset + card.BlockSize >= kv.BlockOffset + kv.BlockSize + 20 - 0.5,
+            $"card ends at {card.BlockOffset + card.BlockSize:0.#}, row ends at {kv.BlockOffset + kv.BlockSize:0.#}");
+    }
+
     [Fact]
     public async Task Column_flex_stretched_item_keeps_the_full_width()
     {

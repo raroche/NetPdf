@@ -10,7 +10,8 @@ namespace NetPdf.Text.Fonts.SystemFonts;
 /// Base class for platform-specific system-font enumeration. Subclasses provide the list
 /// of well-known font directories for their platform; the base class walks each directory
 /// (recursively) and parses the <c>name</c> + <c>OS/2</c> tables of every reachable
-/// <c>.ttf</c> / <c>.otf</c> file to materialize <see cref="SystemFontEntry"/> records.
+/// <c>.ttf</c> / <c>.otf</c> / <c>.ttc</c> / <c>.otc</c> file to materialize
+/// <see cref="SystemFontEntry"/> records — one per face.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,13 +22,12 @@ namespace NetPdf.Text.Fonts.SystemFonts;
 /// of system fonts installed.
 /// </para>
 /// <para>
-/// Phase 1 covers the four platforms NetPdf targets (macOS, Windows, Linux, Alpine).
-/// <b>TTC / OTC collection files are scanned but currently NOT indexed</b>: the
-/// <see cref="OpenTypeFont.Parse"/> entry point doesn't yet support collection
-/// containers, so <see cref="TryIndex"/> swallows the parse failure and skips the
-/// file. Full multi-face collection support — including indexing face 0 (and
-/// optionally subsequent faces) of every <c>.ttc</c> / <c>.otc</c> reachable on disk
-/// — lands when the collection parser does (post-Phase-1).
+/// <b>Font collections.</b> A file whose content starts with the <c>ttcf</c> tag (whatever its
+/// extension) is indexed face by face by <see cref="IndexCollection"/>: it reads only the collection
+/// header, each face's table directory and its <c>name</c> / <c>OS/2</c> / <c>head</c> tables, and
+/// records the face index on the entry (<see cref="SystemFontEntry.IsCollectionFace"/>). The resolver
+/// later extracts the chosen face as a standalone font (<see cref="FontCollection.ExtractFace(string, int)"/>).
+/// Plain TTF / OTF files go through <see cref="TryIndex"/> (safety validator + full parse).
 /// </para>
 /// </remarks>
 internal abstract class SystemFontEnumerator
@@ -65,7 +65,14 @@ internal abstract class SystemFontEnumerator
             }
             foreach (var file in files)
             {
-                if (TryIndex(file, out var entry)) yield return entry;
+                if (IsCollectionFile(file))
+                {
+                    foreach (var face in IndexCollection(file)) yield return face;
+                }
+                else if (TryIndex(file, out var entry))
+                {
+                    yield return entry;
+                }
             }
         }
     }
@@ -93,8 +100,7 @@ internal abstract class SystemFontEnumerator
         entry = default;
         try
         {
-            // Read once, parse OpenType. For TTC / OTC the parse currently fails (Phase 1
-            // does not support collection parsing) — caller swallows the error and skips.
+            // Read once, parse OpenType. Collections (.ttc / .otc) take IndexCollection instead.
             var bytes = File.ReadAllBytes(filePath);
             // Per PR #17 review user-recommendation #4 — system fonts are
             // still an input boundary (user-installed; macOS lets any app
@@ -125,6 +131,110 @@ internal abstract class SystemFontEnumerator
         catch (InvalidDataException) { return false; }
         catch (ArgumentException) { return false; }
     }
+
+    /// <summary>True when the file starts with the <c>ttcf</c> collection tag (the extension alone is not
+    /// trusted: some <c>.ttc</c> files hold one plain sfnt, and some <c>.ttf</c> files are collections).</summary>
+    private static bool IsCollectionFile(string filePath)
+    {
+        try
+        {
+            using var handle = File.OpenHandle(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            Span<byte> tag = stackalloc byte[4];
+            // RandomAccess.Read may return fewer bytes than asked before EOF — loop until 4 or EOF (0).
+            var read = 0;
+            while (read < tag.Length)
+            {
+                var n = RandomAccess.Read(handle, tag[read..], read);
+                if (n <= 0) return false;
+                read += n;
+            }
+            return FontCollection.IsCollection(tag);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
+    /// <summary>
+    /// One entry per usable face of a font collection (<c>.ttc</c> / <c>.otc</c>). Reads only the
+    /// collection header, each face's table directory, and its <c>name</c> / <c>OS/2</c> / <c>head</c>
+    /// tables — large CJK collections are never read whole. A face is skipped (the others still index)
+    /// when its directory is malformed, it lacks a table the full parse requires, it carries a table the
+    /// safety validator rejects, or its standalone size is over the validator's byte cap — so a face in
+    /// the index is one <see cref="FontCollection.ExtractFace(string, int)"/> can hand to the same
+    /// validator and parser a plain <c>.ttf</c> goes through.
+    /// </summary>
+    internal static List<SystemFontEntry> IndexCollection(string filePath)
+    {
+        var entries = new List<SystemFontEntry>();
+        try
+        {
+            using var handle = File.OpenHandle(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, FileOptions.RandomAccess);
+            var source = FontCollection.Source.FromFile(handle);
+            var offsets = FontCollection.ReadFaceOffsets(source);
+            for (var i = 0; i < offsets.Length; i++)
+            {
+                if (TryIndexCollectionFace(source, filePath, i, offsets[i], out var entry)) entries.Add(entry);
+            }
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (InvalidDataException) { }
+        return entries;
+    }
+
+    private static bool TryIndexCollectionFace(
+        in FontCollection.Source source, string filePath, int faceIndex, uint offset, out SystemFontEntry entry)
+    {
+        entry = default;
+        try
+        {
+            var face = FontCollection.ReadFaceDirectory(source, offset);
+            if (FontCollection.StandaloneSize(face) > FontSafetyValidator.MaxBytes) return false;
+            foreach (var t in face.Tables)
+            {
+                if (FontSafetyValidator.IsDangerousTableTag(t.Tag)) return false;
+            }
+            foreach (var required in RequiredTables)
+            {
+                if (!face.TryGet(required, out _)) return false;
+            }
+            var outlines = face.SfntVersion == OpenTypeTags.SfntVersionOtf
+                ? face.TryGet(OpenTypeTags.Cff, out _)
+                : face.TryGet(OpenTypeTags.Loca, out _) && face.TryGet(OpenTypeTags.Glyf, out _);
+            if (!outlines) return false;
+
+            face.TryGet(OpenTypeTags.Name, out var nameRecord);
+            face.TryGet(OpenTypeTags.Os2, out var os2Record);
+            face.TryGet(OpenTypeTags.Head, out var headRecord);
+            var meta = FontMetadata.FromTables(
+                NameTable.Parse(source.ReadTable(nameRecord)),
+                Os2Table.Parse(source.ReadTable(os2Record)),
+                HeadTable.Parse(source.ReadTable(headRecord)));
+            entry = new SystemFontEntry
+            {
+                FilePath = filePath,
+                FaceIndex = faceIndex,
+                IsCollectionFace = true,
+                FamilyName = meta.FamilyName,
+                SubfamilyName = meta.SubfamilyName,
+                PostScriptName = meta.PostScriptName,
+                WeightCss = meta.WeightCss,
+                StretchCss = meta.StretchCss,
+                IsItalic = meta.IsItalic || meta.IsOblique,
+            };
+            return !string.IsNullOrEmpty(entry.FamilyName);
+        }
+        catch (IOException) { return false; }
+        catch (InvalidDataException) { return false; }
+        catch (ArgumentException) { return false; }
+    }
+
+    /// <summary>Tables <see cref="OpenTypeFont.Parse"/> requires of every face.</summary>
+    private static readonly uint[] RequiredTables =
+    [
+        OpenTypeTags.Head, OpenTypeTags.Hhea, OpenTypeTags.Maxp, OpenTypeTags.Os2,
+        OpenTypeTags.Post, OpenTypeTags.Name, OpenTypeTags.Hmtx, OpenTypeTags.Cmap,
+    ];
 
     /// <summary>
     /// Construct the appropriate enumerator for the current OS. Falls back to the Linux

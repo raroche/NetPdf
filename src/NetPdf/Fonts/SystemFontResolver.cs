@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Collections.Frozen;
+using System.Globalization;
 using NetPdf.Text.Fonts;
+using NetPdf.Text.Fonts.OpenType;
 using NetPdf.Text.Fonts.SystemFonts;
 
 namespace NetPdf;
@@ -65,18 +67,29 @@ public sealed class SystemFontResolver : IFontResolver
     public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        var entry = ResolveEntry(query);
+        // Walk the candidates in order: a direct family has one; a CSS generic has one per installed
+        // family of its chain. A collection face the indexer accepted but whose full parse fails is skipped
+        // so the NEXT candidate still resolves (PR #386 review) — a broken face never hides a usable one.
+        SystemFontEntry? entry = null;
+        ReadOnlyMemory<byte> bytes = default;
+        foreach (var candidate in CandidateEntries(query))
+        {
+            var loaded = LoadBytes(candidate);
+            if (loaded.IsEmpty) continue;
+            entry = candidate;
+            bytes = loaded;
+            break;
+        }
         if (entry is null) return ValueTask.FromResult<FontFaceData?>(null);
-
-        var bytes = _cache.GetOrAdd(entry.Value.FilePath, static path => File.ReadAllBytes(path));
+        var face = entry.Value;
         var data = new FontFaceData
         {
             Bytes = bytes,
-            Family = entry.Value.FamilyName,
-            WeightCss = entry.Value.WeightCss,
-            StretchCss = entry.Value.StretchCss,
-            Style = entry.Value.IsItalic ? FontStyle.Italic : FontStyle.Normal,
-            PostScriptName = entry.Value.PostScriptName,
+            Family = face.FamilyName,
+            WeightCss = face.WeightCss,
+            StretchCss = face.StretchCss,
+            Style = face.IsItalic ? FontStyle.Italic : FontStyle.Normal,
+            PostScriptName = face.PostScriptName,
             // Use the .NET path-aware Uri ctor so the runtime normalizes the platform's
             // path separator (Windows backslashes -> forward slashes) and percent-encodes
             // characters that need escaping (spaces, parentheses, etc). String-concatenating
@@ -84,9 +97,31 @@ public sealed class SystemFontResolver : IFontResolver
             // not valid file-URI form) and leaves spaces unescaped on Unix. Per RFC 8089:
             // file URIs derived from absolute paths must round-trip through the system's
             // path normalization rules — `new Uri(path)` is what does that.
-            Source = new Uri(entry.Value.FilePath),
+            Source = face.IsCollectionFace
+                ? new UriBuilder(new Uri(face.FilePath)) { Fragment = "face=" + face.FaceIndex.ToString(CultureInfo.InvariantCulture) }.Uri
+                : new Uri(face.FilePath),
         };
         return ValueTask.FromResult<FontFaceData?>(data);
+    }
+
+    /// <summary>
+    /// Extract one face of a font collection as a standalone sfnt and check it the way a plain
+    /// <c>.ttf</c> is checked at index time (safety validator + full OpenType parse). Returns empty
+    /// bytes when the face cannot be used.
+    /// </summary>
+    private static ReadOnlyMemory<byte> LoadCollectionFace(string path, int faceIndex)
+    {
+        try
+        {
+            var bytes = FontCollection.ExtractFace(path, faceIndex);
+            if (!FontSafetyValidator.Validate(bytes).IsSafe) return ReadOnlyMemory<byte>.Empty;
+            _ = OpenTypeFont.Parse(bytes);
+            return bytes;
+        }
+        catch (IOException) { return ReadOnlyMemory<byte>.Empty; }
+        catch (UnauthorizedAccessException) { return ReadOnlyMemory<byte>.Empty; }
+        catch (InvalidDataException) { return ReadOnlyMemory<byte>.Empty; }
+        catch (ArgumentException) { return ReadOnlyMemory<byte>.Empty; }
     }
 
     /// <summary>
@@ -98,13 +133,23 @@ public sealed class SystemFontResolver : IFontResolver
     /// </summary>
     internal SystemFontEntry? ResolveEntry(FontQuery query)
     {
+        foreach (var candidate in CandidateEntries(query)) return candidate;
+        return null;
+    }
+
+    /// <summary>The index entries a query can resolve to, best first: the family's best match for a
+    /// direct family name, else the best match of each installed family of the CSS-generic chain.</summary>
+    private IEnumerable<SystemFontEntry> CandidateEntries(FontQuery query)
+    {
         var italic = query.Style is FontStyle.Italic or FontStyle.Oblique;
         var stretchCss = Math.Clamp(query.StretchCss ?? 5, 1, 9);
 
         // Direct hit by family name.
         if (_index.Value.HasFamily(query.Family))
         {
-            return _index.Value.FindBest(query.Family, query.WeightCss, italic, stretchCss);
+            if (_index.Value.FindBest(query.Family, query.WeightCss, italic, stretchCss) is { } direct)
+                yield return direct;
+            yield break;
         }
 
         // CSS-generic expansion: walk the fallback chain in order.
@@ -112,13 +157,25 @@ public sealed class SystemFontResolver : IFontResolver
         {
             foreach (var candidateFamily in chain)
             {
-                if (_index.Value.HasFamily(candidateFamily))
+                if (_index.Value.HasFamily(candidateFamily)
+                    && _index.Value.FindBest(candidateFamily, query.WeightCss, italic, stretchCss) is { } generic)
                 {
-                    return _index.Value.FindBest(candidateFamily, query.WeightCss, italic, stretchCss);
+                    yield return generic;
                 }
             }
         }
-        return null;
+    }
+
+    /// <summary>The font bytes for an entry: the file for a plain font, the extracted face for a collection
+    /// face (empty when that face can't be used). Cached per file / per face.</summary>
+    private ReadOnlyMemory<byte> LoadBytes(SystemFontEntry face)
+    {
+        if (!face.IsCollectionFace)
+            return _cache.GetOrAdd(face.FilePath, static path => File.ReadAllBytes(path));
+        // One cache slot per face: faces of one collection are distinct programs.
+        return _cache.GetOrAdd(
+            face.FilePath + "#" + face.FaceIndex.ToString(CultureInfo.InvariantCulture),
+            _ => LoadCollectionFace(face.FilePath, face.FaceIndex));
     }
 
     private static FrozenDictionary<string, string[]> BuildCssGenericFallbacks()

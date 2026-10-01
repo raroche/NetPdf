@@ -11,9 +11,9 @@ namespace NetPdf.Text.Fonts.SystemFonts;
 /// <remarks>
 /// <para>
 /// <see cref="FilePath"/> is the disk path the enumerator discovered. <see cref="FaceIndex"/>
-/// is non-zero only for TrueType / OpenType collection files (<c>.ttc</c> / <c>.otc</c>),
-/// each of which contains multiple faces — Phase 1 indexes face 0 only and will gain
-/// multi-face support when collection parsing lands.
+/// is the face's position inside a TrueType / OpenType collection file (<c>.ttc</c> /
+/// <c>.otc</c>); <see cref="IsCollectionFace"/> marks such entries, whose bytes are a
+/// standalone copy of that one face (<c>FontCollection.ExtractFace</c>), not the file.
 /// </para>
 /// </remarks>
 internal readonly record struct SystemFontEntry
@@ -23,6 +23,9 @@ internal readonly record struct SystemFontEntry
 
     /// <summary>Face index within a collection file. Always 0 for non-collection (TTF/OTF) files.</summary>
     public required int FaceIndex { get; init; }
+
+    /// <summary>True when <see cref="FilePath"/> is a font collection and the face must be extracted.</summary>
+    public bool IsCollectionFace { get; init; }
 
     /// <summary>Family name extracted from the <c>name</c> table at indexing time.</summary>
     public required string FamilyName { get; init; }

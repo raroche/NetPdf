@@ -62,36 +62,42 @@ internal sealed record FontMetadata
     /// <summary>
     /// Extract metadata from an already-parsed <see cref="OpenTypeFont"/>.
     /// </summary>
-    public static FontMetadata Extract(OpenTypeFont font)
+    public static FontMetadata Extract(OpenTypeFont font) => FromTables(font.Name, font.Os2, font.Head);
+
+    /// <summary>
+    /// Extract metadata from the three identifying tables alone — the font-collection indexer reads
+    /// only these per face instead of parsing every face in full.
+    /// </summary>
+    public static FontMetadata FromTables(NameTable name, Os2Table os2, HeadTable head)
     {
         // Family + subfamily resolution: OpenType nameID 16 ("Typographic / Preferred Family")
         // is preferred when present (4-style families like "Roboto Slab" carry their preferred
         // family there); nameID 1 is the legacy 4-style-grouping name.
         const ushort NameIdTypographicFamily = 16;
         const ushort NameIdTypographicSubfamily = 17;
-        var family = font.Name.GetName(NameIdTypographicFamily)
-                  ?? font.Name.GetName(NameTable.NameIdFamilyName)
+        var family = name.GetName(NameIdTypographicFamily)
+                  ?? name.GetName(NameTable.NameIdFamilyName)
                   ?? string.Empty;
-        var subfamily = font.Name.GetName(NameIdTypographicSubfamily)
-                     ?? font.Name.GetName(NameTable.NameIdSubfamilyName)
+        var subfamily = name.GetName(NameIdTypographicSubfamily)
+                     ?? name.GetName(NameTable.NameIdSubfamilyName)
                      ?? string.Empty;
 
         // OS/2 bit semantics (OpenType §"OS/2 — fsSelection"):
         //   bit 0 ITALIC, bit 5 BOLD, bit 6 REGULAR, bit 9 OBLIQUE.
         // head.macStyle is the older indicator: bit 0 BOLD, bit 1 ITALIC. Use it only as a
         // fallback when OS/2 bits are clearly not set, since some fonts forget OS/2 fsSelection.
-        var fs = font.Os2.FsSelection;
-        var mac = font.Head.MacStyle;
+        var fs = os2.FsSelection;
+        var mac = head.MacStyle;
         var isItalic = (fs & 0x0001) != 0 || (mac & 0x0002) != 0;
         var isOblique = (fs & 0x0200) != 0;
-        var isBold = (fs & 0x0020) != 0 || (mac & 0x0001) != 0 || font.Os2.UsWeightClass >= 700;
+        var isBold = (fs & 0x0020) != 0 || (mac & 0x0001) != 0 || os2.UsWeightClass >= 700;
 
         // Weight: OS/2 usWeightClass is in CSS-equivalent 1..1000 space (per OpenType spec
         // since 2002). Some legacy fonts use a 1..9 scale — detect and rescale to 100..900.
         // Any out-of-CSS-range value (0, > 1000) is treated as "missing" and normalized to
         // 400 (CSS normal) — keeps malformed-font weights from leaking into the matcher and
         // pushing scoring off-axis.
-        int weight = font.Os2.UsWeightClass;
+        int weight = os2.UsWeightClass;
         if (weight is > 0 and < 10)
         {
             weight *= 100;
@@ -102,14 +108,14 @@ internal sealed record FontMetadata
         }
 
         // Stretch: OS/2 usWidthClass is 1..9 per spec. Clamp anything out-of-range to 5 (normal).
-        int stretch = font.Os2.UsWidthClass;
+        int stretch = os2.UsWidthClass;
         if (stretch is < 1 or > 9) stretch = 5;
 
         return new FontMetadata
         {
             FamilyName = family,
             SubfamilyName = subfamily,
-            PostScriptName = font.Name.PostScriptName,
+            PostScriptName = name.PostScriptName,
             WeightCss = weight,
             StretchCss = stretch,
             IsItalic = isItalic,

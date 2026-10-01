@@ -142,7 +142,7 @@ public static class FontSafetyValidator
     /// sanity (numTables + directory bounds), this validates EVERY table
     /// record's offset+length lies within the file + rejects any font
     /// that uses one of the danger-class tables NetPdf v1 doesn't
-    /// render. The exact denylist enforced by <see cref="IsDangerousTableTag"/>
+    /// render. The exact denylist enforced by <see cref="IsDangerousTableTag(char, char, char, char)"/>
     /// is: <c>SVG </c> (SVG-in-OpenType), <c>sbix</c> (Apple bitmap),
     /// <c>CBDT</c> + <c>CBLC</c> (Google color bitmap data + location),
     /// <c>EBDT</c> + <c>EBLC</c> (embedded bitmap data + location). SVG-
@@ -162,7 +162,7 @@ public static class FontSafetyValidator
     /// payloads — much smaller attack surface than SVG / bitmap glyph
     /// tables), and clarify the doc to match what's enforced. If a
     /// future review wants COLR/CPAL added too, both the doc + the
-    /// <see cref="IsDangerousTableTag"/> body should be updated together.</para>
+    /// <see cref="IsDangerousTableTag(char, char, char, char)"/> body should be updated together.</para>
     ///
     /// <para><b>Per PR #18 review #9 — public for post-decompression
     /// re-validation.</b> WOFF / WOFF2 wrap an sfnt + apply zlib /
@@ -257,6 +257,10 @@ public static class FontSafetyValidator
     /// rejected up front: the Phase 5 shaper pipeline doesn't own them,
     /// and accepting them would invite the SVG-in-OpenType + colored-
     /// bitmap attack-surface classes.</summary>
+    /// <summary>The tag-integer form of <see cref="IsDangerousTableTag(char, char, char, char)"/> (font-collection indexer).</summary>
+    internal static bool IsDangerousTableTag(uint tag) =>
+        IsDangerousTableTag((char)(tag >> 24), (char)((tag >> 16) & 0xFF), (char)((tag >> 8) & 0xFF), (char)(tag & 0xFF));
+
     private static bool IsDangerousTableTag(char a, char b, char c, char d)
     {
         // SVG  — embedded SVG glyphs.

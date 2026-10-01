@@ -2,7 +2,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Collections.Frozen;
+using System.Globalization;
 using NetPdf.Text.Fonts;
+using NetPdf.Text.Fonts.OpenType;
 using NetPdf.Text.Fonts.SystemFonts;
 
 namespace NetPdf;
@@ -68,7 +70,22 @@ public sealed class SystemFontResolver : IFontResolver
         var entry = ResolveEntry(query);
         if (entry is null) return ValueTask.FromResult<FontFaceData?>(null);
 
-        var bytes = _cache.GetOrAdd(entry.Value.FilePath, static path => File.ReadAllBytes(path));
+        var face = entry.Value;
+        ReadOnlyMemory<byte> bytes;
+        if (face.IsCollectionFace)
+        {
+            // One cache slot per face: faces of one collection are distinct programs.
+            bytes = _cache.GetOrAdd(
+                face.FilePath + "#" + face.FaceIndex.ToString(CultureInfo.InvariantCulture),
+                _ => LoadCollectionFace(face.FilePath, face.FaceIndex));
+            // A face the indexer accepted but whose full parse fails is "not available", like a
+            // family that is not installed: the caller falls through to its next family.
+            if (bytes.IsEmpty) return ValueTask.FromResult<FontFaceData?>(null);
+        }
+        else
+        {
+            bytes = _cache.GetOrAdd(face.FilePath, static path => File.ReadAllBytes(path));
+        }
         var data = new FontFaceData
         {
             Bytes = bytes,
@@ -84,9 +101,31 @@ public sealed class SystemFontResolver : IFontResolver
             // not valid file-URI form) and leaves spaces unescaped on Unix. Per RFC 8089:
             // file URIs derived from absolute paths must round-trip through the system's
             // path normalization rules — `new Uri(path)` is what does that.
-            Source = new Uri(entry.Value.FilePath),
+            Source = face.IsCollectionFace
+                ? new UriBuilder(new Uri(face.FilePath)) { Fragment = "face=" + face.FaceIndex.ToString(CultureInfo.InvariantCulture) }.Uri
+                : new Uri(face.FilePath),
         };
         return ValueTask.FromResult<FontFaceData?>(data);
+    }
+
+    /// <summary>
+    /// Extract one face of a font collection as a standalone sfnt and check it the way a plain
+    /// <c>.ttf</c> is checked at index time (safety validator + full OpenType parse). Returns empty
+    /// bytes when the face cannot be used.
+    /// </summary>
+    private static ReadOnlyMemory<byte> LoadCollectionFace(string path, int faceIndex)
+    {
+        try
+        {
+            var bytes = FontCollection.ExtractFace(path, faceIndex);
+            if (!FontSafetyValidator.Validate(bytes).IsSafe) return ReadOnlyMemory<byte>.Empty;
+            _ = OpenTypeFont.Parse(bytes);
+            return bytes;
+        }
+        catch (IOException) { return ReadOnlyMemory<byte>.Empty; }
+        catch (UnauthorizedAccessException) { return ReadOnlyMemory<byte>.Empty; }
+        catch (InvalidDataException) { return ReadOnlyMemory<byte>.Empty; }
+        catch (ArgumentException) { return ReadOnlyMemory<byte>.Empty; }
     }
 
     /// <summary>

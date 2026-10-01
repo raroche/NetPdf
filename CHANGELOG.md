@@ -6,6 +6,9 @@ All notable changes to NetPdf are documented here. The format follows [Keep a Ch
 
 Post-`1.1.1` improvements accumulate here until the next release is cut.
 
+### Added
+- **System font collections (`.ttc` / `.otc`) are now used.** The system-font index skipped every collection file, so families that ship only as a collection could not be used and a document asking for them fell back to another font. On macOS these include Helvetica, Helvetica Neue, Avenir, Avenir Next, Menlo and Optima; on Windows and Linux, CJK families such as MS Gothic and Noto Sans CJK. Every face of a collection is now indexed, and the chosen face is embedded on its own (not the whole collection). Faces that the font safety validator rejects (bitmap or SVG glyph tables) or that lack a required table are skipped. Fonts you supply yourself through an `IFontResolver` must still be a single TTF / OTF.
+
 ### Fixed
 - **Flex items no longer lose content when flexed below it.** A `flex: 1` item in a column flexbox (for example the feature list inside a card) could be flexed to almost no height; its content was then laid out into that tiny space and everything after the first line was silently dropped. A column item with `height: auto` and `min-height: auto` now keeps at least its content height (CSS Flexbox §4.5), and an item's content never paginates inside a fixed-size item — it overflows it, as in a browser.
 - **Absolutely positioned content taller than its box is no longer cut.** It overflows the box (CSS `overflow: visible`) instead of keeping only what fitted before the first "page break" inside the box.

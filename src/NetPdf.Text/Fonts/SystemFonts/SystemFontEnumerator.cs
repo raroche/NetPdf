@@ -10,7 +10,8 @@ namespace NetPdf.Text.Fonts.SystemFonts;
 /// Base class for platform-specific system-font enumeration. Subclasses provide the list
 /// of well-known font directories for their platform; the base class walks each directory
 /// (recursively) and parses the <c>name</c> + <c>OS/2</c> tables of every reachable
-/// <c>.ttf</c> / <c>.otf</c> file to materialize <see cref="SystemFontEntry"/> records.
+/// <c>.ttf</c> / <c>.otf</c> / <c>.ttc</c> / <c>.otc</c> file to materialize
+/// <see cref="SystemFontEntry"/> records — one per face.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,13 +22,12 @@ namespace NetPdf.Text.Fonts.SystemFonts;
 /// of system fonts installed.
 /// </para>
 /// <para>
-/// Phase 1 covers the four platforms NetPdf targets (macOS, Windows, Linux, Alpine).
-/// <b>TTC / OTC collection files are scanned but currently NOT indexed</b>: the
-/// <see cref="OpenTypeFont.Parse"/> entry point doesn't yet support collection
-/// containers, so <see cref="TryIndex"/> swallows the parse failure and skips the
-/// file. Full multi-face collection support — including indexing face 0 (and
-/// optionally subsequent faces) of every <c>.ttc</c> / <c>.otc</c> reachable on disk
-/// — lands when the collection parser does (post-Phase-1).
+/// <b>Font collections.</b> A file whose content starts with the <c>ttcf</c> tag (whatever its
+/// extension) is indexed face by face by <see cref="IndexCollection"/>: it reads only the collection
+/// header, each face's table directory and its <c>name</c> / <c>OS/2</c> / <c>head</c> tables, and
+/// records the face index on the entry (<see cref="SystemFontEntry.IsCollectionFace"/>). The resolver
+/// later extracts the chosen face as a standalone font (<see cref="FontCollection.ExtractFace(string, int)"/>).
+/// Plain TTF / OTF files go through <see cref="TryIndex"/> (safety validator + full parse).
 /// </para>
 /// </remarks>
 internal abstract class SystemFontEnumerator
@@ -140,7 +140,15 @@ internal abstract class SystemFontEnumerator
         {
             using var handle = File.OpenHandle(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             Span<byte> tag = stackalloc byte[4];
-            return RandomAccess.Read(handle, tag, 0) == 4 && FontCollection.IsCollection(tag);
+            // RandomAccess.Read may return fewer bytes than asked before EOF — loop until 4 or EOF (0).
+            var read = 0;
+            while (read < tag.Length)
+            {
+                var n = RandomAccess.Read(handle, tag[read..], read);
+                if (n <= 0) return false;
+                read += n;
+            }
+            return FontCollection.IsCollection(tag);
         }
         catch (IOException) { return false; }
         catch (UnauthorizedAccessException) { return false; }

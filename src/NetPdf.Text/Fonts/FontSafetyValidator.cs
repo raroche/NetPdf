@@ -257,10 +257,6 @@ public static class FontSafetyValidator
     /// rejected up front: the Phase 5 shaper pipeline doesn't own them,
     /// and accepting them would invite the SVG-in-OpenType + colored-
     /// bitmap attack-surface classes.</summary>
-    /// <summary>The tag-integer form of <see cref="IsDangerousTableTag(char, char, char, char)"/> (font-collection indexer).</summary>
-    internal static bool IsDangerousTableTag(uint tag) =>
-        IsDangerousTableTag((char)(tag >> 24), (char)((tag >> 16) & 0xFF), (char)((tag >> 8) & 0xFF), (char)(tag & 0xFF));
-
     private static bool IsDangerousTableTag(char a, char b, char c, char d)
     {
         // SVG  — embedded SVG glyphs.
@@ -275,6 +271,11 @@ public static class FontSafetyValidator
         if (a == 'E' && b == 'B' && c == 'L' && d == 'C') return true;
         return false;
     }
+
+    /// <summary>The tag-integer form of <see cref="IsDangerousTableTag(char, char, char, char)"/>, for the
+    /// font-collection indexer, which checks each face's directory before extracting it.</summary>
+    internal static bool IsDangerousTableTag(uint tag) =>
+        IsDangerousTableTag((char)(tag >> 24), (char)((tag >> 16) & 0xFF), (char)((tag >> 8) & 0xFF), (char)(tag & 0xFF));
 
     /// <summary>Per Phase D D-5 — WOFF (1.0) header validation per
     /// W3C WOFF File Format 1.0 §3. Accepts the font when the

@@ -11825,6 +11825,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         : buf.ContentBlockExtent + blockChrome;
                     measureCache[item] = measuredBorderBox;
                 }
+                // The content-grown height never exceeds `max-height` (the same cap the emission applies).
+                var (_, maxBorderBox) = item.ResolveFlexItemMinMaxMainSize(PropertyId.MinHeight, PropertyId.MaxHeight);
+                measuredBorderBox = Math.Min(measuredBorderBox, maxBorderBox);
                 if (measuredBorderBox > mainExtent) mainExtent = measuredBorderBox;
             }
             totalMain += mainExtent;

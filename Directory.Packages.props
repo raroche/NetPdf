@@ -25,27 +25,27 @@
           grid-row-end known gap closed upstream.
       Before bumping it again: run the W3cConformance gates and CssParserAdapterPreprocessTests locally.
     -->
-    <PackageVersion Include="AngleSharp" Version="1.8.2" />
-    <PackageVersion Include="AngleSharp.Css" Version="1.1.2" />
-    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.301" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.301" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.301" />
-    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.301" />
-    <PackageVersion Include="SkiaSharp" Version="4.153.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.153.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.153.1" />
-    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.153.1" />
+    <PackageVersion Include="AngleSharp" Version="1.8.6" />
+    <PackageVersion Include="AngleSharp.Css" Version="1.2.2" />
+    <PackageVersion Include="HarfBuzzSharp" Version="14.2.1.400" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Linux" Version="14.2.1.400" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.macOS" Version="14.2.1.400" />
+    <PackageVersion Include="HarfBuzzSharp.NativeAssets.Win32" Version="14.2.1.400" />
+    <PackageVersion Include="SkiaSharp" Version="4.154.0" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="4.154.0" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.154.0" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.154.0" />
   </ItemGroup>
 
   <!-- Test-only dependencies. -->
   <ItemGroup>
     <PackageVersion Include="xunit" Version="2.9.3" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.0" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
     <PackageVersion Include="coverlet.collector" Version="10.1.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageVersion Include="SharpFuzz" Version="2.3.0" />
-    <PackageVersion Include="Microsoft.Playwright" Version="1.63.0" />
+    <PackageVersion Include="Microsoft.Playwright" Version="1.64.1" />
     <!-- Visual-regression harness (PR 8): PDFium (via PDFtoImage, ships bblanchon.PDFium native for
          macOS/Linux/Win) rasterizes the NetPdf PDF -> RGBA; SkiaSharp only WRITES PDF.
          PDFtoImage 5.4.0 declares a SkiaSharp FLOOR of 4.150.1; production pins a newer 4.x above (see the
@@ -74,7 +74,7 @@
 
   <!-- Build infrastructure. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.403" />
   </ItemGroup>
 
 </Project>
